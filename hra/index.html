@@ -56075,34 +56075,57 @@ function openFullscreenMap() {
                 const playerName = getPlayerName();
                 const sanitizedName = playerName.replace(/[\\/\\.#$\\[\\]]/g, '_');
                 
-                // Zkontroluj jestli existuje factionSeason - pokud ne, vytvoř ho (první spuštění)
+                // Zkontroluj factionSeason
                 const seasonSnap = await firebaseDB.ref('factionSeason').once('value');
                 const seasonData = seasonSnap.val();
                 
                 if (!seasonData) {
-                    // factionSeason neexistuje - vytvoř ho (první inicializace, NE reset!)
+                    // factionSeason neexistuje - vytvoř ho (první inicializace)
                     console.log('🏴 Creating initial factionSeason');
                     await firebaseDB.ref('factionSeason').set({
                         startTime: Date.now(),
                         seasonNumber: 1,
                         lastReset: null
                     });
+                } else if (seasonData.lastReset) {
+                    // Byl proveden reset - zkontroluj jestli hráč vstoupil do frakce PŘED resetem
+                    const joinedAt = state.pvpFactionJoinedAt || 0;
+                    if (joinedAt < seasonData.lastReset) {
+                        // Hráč měl frakci před resetem - musí si vybrat znovu!
+                        console.log('🔄 Faction was reset after player joined, clearing local state');
+                        state.pvpFaction = null;
+                        state.pvpFactionJoinedAt = null;
+                        state.pvpFactionContribution = 0;
+                        saveGame();
+                        notifyInfo('🏴 Frakce resetovány', 'Vyber si novou frakci!');
+                        return;
+                    }
                 }
                 
-                // Zkontroluj jestli záznam hráče existuje
+                // Zkontroluj jestli záznam hráče existuje v Firebase
                 const snap = await firebaseDB.ref('factionMembers/' + sanitizedName).once('value');
                 const existingData = snap.val();
                 
                 if (!existingData) {
-                    // Záznam neexistuje - vytvoř ho znovu
+                    // Záznam neexistuje - vytvoř nový (ale bez starých bodů!)
+                    // Pokud hráč vstoupil po resetu, může mít contribution
+                    // Pokud vstoupil před a záznam chybí, něco je špatně - dej 0
+                    const safeContribution = (state.pvpFactionJoinedAt && seasonData?.lastReset && state.pvpFactionJoinedAt > seasonData.lastReset) 
+                        ? (state.pvpFactionContribution || 0) 
+                        : 0;
+                    
                     await firebaseDB.ref('factionMembers/' + sanitizedName).set({
                         name: playerName,
                         faction: faction,
                         joinedAt: state.pvpFactionJoinedAt || Date.now(),
-                        contribution: state.pvpFactionContribution || 0,
+                        contribution: safeContribution,
                         lastActive: Date.now()
                     });
-                    console.log('🔄 Re-registered in factionMembers:', playerName);
+                    
+                    // Synchronizuj lokální stav
+                    state.pvpFactionContribution = safeContribution;
+                    
+                    console.log('🔄 Re-registered in factionMembers:', playerName, 'contribution:', safeContribution);
                 } else {
                     // Existuje - jen aktualizuj lastActive
                     await firebaseDB.ref('factionMembers/' + sanitizedName + '/lastActive').set(Date.now());
@@ -68179,6 +68202,8 @@ function openFullscreenMap() {
             if (!confirm('Toto smaže:\n• Všechna území\n• Všechny členy frakcí\n• Historii sezón\n• Válečnou zónu\n\nHráči si budou muset znovu vybrat frakci!')) return;
             
             try {
+                const resetTime = Date.now();
+                
                 // Smaž území
                 await firebaseDB.ref('territories').remove();
                 
@@ -68188,8 +68213,12 @@ function openFullscreenMap() {
                 // Smaž historii sezón
                 await firebaseDB.ref('factionSeasonHistory').remove();
                 
-                // Smaž aktuální sezónu
-                await firebaseDB.ref('factionSeason').remove();
+                // Nastav novou sezónu s časem resetu (důležité pro detekci u ostatních hráčů!)
+                await firebaseDB.ref('factionSeason').set({
+                    startTime: resetTime,
+                    seasonNumber: 1,
+                    lastReset: resetTime
+                });
                 
                 // Smaž válečnou zónu
                 await firebaseDB.ref('warZone').remove();
