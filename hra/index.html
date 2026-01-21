@@ -23864,12 +23864,18 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 // Frakční barva rámečku (pokud je území obsazené) - zobraz i pro neznámé lokace!
                 let factionBorderColor = null;
                 let factionBorderStyle = '';
-                if (window.territoryCache && window.territoryCache[loc.id]?.owner) {
-                    const ownerFaction = PVP_FACTIONS[window.territoryCache[loc.id].owner];
-                    if (ownerFaction) {
-                        factionBorderColor = ownerFaction.color;
-                        factionBorderStyle = ` box-shadow: 0 0 5px ${ownerFaction.color}50;`;
+                let territoryOwnerName = '';
+                try {
+                    if (window.territoryCache && window.territoryCache[loc.id] && window.territoryCache[loc.id].owner) {
+                        const ownerFaction = PVP_FACTIONS[window.territoryCache[loc.id].owner];
+                        if (ownerFaction) {
+                            factionBorderColor = ownerFaction.color;
+                            factionBorderStyle = ` box-shadow: 0 0 5px ${ownerFaction.color}50;`;
+                            territoryOwnerName = ownerFaction.name;
+                        }
                     }
+                } catch(e) {
+                    console.log('Territory cache error:', e);
                 }
                 
                 // === VÁLEČNÁ ZÓNA - výrazné červené svícení ===
@@ -23878,13 +23884,14 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     isWarZone = true;
                     factionBorderColor = '#ff0000';
                     factionBorderStyle = ` box-shadow: 0 0 15px #ff0000, 0 0 30px #ff000080; animation: war-zone-pulse 1s infinite;`;
+                    territoryOwnerName = '⚔️ VÁLKA';
                 }
                 
                 // Použij frakční barvu pokud existuje, jinak původní
                 const finalBorderColor = factionBorderColor || borderColor;
                 const borderWidth = (factionBorderColor || isWarZone) ? '3px' : '2px';
                 
-                html += '<div onclick="' + clickAction + '" style="position: absolute; left: ' + left + 'px; top: ' + top + 'px; width: ' + (cellSize - 2) + 'px; height: ' + (cellSize - 2) + 'px; background: ' + bgColor + '; border: ' + borderWidth + ' solid ' + finalBorderColor + '; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1rem; cursor: ' + cursor + '; opacity: ' + (factionBorderColor ? Math.max(0.6, opacity) : opacity) + ';' + factionBorderStyle + (isHere ? ' animation: pulse-glow 1.5s infinite; box-shadow: 0 0 10px var(--toxic-green);' : '') + '" title="' + tooltipText + (factionBorderColor ? ' [' + PVP_FACTIONS[window.territoryCache[loc.id].owner].name + ']' : '') + '">';
+                html += '<div onclick="' + clickAction + '" style="position: absolute; left: ' + left + 'px; top: ' + top + 'px; width: ' + (cellSize - 2) + 'px; height: ' + (cellSize - 2) + 'px; background: ' + bgColor + '; border: ' + borderWidth + ' solid ' + finalBorderColor + '; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1rem; cursor: ' + cursor + '; opacity: ' + (factionBorderColor ? Math.max(0.6, opacity) : opacity) + ';' + factionBorderStyle + (isHere ? ' animation: pulse-glow 1.5s infinite; box-shadow: 0 0 10px var(--toxic-green);' : '') + '" title="' + tooltipText + (territoryOwnerName ? ' [' + territoryOwnerName + ']' : '') + '">';
                 
                 // Zobraz ikonu - pro aktuální pozici přidej 📍, pro skrýš přidej 📦
                 if (isHere) {
@@ -55752,12 +55759,27 @@ function openFullscreenMap() {
                 const playerName = getPlayerName();
                 const sanitizedName = playerName.replace(/[\\/\\.#$\\[\\]]/g, '_');
                 
+                // Zkontroluj jestli existuje factionSeason (pokud ne, byl reset)
+                const seasonSnap = await firebaseDB.ref('factionSeason').once('value');
+                const seasonData = seasonSnap.val();
+                
+                // Pokud neexistuje sezóna a hráč má frakci, byl proveden reset - resetuj lokální stav
+                if (!seasonData && state.pvpFaction) {
+                    console.log('🔄 Faction reset detected, clearing local faction state');
+                    state.pvpFaction = null;
+                    state.pvpFactionJoinedAt = null;
+                    state.pvpFactionContribution = 0;
+                    saveGame();
+                    notifyInfo('🏴 Frakce resetovány', 'Vyber si novou frakci!');
+                    return;
+                }
+                
                 // Zkontroluj jestli záznam existuje
                 const snap = await firebaseDB.ref('factionMembers/' + sanitizedName).once('value');
                 const existingData = snap.val();
                 
                 if (!existingData) {
-                    // Záznam neexistuje (možná po resetu sezóny) - vytvoř ho znovu
+                    // Záznam neexistuje - vytvoř ho znovu
                     await firebaseDB.ref('factionMembers/' + sanitizedName).set({
                         name: playerName,
                         faction: faction,
@@ -67227,6 +67249,12 @@ function openFullscreenMap() {
                 window.territoryCache = null;
                 window.activeWarZone = null;
                 
+                // Reset lokálního stavu frakce - hráč si musí vybrat znovu
+                state.pvpFaction = null;
+                state.pvpFactionJoinedAt = null;
+                state.pvpFactionContribution = 0;
+                saveGame();
+                
                 // Oznámení do chatu
                 await firebaseDB.ref('chat/messages').push({
                     player: '⚔️ SYSTÉM',
@@ -67237,6 +67265,7 @@ function openFullscreenMap() {
                 
                 notifySuccess('🏴 FRAKCE RESETOVÁNY', 'Všechna data frakcí byla smazána');
                 closeModal();
+                renderFull();
                 
             } catch (e) {
                 console.error('Reset factions error:', e);
