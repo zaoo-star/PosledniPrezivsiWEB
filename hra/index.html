@@ -57521,57 +57521,53 @@ function openFullscreenMap() {
             
             if (multiplayerEnabled && firebaseDB) {
                 try {
-                    // Atomická operace - zkontroluj a vyčisti activeCapture
-                    const captureRef = firebaseDB.ref('territories/' + locationId + '/activeCapture');
-                    const captureSnapshot = await captureRef.once('value');
-                    const activeCapture = captureSnapshot.val();
-                    
-                    // Pokud není aktivní capture od nás, někdo jiný ho dokončil nebo byl zrušen
-                    const myName = getPlayerName();
-                    if (!activeCapture || activeCapture.player !== myName) {
-                        // Zkontroluj jestli capture není starý (> 35 min) - v tom případě ho vyčisti
-                        if (activeCapture && (Date.now() - activeCapture.startTime) > 35 * 60 * 1000) {
-                            console.log('🏴 Cleaning stale capture from', activeCapture.player);
-                            await captureRef.remove();
-                        } else {
-                            console.log('🏴 Capture already processed by someone else');
-                            // Nekončíme - stále zkontrolujeme jestli náhodou už nevlastníme území
-                        }
-                    } else {
-                        // Vyčisti náš activeCapture
-                        await captureRef.remove();
-                    }
-                    
                     // Zkontroluj jestli území už nemáme
                     const ownerSnapshot = await firebaseDB.ref('territories/' + locationId + '/owner').once('value');
                     const currentOwner = ownerSnapshot.val();
                     
                     if (currentOwner === faction) {
-                        // Už máme - vyčisti případný konfliktní capture od naší frakce
-                        const newCaptureSnapshot = await captureRef.once('value');
-                        const newCapture = newCaptureSnapshot.val();
-                        if (newCapture && newCapture.faction === faction) {
-                            // Někdo z naší frakce začal capture na území které už vlastníme
-                            console.log('🏴 Cleaning redundant capture from same faction');
-                            await captureRef.remove();
-                        }
-                        
+                        // Už máme území
                         console.log('🏴 Territory already owned by us');
                         notifyInfo('Území již vlastníme', 'Toto území už patří tvé frakci');
+                        
+                        // Vyčisti případný activeCapture
+                        await firebaseDB.ref('territories/' + locationId + '/activeCapture').remove();
                         return;
                     }
                     
-                    // Území ještě nevlastníme - nastav vlastníka
+                    // Zkontroluj activeCapture
+                    const captureRef = firebaseDB.ref('territories/' + locationId + '/activeCapture');
+                    const captureSnapshot = await captureRef.once('value');
+                    const activeCapture = captureSnapshot.val();
+                    const myName = getPlayerName();
+                    
+                    // Pokud někdo jiný aktivně obsazuje (čerstvý capture), nerušíme
+                    if (activeCapture && activeCapture.player !== myName) {
+                        const elapsed = Date.now() - activeCapture.startTime;
+                        if (elapsed < 35 * 60 * 1000) {
+                            // Někdo jiný má čerstvý capture - zrušeno
+                            console.log('🏴 Someone else is capturing:', activeCapture.player);
+                            notifyWarning('Obsazování zrušeno', `${activeCapture.player} právě obsazuje toto území`);
+                            return;
+                        }
+                        // Starý capture - vyčistíme a pokračujeme
+                        console.log('🏴 Cleaning stale capture from', activeCapture.player);
+                    }
+                    
+                    // Vyčisti activeCapture (náš nebo starý)
+                    await captureRef.remove();
+                    
+                    // Nastav vlastníka
                     await firebaseDB.ref('territories/' + locationId + '/owner').set(faction);
                     await contributeToTerritory(30);
                     window.territoryCache = null; // Invaliduj cache
                     
-                    // Po dobytí vyčisti jakýkoliv zbývající activeCapture
-                    await captureRef.remove();
-                    
+                    console.log('🏴 Territory captured:', locationId, 'for', faction);
                     notifySuccess('🏴 Území dobyto!', `+30 bodů pro ${PVP_FACTIONS[faction].name}`);
+                    
                 } catch(e) {
                     console.error('Complete capture error:', e);
+                    notifyWarning('Chyba', 'Nepodařilo se dokončit obsazování');
                 }
             } else {
                 notifySuccess('🏴 Území dobyto!', `+30 bodů pro ${PVP_FACTIONS[faction].name}`);
