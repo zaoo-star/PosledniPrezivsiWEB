@@ -22929,7 +22929,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         // === NOVÝ MAP SYSTÉM ===
         
         // Hlavní renderování mapy
-        function renderWorldMap() {
+        async function renderWorldMap() {
             // Zajisti že currentLocation existuje
             if (!state.world.currentLocation) {
                 state.world.currentLocation = 'shelter';
@@ -22943,18 +22943,18 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             
             if (multiplayerEnabled && firebaseDB && shouldRefreshCache) {
                 window.territoryCacheTime = Date.now();
-                firebaseDB.ref('territories').once('value').then(snapshot => {
+                try {
+                    const snapshot = await firebaseDB.ref('territories').once('value');
                     window.territoryCache = snapshot.val() || {};
-                    console.log('🗺️ Territory cache loaded:', Object.keys(window.territoryCache).length, 'territories');
-                    // Překresli mapu pokud se data změnila
-                    if (state.activeTab === 'map' && !window._territoryRedrawing) {
-                        window._territoryRedrawing = true;
-                        setTimeout(() => {
-                            window._territoryRedrawing = false;
-                            renderFull();
-                        }, 200);
-                    }
-                }).catch(e => console.log('Territory cache error:', e));
+                    const ownedCount = Object.values(window.territoryCache).filter(t => t && t.owner).length;
+                    console.log('🗺️ Territory cache loaded:', Object.keys(window.territoryCache).length, 'territories,', ownedCount, 'owned');
+                    // Debug: zobraz prvních pár území s vlastníkem
+                    Object.entries(window.territoryCache).slice(0, 5).forEach(([id, t]) => {
+                        if (t && t.owner) console.log('  🏴', id, '-> owner:', t.owner);
+                    });
+                } catch(e) {
+                    console.log('Territory cache error:', e);
+                }
                 
                 // === NAČTI VÁLEČNOU ZÓNU ===
                 firebaseDB.ref('warZone').once('value').then(async snapshot => {
@@ -56848,11 +56848,19 @@ function openFullscreenMap() {
             
             if (multiplayerEnabled && firebaseDB) {
                 try {
+                    console.log('🏴 showTerritoryActions - loading territory:', locationId);
                     const snapshot = await firebaseDB.ref('territories/' + locationId).once('value');
-                    const territory = snapshot.val() || {};
-                    territoryOwner = territory.owner;
-                    territoryGuards = territory.guards || [];
-                    territoryPoints = territory.points || {};
+                    const territory = snapshot.val();
+                    console.log('🏴 showTerritoryActions - RAW data from Firebase:', JSON.stringify(territory));
+                    
+                    if (territory) {
+                        territoryOwner = territory.owner;
+                        territoryGuards = territory.guards || [];
+                        territoryPoints = territory.points || {};
+                        console.log('🏴 showTerritoryActions - owner:', territoryOwner, 'guards:', territoryGuards.length);
+                    } else {
+                        console.log('🏴 showTerritoryActions - NO DATA for this territory!');
+                    }
                     
                     // Kontrola aktivního hráče na území
                     if (territory.activeCapture) {
@@ -57288,14 +57296,21 @@ function openFullscreenMap() {
             const faction = getPlayerFaction();
             if (!faction) return;
             
+            console.log('🏴 claimNeutralTerritory:', locationId, 'faction:', faction);
+            
             if (multiplayerEnabled && firebaseDB) {
                 try {
+                    console.log('🏴 Setting owner in Firebase...');
                     await firebaseDB.ref('territories/' + locationId + '/owner').set(faction);
+                    console.log('🏴 Owner set! Now contributing...');
                     await contributeToTerritory(20);
                     // Invaliduj cache
                     window.territoryCache = null;
+                    console.log('🏴 Claim complete!');
                 } catch(e) {
                     console.error('Claim territory error:', e);
+                    notifyWarning('Chyba', 'Nepodařilo se obsadit: ' + e.message);
+                    return;
                 }
             }
             
@@ -57450,8 +57465,9 @@ function openFullscreenMap() {
                     
                     if (elapsed >= CAPTURE_DURATION) {
                         // Dokončeno!
+                        console.log('🏴 Capture duration reached for', capLocId);
                         stopTerritoryListener(capLocId);
-                        completeTerritoryCapture(capLocId);
+                        await completeTerritoryCapture(capLocId);
                     }
                 }
             }
@@ -57519,35 +57535,47 @@ function openFullscreenMap() {
             if (!state.confirmed) return;
             
             const myName = getPlayerName();
-            const locationId = state.world?.currentLocation;
-            if (!locationId || locationId === 'shelter') return;
+            const currentLocationId = state.world?.currentLocation;
             
             try {
-                const snapshot = await firebaseDB.ref('territories/' + locationId + '/activeCapture').once('value');
-                const activeCapture = snapshot.val();
+                // Prohledej VŠECHNY území jestli tam nemáme aktivní capture
+                const snapshot = await firebaseDB.ref('territories').once('value');
+                const territories = snapshot.val() || {};
                 
-                if (activeCapture && activeCapture.player === myName) {
-                    const elapsed = Date.now() - activeCapture.startTime;
-                    const progress = Math.min(100, (elapsed / (30 * 60 * 1000)) * 100);
+                for (const [locationId, territory] of Object.entries(territories)) {
+                    const activeCapture = territory.activeCapture;
                     
-                    if (progress < 100) {
-                        // Obnov lokální stav
-                        if (!state.territoryCapture) state.territoryCapture = {};
-                        state.territoryCapture[locationId] = {
-                            startTime: activeCapture.startTime,
-                            progress: progress,
-                            faction: activeCapture.faction,
-                            originalOwner: activeCapture.originalOwner
-                        };
+                    if (activeCapture && activeCapture.player === myName) {
+                        const elapsed = Date.now() - activeCapture.startTime;
+                        const progress = Math.min(100, (elapsed / (30 * 60 * 1000)) * 100);
                         
-                        // Spusť listener
-                        startTerritoryListener(locationId);
+                        console.log(`🏴 Found active capture at ${locationId}: ${progress.toFixed(1)}%`);
                         
-                        console.log(`🏴 Capture obnoven: ${progress.toFixed(1)}%`);
-                        notifyInfo('Obsazování obnoveno', `Progress: ${progress.toFixed(0)}% - pokračuj!`);
-                    } else {
-                        // Měl být dokončen
-                        await completeTerritoryCapture(locationId);
+                        if (progress >= 100) {
+                            // Měl být dokončen - dokonči ho!
+                            console.log('🏴 Auto-completing expired capture at', locationId);
+                            await completeTerritoryCapture(locationId);
+                        } else if (locationId === currentLocationId) {
+                            // Jsme na té lokaci - obnov lokální stav
+                            if (!state.territoryCapture) state.territoryCapture = {};
+                            state.territoryCapture[locationId] = {
+                                startTime: activeCapture.startTime,
+                                progress: progress,
+                                faction: activeCapture.faction,
+                                originalOwner: activeCapture.originalOwner
+                            };
+                            
+                            // Spusť listener
+                            startTerritoryListener(locationId);
+                            
+                            console.log(`🏴 Capture obnoven: ${progress.toFixed(1)}%`);
+                            notifyInfo('Obsazování obnoveno', `Progress: ${progress.toFixed(0)}% - pokračuj!`);
+                        } else {
+                            // Nejsme na té lokaci - zruš capture
+                            console.log('🏴 Cancelling capture at', locationId, '- player is elsewhere');
+                            await firebaseDB.ref('territories/' + locationId + '/activeCapture').remove();
+                            notifyWarning('Obsazování zrušeno', `Opustil jsi ${locationId} před dokončením`);
+                        }
                     }
                 }
             } catch(e) {
@@ -57557,7 +57585,12 @@ function openFullscreenMap() {
         
         async function completeTerritoryCapture(locationId) {
             const faction = getPlayerFaction();
-            if (!faction) return;
+            if (!faction) {
+                console.log('🏴 completeTerritoryCapture - no faction!');
+                return;
+            }
+            
+            console.log('🏴 completeTerritoryCapture started for', locationId, 'faction:', faction);
             
             // Zastav listener
             stopTerritoryListener(locationId);
@@ -57572,6 +57605,7 @@ function openFullscreenMap() {
                     // Zkontroluj jestli území už nemáme
                     const ownerSnapshot = await firebaseDB.ref('territories/' + locationId + '/owner').once('value');
                     const currentOwner = ownerSnapshot.val();
+                    console.log('🏴 Current owner:', currentOwner);
                     
                     if (currentOwner === faction) {
                         // Už máme území
@@ -57588,6 +57622,7 @@ function openFullscreenMap() {
                     const captureSnapshot = await captureRef.once('value');
                     const activeCapture = captureSnapshot.val();
                     const myName = getPlayerName();
+                    console.log('🏴 Active capture:', activeCapture, 'myName:', myName);
                     
                     // Pokud někdo jiný aktivně obsazuje (čerstvý capture), nerušíme
                     if (activeCapture && activeCapture.player !== myName) {
@@ -57604,9 +57639,13 @@ function openFullscreenMap() {
                     
                     // Vyčisti activeCapture (náš nebo starý)
                     await captureRef.remove();
+                    console.log('🏴 ActiveCapture removed');
                     
                     // Nastav vlastníka
+                    console.log('🏴 Setting owner to', faction);
                     await firebaseDB.ref('territories/' + locationId + '/owner').set(faction);
+                    console.log('🏴 Owner set successfully!');
+                    
                     await contributeToTerritory(30);
                     window.territoryCache = null; // Invaliduj cache
                     
@@ -57615,7 +57654,7 @@ function openFullscreenMap() {
                     
                 } catch(e) {
                     console.error('Complete capture error:', e);
-                    notifyWarning('Chyba', 'Nepodařilo se dokončit obsazování');
+                    notifyWarning('Chyba', 'Nepodařilo se dokončit obsazování: ' + e.message);
                 }
             } else {
                 notifySuccess('🏴 Území dobyto!', `+30 bodů pro ${PVP_FACTIONS[faction].name}`);
