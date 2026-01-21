@@ -5314,7 +5314,8 @@
                     { level: 2, name: 'Sběrač', bonus: '3-5 surovin', effect: { minRes: 3, maxRes: 5 }, cost: 400, consumption: { food: 1, water: 1 } },
                     { level: 3, name: 'Průzkumník', bonus: '4-7 surovin', effect: { minRes: 4, maxRes: 7, rareChance: 0.1 }, cost: 800, consumption: { food: 2, water: 1 } },
                     { level: 4, name: 'Expert', bonus: '5-9 surovin', effect: { minRes: 5, maxRes: 9, electronics: true }, cost: 1500, consumption: { food: 2, water: 2 } },
-                    { level: 5, name: 'Mistr sběrač', bonus: '7-12 surovin', effect: { minRes: 7, maxRes: 12, itemChance: 0.05 }, cost: 3000, consumption: { food: 3, water: 2 } }
+                    { level: 5, name: 'Mistr sběrač', bonus: '7-12 surovin', effect: { minRes: 7, maxRes: 12, itemChance: 0.05 }, cost: 3000, consumption: { food: 3, water: 2 } },
+                    { level: 6, name: 'Legendární sběrač', bonus: '10-15 surovin', effect: { minRes: 10, maxRes: 15, itemChance: 0.1, electronics: true }, cost: 6000, consumption: { food: 3, water: 2 } }
                 ]
             },
             medicine: {
@@ -5404,7 +5405,8 @@
                     { level: 2, name: 'Dělník', bonus: '+3 vody', effect: { water: 3 }, cost: 250, consumption: { food: 1, water: 0 } },
                     { level: 3, name: 'Pomocník', bonus: '+5 vody', effect: { water: 5, food: 1 }, cost: 500, consumption: { food: 2, water: 0 } },
                     { level: 4, name: 'Veterán', bonus: '+7 vody, +1 jídlo', effect: { water: 7, food: 1 }, cost: 1000, consumption: { food: 2, water: 1 } },
-                    { level: 5, name: 'Neúnavný', bonus: '+10 vody, +2 jídlo', effect: { water: 10, food: 2 }, cost: 2000, consumption: { food: 3, water: 1 } }
+                    { level: 5, name: 'Neúnavný', bonus: '+10 vody, +2 jídlo', effect: { water: 10, food: 2 }, cost: 2000, consumption: { food: 3, water: 1 } },
+                    { level: 6, name: 'Mistr nosič', bonus: '+14 vody, +3 jídlo', effect: { water: 14, food: 3 }, cost: 4000, consumption: { food: 3, water: 1 } }
                 ]
             },
             woodcutting: {
@@ -16000,8 +16002,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         }
         
         function showActionProgress(actionType, totalMinutes, isResumed = false) {
-            const icons = { hunt: '🏹', mine: '⛏️', fish: '🎣', explore: '🔍', gather: '🧺' };
-            const names = { hunt: 'Lov', mine: 'Těžba', fish: 'Rybolov', explore: 'Průzkum', gather: 'Sbírání' };
+            const icons = { hunt: '🏹', mine: '⛏️', fish: '🎣', explore: '🔍', gather: '🧺', alchemy: '⚗️' };
+            const names = { hunt: 'Lov', mine: 'Těžba', fish: 'Rybolov', explore: 'Průzkum', gather: 'Sbírání', alchemy: 'Alchymie' };
             
             // Spustíme interval pro kontrolu dokončení A aktualizaci UI
             const checkProgress = () => {
@@ -22874,11 +22876,16 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 }).catch(e => console.log('Territory cache error:', e));
                 
                 // === NAČTI VÁLEČNOU ZÓNU ===
-                firebaseDB.ref('warZone').once('value').then(snapshot => {
+                firebaseDB.ref('warZone').once('value').then(async snapshot => {
                     const warZone = snapshot.val();
                     if (warZone && warZone.endTime > Date.now()) {
                         window.activeWarZone = warZone;
                         console.log('⚔️ War zone active:', warZone.locationId);
+                    } else if (warZone && warZone.endTime <= Date.now()) {
+                        // War zone expirovala - automaticky vyhodnoť
+                        console.log('⚔️ War zone expired, auto-evaluating...');
+                        window.activeWarZone = null;
+                        await autoEvaluateExpiredWarZone(warZone);
                     } else {
                         window.activeWarZone = null;
                     }
@@ -42139,7 +42146,7 @@ function openFullscreenMap() {
             renderFull();
         }
         
-        // Sběrači sbírají každou hodinu reálného času
+        // Sběrači a lovci sbírají každou hodinu reálného času
         function updateScavengerProduction() {
             if (!state.settlement || !state.settlement.settlers) return;
             
@@ -42158,6 +42165,39 @@ function openFullscreenMap() {
                             settler.skill = (settler.skill || 1) + 1;
                         }
                     }
+                }
+                
+                // SBĚRAČ - sbírá suroviny každých 6 hodin
+                if (type.id === 'scavenger_s') {
+                    const skillLevel = settler.skillLevel || 1;
+                    const SETTLER_SKILLS_DATA = {
+                        1: { min: 2, max: 4 },
+                        2: { min: 3, max: 5 },
+                        3: { min: 4, max: 7 },
+                        4: { min: 5, max: 9 },
+                        5: { min: 7, max: 12 }
+                    };
+                    const skillData = SETTLER_SKILLS_DATA[skillLevel] || SETTLER_SKILLS_DATA[1];
+                    const amount = Math.floor(Math.random() * (skillData.max - skillData.min + 1)) + skillData.min;
+                    const resources = ['wood', 'metal', 'stone', 'cloth', 'leather'];
+                    
+                    const gathered = {};
+                    for (let i = 0; i < amount; i++) {
+                        const res = resources[Math.floor(Math.random() * resources.length)];
+                        state.settlement.resources[res] = (state.settlement.resources[res] || 0) + 1;
+                        gathered[res] = (gathered[res] || 0) + 1;
+                    }
+                    
+                    // Šance na vzácnou surovinu (vyšší úrovně)
+                    if (skillLevel >= 3 && Math.random() < 0.2) {
+                        const rareRes = ['chemicals', 'electronics', 'glass'][Math.floor(Math.random() * 3)];
+                        state.settlement.resources[rareRes] = (state.settlement.resources[rareRes] || 0) + 1;
+                        gathered[rareRes] = (gathered[rareRes] || 0) + 1;
+                    }
+                    
+                    const gatheredText = Object.entries(gathered).map(([k,v]) => `${v}x ${k}`).join(', ');
+                    addLog(`🎒 ${settler.name} nasbíral: ${gatheredText}`, '🎒');
+                    notifySuccess(`🎒 ${settler.name}`, `Nasbíral: ${gatheredText}`);
                 }
             });
         }
@@ -42262,6 +42302,9 @@ function openFullscreenMap() {
         
         function updateSettlementDaily() {
             if (!state.settlement) return;
+            
+            console.log('📅 updateSettlementDaily() called! Day:', state.time.days);
+            console.log('📅 Settlers:', state.settlement.settlers?.map(s => `${s.name} (${s.type})`));
             
             // Process finances first (income and maintenance)
             processSettlementFinances();
@@ -42377,9 +42420,21 @@ function openFullscreenMap() {
                     const amount = Math.floor(Math.random() * (maxRes - minRes + 1)) + minRes;
                     const resources = ['wood', 'metal', 'stone', 'cloth', 'leather'];
                     
+                    console.log(`🎒 Sběrač ${settler.name} sbírá ${amount} surovin...`);
+                    
                     // Inicializuj historii sběru pro tohoto sběrače
                     if (!settler.gatherHistory) settler.gatherHistory = [];
                     const todayGather = { day: state.world.day, items: [], resources: {} };
+                    
+                    for (let i = 0; i < amount; i++) {
+                        const res = resources[Math.floor(Math.random() * resources.length)];
+                        state.settlement.resources[res] = (state.settlement.resources[res] || 0) + 1;
+                        prodReport.resources[res] = (prodReport.resources[res] || 0) + 1;
+                        todayGather.resources[res] = (todayGather.resources[res] || 0) + 1;
+                    }
+                    
+                    console.log('🎒 Sběrač nasbíral:', todayGather.resources);
+                    addLog(`🎒 ${settler.name} nasbíral: ${Object.entries(todayGather.resources).map(([k,v]) => `${v}x ${k}`).join(', ')}`, '🎒');
                     
                     for (let i = 0; i < amount; i++) {
                         const res = resources[Math.floor(Math.random() * resources.length)];
@@ -43932,11 +43987,8 @@ function openFullscreenMap() {
         
         // Obchod v osadě
         function tradeAtSettlement() {
-            // Kontrola že je hráč v osadě (shelter = domov/osada)
-            if (state.world?.currentLocation !== 'shelter' && !state.map?.inBase) {
-                notifyWarning('❌ Nejsi v osadě', 'Musíš být v osadě abys mohl obchodovat!');
-                return;
-            }
+            // Obchodník v osadě funguje i vzdáleně - prodej/nákup jde přes sklad osady
+            const isInShelter = state.world?.currentLocation === 'shelter' || state.map?.inBase;
             
             // Kontrola otevírací doby
             if (!isShopOpen('settlement')) {
@@ -44105,39 +44157,44 @@ function openFullscreenMap() {
         
         function showSettlementShopSell() {
             const traderBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.25;
+            const isInShelter = state.world?.currentLocation === 'shelter' || state.map?.inBase;
+            
             let html = '<div style="max-height: 250px; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
+            
+            // Info o režimu
+            if (!isInShelter) {
+                html += '<p style="color: #ff9800; font-size: 0.8rem; text-align: center; margin-bottom: 0.5rem;">📦 Prodáváš ze skladu osady (nejsi v osadě)</p>';
+            }
             
             // Pomocná funkce pro získání ceny itemu
             const getItemPrice = (item) => {
                 if (item.price && item.price > 0) return item.price;
-                // Hledej v ITEMS definici
                 const itemDef = ITEMS.find(i => i.id === item.id);
                 return itemDef?.price || 0;
             };
             
-            // Prodejné věci - zakázat pouze ty s fromCaravan/fromShop flagy (anti-flip)
-            // Crafted věci MOHOU být prodány (hráč je vyrobil, může prodat)
-            const sellableItems = state.inv.filter(i => getItemPrice(i) > 0 && !isItemEquipped(i) && !i.fromCaravan && !i.fromShop);
-            // Neprodejné věci (zamčené) - pouze ty z karavany nebo obchodu
-            const lockedItems = state.inv.filter(i => getItemPrice(i) > 0 && !isItemEquipped(i) && (i.fromCaravan || i.fromShop));
+            // Zdroj věcí - inventář když v osadě, sklad osady když mimo
+            const sourceItems = isInShelter ? state.inv : (state.baseItems || []);
+            const sourceType = isInShelter ? 'inv' : 'base';
+            
+            // Prodejné věci
+            const sellableItems = sourceItems.filter(i => getItemPrice(i) > 0 && !isItemEquipped(i) && !i.fromCaravan && !i.fromShop);
+            const lockedItems = sourceItems.filter(i => getItemPrice(i) > 0 && !isItemEquipped(i) && (i.fromCaravan || i.fromShop));
             
             if (sellableItems.length === 0 && lockedItems.length === 0) {
-                html += '<p style="color: #666; text-align: center;">Nemáš nic na prodej.</p>';
+                html += `<p style="color: #666; text-align: center;">${isInShelter ? 'Nemáš nic na prodej.' : 'Sklad osady je prázdný.'}</p>`;
             } else {
-                // Nejdřív prodejné
                 sellableItems.forEach((item) => {
                     let sellPrice = Math.floor(getItemPrice(item) * 0.35 * traderBonus);
                     
-                    // Snížení ceny za poškození
                     if (item.durability !== undefined && item.maxDurability) {
                         const durabilityRatio = item.durability / item.maxDurability;
                         sellPrice = Math.floor(sellPrice * durabilityRatio);
                         if (sellPrice < 1) sellPrice = 1;
                     }
                     
-                    const realIdx = state.inv.indexOf(item);
+                    const realIdx = sourceItems.indexOf(item);
                     
-                    // Zjisti special efekt
                     let specialInfo = '';
                     const itemData = ITEMS.find(i => i.id === item.id) || item;
                     if (itemData.special || item.special) {
@@ -44159,14 +44216,12 @@ function openFullscreenMap() {
                         specialInfo = specialLabels[specialName] || specialName;
                     }
                     
-                    // Durabilita info
                     let durabilityInfo = '';
                     if (item.durability !== undefined) {
                         const durColor = item.durability < 30 ? '#f44336' : item.durability < 60 ? '#ff9800' : '#4caf50';
                         durabilityInfo = `<span style="color: ${durColor}; font-size: 0.7rem;">[${item.durability}%]</span>`;
                     }
                     
-                    // Defense/Damage info
                     let statsInfo = '';
                     if (item.defense) statsInfo += `🛡️${item.defense} `;
                     if (item.damage) statsInfo += `⚔️${item.damage} `;
@@ -44184,14 +44239,13 @@ function openFullscreenMap() {
                                     ${statsInfo}${specialInfo ? '<span style="color: #8bc34a;">' + specialInfo + '</span>' : ''}
                                 </div>
                             </div>
-                            <button class="btn" onclick="sellAtSettlement(${realIdx})" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #ff9800;">
+                            <button class="btn" onclick="sellAtSettlement(${realIdx}, '${sourceType}')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #ff9800;">
                                 💰${sellPrice}
                             </button>
                         </div>
                     `;
                 });
                 
-                // Zobraz zamčené věci (karavana/obchod - anti-flip)
                 if (lockedItems.length > 0) {
                     html += `<div style="border-top: 1px solid #444; margin-top: 0.5rem; padding-top: 0.5rem;">
                         <p style="color: #666; font-size: 0.75rem; text-align: center; margin-bottom: 0.3rem;">🔒 Nelze přeprodat obchodníkovi:</p>`;
@@ -44217,11 +44271,8 @@ function openFullscreenMap() {
         }
         
         function buyFromSettlement(itemIdx) {
-            // Kontrola že je hráč v osadě (shelter = domov/osada)
-            if (state.world?.currentLocation !== 'shelter' && !state.map?.inBase) {
-                notifyWarning('❌ Nejsi v osadě', 'Musíš být v osadě abys mohl nakupovat!');
-                return;
-            }
+            // Nákup funguje i vzdáleně - nakoupené věci jdou do skladu osady
+            const isInShelter = state.world?.currentLocation === 'shelter' || state.map?.inBase;
             
             console.log('🛒 buyFromSettlement - itemIdx:', itemIdx);
             console.log('🛒 settlementShop:', state.settlementShop);
@@ -44252,10 +44303,12 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Kontrola váhy
-            if (!canAddItem(item, 1)) {
-                notifyWarning(t('notifications', 'inventoryFull'), 'Neuneseš další věci.');
-                return;
+            // Pokud v osadě - kontrola váhy, jinak jde do skladu
+            if (isInShelter) {
+                if (!canAddItem(item, 1)) {
+                    notifyWarning(t('notifications', 'inventoryFull'), 'Neuneseš další věci.');
+                    return;
+                }
             }
             
             console.log('🛒 Removing money and adding item...');
@@ -44267,7 +44320,16 @@ function openFullscreenMap() {
                 fromShop: true,
                 boughtPrice: price
             };
-            addItemToInventory(boughtItem, 1);
+            
+            if (isInShelter) {
+                // V osadě - do inventáře
+                addItemToInventory(boughtItem, 1);
+            } else {
+                // Mimo osadu - do skladu osady
+                if (!state.baseItems) state.baseItems = [];
+                state.baseItems.push(boughtItem);
+                notifyInfo('📦 Do skladu', `${item.icon} ${item.name} přidáno do skladu osady`);
+            }
             item.stock--;
             
             console.log('🛒 Done! New money:', getMoney());
@@ -44284,14 +44346,17 @@ function openFullscreenMap() {
             showSettlementShopBuy(); // Refresh
         }
         
-        function sellAtSettlement(itemIndex) {
-            // Kontrola že je hráč v osadě (shelter = domov/osada)
-            if (state.world?.currentLocation !== 'shelter' && !state.map?.inBase) {
-                notifyWarning('❌ Nejsi v osadě', 'Musíš být v osadě abys mohl prodávat!');
-                return;
+        function sellAtSettlement(itemIndex, sourceType = 'inv') {
+            // Prodej funguje i vzdáleně - prodává ze skladu osady
+            const isInShelter = state.world?.currentLocation === 'shelter' || state.map?.inBase;
+            
+            // Pokud není v osadě ale source je inv, změň na base
+            if (!isInShelter && sourceType === 'inv') {
+                sourceType = 'base';
             }
             
-            const item = state.inv[itemIndex];
+            const sourceArray = sourceType === 'base' ? (state.baseItems || []) : state.inv;
+            const item = sourceArray[itemIndex];
             if (!item) return;
             
             // Vycraftěné předměty nelze prodat obchodníkům
@@ -44330,7 +44395,7 @@ function openFullscreenMap() {
             if (item.count > 1) {
                 item.count--;
             } else {
-                state.inv.splice(itemIndex, 1);
+                sourceArray.splice(itemIndex, 1);
             }
             
             state.stats.itemsSold = (state.stats.itemsSold || 0) + 1;
@@ -53437,7 +53502,7 @@ function openFullscreenMap() {
             const realDate = new Date();
             state.time.hours = realDate.getHours();
             state.time.mins = realDate.getMinutes();
-            state.time.days = Math.floor(state.time.totalElapsed / 86400); // Days from gameplay
+            state.time.days = Math.floor(state.time.totalElapsed / 86400); // Days from gameplay (24h real = 1 game day)
             
             // Update weather
             if (state.confirmed) {
@@ -54012,9 +54077,12 @@ function openFullscreenMap() {
             
             render();
             
-            // Scavenger hourly production (every hour of real time)
-            if (Math.floor(state.time.totalElapsed) % 3600 === 0 && state.confirmed) {
+            // Scavenger production (every 6 hours of real time)
+            const currentPeriod = Math.floor(state.time.totalElapsed / 21600); // 21600 = 6 hodin
+            if (!state.settlement.lastScavengerPeriod) state.settlement.lastScavengerPeriod = currentPeriod;
+            if (currentPeriod > state.settlement.lastScavengerPeriod && state.confirmed) {
                 updateScavengerProduction();
+                state.settlement.lastScavengerPeriod = currentPeriod;
             }
             
             // Production from buildings (check every minute)
@@ -67074,6 +67142,123 @@ function openFullscreenMap() {
             }
         }
         
+        // Automatické vyhodnocení expirované war zone (volá se když někdo načte mapu a war zone už skončila)
+        async function autoEvaluateExpiredWarZone(warZone) {
+            if (!warZone || !firebaseDB) return;
+            
+            try {
+                // Použij transakci aby se to provedlo jen jednou
+                const lockRef = firebaseDB.ref('warZone/evaluating');
+                const lockResult = await lockRef.transaction(current => {
+                    if (current === true) return; // Už někdo vyhodnocuje
+                    return true;
+                });
+                
+                if (!lockResult.committed) {
+                    console.log('⚔️ War zone already being evaluated by another client');
+                    return;
+                }
+                
+                console.log('⚔️ Auto-evaluating expired war zone...');
+                
+                // Načti aktuální stav (mohl se změnit)
+                const snap = await firebaseDB.ref('warZone').once('value');
+                const currentWarZone = snap.val();
+                
+                if (!currentWarZone || currentWarZone.endTime > Date.now()) {
+                    // Už není nebo ještě neskončila
+                    await lockRef.remove();
+                    return;
+                }
+                
+                // Načti body
+                const warPoints = currentWarZone.factionPoints || {};
+                
+                // Najdi vítěze
+                let winner = null;
+                let maxPoints = 0;
+                for (const [fid, pts] of Object.entries(warPoints)) {
+                    if (pts > maxPoints) {
+                        maxPoints = pts;
+                        winner = fid;
+                    }
+                }
+                
+                if (!winner || maxPoints === 0) {
+                    // Nikdo nebojoval
+                    await firebaseDB.ref('warZone').remove();
+                    
+                    await firebaseDB.ref('chat/messages').push({
+                        player: '⚔️ SYSTÉM',
+                        text: `⏰ Válečná zóna automaticky skončila bez vítěze! Nikdo nezískal body.`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        type: 'system'
+                    });
+                    
+                    console.log('⚔️ War zone ended without winner');
+                    return;
+                }
+                
+                const winnerFaction = PVP_FACTIONS[winner];
+                
+                // Rozdej odměny členům vítězné frakce
+                const membersSnap = await firebaseDB.ref('factionMembers').once('value');
+                const members = membersSnap.val() || {};
+                
+                let winnersCount = 0;
+                for (const [key, member] of Object.entries(members)) {
+                    if (member.faction === winner) {
+                        const safeName = member.name.replace(/[\\/.#$\[\]]/g, '_');
+                        await firebaseDB.ref('notifications/' + safeName).push({
+                            type: 'war_reward',
+                            title: '⚔️ Vítězství ve válečné zóně!',
+                            message: `Tvá frakce ${winnerFaction.icon} ${winnerFaction.name} vyhrála bitvu s ${maxPoints} body! Odměna: ${currentWarZone.reward} 💰`,
+                            reward: { money: currentWarZone.reward },
+                            timestamp: Date.now(),
+                            read: false
+                        });
+                        winnersCount++;
+                    }
+                }
+                
+                // Nastav území jako vlastněné vítěznou frakcí
+                await firebaseDB.ref('territories/' + currentWarZone.locationId + '/owner').set(winner);
+                
+                // Ulož do historie
+                await firebaseDB.ref('warZoneHistory').push({
+                    locationId: currentWarZone.locationId,
+                    winner: winner,
+                    points: warPoints,
+                    reward: currentWarZone.reward,
+                    winnersCount: winnersCount,
+                    endTime: Date.now(),
+                    autoEvaluated: true
+                });
+                
+                // Smaž válečnou zónu
+                await firebaseDB.ref('warZone').remove();
+                
+                // Oznámení do chatu
+                const allPoints = Object.entries(warPoints)
+                    .filter(([_, pts]) => pts > 0)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([fid, pts]) => `${PVP_FACTIONS[fid]?.icon || '?'} ${pts}`)
+                    .join(' | ');
+                
+                await firebaseDB.ref('chat/messages').push({
+                    player: '⚔️ SYSTÉM',
+                    text: `⏰ Válečná zóna automaticky skončila! 🏆 Vítěz: ${winnerFaction.icon} ${winnerFaction.name} (${maxPoints} bodů)! Výsledky: ${allPoints}`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    type: 'system'
+                });
+                
+                console.log('⚔️ War zone auto-evaluated, winner:', winner);
+                
+            } catch (e) {
+                console.error('Auto-evaluate war zone error:', e);
+            }
+        }
+        
         async function adminEndWarZone() {
             if (!isAdmin()) return;
             
@@ -67328,8 +67513,8 @@ function openFullscreenMap() {
             closeModal();
             
             // Spusť normální boj se všemi bonusy hráče
-            // Třetí parametr true = skipPreCombat (pro rychlejší průběh)
-            startCombatWithGroup(enemyGroup, 'war_zone', true);
+            // skipPreCombat = false - ukaž přípravu společníků pokud nějaké má
+            startCombatWithGroup(enemyGroup, 'war_zone', false);
         }
         
         // Po dokončení boje ve válečné zóně
