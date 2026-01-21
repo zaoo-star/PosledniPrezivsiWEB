@@ -22936,10 +22936,10 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
             
             // === NAČTI FRAKČNÍ TERITORIA DO CACHE ===
-            // Načteme teritoria pro zobrazení barev na mapě (refresh každých 30s nebo při prvním načtení)
+            // Načteme teritoria pro zobrazení barev na mapě (refresh každých 10s nebo při prvním načtení)
             const shouldRefreshCache = !window.territoryCache || 
                                        !window.territoryCacheTime || 
-                                       (Date.now() - window.territoryCacheTime > 30000);
+                                       (Date.now() - window.territoryCacheTime > 10000);
             
             if (multiplayerEnabled && firebaseDB && shouldRefreshCache) {
                 window.territoryCacheTime = Date.now();
@@ -55035,6 +55035,9 @@ function openFullscreenMap() {
                             setTimeout(setupCloudSyncListener, 2000);
                         }
                         
+                        // Spusť real-time listener na území pro okamžitou synchronizaci
+                        setupTerritoryRealTimeListener();
+                        
                         // Zkontroluj nevyzvednuté odměny od admina
                         if (!isGuest && state.char?.name) {
                             setTimeout(() => {
@@ -55824,6 +55827,48 @@ function openFullscreenMap() {
                 checkPendingRewards();
             }
         }, 5 * 60 * 1000);
+        
+        // Real-time listener na území - synchronizuje změny okamžitě
+        let territoryRealTimeListener = null;
+        function setupTerritoryRealTimeListener() {
+            if (!firebaseDB) return;
+            
+            // Odstraň starý listener
+            if (territoryRealTimeListener) {
+                firebaseDB.ref('territories').off('value', territoryRealTimeListener);
+            }
+            
+            territoryRealTimeListener = firebaseDB.ref('territories').on('value', (snapshot) => {
+                const newData = snapshot.val() || {};
+                const oldCache = window.territoryCache || {};
+                
+                // Zkontroluj jestli se něco změnilo
+                const newKeys = Object.keys(newData);
+                const oldKeys = Object.keys(oldCache);
+                
+                let changed = newKeys.length !== oldKeys.length;
+                if (!changed) {
+                    for (const key of newKeys) {
+                        if (newData[key]?.owner !== oldCache[key]?.owner) {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Aktualizuj cache
+                window.territoryCache = newData;
+                window.territoryCacheTime = Date.now();
+                
+                // Pokud se něco změnilo a jsme na mapě, překresli
+                if (changed && state.activeTab === 'map') {
+                    console.log('🗺️ Territory real-time update detected');
+                    setTimeout(() => renderFull(), 100);
+                }
+            });
+            
+            console.log('🗺️ Territory real-time listener aktivován');
+        }
         
         // Real-time sync listener - sleduje změny v cloudu
         function setupCloudSyncListener() {
@@ -57346,6 +57391,9 @@ function openFullscreenMap() {
                         action: 'capturing',
                         originalOwner: originalOwner
                     });
+                    // Invaliduj cache aby mapa zobrazila správný stav
+                    window.territoryCache = null;
+                    console.log('🏴 Capture started, cache invalidated');
                 } catch(e) {
                     console.error('Start capture error:', e);
                 }
