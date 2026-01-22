@@ -5197,7 +5197,7 @@
             
             // === BOSS TROPHY ITEMS ===
             { id: 'queen_crown', name: 'Koruna mutantí královny', icon: '👑', type: 'trophy', weight: 1, price: 5000, rarity: 'legendary', desc: 'Groteskní koruna z mutantího chitinu. Důkaz vítězství nad královnou hnízda.' },
-            { id: 'deathclaw_hand', name: 'Dráp Deathclawa', icon: '🦖', type: 'resource', weight: 3, price: 3000, rarity: 'legendary', desc: 'Obrovský dráp nejnebezpečnějšího predátora. Lze použít k výrobě legendární zbraně!' },
+            { id: 'deathclaw_hand', name: 'Dráp Deathclawa', icon: '🦖', type: 'component', weight: 3, price: 3000, rarity: 'legendary', desc: 'Obrovský dráp nejnebezpečnějšího predátora. Lze použít k výrobě legendární zbraně v Craftingu!' },
             { id: 'mutant_heart', name: 'Srdce Behemotha', icon: '💜', type: 'trophy', weight: 5, price: 4000, rarity: 'legendary', desc: 'Masivní pulzující srdce. Použij pro +50 max HP (jednorázově) nebo prodej.', usable: true },
             { id: 'ai_chip', name: 'AI Procesorové jádro', icon: '🧠', type: 'component', weight: 0.5, price: 2500, rarity: 'epic', desc: 'Pokročilý kvantový procesor předválečné AI. Použij v inventáři pro vylepšení zbraně (+10 DMG) nebo zbroje (+10 DEF).' },
             { id: 'ai_module', name: 'AI Paměťový modul', icon: '💾', type: 'component', weight: 1, price: 1800, rarity: 'rare', desc: 'Paměťový modul obsahující fragmenty AI vědomí. Prodejný předmět.' },
@@ -10079,7 +10079,15 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         
         // Helper funkce pro získání celkového počtu suroviny (inventář hráče + sklad osady)
         function getTotalResource(resourceId, includeSettlement = true) {
-            const playerAmount = state.resources[resourceId] || 0;
+            let playerAmount = state.resources[resourceId] || 0;
+            
+            // Speciální komponenty jsou v inventáři, ne v resources
+            const specialComponents = ['deathclaw_hand', 'mutant_heart', 'crystal', 'gold', 'gems'];
+            if (specialComponents.includes(resourceId)) {
+                const invCount = state.inv?.filter(i => i.id === resourceId).reduce((sum, i) => sum + (i.count || 1), 0) || 0;
+                playerAmount += invCount;
+            }
+            
             if (!includeSettlement) return playerAmount;
             const settlementAmount = state.settlement?.resources?.[resourceId] || 0;
             return playerAmount + settlementAmount;
@@ -34485,15 +34493,34 @@ function openFullscreenMap() {
             }
             
             // Consume resources
+            const specialComponents = ['deathclaw_hand', 'mutant_heart', 'crystal', 'gold', 'gems'];
+            
             for (const [res, amt] of Object.entries(recipe.requires)) {
                 const adjustedAmt = Math.ceil(amt * engineerReduction);
                 let remaining = adjustedAmt;
                 
-                // Nejprve odečti z inventáře hráče
-                const playerHas = state.resources[res] || 0;
-                const fromPlayer = Math.min(playerHas, remaining);
-                state.resources[res] = playerHas - fromPlayer;
-                remaining -= fromPlayer;
+                // Speciální komponenty - odeber z inventáře
+                if (specialComponents.includes(res)) {
+                    for (let i = 0; i < remaining && state.inv; i++) {
+                        const idx = state.inv.findIndex(item => item.id === res);
+                        if (idx !== -1) {
+                            if (state.inv[idx].count && state.inv[idx].count > 1) {
+                                state.inv[idx].count--;
+                            } else {
+                                state.inv.splice(idx, 1);
+                            }
+                        }
+                    }
+                    remaining = 0;
+                }
+                
+                // Nejprve odečti z inventáře hráče (resources)
+                if (remaining > 0) {
+                    const playerHas = state.resources[res] || 0;
+                    const fromPlayer = Math.min(playerHas, remaining);
+                    state.resources[res] = playerHas - fromPlayer;
+                    remaining -= fromPlayer;
+                }
                 
                 // Zbytek odečti ze skladu osady (pouze pokud useSettlement)
                 if (remaining > 0 && useSettlement && state.settlement?.resources) {
