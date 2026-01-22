@@ -6990,7 +6990,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'efficient', name: 'Efektivita', icon: '⚙️', desc: '+25% XP ze všech zdrojů', maxLevel: 3, type: 'xp_bonus', value: 0.25 },
             { id: 'lucky', name: 'Štěstí', icon: '🍀', desc: '+10% kvalita lootu', maxLevel: 3, type: 'loot_quality', value: 0.1 },
             { id: 'survivor', name: 'Přeživší', icon: '🛡️', desc: '+1 HP/min regenerace', maxLevel: 5, type: 'health_regen', value: 1 },
-            { id: 'repair', name: 'Opravář', icon: '🔧', desc: 'Oprava zbraní a zbroje (-50% cost)', maxLevel: 3, type: 'repair', value: 0.5 }
+            { id: 'repair', name: 'Opravář', icon: '🔧', desc: 'Oprava zbraní a zbroje (-50% cost)', maxLevel: 3, type: 'repair', value: 0.5 },
+            { id: 'auto_consume', name: 'Pud sebezáchovy', icon: '🧠', desc: 'Auto-jí/pije když umíráš', maxLevel: 1, type: 'auto_consume', value: 1 }
         ];
         
         const ENEMIES = [
@@ -8967,8 +8968,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     { id: 'scavenger', name: 'Sběrač', icon: '🔍', desc: '+15% šance na loot', maxLevel: 5, effect: { lootChance: 0.15 }, requires: null, tier: 1 },
                     { id: 'efficient', name: 'Efektivita', icon: '📊', desc: '-10% spotřeba jídla/vody', maxLevel: 5, effect: { consumeReduction: 0.1 }, requires: 'scavenger', tier: 2 },
                     { id: 'pack_rat', name: 'Křeček', icon: '🎒', desc: '+10 nosnost', maxLevel: 5, effect: { carryWeight: 10 }, requires: 'scavenger', tier: 2 },
-                    { id: 'lucky', name: 'Štěstěna', icon: '🍀', desc: '+5% šance na vzácný loot', maxLevel: 3, effect: { rareChance: 0.05 }, requires: 'efficient', tier: 3 },
-                    { id: 'survivalist', name: 'Přežívač', icon: '🏆', desc: 'Nelze zemřít hlady/žízní (min 1)', maxLevel: 1, effect: { noStarvation: true }, requires: 'lucky', tier: 4 }
+                    { id: 'auto_consume', name: 'Pud sebezáchovy', icon: '🧠', desc: 'Auto-jí/pije když umíráš', maxLevel: 1, effect: { autoConsume: true }, requires: 'efficient', tier: 3 },
+                    { id: 'lucky', name: 'Štěstěna', icon: '🍀', desc: '+5% šance na vzácný loot', maxLevel: 3, effect: { rareChance: 0.05 }, requires: 'efficient', tier: 3 }
                 ]
             },
             exploration: {
@@ -10358,6 +10359,16 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             confirmed: false,
             activeTab: 'multiplayer',
             craftFilter: 'all', // Filtr pro crafting
+            lootFilter: {
+                // Auto-loot filtr - co sbírat automaticky
+                consumables: true,
+                weapons: true,
+                armor: true,
+                ammo: true,
+                resources: true,
+                tools: true,
+                minRarity: 'common' // common, uncommon, rare, epic, legendary
+            },
             buildingCooldowns: {
                 // Track last visit timestamp for special buildings
                 hospitals: {}, // { "q,r": timestamp }
@@ -10707,8 +10718,308 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         }
         
         function getSkillLevel(skillId) {
-            if (!state.unlockedSkills) return 0;
-            return state.unlockedSkills[skillId] || 0;
+            // Nejprve zkus starý SKILLS systém
+            if (state.skills && state.skills[skillId]) {
+                return state.skills[skillId];
+            }
+            
+            // Pak zkus SKILL_TREE
+            if (state.skillTree) {
+                for (const branchId of Object.keys(state.skillTree)) {
+                    if (state.skillTree[branchId][skillId]) {
+                        return state.skillTree[branchId][skillId];
+                    }
+                }
+            }
+            
+            return 0;
+        }
+        
+        // Automatické konzumování když hráč umírá (pokud má perk)
+        function autoConsumeIfDying() {
+            // Zkontroluj jestli má hráč perk "Pud sebezáchovy"
+            const hasAutoConsume = getSkillLevel('auto_consume') > 0;
+            if (!hasAutoConsume) return;
+            
+            // Práh pro automatické konzumování
+            const DANGER_THRESHOLD = 15;
+            
+            // Auto-jídlo když hlad pod prahem
+            if (state.status.hunger < DANGER_THRESHOLD) {
+                const foodItems = state.inv.filter(i => 
+                    i.type === 'consumable' && 
+                    (i.effect === 'hunger' || (i.effect === 'health' && i.id.includes('food')))
+                ).sort((a, b) => (a.value || 0) - (b.value || 0)); // Nejslabší první
+                
+                if (foodItems.length > 0) {
+                    const food = foodItems[0];
+                    const value = food.value || 30;
+                    state.status.hunger = Math.min(100, state.status.hunger + value);
+                    
+                    // Odeber z inventáře
+                    if (food.count && food.count > 1) {
+                        food.count--;
+                    } else {
+                        const idx = state.inv.indexOf(food);
+                        if (idx > -1) state.inv.splice(idx, 1);
+                    }
+                    
+                    addLog(`🧠 Pud sebezáchovy: Automaticky snědl ${food.name}`, food.icon);
+                }
+            }
+            
+            // Auto-pití když žízeň pod prahem
+            if (state.status.thirst < DANGER_THRESHOLD) {
+                const drinkItems = state.inv.filter(i => 
+                    i.type === 'consumable' && i.effect === 'thirst'
+                ).sort((a, b) => (a.value || 0) - (b.value || 0)); // Nejslabší první
+                
+                if (drinkItems.length > 0) {
+                    const drink = drinkItems[0];
+                    const value = drink.value || 30;
+                    state.status.thirst = Math.min(100, state.status.thirst + value);
+                    
+                    // Odeber z inventáře
+                    if (drink.count && drink.count > 1) {
+                        drink.count--;
+                    } else {
+                        const idx = state.inv.indexOf(drink);
+                        if (idx > -1) state.inv.splice(idx, 1);
+                    }
+                    
+                    addLog(`🧠 Pud sebezáchovy: Automaticky vypil ${drink.name}`, drink.icon);
+                }
+            }
+            
+            // Auto-léčení když HP pod 20%
+            if (state.status.hp < getMaxHp() * 0.2) {
+                const healItems = state.inv.filter(i => 
+                    i.type === 'consumable' && i.effect === 'health'
+                ).sort((a, b) => (a.value || 0) - (b.value || 0)); // Nejslabší první
+                
+                if (healItems.length > 0) {
+                    const heal = healItems[0];
+                    const value = heal.value || 20;
+                    state.status.hp = Math.min(getMaxHp(), state.status.hp + value);
+                    
+                    // Odeber z inventáře
+                    if (heal.count && heal.count > 1) {
+                        heal.count--;
+                    } else {
+                        const idx = state.inv.indexOf(heal);
+                        if (idx > -1) state.inv.splice(idx, 1);
+                    }
+                    
+                    addLog(`🧠 Pud sebezáchovy: Automaticky použil ${heal.name}`, heal.icon);
+                }
+            }
+        }
+        
+        // === LOOT FILTR ===
+        const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
+        
+        // Zkontroluje jestli item projde loot filtrem
+        function passesLootFilter(item) {
+            if (!state.lootFilter) return true; // Žádný filtr = sbírej vše
+            
+            const filter = state.lootFilter;
+            const itemType = item.type;
+            const itemRarity = item.rarity || 'common';
+            
+            // Kontrola typu
+            if (itemType === 'consumable' && !filter.consumables) return false;
+            if (itemType === 'weapon' && !filter.weapons) return false;
+            if (itemType === 'armor' && !filter.armor) return false;
+            if (itemType === 'ammo' && !filter.ammo) return false;
+            if (itemType === 'resource' && !filter.resources) return false;
+            if (itemType === 'tool' && !filter.tools) return false;
+            
+            // Kontrola rarity
+            const minRarityIdx = RARITY_ORDER.indexOf(filter.minRarity || 'common');
+            const itemRarityIdx = RARITY_ORDER.indexOf(itemRarity);
+            if (itemRarityIdx < minRarityIdx) return false;
+            
+            return true;
+        }
+        
+        // Zobrazí nastavení loot filtru
+        function showLootFilterSettings() {
+            const filter = state.lootFilter || {
+                consumables: true, weapons: true, armor: true,
+                ammo: true, resources: true, tools: true, minRarity: 'common'
+            };
+            
+            const rarityOptions = [
+                { id: 'common', name: '⚪ Common+', desc: 'Sbírej vše' },
+                { id: 'uncommon', name: '🟢 Uncommon+', desc: 'Ignoruj common' },
+                { id: 'rare', name: '🔵 Rare+', desc: 'Jen vzácné' },
+                { id: 'epic', name: '🟣 Epic+', desc: 'Jen epické' },
+                { id: 'legendary', name: '🟡 Legendary', desc: 'Jen legendární' }
+            ];
+            
+            showModal('🎒 Nastavení Auto-Lootu', `
+                <p style="color: #888; font-size: 0.85rem; margin-bottom: 1rem;">
+                    Vyber co chceš automaticky sbírat. Ostatní zůstane na zemi.
+                </p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterConsumables" ${filter.consumables ? 'checked' : ''} onchange="updateLootFilter('consumables', this.checked)">
+                        <span>🍖 Spotřební</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterWeapons" ${filter.weapons ? 'checked' : ''} onchange="updateLootFilter('weapons', this.checked)">
+                        <span>⚔️ Zbraně</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterArmor" ${filter.armor ? 'checked' : ''} onchange="updateLootFilter('armor', this.checked)">
+                        <span>🛡️ Zbroje</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterAmmo" ${filter.ammo ? 'checked' : ''} onchange="updateLootFilter('ammo', this.checked)">
+                        <span>🔸 Munice</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterResources" ${filter.resources ? 'checked' : ''} onchange="updateLootFilter('resources', this.checked)">
+                        <span>📦 Suroviny</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #2a2a2a; border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="filterTools" ${filter.tools ? 'checked' : ''} onchange="updateLootFilter('tools', this.checked)">
+                        <span>🔧 Nástroje</span>
+                    </label>
+                </div>
+                
+                <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <label style="color: #888; font-size: 0.8rem;">Minimální vzácnost:</label>
+                    <select id="filterMinRarity" onchange="updateLootFilter('minRarity', this.value)" 
+                            style="width: 100%; padding: 0.5rem; margin-top: 0.3rem; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px;">
+                        ${rarityOptions.map(r => `
+                            <option value="${r.id}" ${filter.minRarity === r.id ? 'selected' : ''}>${r.name} - ${r.desc}</option>
+                        `).join('')}
+                    </select>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" onclick="resetLootFilter()" style="background: #555;">🔄 Reset</button>
+                    <button class="btn" onclick="closeModal()" style="background: #4caf50;">✓ Hotovo</button>
+                </div>
+            `);
+        }
+        
+        function updateLootFilter(key, value) {
+            if (!state.lootFilter) state.lootFilter = {
+                consumables: true, weapons: true, armor: true,
+                ammo: true, resources: true, tools: true, minRarity: 'common'
+            };
+            state.lootFilter[key] = value;
+            saveGame();
+        }
+        
+        function resetLootFilter() {
+            state.lootFilter = {
+                consumables: true, weapons: true, armor: true,
+                ammo: true, resources: true, tools: true, minRarity: 'common'
+            };
+            showLootFilterSettings();
+        }
+        
+        // === RECYKLACE ITEMŮ ===
+        function recycleItem(itemIndex) {
+            const item = state.inv[itemIndex];
+            if (!item) return;
+            
+            const itemData = ITEMS.find(i => i.id === item.id) || item;
+            
+            // Nelze recyklovat consumables a některé speciální itemy
+            if (itemData.type === 'consumable' || itemData.type === 'ammo' || itemData.type === 'resource') {
+                notifyWarning('Nelze recyklovat', 'Tento typ předmětu nelze recyklovat');
+                return;
+            }
+            
+            // Vypočítej materiály
+            const materials = calculateRecycleMaterials(itemData);
+            
+            if (Object.keys(materials).length === 0) {
+                notifyWarning('Nelze recyklovat', 'Z tohoto předmětu nezískáš žádné materiály');
+                return;
+            }
+            
+            // Zobraz potvrzení
+            let materialsHtml = '';
+            for (const [mat, amount] of Object.entries(materials)) {
+                const matIcon = { metal: '🔩', wood: '🪵', cloth: '🧵', leather: '🦎', electronics: '📱', chemicals: '🧪', scrap: '⚙️', glass: '🪟', stone: '🪨' }[mat] || '📦';
+                materialsHtml += `<div style="display: inline-block; background: #2a2a2a; padding: 0.3rem 0.6rem; border-radius: 4px; margin: 0.2rem;">${matIcon} ${amount}x ${mat}</div>`;
+            }
+            
+            showModal(`♻️ Recyklovat ${item.icon} ${item.name}?`, `
+                <p style="color: #888;">Rozložíš předmět a získáš suroviny:</p>
+                <div style="margin: 1rem 0;">${materialsHtml}</div>
+                <p style="color: #ff9800; font-size: 0.85rem;">⚠️ Předmět bude zničen!</p>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
+                    <button class="btn" onclick="confirmRecycle(${itemIndex})" style="background: #4caf50;">♻️ Recyklovat</button>
+                    <button class="btn" onclick="closeModal()" style="background: #555;">✗ Zrušit</button>
+                </div>
+            `);
+        }
+        
+        function calculateRecycleMaterials(itemData) {
+            const materials = {};
+            const price = itemData.price || 50;
+            const rarity = itemData.rarity || 'common';
+            
+            // Základní materiály podle typu
+            if (itemData.type === 'weapon') {
+                materials.metal = Math.max(1, Math.floor(price / 40));
+                if (itemData.ammoType) materials.scrap = Math.max(1, Math.floor(price / 60));
+                if (rarity === 'rare' || rarity === 'epic') materials.electronics = 1;
+            } else if (itemData.type === 'armor') {
+                if (itemData.id?.includes('leather') || itemData.defense < 10) {
+                    materials.leather = Math.max(1, Math.floor(price / 35));
+                    materials.cloth = Math.max(1, Math.floor(price / 50));
+                } else {
+                    materials.metal = Math.max(1, Math.floor(price / 40));
+                    materials.cloth = Math.max(1, Math.floor(price / 60));
+                }
+                if (rarity === 'rare' || rarity === 'epic') materials.chemicals = 1;
+            } else if (itemData.type === 'tool') {
+                materials.metal = Math.max(1, Math.floor(price / 50));
+                materials.wood = Math.max(1, Math.floor(price / 60));
+            }
+            
+            // Bonus za vyšší rarity
+            const rarityMultiplier = { common: 0.5, uncommon: 0.6, rare: 0.75, epic: 0.85, legendary: 1 }[rarity] || 0.5;
+            
+            for (const key of Object.keys(materials)) {
+                materials[key] = Math.max(1, Math.floor(materials[key] * rarityMultiplier));
+            }
+            
+            return materials;
+        }
+        
+        function confirmRecycle(itemIndex) {
+            const item = state.inv[itemIndex];
+            if (!item) { closeModal(); return; }
+            
+            const itemData = ITEMS.find(i => i.id === item.id) || item;
+            const materials = calculateRecycleMaterials(itemData);
+            
+            // Přidej materiály
+            for (const [mat, amount] of Object.entries(materials)) {
+                state.resources[mat] = (state.resources[mat] || 0) + amount;
+            }
+            
+            // Odeber item
+            if (item.count && item.count > 1) {
+                item.count--;
+            } else {
+                state.inv.splice(itemIndex, 1);
+            }
+            
+            notifySuccess('♻️ Recyklováno!', `${item.name} rozloženo na suroviny`);
+            addLog(`Recykloval jsi ${item.name}`, '♻️');
+            
+            closeModal();
+            renderFull();
         }
         
         // Získá všechny bojové bonusy hráče ze skillů
@@ -21694,6 +22005,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                             <div style="background: #1a1a1a; height: 6px; border-radius: 3px; overflow: hidden;">
                                 <div style="height: 100%; width: ${Math.min(100, (state.carryWeight / state.maxCarryWeight) * 100)}%; background: linear-gradient(90deg, var(--toxic-green), ${state.carryWeight > state.maxCarryWeight * 0.8 ? '#ff9800' : 'var(--toxic-green)'});"></div>
                             </div>
+                            <button onclick="showLootFilterSettings()" style="width: 100%; margin-top: 0.4rem; padding: 0.3rem; font-size: 0.7rem; background: #2a2a3a; border: 1px solid #444; border-radius: 4px; color: #888; cursor: pointer;">
+                                🎒 Auto-loot nastavení
+                            </button>
                         </div>
                         
                         ${(() => {
@@ -27939,12 +28253,12 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             // Fallback pokud je lootPool prázdný
             if (lootPool.length === 0) lootPool = ITEMS.filter(i => i.type === 'consumable' || i.type === 'resource').slice(0, 20);
             
-            // Šance na prázdný nález (30% vyšší = méně lootu)
-            let emptyChance = 0.30;
-            if (loc.zone === 'safe') emptyChance = 0.35;
-            if (loc.zone === 'medium') emptyChance = 0.28;
-            if (loc.zone === 'danger') emptyChance = 0.22;
-            if (loc.zone === 'deadly') emptyChance = 0.18;
+            // Šance na prázdný nález (ZVÝŠENO - méně lootu)
+            let emptyChance = 0.50; // Bylo 0.30, nyní 50% šance že nic nenajdeš
+            if (loc.zone === 'safe') emptyChance = 0.55;    // Bylo 0.35
+            if (loc.zone === 'medium') emptyChance = 0.48;  // Bylo 0.28
+            if (loc.zone === 'danger') emptyChance = 0.42;  // Bylo 0.22
+            if (loc.zone === 'deadly') emptyChance = 0.35;  // Bylo 0.18
             
             const isEmpty = Math.random() < emptyChance;
             
@@ -27955,7 +28269,14 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             console.log('Explore loot item:', lootItem?.name || 'EMPTY');
             
             if (lootItem) {
-                if (canAddItem(lootItem, 1)) {
+                // Zkontroluj loot filtr
+                const passesFilter = passesLootFilter(lootItem);
+                
+                if (!passesFilter) {
+                    // Hráč nechce tento typ - nech na zemi
+                    addToGroundLoot({...lootItem});
+                    groundItems.push(lootItem.icon + ' ' + lootItem.name + ' (filtr)');
+                } else if (canAddItem(lootItem, 1)) {
                     addItemToInventory(lootItem, 1);
                     notifyLoot(lootItem.name, lootItem.rarity, lootItem.icon);
                     foundItems.push(lootItem.icon + ' ' + lootItem.name);
@@ -30537,7 +30858,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     'hunger_efficiency': '%', 'thirst_efficiency': '%', 'energy_efficiency': '%',
                     'loot_chance': '%', 'travel_speed': '%', 'radiation_resistance': '%',
                     'max_health': ' HP', 'xp_bonus': '%', 'loot_quality': '%',
-                    'health_regen': ' HP/min', 'repair': '%'
+                    'health_regen': ' HP/min', 'repair': '%', 'auto_consume': ''
                 };
                 const unit = effectDescriptions[skill.type] || '';
                 const multiplier = unit === ' HP' || unit === ' HP/min' ? 1 : 100;
@@ -31737,6 +32058,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${needsRepair ? `<button class="btn" onclick="repairItemForMoney(${idx})" style="background: ${canRepair ? '#2196f3' : '#555'};" ${!canRepair ? 'disabled' : ''}>🔧 ${'Opravit za'} ${repairCost} 💰</button>` : ''}
                     ${!isEquipped ? `<button class="btn" onclick="equipWeaponByIndex(${idx})" style="background: #4caf50;">✋ ${'Nasadit'}</button>` : `<button class="btn" onclick="unequipWeapon()" style="background: #ff9800;">👋 ${'Sundat'}</button>`}
+                    <button class="btn" onclick="recycleItem(${idx})" style="background: #795548;">♻️ Recyklovat</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ ${'Zahodit'}</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
                 </div>
@@ -32154,6 +32476,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${needsRepair ? `<button class="btn" onclick="repairItemForMoney(${idx})" style="background: ${canRepair ? '#2196f3' : '#555'};" ${!canRepair ? 'disabled' : ''}>🔧 Opravit za ${repairCost} 💰</button>` : ''}
                     ${!isEquipped ? `<button class="btn" onclick="equipArmorByIndex(${idx})" style="background: #4caf50;">✋ Nasadit</button>` : `<button class="btn" onclick="unequipArmor()" style="background: #ff9800;">👋 Sundat</button>`}
+                    <button class="btn" onclick="recycleItem(${idx})" style="background: #795548;">♻️ Recyklovat</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
                 </div>
@@ -51089,6 +51412,11 @@ function openFullscreenMap() {
             
             // Helper pro generování jednoho lootu
             function generateSingleLoot(lootArray) {
+                // 50% šance že item vůbec nepadne (snížení lootu)
+                if (Math.random() < 0.5) {
+                    return; // Nic nepadne
+                }
+                
                 const lootId = lootArray[Math.floor(Math.random() * lootArray.length)];
                 
                 // Legendary má jen 8% šanci dropnout (i když je v loot poli)
@@ -55108,6 +55436,11 @@ function openFullscreenMap() {
                     state.status.thirst = Math.max(0, state.status.thirst - thirstRate * delta * consumptionMod);
                     state.status.energy = Math.max(0, state.status.energy - energyRate * delta);
                     
+                    // Automatické konzumování pokud má hráč perk (kontrola každých 10s)
+                    if (Math.floor(now / 10000) !== Math.floor((now - delta * 1000) / 10000)) {
+                        autoConsumeIfDying();
+                    }
+                    
                     // === PŘIROZENÁ REGENERACE HP ===
                     // 5 HP za hodinu, ale jen pokud není hladový/dehydratovaný a má méně než max HP
                     if (state.char.hp < state.char.maxHp && state.status.hunger > 20 && state.status.thirst > 20 && state.status.radiation < 50) {
@@ -55620,6 +55953,9 @@ function openFullscreenMap() {
                     state.status.hunger = Math.max(0, state.status.hunger - hungerRate * offlineTime);
                     state.status.thirst = Math.max(0, state.status.thirst - thirstRate * offlineTime);
                     state.status.energy = Math.max(0, state.status.energy - energyRate * offlineTime);
+                    
+                    // Automatické konzumování pokud má hráč perk
+                    autoConsumeIfDying();
                     
                     // Log if significant time passed
                     if (offlineTime > 600) { // More than 10 minutes
@@ -69737,6 +70073,11 @@ function openFullscreenMap() {
         window.createTreasure = createTreasure;
         window.adminCancelTreasure = adminCancelTreasure;
         window.claimTreasure = claimTreasure;
+        window.showLootFilterSettings = showLootFilterSettings;
+        window.updateLootFilter = updateLootFilter;
+        window.resetLootFilter = resetLootFilter;
+        window.recycleItem = recycleItem;
+        window.confirmRecycle = confirmRecycle;
     </script>
 </body>
 </html>
