@@ -67649,6 +67649,8 @@ function openFullscreenMap() {
             if (!multiplayerEnabled || !firebaseDB || !state.char?.name) return;
             
             const myName = state.char.name;
+            // Escapování pro Firebase - musí být stejné jako při ukládání notifikací
+            const safeName = myName.replace(/[\\/\\.#$\\[\\]]/g, '_');
             
             try {
                 let totalMoney = 0;
@@ -67657,8 +67659,8 @@ function openFullscreenMap() {
                 let receivedItems = [];
                 let reasons = [];
                 
-                // === 1. Kontrola notifications/{name} (admin rewards, tombola wins) ===
-                const notifSnapshot = await firebaseDB.ref(`notifications/${myName}`).once('value');
+                // === 1. Kontrola notifications/{safeName} (admin rewards, tombola wins) ===
+                const notifSnapshot = await firebaseDB.ref(`notifications/${safeName}`).once('value');
                 const notifications = notifSnapshot.val() || {};
                 
                 for (const [key, notif] of Object.entries(notifications)) {
@@ -67689,7 +67691,7 @@ function openFullscreenMap() {
                         }
                         
                         // Smaž notifikaci
-                        await firebaseDB.ref(`notifications/${myName}/${key}`).remove();
+                        await firebaseDB.ref(`notifications/${safeName}/${key}`).remove();
                         console.log('🎁 Admin odměna vyzveduta:', notif);
                     }
                     
@@ -67701,19 +67703,19 @@ function openFullscreenMap() {
                         if (notif.title) reasons.push(notif.title);
                         
                         // Smaž notifikaci
-                        await firebaseDB.ref(`notifications/${myName}/${key}`).remove();
+                        await firebaseDB.ref(`notifications/${safeName}/${key}`).remove();
                         console.log('⚔️ War zone odměna vyzveduta:', notif);
                     }
                     
                     // Tombola výhra
                     if (notif.type === 'tombola_win' && !notif.processed) {
                         processTombolaWin(notif);
-                        await firebaseDB.ref(`notifications/${myName}/${key}`).remove();
+                        await firebaseDB.ref(`notifications/${safeName}/${key}`).remove();
                     }
                 }
                 
-                // === 2. Kontrola players/{name}/pendingRewards (starý systém) ===
-                const pendingSnapshot = await firebaseDB.ref(`players/${myName}/pendingRewards`).once('value');
+                // === 2. Kontrola players/{safeName}/pendingRewards (starý systém) ===
+                const pendingSnapshot = await firebaseDB.ref(`players/${safeName}/pendingRewards`).once('value');
                 const pendingData = pendingSnapshot.val() || {};
                 
                 for (const [key, reward] of Object.entries(pendingData)) {
@@ -67737,7 +67739,7 @@ function openFullscreenMap() {
                         }
                         
                         // Označ jako vyzvednuté
-                        await firebaseDB.ref(`players/${myName}/pendingRewards/${key}/claimed`).set(true);
+                        await firebaseDB.ref(`players/${safeName}/pendingRewards/${key}/claimed`).set(true);
                     }
                 }
                 
@@ -69686,12 +69688,12 @@ function openFullscreenMap() {
                 // Vyčisti vybranou lokaci
                 window.selectedWarZoneLocation = null;
                 
-                // Pošli notifikaci všem
+                // Pošli notifikaci všem - formát jako tombola
                 await firebaseDB.ref('chat/messages').push({
-                    player: '⚔️ SYSTÉM',
-                    text: `🔥 VÁLEČNÁ ZÓNA VYHLÁŠENA! 🔥 Lokace: ${loc?.icon || '📍'} ${loc?.name || locationId} | Nepřítel: ${enemy?.icon || '👹'} ${enemy?.name} (${enemyCount}x) | Odměna: ${reward} 💰 | Čas: ${duration} min! Frakce s nejvíce body vyhrává!`,
+                    author: '⚔️ VÁLEČNÁ ZÓNA',
+                    text: `🔥 BITVA VYHLÁŠENA! Lokace: ${loc?.icon || '📍'} ${loc?.name || locationId} | Nepřítel: ${enemy?.icon || '👹'} ${enemy?.name} (${enemyCount}x) | Čas: ${duration} min\n💰 Odměna pro vítěznou frakci: ${reward} 💰 na hráče! Běžte bojovat!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    type: 'system'
+                    system: true
                 });
                 
                 notifySuccess('⚔️ Válečná zóna vyhlášena!', `${loc?.name || locationId} - ${duration} minut`);
@@ -69885,10 +69887,10 @@ function openFullscreenMap() {
                     await firebaseDB.ref('warZone').remove();
                     
                     await firebaseDB.ref('chat/messages').push({
-                        player: '⚔️ SYSTÉM',
-                        text: `❌ Válečná zóna skončila bez vítěze! Nikdo nezískal body.`,
+                        author: '⚔️ VÁLEČNÁ ZÓNA',
+                        text: `❌ Bitva skončila bez vítěze! Nikdo nezískal body. Žádné odměny nebyly rozdány.`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
-                        type: 'system'
+                        system: true
                     });
                     
                     notifyInfo('Válečná zóna skončila', 'Bez vítěze');
@@ -69945,15 +69947,68 @@ function openFullscreenMap() {
                     .map(([fid, pts]) => `${PVP_FACTIONS[fid]?.icon || '?'} ${pts}`)
                     .join(' | ');
                 
+                // Vytvoř seznam výherců (max 10 jmen)
+                const winnerNames = [];
+                for (const [key, member] of Object.entries(members)) {
+                    if (member.faction === winner && winnerNames.length < 10) {
+                        winnerNames.push(member.name);
+                    }
+                }
+                const winnersListText = winnerNames.length > 0 
+                    ? `Výherci: ${winnerNames.join(', ')}${winnersCount > 10 ? ` a dalších ${winnersCount - 10}...` : ''}`
+                    : '';
+                
+                // Oznámení do chatu - formát jako tombola
                 await firebaseDB.ref('chat/messages').push({
-                    player: '⚔️ SYSTÉM',
-                    text: `🏆 VÁLEČNÁ ZÓNA SKONČILA! Vítěz: ${winnerFaction.icon} ${winnerFaction.name}! Skóre: ${allPoints} | ${winnersCount} hráčů dostává ${warZone.reward} 💰!`,
+                    author: '⚔️ VÁLEČNÁ ZÓNA',
+                    text: `🏆 BITVA SKONČILA! Vítěz: ${winnerFaction.icon} ${winnerFaction.name} (${maxPoints} bodů)! Skóre: ${allPoints}`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    type: 'system'
+                    system: true
                 });
                 
-                notifySuccess('🏆 Válečná zóna vyhodnocena!', `Vítěz: ${winnerFaction.name} (${maxPoints} bodů)`);
-                closeModal();
+                // Druhá zpráva s výherci a odměnami
+                await firebaseDB.ref('chat/messages').push({
+                    author: '⚔️ VÁLEČNÁ ZÓNA',
+                    text: `💰 ${winnersCount} hráčů dostává odměnu ${warZone.reward} 💰! ${winnersListText}`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
+                });
+                
+                // Zobraz detailní přehled adminovi
+                const loc = WORLD_LOCATIONS.find(l => l.id === warZone.locationId);
+                showModal('🏆 Válečná zóna vyhodnocena!', `
+                    <div style="text-align: center; margin-bottom: 1rem;">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">${winnerFaction.icon}</div>
+                        <h3 style="color: ${winnerFaction.color}; margin: 0;">${winnerFaction.name} VYHRÁVÁ!</h3>
+                    </div>
+                    
+                    <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                        <p style="color: #888; margin: 0 0 0.5rem 0;">📍 Lokace: <strong style="color: #ddd;">${loc?.icon || ''} ${loc?.name || warZone.locationId}</strong></p>
+                        <p style="color: #888; margin: 0 0 0.5rem 0;">🏆 Vítězné body: <strong style="color: #ffd700;">${maxPoints}</strong></p>
+                        <p style="color: #888; margin: 0;">💰 Odměna: <strong style="color: #4caf50;">${warZone.reward} 💰</strong></p>
+                    </div>
+                    
+                    <div style="background: #0a1a0a; padding: 1rem; border-radius: 8px; border: 1px solid #4caf50; margin-bottom: 1rem;">
+                        <p style="color: #4caf50; margin: 0 0 0.5rem 0; font-weight: bold;">✅ Odměny odeslány!</p>
+                        <p style="color: #8bc34a; margin: 0;">${winnersCount} hráčů z frakce ${winnerFaction.icon} ${winnerFaction.name} obdrží ${warZone.reward} 💰</p>
+                        <p style="color: #666; margin: 0.5rem 0 0 0; font-size: 0.85rem;">Hráči si odměnu vyzvednou automaticky při dalším načtení hry.</p>
+                    </div>
+                    
+                    <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px;">
+                        <p style="color: #888; margin: 0 0 0.5rem 0; font-size: 0.85rem;">📊 Konečné skóre:</p>
+                        <div style="display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap;">
+                            ${Object.entries(warPoints)
+                                .sort((a, b) => b[1] - a[1])
+                                .map(([fid, pts]) => {
+                                    const f = PVP_FACTIONS[fid];
+                                    const isWinner = fid === winner;
+                                    return `<span style="color: ${f?.color || '#888'}; ${isWinner ? 'font-weight: bold; font-size: 1.2rem;' : ''}">${f?.icon || '?'} ${pts}</span>`;
+                                }).join(' | ')}
+                        </div>
+                    </div>
+                    
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #4caf50;">✓ OK</button>
+                `);
                 
             } catch(e) {
                 console.error('End war zone error:', e);
