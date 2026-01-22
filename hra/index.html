@@ -35569,12 +35569,12 @@ function openFullscreenMap() {
             
             // === RESET DUNGEONŮ PO 24 HODINÁCH ===
             const DUNGEON_RESET_TIME = 24 * 60 * 60 * 1000; // 24 hodin v ms
-            const dungeonClearData = state.dungeon.cleared[dungeonId];
+            const dungeonClearData = state.dungeon.cleared ? state.dungeon.cleared[dungeonId] : null;
             let clearedFloors = [];
             
             if (dungeonClearData) {
                 // Nový formát: { floors: [...], clearedAt: timestamp }
-                if (dungeonClearData.floors) {
+                if (dungeonClearData.floors && Array.isArray(dungeonClearData.floors)) {
                     // Kontrola resetu - pouze pokud je clearedAt nastaveno
                     if (dungeonClearData.clearedAt) {
                         const timeSinceClear = Date.now() - dungeonClearData.clearedAt;
@@ -35584,31 +35584,32 @@ function openFullscreenMap() {
                             addLog(`🏰 ${dungeonData.name} se resetoval - nepřátelé se vrátili!`, '🔄');
                             clearedFloors = [];
                         } else {
-                            clearedFloors = dungeonClearData.floors || [];
+                            clearedFloors = [...dungeonClearData.floors]; // Kopie array
                         }
                     } else {
                         // clearedAt je null - dungeon ještě není kompletně vyčištěn, ale některá patra mohou být
-                        clearedFloors = dungeonClearData.floors || [];
+                        clearedFloors = [...dungeonClearData.floors]; // Kopie array
                     }
                 } else if (Array.isArray(dungeonClearData)) {
                     // Starý formát: [floors] - převeď na nový
                     state.dungeon.cleared[dungeonId] = {
-                        floors: dungeonClearData,
+                        floors: [...dungeonClearData],
                         clearedAt: null
                     };
-                    clearedFloors = dungeonClearData;
+                    clearedFloors = [...dungeonClearData];
                 }
             }
             
-            const isCleared = clearedFloors.includes(state.dungeon.floor);
+            const currentFloorNum = state.dungeon.floor || 1;
+            const isCleared = clearedFloors.includes(currentFloorNum);
             
             console.log('🏰 showDungeonUI:', { 
                 dungeonId, 
-                floor: state.dungeon.floor, 
+                floor: currentFloorNum, 
                 totalFloors: dungeonData.floors.length,
                 isCleared,
                 clearedFloors: clearedFloors,
-                clearData: state.dungeon.cleared[dungeonId]
+                clearData: state.dungeon.cleared ? state.dungeon.cleared[dungeonId] : null
             });
             
             // Vypočítej čas do resetu - pouze když jsou VŠECHNA patra vyčištěna
@@ -35627,7 +35628,7 @@ function openFullscreenMap() {
             showModal(`🏰 ${dungeonData.name}`, `
                 <div style="background: linear-gradient(135deg, #1a1a2a, #0a0a1a); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 2px solid #333;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <h3 style="margin: 0; color: #64b5f6;">Patro ${state.dungeon.floor}: ${floor.name}</h3>
+                        <h3 style="margin: 0; color: #64b5f6;">Patro ${currentFloorNum}: ${floor.name}</h3>
                         ${isCleared ? '<span style="color: #8bc34a;">✓ Vyčištěno</span>' : '<span style="color: #ff9800;">⚠️ Nevyčištěno</span>'}
                     </div>
                     <div style="font-size: 0.85rem; color: #888;">
@@ -35642,7 +35643,7 @@ function openFullscreenMap() {
                         ${dungeonData.floors.map(f => `
                             <div style="flex: 1; height: 8px; border-radius: 4px; background: ${
                                 clearedFloors.includes(f.floor) ? '#8bc34a' : 
-                                f.floor === state.dungeon.floor ? '#ff9800' : '#333'
+                                f.floor === currentFloorNum ? '#ff9800' : '#333'
                             };"></div>
                         `).join('')}
                     </div>
@@ -35686,7 +35687,7 @@ function openFullscreenMap() {
                             ⚔️ Prozkoumat patro
                         </button>
                     ` : `
-                        ${state.dungeon.floor < dungeonData.floors.length ? `
+                        ${currentFloorNum < dungeonData.floors.length ? `
                             <button class="btn" onclick="descendDungeon()" style="background: var(--toxic-dark);">
                                 ⬇️ Sestoupit hlouběji
                             </button>
@@ -35696,7 +35697,7 @@ function openFullscreenMap() {
                             </div>
                         `}
                     `}
-                    ${state.dungeon.floor > 1 ? `
+                    ${currentFloorNum > 1 ? `
                         <button class="btn" onclick="ascendDungeon()" style="background: #555;">
                             ⬆️ Vrátit se nahoru
                         </button>
@@ -35724,12 +35725,15 @@ function openFullscreenMap() {
                 return;
             }
             
-            const currentFloor = dungeonData.floors.find(f => f.floor === state.dungeon.floor);
+            const currentFloorNum = state.dungeon.floor || 1;
+            const currentFloor = dungeonData.floors.find(f => f.floor === currentFloorNum);
             
             if (!currentFloor) {
-                notifyWarning('Chyba', 'Data patra nenalezena');
+                notifyWarning('Chyba', `Data patra ${currentFloorNum} nenalezena`);
                 return;
             }
+            
+            console.log('🏰 exploreDungeonFloor:', dungeonId, 'floor:', currentFloorNum, 'enemies:', currentFloor.enemies);
             
             // Vytvoř nepřátele
             let enemyGroup = [];
@@ -35748,6 +35752,8 @@ function openFullscreenMap() {
                             bleeding: 0
                         });
                     }
+                } else {
+                    console.warn('🏰 Enemy not found:', eId);
                 }
             });
             
@@ -35766,7 +35772,14 @@ function openFullscreenMap() {
                         bleeding: 0,
                         isBoss: true
                     });
+                } else {
+                    console.warn('🏰 Boss not found:', currentFloor.boss);
                 }
+            }
+            
+            if (enemyGroup.length === 0) {
+                notifyWarning('Chyba', 'Žádní nepřátelé na tomto patře');
+                return;
             }
             
             window.isDungeonCombat = true;
@@ -35774,7 +35787,7 @@ function openFullscreenMap() {
         }
         
         function handleDungeonVictory() {
-            console.log('🏰 handleDungeonVictory called!', { dungeon: state.dungeon });
+            console.log('🏰 handleDungeonVictory called!', { dungeon: JSON.stringify(state.dungeon) });
             
             if (!state.dungeon?.active) {
                 console.error('🏰 handleDungeonVictory: No active dungeon');
@@ -35796,8 +35809,9 @@ function openFullscreenMap() {
             
             const dungeonId = state.dungeon.active;
             const dungeonData = DUNGEON_FLOORS[dungeonId];
+            const currentFloorNum = state.dungeon.floor || 1;
             
-            console.log('🏰 Processing victory for:', dungeonId, 'floor:', state.dungeon.floor);
+            console.log('🏰 Processing victory for:', dungeonId, 'floor:', currentFloorNum);
             
             if (!dungeonData) {
                 console.error('🏰 handleDungeonVictory: No dungeon data for', dungeonId);
@@ -35805,35 +35819,47 @@ function openFullscreenMap() {
                 return;
             }
             
-            const currentFloor = dungeonData.floors.find(f => f.floor === state.dungeon.floor);
+            const currentFloor = dungeonData.floors.find(f => f.floor === currentFloorNum);
             
             if (!currentFloor) {
-                console.error('🏰 handleDungeonVictory: No floor data for floor', state.dungeon.floor);
+                console.error('🏰 handleDungeonVictory: No floor data for floor', currentFloorNum);
                 return;
             }
             
             // Zajisti že loot array existuje
             if (!state.dungeon.loot) state.dungeon.loot = [];
             
-            // Označ patro jako vyčištěné (nový formát s timestampem)
-            if (!state.dungeon.cleared) state.dungeon.cleared = {};
-            if (!state.dungeon.cleared[dungeonId]) {
+            // === ROBUSTNÍ OZNAČENÍ PATRA JAKO VYČIŠTĚNÉHO ===
+            // Zajisti že cleared objekt existuje
+            if (!state.dungeon.cleared || typeof state.dungeon.cleared !== 'object') {
+                state.dungeon.cleared = {};
+            }
+            
+            // Zajisti že tento dungeon má správnou strukturu
+            if (!state.dungeon.cleared[dungeonId] || typeof state.dungeon.cleared[dungeonId] !== 'object') {
                 state.dungeon.cleared[dungeonId] = { floors: [], clearedAt: null };
             }
-            // Migrace starého formátu
+            
+            // Migrace starého formátu (pokud je to array)
             if (Array.isArray(state.dungeon.cleared[dungeonId])) {
                 state.dungeon.cleared[dungeonId] = { 
                     floors: state.dungeon.cleared[dungeonId], 
-                    clearedAt: null // Nastaví se níže
+                    clearedAt: null
                 };
             }
-            if (!state.dungeon.cleared[dungeonId].floors) {
+            
+            // Zajisti že floors array existuje
+            if (!Array.isArray(state.dungeon.cleared[dungeonId].floors)) {
                 state.dungeon.cleared[dungeonId].floors = [];
             }
-            if (!state.dungeon.cleared[dungeonId].floors.includes(state.dungeon.floor)) {
-                state.dungeon.cleared[dungeonId].floors.push(state.dungeon.floor);
-                console.log('🏰 Floor', state.dungeon.floor, 'marked as cleared!');
-                notifySuccess('🏰 Patro vyčištěno!', `Patro ${state.dungeon.floor} bylo vyčištěno`);
+            
+            // Přidej patro do seznamu vyčištěných (pokud tam ještě není)
+            if (!state.dungeon.cleared[dungeonId].floors.includes(currentFloorNum)) {
+                state.dungeon.cleared[dungeonId].floors.push(currentFloorNum);
+                console.log('🏰 Floor', currentFloorNum, 'marked as cleared! Cleared floors:', state.dungeon.cleared[dungeonId].floors);
+                notifySuccess('🏰 Patro vyčištěno!', `Patro ${currentFloorNum} bylo vyčištěno`);
+            } else {
+                console.log('🏰 Floor', currentFloorNum, 'was already cleared');
             }
             
             // Aktualizuj čas vyčištění - POUZE když jsou vyčištěna VŠECHNA patra
@@ -51374,6 +51400,8 @@ function openFullscreenMap() {
         function handleCombatVictory() {
             const cs = window.combatState;
             
+            console.log('🏆 handleCombatVictory - combatType:', cs?.combatType, 'isDungeon:', cs?.isDungeon);
+            
             // Zvuk vítězství
             if (typeof playCombatSound === 'function') playCombatSound('victory');
             
@@ -51781,8 +51809,9 @@ function openFullscreenMap() {
                         </div>
                     `;
                 }
-            } else if (cs.combatType === 'dungeon') {
+            } else if (cs.combatType === 'dungeon' || cs.isDungeon) {
                 continueAction = "handleDungeonVictory();";
+                console.log('🏰 Setting continueAction to handleDungeonVictory, combatType:', cs.combatType, 'isDungeon:', cs.isDungeon);
             } else if (cs.combatType === 'abyss') {
                 continueAction = "handleAbyssVictory();";
             }
