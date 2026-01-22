@@ -7164,7 +7164,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'silver_ring', name: 'Stříbrný prsten', icon: '💍', result: { type: 'accessory', bonus: 'luck', value: 10, desc: '+10% šance na loot' }, requires: { silver: 3, glass: 1 }, category: 'special', portable: false },
             { id: 'golden_amulet', name: 'Zlatý amulet', icon: '📿', result: { type: 'accessory', bonus: 'xp', value: 15, desc: '+15% XP ze všeho' }, requires: { gold: 2, electronics: 2, leather: 1 }, category: 'special', portable: false },
             { id: 'crystal_focus', name: 'Krystalový zaměřovač', icon: '🔮', result: { type: 'accessory', bonus: 'crit', value: 15, desc: '+15% kritický zásah' }, requires: { crystal: 2, electronics: 2 }, category: 'special', portable: false },
-            { id: 'gem_pendant', name: 'Ochranný přívěsek', icon: '💎', result: { type: 'accessory', bonus: 'defense', value: 10, desc: '+10 obrana' }, requires: { glass: 3, metal: 4, leather: 1 }, category: 'special', portable: false },
+            { id: 'gem_pendant', name: 'Drahokamový přívěsek', icon: '💎', result: { type: 'accessory', bonus: 'defense', value: 15, desc: '+15 obrana' }, requires: { gems: 2, gold: 1, leather: 1 }, category: 'special', portable: false },
+            { id: 'gem_ring', name: 'Drahokamový prsten', icon: '💍', result: { type: 'accessory', bonus: 'luck', value: 10, desc: '+10% šance na vzácný loot' }, requires: { gems: 1, silver: 1 }, category: 'special', portable: false },
             
             // === LEGENDÁRNÍ PŘEDMĚTY (z trofejí) ===
             { id: 'deathclaw_gauntlet', name: 'Rukavice Deathclawa', icon: '🦖', result: { type: 'weapon', damage: 55, rarity: 'legendary', special: 'bleed', critBonus: 15 }, requires: { deathclaw_hand: 1, metal: 10, leather: 5 }, category: 'legendary', portable: false, legendaryRequired: true },
@@ -14809,6 +14810,11 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                                     <button class="btn" onclick="renameCompanion('${comp.uniqueId || comp.id}')" style="background: #2196f3; font-size: 0.75rem; padding: 0.4rem;">✏️ ${currentLang === "en" ? "Name" : "Jméno"}</button>
                                     <button class="btn" onclick="confirmDismissCompanion('${comp.uniqueId || comp.id}')" style="background: #333; font-size: 0.75rem; padding: 0.4rem;">👋 ${currentLang === "en" ? "Dismiss" : "Pryč"}</button>
                                 </div>
+                                ${comp.id === 'engineer_npc' && comp.skills?.includes('masterwork') ? `
+                                    <button class="btn" onclick="technicianUpgradeEquipment()" style="width: 100%; margin-top: 0.5rem; background: linear-gradient(135deg, #ff9800, #f57c00);">
+                                        ⚡ Vylepšit vybavení (+5 DMG/DEF, 20⚙️)
+                                    </button>
+                                ` : ''}
                             </div>
                         `;
                     }).join('')}
@@ -14943,10 +14949,30 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 firstStrikeCrit: false,
                 ignoreTerrrain: false,
                 prediction: false, // Havran - předpověď počasí a eventů
-                questReveal: false // Havran - odhalení quest lokací
+                questReveal: false, // Havran - odhalení quest lokací
+                // Technik efekty
+                autoRepair: false,
+                canUpgrade: false,
+                durabilityBonus: 0,
+                craftCostReduction: 0,
+                craftBonus: 0,
+                specialRecipes: false,
+                canTrap: false,
+                turretDamage: 0,
+                canBuildRobot: false,
+                freeRepair: false // Základní schopnost technika
             };
             
             if (!state.companions || state.companions.length === 0) return bonuses;
+            
+            // Kontrola základních schopností společníků
+            state.companions.forEach(comp => {
+                const base = COMPANIONS.find(c => c.id === comp.id) || comp;
+                // Technik má základní schopnost opravy zdarma
+                if (comp.id === 'engineer_npc' || base.id === 'engineer_npc') {
+                    bonuses.freeRepair = true;
+                }
+            });
             
             state.companions.forEach(comp => {
                 if (!comp.skills || comp.skills.length === 0) return;
@@ -15575,6 +15601,78 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     <button class="btn" onclick="dismissCompanion('${companionId}'); closeModal();" style="background: #c62828;">✓ Propustit</button>
                 </div>
             `);
+        }
+        
+        // Technik companion - vylepšení vybavení (skill Mistrovská práce)
+        function technicianUpgradeEquipment() {
+            const metalCost = 20;
+            
+            if ((state.resources?.metal || 0) < metalCost) {
+                notifyWarning('Málo kovu!', `Technik potřebuje ${metalCost}⚙️ kovu`);
+                return;
+            }
+            
+            // Vyber co vylepšit
+            const hasWeapon = state.equipped?.weapon;
+            const hasArmor = state.equipped?.armor;
+            
+            if (!hasWeapon && !hasArmor) {
+                notifyWarning('Žádné vybavení!', 'Nasaď zbraň nebo zbroj k vylepšení');
+                return;
+            }
+            
+            // Získej bonus od kováře osadníka
+            const blacksmithBonus = getSettlerUpgradeBonus();
+            const totalBonus = 5 + blacksmithBonus;
+            const bonusText = blacksmithBonus > 0 ? ` (+${blacksmithBonus} kovář)` : '';
+            
+            showModal('⚡ Technik vylepšuje', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <div style="font-size: 3rem;">🔧</div>
+                    <p style="color: #ff9800;">Vyber vybavení k vylepšení (+${totalBonus}${bonusText})</p>
+                    <p style="color: #888; font-size: 0.85rem;">Cena: ${metalCost}⚙️ kovu</p>
+                </div>
+                <div style="display: grid; gap: 0.5rem;">
+                    ${hasWeapon ? `
+                        <button class="btn" onclick="doTechnicianUpgrade('weapon')" style="background: #ff5722;">
+                            ⚔️ ${state.equipped.weapon.name} (+${totalBonus} DMG)
+                        </button>
+                    ` : ''}
+                    ${hasArmor ? `
+                        <button class="btn" onclick="doTechnicianUpgrade('armor')" style="background: #2196f3;">
+                            🛡️ ${state.equipped.armor.name} (+${totalBonus} DEF)
+                        </button>
+                    ` : ''}
+                    <button class="btn" onclick="showCompanionsInfo()" style="background: #555;">❌ Zrušit</button>
+                </div>
+            `);
+        }
+        
+        function doTechnicianUpgrade(type) {
+            const metalCost = 20;
+            
+            if ((state.resources?.metal || 0) < metalCost) {
+                notifyWarning('Málo kovu!', `Potřebuješ ${metalCost}⚙️`);
+                return;
+            }
+            
+            state.resources.metal -= metalCost;
+            
+            const blacksmithBonus = getSettlerUpgradeBonus();
+            const totalBonus = 5 + blacksmithBonus;
+            
+            if (type === 'weapon' && state.equipped?.weapon) {
+                state.equipped.weapon.damage = (state.equipped.weapon.damage || 10) + totalBonus;
+                state.equipped.weapon.name = state.equipped.weapon.name + ' ⚡';
+                notifySuccess('⚡ Vylepšeno!', `${state.equipped.weapon.name}: +${totalBonus} DMG`);
+            } else if (type === 'armor' && state.equipped?.armor) {
+                state.equipped.armor.defense = (state.equipped.armor.defense || 5) + totalBonus;
+                state.equipped.armor.name = state.equipped.armor.name + ' ⚡';
+                notifySuccess('⚡ Vylepšeno!', `${state.equipped.armor.name}: +${totalBonus} DEF`);
+            }
+            
+            closeModal();
+            renderFull();
         }
         
         function renameCompanion(companionId) {
@@ -27017,24 +27115,64 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         
         // Táborák
         function makeCampfire() {
+            const woodCost = 3;
+            const currentWood = state.resources.wood || 0;
+            
+            if (currentWood < woodCost) {
+                notifyWarning('Nedostatek', `Potřebuješ ${woodCost} dřeva (máš ${currentWood})`);
+                return;
+            }
+            
+            // Zobraz potvrzovací dialog
+            showModal('🔥 Rozdělat táborák?', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <div style="font-size: 3rem;">🔥</div>
+                    <p style="color: #888;">Rozděláš oheň a můžeš vařit jídlo.</p>
+                </div>
+                
+                <div style="background: #2a1a0a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #E65100;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: #ff9800;">🌲 Cena:</span>
+                        <span style="color: #fff; font-weight: bold;">${woodCost} dřeva</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
+                        <span style="color: #888;">Máš:</span>
+                        <span style="color: ${currentWood >= woodCost ? '#8bc34a' : '#f44336'};">${currentWood} dřeva</span>
+                    </div>
+                </div>
+                
+                <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <p style="color: #8bc34a; margin: 0; font-size: 0.9rem;">✓ Bonus: +20 nálada</p>
+                    <p style="color: #ff9800; margin: 0.3rem 0 0 0; font-size: 0.9rem;">🍳 Umožní vaření jídla</p>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
+                    <button class="btn" onclick="confirmCampfire()" style="background: #E65100;">🔥 Rozdělat</button>
+                </div>
+            `);
+        }
+        
+        function confirmCampfire() {
             if ((state.resources.wood || 0) < 3) {
                 notifyWarning('Nedostatek', 'Potřebuješ 3 dřeva');
+                closeModal();
                 return;
             }
             
             state.resources.wood -= 3;
             state.status.mood = Math.min(100, (state.status.mood || 50) + 20);
             
-            showModal('🔥 Táborák', 
+            showModal('🔥 Táborák hoří!', 
                 '<div style="text-align: center;">' +
                 '<div style="font-size: 3rem;">🔥</div>' +
-                '<h3>Rozdělal jsi oheň</h3>' +
+                '<h3 style="color: #8bc34a;">Rozdělal jsi oheň</h3>' +
                 '<p style="color: #8bc34a;">+20 nálada</p>' +
-                '<p style="color: #888;">-3 dřeva</p>' +
-                '<p style="margin-top: 1rem;">Teď můžeš vařit!</p>' +
+                '<p style="color: #888; font-size: 0.85rem;">-3 dřeva</p>' +
+                '<p style="margin-top: 1rem; color: #ff9800;">Teď můžeš vařit!</p>' +
                 '</div>' +
                 '<button class="btn" onclick="openCookingMenu()" style="width: 100%; margin-top: 0.5rem; background: #E65100;">🍳 Vařit</button>' +
-                '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">✗ Zavřít</button>'
+                '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">✗ Zavřít</button>'
             );
             renderFull();
         }
@@ -31398,9 +31536,21 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             const item = state.inv[idx];
             if (!item || item.durability === undefined) return;
             
-            const repairCost = Math.ceil((item.maxDurability - item.durability) * (item.price || 50) / 100);
+            let repairCost = Math.ceil((item.maxDurability - item.durability) * (item.price || 50) / 100);
             
-            if (state.money < repairCost) {
+            // Technik companion = opravy zdarma
+            const companionBonuses = getAllCompanionBonuses();
+            const freeRepair = companionBonuses.freeRepair;
+            
+            // Kovář osadník = opravy zdarma
+            const blacksmithSettler = state.settlement?.settlers?.find(s => s.type === 'blacksmith_s');
+            const settlerFreeRepair = blacksmithSettler ? true : false;
+            
+            if (freeRepair || settlerFreeRepair) {
+                repairCost = 0;
+            }
+            
+            if (repairCost > 0 && state.money < repairCost) {
                 notifyWarning(t('notifications', 'notEnoughMoney'), `Potřebuješ ${repairCost} 💰`);
                 return;
             }
@@ -31410,15 +31560,21 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 return;
             }
             
-            // Odečti peníze a oprav
-            state.money -= repairCost;
+            // Odečti peníze (pokud nejsou zdarma) a oprav
+            if (repairCost > 0) {
+                state.money -= repairCost;
+                state.stats.moneySpentOnRepairs = (state.stats.moneySpentOnRepairs || 0) + repairCost;
+            }
             item.durability = item.maxDurability;
             
-            // Statistiky
-            state.stats.moneySpentOnRepairs = (state.stats.moneySpentOnRepairs || 0) + repairCost;
-            
             closeModal();
-            notifySuccess('🔧 Opraveno!', `${item.name} je jako nový! (-${repairCost} 💰)`);
+            if (freeRepair) {
+                notifySuccess('🔧 Opraveno zdarma!', `${item.name} - Technik to zvládl!`);
+            } else if (settlerFreeRepair) {
+                notifySuccess('🔧 Opraveno zdarma!', `${item.name} - Kovář v osadě pomohl!`);
+            } else {
+                notifySuccess('🔧 Opraveno!', `${item.name} je jako nový! (-${repairCost} 💰)`);
+            }
             saveGame();
             renderFull();
         }
@@ -33308,7 +33464,12 @@ function openFullscreenMap() {
             const recipe = CRAFTING.find(r => r.id === recipeId);
             if (!recipe) return;
             
-            const engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
+            // Engineer class = 50% reduction, Technik companion skill = další redukce
+            let engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
+            const companionBonuses = getAllCompanionBonuses();
+            if (companionBonuses.craftCostReduction > 0) {
+                engineerReduction = engineerReduction * (1 - companionBonuses.craftCostReduction);
+            }
             
             // Check if can craft - portable věci nepotřebují dílnu
             const needsWorkshop = recipe.portable !== true;
@@ -33549,6 +33710,15 @@ function openFullscreenMap() {
                 }
             }
             
+            // Kontrola limitu pastí (max 2)
+            if (recipeId === 'trap') {
+                const trapCount = state.inv?.filter(i => i.bonus === 'food' || i.id === 'trap').length || 0;
+                if (trapCount >= 2) {
+                    notifyWarning('Maximum pastí', 'Můžeš mít maximálně 2 pasti');
+                    return;
+                }
+            }
+            
             // Kontrola jestli potřebuje dílnu
             const needsWorkshop = recipe.portable !== true;
             if (needsWorkshop && !state.base.includes('workshop')) {
@@ -33556,8 +33726,12 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Engineer bonus - 50% méně surovin
-            const engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
+            // Engineer bonus - 50% méně surovin + technik companion bonus
+            let engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
+            const companionBonuses = getAllCompanionBonuses();
+            if (companionBonuses.craftCostReduction > 0) {
+                engineerReduction = engineerReduction * (1 - companionBonuses.craftCostReduction);
+            }
             
             // Portable = pouze inventář, Dílna = inventář + sklad osady
             const useSettlement = needsWorkshop;
@@ -39023,10 +39197,18 @@ function openFullscreenMap() {
                 }
             }
             
-            // Kovář Ivan - upgrade zbraně
+            // Kovář Ivan - upgrade zbraně a zbroje
             if (npcId === 'blacksmith_ivan' && trust >= 50) {
+                const blacksmithBonus = getSettlerUpgradeBonus();
+                const totalDmg = 5 + blacksmithBonus;
+                const totalDef = 5 + blacksmithBonus;
+                const bonusText = blacksmithBonus > 0 ? ` <span style="color: #ffd700;">(+${blacksmithBonus} kovář)</span>` : '';
+                
                 html += `<button class="btn" onclick="upgradeWeaponAtIvan()" style="width: 100%; margin-bottom: 0.5rem; background: #ff5722;">
-                    🔨 Vylepšit zbraň (+5 DMG, 50⚙️)
+                    🔨 Vylepšit zbraň (+${totalDmg} DMG, 50⚙️)${bonusText}
+                </button>`;
+                html += `<button class="btn" onclick="upgradeArmorAtIvan()" style="width: 100%; margin-bottom: 0.5rem; background: #2196f3;">
+                    🛡️ Vylepšit zbroj (+${totalDef} DEF, 50⚙️)${bonusText}
                 </button>`;
             }
             
@@ -39533,6 +39715,22 @@ function openFullscreenMap() {
             renderFull();
         }
         
+        // Helper - získá bonus k vylepšení od kováře osadníka
+        function getSettlerUpgradeBonus() {
+            if (!state.settlement?.settlers) return 0;
+            
+            const blacksmith = state.settlement.settlers.find(s => s.type === 'blacksmith_s');
+            if (!blacksmith) return 0;
+            
+            const skillData = SETTLER_SKILLS?.blacksmith;
+            if (!skillData) return 0;
+            
+            const level = blacksmith.skillLevel || 1;
+            const levelData = skillData.levels[level - 1];
+            
+            return levelData?.effect?.upgrade || 0;
+        }
+        
         function upgradeWeaponAtIvan() {
             if (!state.equipped?.weapon) {
                 notifyWarning('Žádná zbraň!', 'Nemáš vybavenou zbraň k vylepšení');
@@ -39544,15 +39742,53 @@ function openFullscreenMap() {
             }
             
             state.resources.metal -= 50;
-            state.equipped.weapon.damage = (state.equipped.weapon.damage || 10) + 5;
+            
+            // Základní bonus + bonus od kováře osadníka
+            let upgradeBonus = 5;
+            const blacksmithBonus = getSettlerUpgradeBonus();
+            upgradeBonus += blacksmithBonus;
+            
+            state.equipped.weapon.damage = (state.equipped.weapon.damage || 10) + upgradeBonus;
             state.equipped.weapon.name = state.equipped.weapon.name + ' +';
             
             showModal('🔨 Zbraň vylepšena!', `
                 <div style="text-align: center;">
                     <div style="font-size: 3rem;">⚔️</div>
                     <p style="color: #8bc34a; font-weight: bold;">${state.equipped.weapon.name}</p>
-                    <p>+5 poškození!</p>
+                    <p>+${upgradeBonus} poškození!${blacksmithBonus > 0 ? ` <span style="color: #ffd700;">(+${blacksmithBonus} od kováře)</span>` : ''}</p>
                     <p style="color: #ff9800;">Nové DMG: ${state.equipped.weapon.damage}</p>
+                </div>
+                <button class="btn" onclick="closeModal(); showNPCDetail('blacksmith_ivan');" style="width: 100%; margin-top: 1rem;">OK</button>
+            `);
+            renderFull();
+        }
+        
+        function upgradeArmorAtIvan() {
+            if (!state.equipped?.armor) {
+                notifyWarning('Žádná zbroj!', 'Nemáš vybavenou zbroj k vylepšení');
+                return;
+            }
+            if ((state.resources?.metal || 0) < 50) {
+                notifyWarning('Málo kovu!', 'Potřebuješ 50 ⚙️ kovu');
+                return;
+            }
+            
+            state.resources.metal -= 50;
+            
+            // Základní bonus + bonus od kováře osadníka
+            let upgradeBonus = 5;
+            const blacksmithBonus = getSettlerUpgradeBonus();
+            upgradeBonus += blacksmithBonus;
+            
+            state.equipped.armor.defense = (state.equipped.armor.defense || 5) + upgradeBonus;
+            state.equipped.armor.name = state.equipped.armor.name + ' +';
+            
+            showModal('🛡️ Zbroj vylepšena!', `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem;">🛡️</div>
+                    <p style="color: #8bc34a; font-weight: bold;">${state.equipped.armor.name}</p>
+                    <p>+${upgradeBonus} obrana!${blacksmithBonus > 0 ? ` <span style="color: #ffd700;">(+${blacksmithBonus} od kováře)</span>` : ''}</p>
+                    <p style="color: #2196f3;">Nové DEF: ${state.equipped.armor.defense}</p>
                 </div>
                 <button class="btn" onclick="closeModal(); showNPCDetail('blacksmith_ivan');" style="width: 100%; margin-top: 1rem;">OK</button>
             `);
@@ -40082,14 +40318,23 @@ function openFullscreenMap() {
                 return;
             }
             
-            state.resources.electronics -= 10;
-            
-            if (state.equipped?.armor) {
-                state.equipped.armor.defense = (state.equipped.armor.defense || 0) + 10;
-                state.equipped.armor.name = state.equipped.armor.name + ' [TECH]';
+            if (!state.equipped?.armor) {
+                notifyWarning('Žádné brnění', 'Nemáš vybavené brnění k vylepšení');
+                return;
             }
             
-            notifySuccess('Vylepšeno!', 'Klára vylepšila tvé brnění: +10 DEF');
+            state.resources.electronics -= 10;
+            
+            // Základní bonus + bonus od kováře osadníka
+            let upgradeBonus = 10;
+            const blacksmithBonus = getSettlerUpgradeBonus();
+            upgradeBonus += blacksmithBonus;
+            
+            state.equipped.armor.defense = (state.equipped.armor.defense || 0) + upgradeBonus;
+            state.equipped.armor.name = state.equipped.armor.name + ' [TECH]';
+            
+            const bonusText = blacksmithBonus > 0 ? ` (+${blacksmithBonus} od kováře)` : '';
+            notifySuccess('Vylepšeno!', `Klára vylepšila tvé brnění: +${upgradeBonus} DEF${bonusText}`);
             showNPCDetail('engineer_klara');
         }
         
@@ -42766,13 +43011,14 @@ function openFullscreenMap() {
                 }
             });
             
-            // Past na zvěř bonus - +2 jídlo/den za každou past v inventáři
+            // Past na zvěř bonus - +2 jídlo/den za každou past v inventáři (max 2 pasti)
             const traps = state.inv?.filter(i => i.bonus === 'food') || [];
             if (traps.length > 0) {
-                const trapFood = traps.length * 2;
+                const effectiveTraps = Math.min(traps.length, 2); // Max 2 pasti
+                const trapFood = effectiveTraps * 2;
                 foodProd += trapFood;
                 prodReport.food += trapFood;
-                prodReport.items.push({ name: '🕸️ Pasti na zvěř', value: '+' + trapFood + ' jídla' });
+                prodReport.items.push({ name: '🕸️ Pasti na zvěř', value: '+' + trapFood + ' jídla' + (traps.length > 2 ? ' (max 2)' : '') });
             }
             
             // Settler production - vše do skladu osady, podle úrovně dovednosti
@@ -45862,6 +46108,7 @@ function openFullscreenMap() {
                 if (eff.tradeBonus) currentBonuses += `💰 +${eff.tradeBonus * 100}% ${settlerDetailTexts.prices}<br>`;
                 if (eff.foodBonus) currentBonuses += `🍳 +${(eff.foodBonus - 1) * 100}% ${settlerDetailTexts.foodBonus}<br>`;
                 if (eff.freeRepair) currentBonuses += `🔧 ${settlerDetailTexts.freeRepairs}<br>`;
+                if (eff.upgrade) currentBonuses += `⚔️ +${eff.upgrade} DMG/DEF vylepšení<br>`;
                 if (eff.raidWarning) currentBonuses += `👁️ ${settlerDetailTexts.raidWarning}<br>`;
                 if (eff.herbs) currentBonuses += `🌿 +${eff.herbs} ${settlerDetailTexts.herbsDay}<br>`;
                 if (eff.chemicals) currentBonuses += `🧪 +${eff.chemicals} ${settlerDetailTexts.chemDay}<br>`;
@@ -50728,6 +50975,27 @@ function openFullscreenMap() {
             
             // Check achievements se volá až po zavření vítězného modalu (v continueAction)
             
+            // === TECHNIK AUTO-REPAIR ===
+            const companionBonuses = getAllCompanionBonuses();
+            let repairHtml = '';
+            if (companionBonuses.autoRepair) {
+                // Oprav vybavení po boji
+                let repaired = [];
+                if (state.equipped?.weapon?.durability !== undefined && state.equipped.weapon.durability < state.equipped.weapon.maxDurability) {
+                    const repairAmount = Math.min(10, state.equipped.weapon.maxDurability - state.equipped.weapon.durability);
+                    state.equipped.weapon.durability += repairAmount;
+                    repaired.push(`⚔️ Zbraň +${repairAmount}`);
+                }
+                if (state.equipped?.armor?.durability !== undefined && state.equipped.armor.durability < state.equipped.armor.maxDurability) {
+                    const repairAmount = Math.min(10, state.equipped.armor.maxDurability - state.equipped.armor.durability);
+                    state.equipped.armor.durability += repairAmount;
+                    repaired.push(`🛡️ Zbroj +${repairAmount}`);
+                }
+                if (repaired.length > 0) {
+                    repairHtml = `<div style="color: #ff9800; font-size: 0.8rem; margin-top: 0.3rem;">🔧 Technik opravil: ${repaired.join(', ')}</div>`;
+                }
+            }
+            
             showModal('🏆 VÍTĚZSTVÍ!', `
                 <div style="text-align: center;">
                     <div style="font-size: 3rem; margin-bottom: 0.3rem;">🏆</div>
@@ -50744,6 +51012,7 @@ function openFullscreenMap() {
                     
                     ${levelUpHtml}
                     ${specialRewardHtml}
+                    ${repairHtml}
                     
                     <p style="color: #555; font-size: 0.75rem; margin-top: 0.3rem;">Zabito: ${enemyCount}</p>
                 </div>
@@ -50893,6 +51162,12 @@ function openFullscreenMap() {
             const pvpFactionBonus = getFactionBonus();
             if (pvpFactionBonus.damage > 0) {
                 baseDmg = Math.floor(baseDmg * (1 + pvpFactionBonus.damage));
+            }
+            
+            // 🔧 Technik companion - věžička bonus
+            const companionBonuses = getAllCompanionBonuses();
+            if (companionBonuses.turretDamage > 0) {
+                baseDmg += companionBonuses.turretDamage;
             }
             
             return Math.max(1, Math.floor(baseDmg));
@@ -51405,12 +51680,24 @@ function openFullscreenMap() {
             if (!hasClassPassive('noDurabilityLoss')) {
                 const weapon = state.equipped?.weapon;
                 if (weapon && weapon.durability !== undefined) {
-                    weapon.durability = Math.max(0, weapon.durability - 2);
-                    if (weapon.durability === 0) {
-                        log.innerHTML += `<div style="color: #c62828;">💔 ${weapon.icon} ${weapon.name} se rozpadla!</div>`;
-                        state.equipped.weapon = null;
-                    } else if (weapon.durability <= 20) {
-                        log.innerHTML += `<div style="color: #ff9800;">⚠️ ${weapon.name}: ${weapon.durability}/${weapon.maxDurability}</div>`;
+                    // Technik zpevnění - menší opotřebení
+                    const compBonuses = getAllCompanionBonuses();
+                    let durabilityLoss = 2;
+                    if (compBonuses.durabilityBonus > 0) {
+                        // S durabilityBonus 0.05 je šance 5% že se zbraň neopotřebí
+                        if (Math.random() < compBonuses.durabilityBonus) {
+                            durabilityLoss = 0; // Technik zabránil opotřebení
+                        }
+                    }
+                    
+                    if (durabilityLoss > 0) {
+                        weapon.durability = Math.max(0, weapon.durability - durabilityLoss);
+                        if (weapon.durability === 0) {
+                            log.innerHTML += `<div style="color: #c62828;">💔 ${weapon.icon} ${weapon.name} se rozpadla!</div>`;
+                            state.equipped.weapon = null;
+                        } else if (weapon.durability <= 20) {
+                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${weapon.name}: ${weapon.durability}/${weapon.maxDurability}</div>`;
+                        }
                     }
                 }
             }
