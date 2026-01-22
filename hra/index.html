@@ -10271,7 +10271,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 locationCooldowns: {},
                 exploredRooms: {},
                 bossesDefeated: [],
-                questItems: {} // Quest itemy na lokacích
+                questItems: {}, // Quest itemy na lokacích
+                groundLoot: {} // Předměty na zemi (lokace -> [items])
             },
             
             // Minimální zpětná kompatibilita (pouze pro staré uložené hry)
@@ -10931,6 +10932,134 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 GameLogger.debug('inventory', `Reduced: ${item.name || item.id}`, { from: currentCount, to: item.count });
                 return true;
             }
+        }
+        
+        // === GROUND LOOT SYSTÉM ===
+        // Přidá předmět na zem na danou lokaci (nebo aktuální)
+        function addToGroundLoot(item, targetLocation = null) {
+            if (!item) return;
+            const location = targetLocation || state.world?.currentLocation || 'shelter';
+            if (!state.world.groundLoot) state.world.groundLoot = {};
+            if (!state.world.groundLoot[location]) state.world.groundLoot[location] = [];
+            
+            // Přidej timestamp pro případné expirování
+            item.droppedAt = Date.now();
+            state.world.groundLoot[location].push(item);
+            
+            addLog(`📦 ${item.icon || '📦'} ${item.name} zůstalo na zemi`, '📦');
+        }
+        
+        // Získá předměty na zemi na aktuální lokaci
+        function getGroundLoot() {
+            const location = state.world?.currentLocation || 'shelter';
+            return state.world.groundLoot?.[location] || [];
+        }
+        
+        // Sebere předmět ze země
+        function pickupGroundLoot(index) {
+            const location = state.world?.currentLocation || 'shelter';
+            const groundItems = state.world.groundLoot?.[location];
+            if (!groundItems || !groundItems[index]) return;
+            
+            const item = groundItems[index];
+            const count = item.count || 1;
+            
+            if (canAddItem(item, count)) {
+                // Vytvoř kopii bez droppedAt
+                const itemCopy = {...item};
+                delete itemCopy.droppedAt;
+                
+                addItemToInventory(itemCopy, count);
+                groundItems.splice(index, 1);
+                notifySuccess('Sebráno!', `${item.icon} ${item.name}`);
+                
+                // Pokud ještě něco zůstalo, znovu zobraz modal
+                if (groundItems.length > 0) {
+                    showGroundLoot();
+                } else {
+                    closeModal();
+                    renderFull();
+                }
+            } else {
+                notifyWarning('Plný inventář!', 'Uvolni místo v inventáři');
+            }
+        }
+        
+        // Sebere vše ze země
+        function pickupAllGroundLoot() {
+            const location = state.world?.currentLocation || 'shelter';
+            const groundItems = state.world.groundLoot?.[location];
+            if (!groundItems || groundItems.length === 0) return;
+            
+            let picked = 0;
+            let remaining = [];
+            
+            groundItems.forEach(item => {
+                const count = item.count || 1;
+                if (canAddItem(item, count)) {
+                    // Vytvoř kopii bez droppedAt
+                    const itemCopy = {...item};
+                    delete itemCopy.droppedAt;
+                    
+                    addItemToInventory(itemCopy, count, true);
+                    picked++;
+                } else {
+                    remaining.push(item);
+                }
+            });
+            
+            state.world.groundLoot[location] = remaining;
+            
+            if (picked > 0) {
+                notifySuccess('Sebráno!', `${picked} předmětů`);
+            }
+            if (remaining.length > 0) {
+                notifyWarning('Plný inventář', `${remaining.length} předmětů zůstalo na zemi`);
+                // Znovu zobraz modal s tím co zbylo
+                showGroundLoot();
+            } else {
+                closeModal();
+                renderFull();
+            }
+        }
+        
+        // Zobrazí modal s předměty na zemi
+        function showGroundLoot() {
+            const groundItems = getGroundLoot();
+            
+            if (groundItems.length === 0) {
+                notifyWarning('Prázdno', 'Na zemi nic není');
+                return;
+            }
+            
+            let itemsHtml = groundItems.map((item, idx) => {
+                const count = item.count || 1;
+                const countText = count > 1 ? ` x${count}` : '';
+                const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
+                const color = rarityColors[item.rarity] || '#888';
+                
+                return `
+                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem;">
+                        <span style="font-size: 1.5rem;">${item.icon || '📦'}</span>
+                        <div style="flex: 1;">
+                            <div style="color: ${color}; font-weight: bold;">${item.name}${countText}</div>
+                            ${item.damage ? `<span style="color: #c62828; font-size: 0.8rem;">⚔️ ${item.damage}</span>` : ''}
+                            ${item.defense ? `<span style="color: #2196f3; font-size: 0.8rem;">🛡️ ${item.defense}</span>` : ''}
+                        </div>
+                        <button class="btn" onclick="pickupGroundLoot(${idx})" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #4caf50;">Vzít</button>
+                    </div>
+                `;
+            }).join('');
+            
+            showModal('📦 Předměty na zemi', `
+                <div style="max-height: 300px; overflow-y: auto; margin-bottom: 1rem;">
+                    ${itemsHtml}
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" onclick="pickupAllGroundLoot()" style="background: #ff9800;">📥 Vzít vše</button>
+                    <button class="btn" onclick="closeModal()" style="background: #555;">✗ Zavřít</button>
+                </div>
+            `);
         }
         
         // Centrální funkce pro přidání předmětu do inventáře se stackováním
@@ -14129,9 +14258,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             
             // Kontrola trvanlivosti
             const perishable = {
-                'raw_meat': { days: 6, name: 'Syrové maso' },
-                'fish': { days: 4, name: 'Ryba' },
-                'herbs': { days: 10, name: 'Byliny' }
+                'raw_meat': { days: 2, name: 'Syrové maso' },
+                'fish': { days: 2, name: 'Ryba' },
+                'herbs': { days: 5, name: 'Byliny' }
             };
             
             let freshness = '';
@@ -16859,7 +16988,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     const amount = Math.max(1, Math.floor(baseAmount * 0.7)); // -30%, min 1
                     if (item === 'meat') {
                         state.resources.raw_meat = (state.resources.raw_meat || 0) + amount;
-                        markFoodAsNew('raw_meat');
+                        markFoodAsNew('raw_meat', amount);
                         lootDisplay.push({ item: '🥩 Syrové maso', amount });
                     } else if (item === 'cloth') {
                         state.resources.cloth = (state.resources.cloth || 0) + amount;
@@ -17000,6 +17129,10 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             Object.entries(recipe.requires).forEach(([res, amt]) => {
                 if (state.resources[res] >= amt) {
                     state.resources[res] -= amt;
+                    // Pokud došlo jídlo které se kazí, smaž timestamp
+                    if (state.resources[res] === 0 && state.foodTimestamps?.[res]) {
+                        delete state.foodTimestamps[res];
+                    }
                 } else {
                     const item = state.inv.find(i => i.id === res);
                     if (item) {
@@ -17044,6 +17177,10 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             Object.entries(recipe.requires).forEach(([res, amt]) => {
                 if (state.resources[res] >= amt) {
                     state.resources[res] -= amt;
+                    // Pokud došlo jídlo které se kazí, smaž timestamp
+                    if (state.resources[res] === 0 && state.foodTimestamps?.[res]) {
+                        delete state.foodTimestamps[res];
+                    }
                 } else {
                     const item = state.inv.find(i => i.id === res);
                     if (item) {
@@ -23740,6 +23877,29 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         function getLocationActionButtons(location) {
             let html = '';
             
+            // === GROUND LOOT - předměty na zemi ===
+            const groundItems = getGroundLoot();
+            if (groundItems.length > 0) {
+                html += `<button onclick="showGroundLoot()" style="
+                    background: linear-gradient(135deg, #ff9800, #f57c00);
+                    color: white;
+                    border: none;
+                    padding: 0.6rem 1rem;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0.4rem;
+                    font-size: 0.9rem;
+                    font-weight: bold;
+                    animation: pulse 1.5s infinite;
+                ">
+                    <span style="font-size: 1.2rem;">📦</span>
+                    <span>Na zemi (${groundItems.length})</span>
+                </button>`;
+            }
+            
             // Typy kde NELZE lovit/těžit (městské/indoor lokace)
             const noHuntingTypes = ['shop', 'service', 'medical', 'home', 'settlement', 'empty', 'city'];
             const noMiningTypes = ['shop', 'service', 'medical', 'home', 'settlement', 'rest', 'empty', 'city'];
@@ -26116,8 +26276,10 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     humor = lootItem.rarity === 'rare' || lootItem.rarity === 'epic' ? getRandomHumor('lootGood') : getRandomHumor('lootJunk');
                     itemAdded = true;
                 } else {
-                    humor = 'Sakra, to se mi už nevejde...';
-                    extraText = '<p style="color: #f44336; font-size: 0.9rem;">❌ Plný inventář! Předmět zůstal ležet.</p>';
+                    // Ulož na zem cílové lokace
+                    addToGroundLoot({...lootItem}, state.map.travelTo || state.world.currentLocation);
+                    humor = 'Nemám místo, ale nechám to tu ležet...';
+                    extraText = '<p style="color: #ff9800; font-size: 0.9rem;">📦 Plný inventář! Předmět zůstal na zemi.</p>';
                 }
             } else {
                 humor = getRandomHumor('lootEmpty');
@@ -27785,13 +27947,20 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             
             const lootItem = isEmpty ? null : lootPool[Math.floor(Math.random() * lootPool.length)];
             let foundItems = [];
+            let groundItems = []; // Položky které zůstaly na zemi
             
             console.log('Explore loot item:', lootItem?.name || 'EMPTY');
             
-            if (lootItem && canAddItem(lootItem, 1)) {
-                addItemToInventory(lootItem, 1);
-                notifyLoot(lootItem.name, lootItem.rarity, lootItem.icon);
-                foundItems.push(lootItem.icon + ' ' + lootItem.name);
+            if (lootItem) {
+                if (canAddItem(lootItem, 1)) {
+                    addItemToInventory(lootItem, 1);
+                    notifyLoot(lootItem.name, lootItem.rarity, lootItem.icon);
+                    foundItems.push(lootItem.icon + ' ' + lootItem.name);
+                } else {
+                    // Ulož na zem
+                    addToGroundLoot({...lootItem});
+                    groundItems.push(lootItem.icon + ' ' + lootItem.name);
+                }
             }
             
             // Suroviny - závisí na typu lokace
@@ -27875,6 +28044,10 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                         foundItems.push(loreBook.icon + ' ' + loreBook.name + ' (VZÁCNÉ!)');
                         notifyLoot(loreBook.name, 'epic', loreBook.icon);
                         addLog('📕 Nalezen vzácný deník!', '📕');
+                    } else {
+                        // Lore knihy na zem
+                        addToGroundLoot({...loreBook});
+                        groundItems.push(loreBook.icon + ' ' + loreBook.name + ' (VZÁCNÉ!)');
                     }
                 }
             }
@@ -27942,6 +28115,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0; border: 1px solid #4CAF50;">
                     <h4 style="margin: 0 0 0.5rem 0; color: #8bc34a;">📦 Nalezeno:</h4>
                     ${foundItems.length > 0 ? `<p style="color: var(--toxic-green);">${foundItems.join(', ')}</p>` : `<p style="color: #888;">${'Žádné předměty...'}</p>`}
+                    ${groundItems.length > 0 ? `<p style="color: #ff9800;">📦 Na zemi: ${groundItems.join(', ')}</p>` : ''}
                     ${foundResources.length > 0 ? `<p style="color: var(--warning-yellow);">${foundResources.join(', ')}</p>` : ''}
                     ${moneyFound > 0 ? `<p style="color: #ffd700;">+${moneyFound} 💰</p>` : ''}
                     <p style="color: #8bc34a; margin-top: 0.5rem;">+${xpGain} XP</p>
@@ -33906,8 +34080,15 @@ function openFullscreenMap() {
                     );
                     addLog('Navštívil jsi nemocnici', '🏥');
                 } else {
-                    SoundSystem.play('error');
-                    showModal('🏥 Nemocnice', 'Plný inventář! Nemůžeš vzít lékárničku.');
+                    // Ulož na zem
+                    addToGroundLoot({...medkit});
+                    state.buildingCooldowns.hospitals[key] = now;
+                    SoundSystem.play('pickup');
+                    showModal('🏥 Nemocnice', 
+                        '<p style="color: #ff9800; font-weight: bold; margin-bottom: 1rem;">📦 Lékárnička zůstala na zemi!</p>' +
+                        '<p>Plný inventář - lékárnička čeká na zemi.</p>' +
+                        '<p style="color: #999; font-size: 0.85rem; margin-top: 1rem;">Uvolni místo a seber ji!</p>'
+                    );
                 }
             } else {
                 const hoursLeft = Math.ceil((3 - daysSinceVisit) * 24);
@@ -34046,9 +34227,9 @@ function openFullscreenMap() {
                 // Can get weapon - pick random high-tier weapon
                 const weaponPool = ITEMS.filter(i => i.type === 'weapon' && (i.rarity === 'uncommon' || i.rarity === 'rare'));
                 const weapon = weaponPool[Math.floor(Math.random() * weaponPool.length)];
+                const weaponWithDurability = {...weapon, durability: 100, maxDurability: 100};
                 
                 if (canAddItem(weapon, 1)) {
-                    const weaponWithDurability = {...weapon, durability: 100, maxDurability: 100};
                     state.inv.push(weaponWithDurability);
                     state.buildingCooldowns.factories[key] = now;
                     SoundSystem.play('rare_item');
@@ -34062,8 +34243,17 @@ function openFullscreenMap() {
                     );
                     addLog('Navštívil jsi zbrojní továrnu', '🏗️');
                 } else {
-                    SoundSystem.play('error');
-                    showModal('🏗️ Zbrojní továrna', 'Plný inventář! Nemůžeš vzít zbraň.');
+                    // Ulož na zem
+                    addToGroundLoot(weaponWithDurability);
+                    state.buildingCooldowns.factories[key] = now;
+                    SoundSystem.play('rare_item');
+                    
+                    showModal('🏗️ Zbrojní továrna', 
+                        '<p style="color: #ff9800; font-weight: bold; margin-bottom: 1rem;">📦 Zbraň zůstala na zemi!</p>' +
+                        `<div style="font-size: 3rem; text-align: center;">${weapon.icon}</div>` +
+                        `<h3 style="text-align: center; color: #2196f3;">${weapon.name}</h3>` +
+                        '<p style="text-align: center; color: #888;">Plný inventář - uvolni místo a seber ji!</p>'
+                    );
                 }
             } else {
                 const hoursLeft = Math.ceil((7 - daysSinceVisit) * 24);
@@ -35194,8 +35384,14 @@ function openFullscreenMap() {
                         const legendaries = ITEMS.filter(i => i.rarity === 'legendary');
                         if (legendaries.length > 0) {
                             const item = legendaries[Math.floor(Math.random() * legendaries.length)];
-                            addItemToInventory(item, 1);
-                            notifyLoot(item.name, 'legendary', item.icon);
+                            if (canAddItem(item, 1)) {
+                                addItemToInventory(item, 1);
+                                notifyLoot(item.name, 'legendary', item.icon);
+                            } else {
+                                // Na zem pokud plný inventář
+                                addToGroundLoot({...item});
+                                notifyWarning('📦 Na zemi', `${item.name} zůstal na zemi (plný inventář)`);
+                            }
                         }
                     } else {
                         // Ostatní - přidej peníze
@@ -39683,7 +39879,7 @@ function openFullscreenMap() {
             if (state.companions.some(c => c.id === 'maya_companion' && !c.isDead)) return;
             
             const activeCompanions = state.companions.filter(c => !c.isDead).length;
-            const maxCompanions = Math.min(5, 1 + Math.floor(state.char.level / 5));
+            const maxCompanions = getMaxCompanions();
             if (activeCompanions >= maxCompanions) {
                 notifyWarning('Plný tým!', `Máš ${activeCompanions}/${maxCompanions} companionů`);
                 return;
@@ -40018,6 +40214,7 @@ function openFullscreenMap() {
             state.resources.leather = (state.resources.leather || 0) + 10;
             state.resources.fur = (state.resources.fur || 0) + 5;
             state.resources.raw_meat = (state.resources.raw_meat || 0) + 8;
+            markFoodAsNew('raw_meat', 8);
             addMoney(150);
             addXP(100);
             
@@ -40215,7 +40412,7 @@ function openFullscreenMap() {
             if (!state.companions) state.companions = [];
             
             const activeCompanions = state.companions.filter(c => !c.isDead).length;
-            const maxCompanions = Math.min(5, 1 + Math.floor(state.char.level / 5));
+            const maxCompanions = getMaxCompanions();
             if (activeCompanions >= maxCompanions) {
                 notifyWarning('Plný tým!', `Máš ${activeCompanions}/${maxCompanions} companionů`);
                 return;
@@ -42851,13 +43048,13 @@ function openFullscreenMap() {
         // === SYSTÉM KAZENÍ JÍDLA ===
         // Syrové jídlo se kazí po určitém počtu dní
         const PERISHABLE_FOOD = {
-            'raw_meat': { days: 6, name: 'Syrové maso', icon: '🥩' },
-            'fish': { days: 4, name: 'Ryba', icon: '🐟' },
-            'small_fish': { days: 4, name: 'Malá ryba', icon: '🐟' },
-            'medium_fish': { days: 4, name: 'Kapr', icon: '🐠' },
-            'big_fish': { days: 4, name: 'Sumec', icon: '🐡' },
-            'berries': { days: 8, name: 'Borůvky', icon: '🫐' },
-            'herbs': { days: 10, name: 'Byliny', icon: '🌿' }
+            'raw_meat': { days: 2, name: 'Syrové maso', icon: '🥩' },
+            'fish': { days: 2, name: 'Ryba', icon: '🐟' },
+            'small_fish': { days: 2, name: 'Malá ryba', icon: '🐟' },
+            'medium_fish': { days: 2, name: 'Kapr', icon: '🐠' },
+            'big_fish': { days: 2, name: 'Sumec', icon: '🐡' },
+            'berries': { days: 3, name: 'Borůvky', icon: '🫐' },
+            'herbs': { days: 5, name: 'Byliny', icon: '🌿' }
         };
         
         function checkFoodSpoilage() {
@@ -42935,13 +43132,28 @@ function openFullscreenMap() {
             }
         }
         
-        // Při získání syrového jídla nastav timestamp
-        function markFoodAsNew(itemId) {
+        // Při získání syrového jídla nastav/aktualizuj timestamp
+        function markFoodAsNew(itemId, addedAmount = 1) {
             if (PERISHABLE_FOOD[itemId]) {
                 if (!state.foodTimestamps) state.foodTimestamps = {};
-                // Nastav timestamp jen pokud ještě nemáme (první kus)
-                if (!state.foodTimestamps[itemId]) {
-                    state.foodTimestamps[itemId] = state.time.days;
+                
+                const currentAmount = state.resources?.[itemId] || 0;
+                const currentDay = state.time.days;
+                
+                if (!state.foodTimestamps[itemId] || currentAmount === 0) {
+                    // První kus nebo prázdné - nastav na dnešek
+                    state.foodTimestamps[itemId] = currentDay;
+                } else {
+                    // Už máme nějaké - spočítej vážený průměr čerstvosti
+                    const oldTimestamp = state.foodTimestamps[itemId];
+                    const oldAmount = Math.max(1, currentAmount - addedAmount); // Kolik jsme měli před přidáním
+                    
+                    // Vážený průměr: (staré * staré_množství + nové * nové_množství) / celkem
+                    const weightedTimestamp = Math.round(
+                        (oldTimestamp * oldAmount + currentDay * addedAmount) / (oldAmount + addedAmount)
+                    );
+                    
+                    state.foodTimestamps[itemId] = weightedTimestamp;
                 }
             }
         }
@@ -50848,13 +51060,17 @@ function openFullscreenMap() {
                             addItemToInventory(lootItem, ammoCount, true);
                             lootHtml += `<div style="color: #ffd700;">🎁 ${lootItem.icon} ${lootItem.name} x${ammoCount}</div>`;
                         } else {
-                            lootHtml += `<div style="color: #f44336;">❌ ${lootItem.icon} ${lootItem.name} (plný inventář)</div>`;
+                            // Ulož na zem
+                            addToGroundLoot({...lootItem, count: ammoCount});
+                            lootHtml += `<div style="color: #ff9800;">📦 ${lootItem.icon} ${lootItem.name} x${ammoCount} (na zemi)</div>`;
                         }
                     } else if (canAddItem(lootItem, 1)) {
                         addItemToInventory(lootItem, 1, true);
                         lootHtml += `<div style="color: #ffd700;">🎁 ${lootItem.icon} ${lootItem.name}</div>`;
                     } else {
-                        lootHtml += `<div style="color: #f44336;">❌ ${lootItem.icon} ${lootItem.name} (plný inventář)</div>`;
+                        // Ulož na zem místo zahození
+                        addToGroundLoot({...lootItem});
+                        lootHtml += `<div style="color: #ff9800;">📦 ${lootItem.icon} ${lootItem.name} (na zemi)</div>`;
                     }
                 } else {
                     // Fallback - přidej jako resource s českým překladem
@@ -52586,6 +52802,9 @@ function openFullscreenMap() {
                     state.char.maxHp = expectedMaxHp;
                 }
             }
+            
+            // Migrace: groundLoot systém
+            if (!state.world.groundLoot) state.world.groundLoot = {};
             
             // Pokud je to čerstvý import, přeskoč destruktivní migrace
             const isFreshImport = state._freshImport === true;
