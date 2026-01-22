@@ -10364,6 +10364,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 workshops: {}, // { "q,r": timestamp }
                 factories: {}  // { "q,r": timestamp }
             },
+            shopMoney: {
+                // Denní limit peněz obchodníků { locationId: { money: number, lastReset: timestamp } }
+            },
             settlement: {
                 level: 1,
                 prosperity: 10, // Začínáme s malou prosperitou díky budovám
@@ -30663,6 +30666,61 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             return html || '<p style="color: #666; font-size: 0.85rem;">Žádné suroviny</p>';
         }
         
+        // === SYSTÉM PENĚZ OBCHODNÍKŮ ===
+        const SHOP_MONEY_LIMITS = {
+            default: 2000,      // Běžný obchod
+            trader_hub: 5000,   // Obchodní centrum
+            caravan: 3000,      // Karavana
+            pawnshop: 1000      // Zastavárna
+        };
+        
+        // Získá aktuální peníze obchodu na lokaci
+        function getShopMoney(locationId = null) {
+            const loc = locationId || state.world?.currentLocation || 'shelter';
+            if (!state.shopMoney) state.shopMoney = {};
+            
+            const shopData = state.shopMoney[loc];
+            const now = Date.now();
+            const dayMs = 24 * 60 * 60 * 1000;
+            
+            // Zjisti typ obchodu a limit
+            const location = WORLD_LOCATIONS?.find(l => l.id === loc);
+            let limit = SHOP_MONEY_LIMITS.default;
+            if (location?.id === 'trader_hub' || location?.specialization === 'trade') {
+                limit = SHOP_MONEY_LIMITS.trader_hub;
+            }
+            
+            // Reset každý den
+            if (!shopData || (now - shopData.lastReset) > dayMs) {
+                state.shopMoney[loc] = { money: limit, lastReset: now, limit: limit };
+                return limit;
+            }
+            
+            return shopData.money;
+        }
+        
+        // Sníží peníze obchodu
+        function reduceShopMoney(amount, locationId = null) {
+            const loc = locationId || state.world?.currentLocation || 'shelter';
+            if (!state.shopMoney) state.shopMoney = {};
+            
+            // Zajisti že existuje záznam
+            getShopMoney(loc);
+            
+            state.shopMoney[loc].money = Math.max(0, state.shopMoney[loc].money - amount);
+            return state.shopMoney[loc].money;
+        }
+        
+        // Získá čas do resetu obchodu
+        function getShopResetTime(locationId = null) {
+            const loc = locationId || state.world?.currentLocation || 'shelter';
+            if (!state.shopMoney?.[loc]) return 0;
+            
+            const dayMs = 24 * 60 * 60 * 1000;
+            const resetTime = state.shopMoney[loc].lastReset + dayMs;
+            return Math.max(0, resetTime - Date.now());
+        }
+        
         function openShop() {
             console.log('🛒 openShop() called');
             
@@ -30758,6 +30816,12 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             const merchantDiscount = (state.caravan?.active && Date.now() < state.caravan?.until) || 
                                      (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until) ? 0.2 : 0;
             
+            // Peníze obchodu
+            const currentShopMoney = getShopMoney();
+            const shopLimit = state.shopMoney?.[state.world?.currentLocation]?.limit || SHOP_MONEY_LIMITS.default;
+            const shopMoneyPercent = Math.round((currentShopMoney / shopLimit) * 100);
+            const shopMoneyColor = shopMoneyPercent > 50 ? '#4caf50' : shopMoneyPercent > 20 ? '#ff9800' : '#f44336';
+            
             document.getElementById('modalContent').innerHTML = `
                 <h2>🏪 ${shopTexts.title}</h2>
                 <p style="color: #888; font-style: italic; text-align: center; margin-bottom: 0.5rem; font-size: 0.85rem;">"${traderQuote}"</p>
@@ -30765,6 +30829,18 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 <p style="text-align: center; font-size: 1.1rem; margin-bottom: 0.5rem;">
                     <strong>💰 ${getMoney()}</strong> | <strong>🎫 ${getCasinoTokens()}</strong>
                 </p>
+                
+                <!-- Peníze obchodníka -->
+                <div style="background: #1a1a2a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem;">
+                        <span style="color: #888;">🏦 Obchodník má:</span>
+                        <span style="color: ${shopMoneyColor}; font-weight: bold;">${currentShopMoney.toLocaleString()} / ${shopLimit.toLocaleString()} 💰</span>
+                    </div>
+                    <div style="background: #333; height: 6px; border-radius: 3px; margin-top: 0.3rem; overflow: hidden;">
+                        <div style="height: 100%; width: ${shopMoneyPercent}%; background: ${shopMoneyColor}; transition: width 0.3s;"></div>
+                    </div>
+                    <p style="color: #666; font-size: 0.7rem; margin: 0.2rem 0 0 0; text-align: right;">Obnovuje se denně</p>
+                </div>
                 
                 <!-- Taby pro Koupit/Prodat -->
                 <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
@@ -31116,6 +31192,31 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
             
             const totalPrice = sellPrice * amount;
+            
+            // === KONTROLA PENĚZ OBCHODU ===
+            const shopMoney = getShopMoney();
+            if (shopMoney < totalPrice) {
+                if (shopMoney <= 0) {
+                    const resetTime = getShopResetTime();
+                    const hours = Math.floor(resetTime / 3600000);
+                    const mins = Math.floor((resetTime % 3600000) / 60000);
+                    notifyWarning('Obchodník nemá peníze!', `Dnes už vyčerpal zásobu. Reset za ${hours}h ${mins}m`);
+                    return;
+                }
+                // Může prodat jen část
+                const maxCanSell = Math.floor(shopMoney / sellPrice);
+                if (maxCanSell < 1) {
+                    notifyWarning('Obchodník nemá dost', `Má jen ${shopMoney} 💰, potřebuje ${totalPrice} 💰`);
+                    return;
+                }
+                // Upozorni a prodej jen co jde
+                notifyWarning('Omezený výkup', `Obchodník má jen na ${maxCanSell}x. Zkus prodat méně.`);
+                return;
+            }
+            
+            // Odečti z peněz obchodu
+            reduceShopMoney(totalPrice);
+            
             addMoney(totalPrice);
             state.stats.itemsSold = (state.stats.itemsSold || 0) + amount;
             
@@ -31264,6 +31365,25 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
             
             const totalPrice = sellPrice * amount;
+            
+            // === KONTROLA PENĚZ OBCHODU ===
+            const shopMoney = getShopMoney();
+            if (shopMoney < totalPrice) {
+                if (shopMoney <= 0) {
+                    const resetTime = getShopResetTime();
+                    const hours = Math.floor(resetTime / 3600000);
+                    const mins = Math.floor((resetTime % 3600000) / 60000);
+                    notifyWarning('Obchodník nemá peníze!', `Dnes už vyčerpal zásobu. Reset za ${hours}h ${mins}m`);
+                    return;
+                }
+                const maxCanSell = Math.floor(shopMoney / sellPrice);
+                notifyWarning('Omezený výkup', `Obchodník má jen na ${maxCanSell}x. Zkus prodat méně.`);
+                return;
+            }
+            
+            // Odečti z peněz obchodu
+            reduceShopMoney(totalPrice);
+            
             addMoney(totalPrice);
             state.stats.itemsSold = (state.stats.itemsSold || 0) + amount;
             
