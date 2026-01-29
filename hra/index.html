@@ -65276,7 +65276,17 @@ function openFullscreenMap() {
                                     // Zkontroluj jestli ban nevypršel
                                     if (banData.until === 0 || banData.until > Date.now()) {
                                         const untilText = banData.until ? new Date(banData.until).toLocaleString('cs') : 'NAVŽDY';
-                                        showBanScreen(playerName, banData.reason, untilText);
+                                        
+                                        // Zkontroluj jestli je zabanován i účet (UID)
+                                        const hasUidBan = banData.accountBanned === true;
+                                        
+                                        if (hasUidBan) {
+                                            // Ban účtu - nelze vytvořit novou postavu
+                                            showBanScreen(playerName, banData.reason, untilText, false);
+                                        } else {
+                                            // Ban jen postavy - nabídni vytvoření nové
+                                            showBanScreen(playerName, banData.reason, untilText, true);
+                                        }
                                         return; // Zastav inicializaci
                                     } else {
                                         // Ban vypršel, odeber ho
@@ -76626,6 +76636,16 @@ function openFullscreenMap() {
                     <input type="text" id="banReason" placeholder="např. Cheating, toxicita..." maxlength="200" style="width: 100%; padding: 0.5rem; background: #1a1a1a; color: #fff; border: 1px solid #444; border-radius: 6px; margin-top: 0.3rem;">
                 </div>
                 
+                <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #3a3a5a;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: #ff9800;">
+                        <input type="checkbox" id="quickBanAccountToo" checked style="width: 18px; height: 18px;">
+                        <span>🔒 Zabanovat i celý účet (UID)</span>
+                    </label>
+                    <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 1.8rem;">
+                        Pokud zaškrtnuto, hráč nemůže vytvořit novou postavu.
+                    </p>
+                </div>
+                
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
                     <button class="btn" onclick="executeQuickBan('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #f44336 0%, #b71c1c 100%);">🚫 Banovat</button>
@@ -76638,20 +76658,68 @@ function openFullscreenMap() {
             
             const duration = parseInt(document.getElementById('banDuration').value);
             const reason = document.getElementById('banReason').value || 'Bez udání důvodu';
+            const banAccountToo = document.getElementById('quickBanAccountToo')?.checked ?? true;
             
             try {
-                const banData = {
-                    player: playerName,
-                    bannedBy: ADMIN_NICK,
+                const expiresAt = duration > 0 ? Date.now() + (duration * 60 * 1000) : 0;
+                
+                // Najdi UID hráče pokud chceme banovat účet
+                let playerUID = null;
+                if (banAccountToo) {
+                    // Zkus najít v online hráčích
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const onlineData = onlineSnap.val();
+                    if (onlineData) {
+                        for (const [key, player] of Object.entries(onlineData)) {
+                            if (player.name === playerName && player.uid) {
+                                playerUID = player.uid;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Zkus najít v cloudSaves
+                    if (!playerUID) {
+                        const cloudSnap = await firebaseDB.ref('cloudSaves').once('value');
+                        const cloudData = cloudSnap.val();
+                        if (cloudData) {
+                            for (const [uid, save] of Object.entries(cloudData)) {
+                                if (save.charName === playerName || save.state?.char?.name === playerName) {
+                                    playerUID = uid;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Ulož ban podle jména
+                await firebaseDB.ref('bannedPlayers/' + playerName.replace(/[\/\.#$\[\]]/g, '_')).set({
+                    name: playerName,
                     reason: reason,
-                    timestamp: Date.now(),
-                    duration: duration, // 0 = permanent
-                    expiresAt: duration > 0 ? Date.now() + (duration * 60 * 1000) : 0
-                };
+                    until: expiresAt,
+                    bannedAt: Date.now(),
+                    bannedBy: getPlayerName(),
+                    uid: playerUID || null,
+                    accountBanned: banAccountToo && playerUID ? true : false
+                });
                 
-                await firebaseDB.ref(`bans/${playerName.replace(/[\/\.#$\[\]]/g, '_')}`).set(banData);
+                // Pokud máme UID a chceme banovat účet
+                if (banAccountToo && playerUID) {
+                    await firebaseDB.ref('bannedUIDs/' + playerUID).set({
+                        name: playerName,
+                        reason: reason,
+                        until: expiresAt,
+                        bannedAt: Date.now(),
+                        bannedBy: getPlayerName()
+                    });
+                    notifySuccess('🚫 Hráč zabanován', `${playerName} - účet i postava`);
+                } else if (banAccountToo && !playerUID) {
+                    notifySuccess('🚫 Hráč zabanován', `${playerName} - jen postava (účet nenalezen)`);
+                } else {
+                    notifySuccess('🚫 Hráč zabanován', `${playerName} - jen postava`);
+                }
                 
-                notifySuccess('🚫 Hráč zabanován', `${playerName} - ${duration > 0 ? (duration >= 1440 ? Math.floor(duration/1440) + ' dní' : duration + ' min') : 'Permanentně'}`);
                 closeModal();
                 
             } catch (e) {
@@ -78298,14 +78366,14 @@ function openFullscreenMap() {
         }
         
         // === BAN SCREEN ===
-        function showBanScreen(playerName, reason, until) {
+        function showBanScreen(playerName, reason, until, canCreateNew = false) {
             document.body.innerHTML = `
                 <div style="min-height: 100vh; background: linear-gradient(135deg, #1a0a0a 0%, #2a0a0a 100%); display: flex; justify-content: center; align-items: center; padding: 2rem;">
                     <div style="background: #1a1a1a; padding: 2rem; border-radius: 16px; max-width: 500px; text-align: center; border: 3px solid #f44336; box-shadow: 0 0 50px rgba(244, 67, 54, 0.5);">
                         <div style="font-size: 5rem; margin-bottom: 1rem;">🚫</div>
-                        <h1 style="color: #f44336; margin: 0 0 1rem 0;">PŘÍSTUP ODEPŘEN</h1>
+                        <h1 style="color: #f44336; margin: 0 0 1rem 0;">${canCreateNew ? 'POSTAVA ZABANOVÁNA' : 'PŘÍSTUP ODEPŘEN'}</h1>
                         <p style="color: #888; font-size: 1.1rem; margin-bottom: 1.5rem;">
-                            Účet <strong style="color: #fff;">${escapeHtml(playerName)}</strong> byl zabanován.
+                            ${canCreateNew ? 'Postava' : 'Účet'} <strong style="color: #fff;">${escapeHtml(playerName)}</strong> ${canCreateNew ? 'byla zabanována' : 'byl zabanován'}.
                         </p>
                         
                         <div style="background: #2a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; border-left: 4px solid #f44336;">
@@ -78318,8 +78386,19 @@ function openFullscreenMap() {
                             <p style="color: #ff9800; margin: 0; font-size: 1.2rem; font-weight: bold;">${until}</p>
                         </div>
                         
+                        ${canCreateNew ? `
+                            <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; border: 2px solid #4caf50;">
+                                <p style="color: #4caf50; margin: 0 0 0.5rem 0; font-size: 1rem; font-weight: bold;">✅ Můžeš vytvořit novou postavu!</p>
+                                <p style="color: #888; margin: 0; font-size: 0.85rem;">Tvůj účet není zabanován, pouze tato postava.</p>
+                            </div>
+                            
+                            <button onclick="startNewCharacterAfterBan()" style="width: 100%; padding: 1rem; background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 1.1rem; font-weight: bold; margin-bottom: 0.5rem;">
+                                🆕 Vytvořit novou postavu
+                            </button>
+                        ` : ''}
+                        
                         <p style="color: #666; font-size: 0.85rem;">
-                            Pokud si myslíš, že jde o omyl, kontaktuj admina na Discordu.
+                            Pokud si myslíš, že jde o omyl, kontaktuj admina na <a href="https://www.facebook.com/groups/1155970856393862" target="_blank" style="color: #4267B2;">Facebooku</a>.
                         </p>
                         
                         <button onclick="location.reload()" style="margin-top: 1rem; padding: 0.8rem 2rem; background: #333; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 1rem;">
@@ -78329,6 +78408,23 @@ function openFullscreenMap() {
                 </div>
             `;
         }
+        
+        // Funkce pro vytvoření nové postavy po banu
+        function startNewCharacterAfterBan() {
+            // Smaž lokální save
+            localStorage.removeItem('survival_hero_save_v2');
+            localStorage.removeItem('survival_hero_save');
+            localStorage.removeItem('survival_hero_backup');
+            localStorage.removeItem('playerName');
+            
+            // Nastav flag pro novou postavu
+            localStorage.setItem('creatingNewCharacter', 'true');
+            sessionStorage.setItem('creatingNewCharacter', 'true');
+            
+            // Reload stránky
+            location.reload();
+        }
+        window.startNewCharacterAfterBan = startNewCharacterAfterBan;
         
         // === VYČISTIT ZASEKNUTÉ CAPTURE ===
         async function adminClearCaptures() {
