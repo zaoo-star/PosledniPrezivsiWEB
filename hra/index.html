@@ -11489,6 +11489,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // === STATE ===
         let state = {
+            isDead: false, // Flag pro smrt hráče
             char: { name: '', gender: null, level: 1, xp: 0, xpNeed: 400, totalXP: 0, classId: null, points: 10, levelUpPoints: 0, skillPoints: 0,
                     hp: 100, maxHp: 100, attrs: { str: 5, int: 5, agi: 5, per: 5, end: 5, lck: 5 },
                     abilityLastUsed: 0 }, // Cooldown pro speciální schopnost
@@ -25698,6 +25699,59 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // === RENDER ===
         function render() {
+            // === KONTROLA SMRTI ===
+            const currentHp = Number(state.char.hp) || 0;
+            
+            // Během PvP souboje nebo PvP výzvy se death screen nezobrazuje
+            const inPvP = window.pvpChallengeOverlayActive === true || 
+                          document.getElementById('pvpFullscreenOverlay') ||
+                          document.getElementById('pvpBattleModal') ||
+                          (state.pvp && state.pvp.inBattle);
+            
+            // Pokud je hráč mrtvý (isDead=true nebo hp<=0), zobraz death screen (ale ne během PvP)
+            if (state.confirmed && (currentHp <= 0 || state.isDead === true) && !inPvP) {
+                // Nastav správné hodnoty
+                state.char.hp = 0;
+                state.isDead = true;
+                
+                // Zkontroluj jestli už je zobrazen death modal
+                const existingModal = document.querySelector('.modal-overlay');
+                const isDeathModalShown = existingModal && existingModal.innerHTML.includes('SMRT');
+                
+                if (!isDeathModalShown) {
+                    // Přičti smrt jen jednou
+                    if (!state._deathCounted) {
+                        state.stats.deaths = (state.stats.deaths || 0) + 1;
+                        state._deathCounted = true;
+                        saveGame();
+                    }
+                    
+                    let deathReason = '💀 Zemřel jsi';
+                    if (state.status.hunger <= 0) deathReason = '🍖 Zemřel jsi hlady';
+                    else if (state.status.thirst <= 0) deathReason = '💧 Zemřel jsi žízní';
+                    else if (state.status.radiation >= 100) deathReason = '☢️ Zemřel jsi na radiaci';
+                    else if (state.status.energy <= 0) deathReason = '😵 Zemřel jsi vyčerpáním';
+                    else if (state.lastDamageSource) deathReason = '⚔️ Zabil tě: ' + state.lastDamageSource;
+                    
+                    showModal('💀 SMRT', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 5rem; margin-bottom: 1rem;">💀</div>
+                            <h2 style="color: #ff4444;">${deathReason}</h2>
+                            <p style="color: #888; margin: 1rem 0;">Přežil jsi ${state.time.days} dní.</p>
+                            <p style="color: #666;">Zabití: ${state.stats.kills || 0} | Úmrtí: ${state.stats.deaths}</p>
+                            <div style="margin-top: 1.5rem;">
+                                <button class="btn" onclick="respawnPlayer()" style="width: 100%; margin-bottom: 0.5rem; background: var(--rust);">🔄 Oživit</button>
+                                <button class="btn" onclick="startNewGame()" style="width: 100%; background: #333;">🆕 Nová hra</button>
+                            </div>
+                        </div>
+                    `);
+                }
+                return; // Nezobrazuj zbytek UI
+            }
+            
+            // Reset death counter když je hráč živý
+            state._deathCounted = false;
+            
             // Always update header
             document.getElementById('name').textContent = state.char.name;
             document.getElementById('level').textContent = state.char.level;
@@ -27525,15 +27579,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function showModal(title, message, persistent = false) {
             // Pokud je aktivní PvP výzva, nepovolit jiné modaly (kromě PvP souvisejících)
-            if (typeof pvpChallengeOverlayActive !== 'undefined' && pvpChallengeOverlayActive) {
-                if (!title.includes('PvP') && !title.includes('⚔️') && !title.includes('Souboj')) {
-                    console.log('⚠️ showModal blocked - PvP challenge overlay active');
-                    return;
+            try {
+                if (window.pvpChallengeOverlayActive === true) {
+                    if (!title.includes('PvP') && !title.includes('⚔️') && !title.includes('Souboj') && !title.includes('SMRT')) {
+                        console.log('⚠️ showModal blocked - PvP challenge overlay active');
+                        return;
+                    }
                 }
-            }
+            } catch(e) { /* ignore */ }
             
             // Pokud čekáme na heslo pro chráněný účet, ten má přednost
-            if (window._pendingPasswordPrompt && !title.includes('Chráněný účet')) {
+            if (window._pendingPasswordPrompt && !title.includes('Chráněný účet') && !title.includes('SMRT')) {
                 console.log('⚠️ showModal blocked - waiting for password prompt');
                 // Znovu zobraz password prompt
                 setTimeout(() => renderProtectedNicknameModal(), 100);
@@ -50778,6 +50834,10 @@ function openFullscreenMap() {
         function showEventDetail(eventId, name, icon, desc, details, day) {
             const event = SETTLEMENT_EVENTS?.find(e => e.id === eventId);
             
+            // Zkontroluj jestli je toto AKTIVNÍ událost čekající na rozhodnutí
+            const activeEvent = state.settlement?.activeEvent;
+            const isActiveChoice = activeEvent && activeEvent.id === eventId && activeEvent.choice === true;
+            
             // Tipy jak řešit různé typy událostí
             const eventTips = {
                 'disease': '💡 TIP: Postav Nemocnici nebo najmi Medika pro prevenci nemocí.',
@@ -50810,7 +50870,87 @@ function openFullscreenMap() {
             const isPositive = ['birth', 'wedding', 'discovery', 'celebration', 'harvest', 'inspiration', 'merchant', 'golden_age', 'treasure'].includes(eventId);
             const isChoice = event?.choice === true;
             
-            showModal(`${icon} ${name}`, `
+            // Tlačítka pro rozhodnutí - jen pokud je aktivní událost
+            let choiceButtons = '';
+            if (isActiveChoice) {
+                switch (activeEvent.effect) {
+                    case 'choice_child':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('child_adopt')" style="width: 100%; margin-bottom: 0.5rem; background: #3a4a3a; border: 1px solid #4a5a4a;">
+                                🏠 Přijmout do osady (+morálka)
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('child_send')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🗺️ Poslat k obchodníkům
+                            </button>
+                        `;
+                        break;
+                    case 'choice_refugee':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('refugee_accept')" style="width: 100%; margin-bottom: 0.5rem; background: #3a4a3a; border: 1px solid #4a5a4a;">
+                                🏠 Přijmout uprchlíka
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('refugee_reject')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🚫 Odmítnout
+                            </button>
+                        `;
+                        break;
+                    case 'choice_bandit':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('bandit_pay')" style="width: 100%; margin-bottom: 0.5rem; background: #4a4a3a; border: 1px solid #5a5a4a;">
+                                💰 Zaplatit výpalné
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('bandit_fight')" style="width: 100%; margin-bottom: 0.5rem; background: #4a3a3a; border: 1px solid #5a4a4a;">
+                                ⚔️ Odmítnout a bránit se
+                            </button>
+                        `;
+                        break;
+                    case 'choice_dog':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('dog_adopt')" style="width: 100%; margin-bottom: 0.5rem; background: #3a4a3a; border: 1px solid #4a5a4a;">
+                                🐕 Adoptovat psa
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('dog_chase')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🚫 Vyhnat
+                            </button>
+                        `;
+                        break;
+                    case 'choice_stranger':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('stranger_help')" style="width: 100%; margin-bottom: 0.5rem; background: #3a4a3a; border: 1px solid #4a5a4a;">
+                                💊 Pomoci a ošetřit
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('stranger_ignore')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🚫 Ignorovat
+                            </button>
+                        `;
+                        break;
+                    case 'choice_trader':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('trader_buy')" style="width: 100%; margin-bottom: 0.5rem; background: #4a4a3a; border: 1px solid #5a5a4a;">
+                                💰 Koupit nabídku
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('trader_decline')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🚫 Odmítnout
+                            </button>
+                        `;
+                        break;
+                    case 'choice_scavenger':
+                        choiceButtons = `
+                            <button class="btn" onclick="closeModal(); settlementChoice('scavenger_open')" style="width: 100%; margin-bottom: 0.5rem; background: #3a4a3a; border: 1px solid #4a5a4a;">
+                                📦 Otevřít bednu
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('scavenger_sell')" style="width: 100%; margin-bottom: 0.5rem; background: #4a4a3a; border: 1px solid #5a5a4a;">
+                                💰 Prodat (50$)
+                            </button>
+                            <button class="btn" onclick="closeModal(); settlementChoice('scavenger_careful')" style="width: 100%; margin-bottom: 0.5rem; background: #1a1a1a; border: 1px solid #333;">
+                                🔍 Opatrně prozkoumat
+                            </button>
+                        `;
+                        break;
+                }
+            }
+            
+            showModal(`${icon} ${name.toUpperCase()}`, `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <div style="font-size: 3rem; margin-bottom: 0.5rem;">${icon}</div>
                     <div style="color: #666; font-size: 0.85rem; font-family: 'Share Tech Mono', monospace;">Den ${day}</div>
@@ -50832,11 +50972,16 @@ function openFullscreenMap() {
                     </div>
                 ` : ''}
                 
-                ${isChoice ? `
+                ${isActiveChoice && choiceButtons ? `
+                    <div style="background: #0a0a0a; padding: 0.8rem; border: 1px solid #4a4a5a; margin-bottom: 1rem; font-family: 'Share Tech Mono', monospace;">
+                        <p style="color: #8a8aaa; font-size: 0.8rem; margin: 0 0 0.8rem 0;">⚡ Vyber co uděláš:</p>
+                        ${choiceButtons}
+                    </div>
+                ` : (isChoice ? `
                     <div style="background: #0a0a0a; padding: 0.8rem; border: 1px solid #3a3a4a; margin-bottom: 1rem; font-family: 'Share Tech Mono', monospace;">
                         <p style="color: #6a6a8a; font-size: 0.8rem; margin: 0;">⚡ Toto byla rozhodovací událost. Výběr ovlivnil osadu.</p>
                     </div>
-                ` : ''}
+                ` : '')}
                 
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #1a1a1a; border: 1px solid #333; font-family: 'Share Tech Mono', monospace;">ZAVŘÍT</button>
             `);
@@ -63118,7 +63263,7 @@ function openFullscreenMap() {
                 // Poškození z hladu (0% = -5 HP/min) - ale ne se skillem Přežívač
                 if (state.status.hunger <= 0 && !hasNoStarvation) {
                     const hungerDmg = 5 * delta / 60;
-                    state.char.hp = state.char.hp - hungerDmg;
+                    state.char.hp = Math.max(0, state.char.hp - hungerDmg);
                     if (Math.floor(state.time.totalElapsed) % 30 === 0) {
                         addLog('⚠️ Hladovíš! Ztrácíš zdraví!', '🍖');
                     }
@@ -63132,7 +63277,7 @@ function openFullscreenMap() {
                 // Poškození z žízně (0% = -8 HP/min, rychlejší než hlad) - ale ne se skillem Přežívač
                 if (state.status.thirst <= 0 && !hasNoStarvation) {
                     const thirstDmg = 8 * delta / 60;
-                    state.char.hp = state.char.hp - thirstDmg;
+                    state.char.hp = Math.max(0, state.char.hp - thirstDmg);
                     if (Math.floor(state.time.totalElapsed) % 30 === 0) {
                         addLog('⚠️ Dehydratuješ! Ztrácíš zdraví!', '💧');
                     }
@@ -63148,7 +63293,7 @@ function openFullscreenMap() {
                     // Pomalé HP poškození - ale ne během cestování (ochrana AFK hráčů)
                     const energyDmg = 2 * delta / 60;
                     if (!state.world?.traveling) {
-                        state.char.hp = state.char.hp - energyDmg;
+                        state.char.hp = Math.max(0, state.char.hp - energyDmg);
                     }
                     if (Math.floor(state.time.totalElapsed) % 60 === 0) {
                         addLog('⚠️ Jsi vyčerpaný! Potřebuješ odpočinek!', '😴');
@@ -63156,8 +63301,10 @@ function openFullscreenMap() {
                 }
                 
                 // === SMRT ===
+                // VŽDY kontroluj HP <= 0 a zobraz death screen
                 if (state.char.hp <= 0 && !state.isDead) {
                     state.isDead = true;
+                    state.char.hp = 0; // Zajisti že je přesně 0
                     state.stats.deaths = (state.stats.deaths || 0) + 1;
                     
                     // Detailní příčina smrti
@@ -63218,6 +63365,59 @@ function openFullscreenMap() {
             }
             
             render();
+            
+            // === HARD DEATH CHECK (absolutní priorita) ===
+            // Pokud HP <= 0, hráč MUSÍ zemřít - žádné výjimky
+            if (state.confirmed && state.char.hp <= 0 && !state.isDead) {
+                // Okamžitě zastav jakoukoli regeneraci
+                state.char.hp = 0;
+                state.isDead = true;
+                state.stats.deaths = (state.stats.deaths || 0) + 1;
+                
+                // Určení příčiny smrti
+                let deathReason = '💀 Zemřel jsi';
+                let deathDetails = 'HP kleslo na 0';
+                
+                if (state.status.hunger <= 0) {
+                    deathReason = '🍖 Zemřel jsi hlady';
+                    deathDetails = 'Hlad: 0%';
+                } else if (state.status.thirst <= 0) {
+                    deathReason = '💧 Zemřel jsi žízní';
+                    deathDetails = 'Žízeň: 0%';
+                } else if (state.status.radiation >= 100) {
+                    deathReason = '☢️ Zemřel jsi na radiaci';
+                    deathDetails = 'Radiace: 100%';
+                } else if (state.status.energy <= 0) {
+                    deathReason = '😵 Zemřel jsi vyčerpáním';
+                    deathDetails = 'Energie: 0%';
+                } else if (state.lastDamageSource) {
+                    deathReason = `⚔️ Zabil tě: ${state.lastDamageSource}`;
+                    deathDetails = `Damage: ${state.lastDamageAmount || '?'}`;
+                }
+                
+                state.stats.lastDeathReason = deathReason;
+                state.stats.lastDeathDetails = deathDetails;
+                
+                // Zobraz death screen OKAMŽITĚ
+                showModal('💀 SMRT', `
+                    <div style="text-align: center; font-family: 'Share Tech Mono', monospace;">
+                        <div style="font-size: 5rem; margin-bottom: 1rem; filter: saturate(0.7);">💀</div>
+                        <h2 style="color: #8a5a5a;">${deathReason}</h2>
+                        <p style="color: #8a8a5a; font-size: 0.9rem;">${deathDetails}</p>
+                        <p style="color: #666; margin: 1rem 0;">Přežil jsi ${state.time.days} dní.</p>
+                        <p style="color: #555; font-size: 0.85rem;">Zabití: ${state.stats.kills || 0} | Úmrtí: ${state.stats.deaths}</p>
+                        
+                        <div style="margin-top: 1.5rem;">
+                            <button class="btn" onclick="respawnPlayer()" style="width: 100%; margin-bottom: 0.5rem; background: #4a3a3a; border: 1px solid #6a4a4a;">🔄 Oživit (ztratíš část věcí)</button>
+                            <button class="btn" onclick="startNewGame()" style="width: 100%; background: #1a1a1a; border: 1px solid #333;">🆕 Nová hra</button>
+                        </div>
+                    </div>
+                `);
+                
+                saveGame();
+                console.log('💀 DEATH: HP <= 0, reason:', deathReason);
+                return; // Zastav další zpracování
+            }
             
             // Scavenger production (every 6 hours of real time)
             const currentPeriod = Math.floor(state.time.totalElapsed / 21600); // 21600 = 6 hodin
@@ -69474,11 +69674,11 @@ function openFullscreenMap() {
         
         // 🎬 FULLSCREEN PvP VÝZVA s animacemi
         // Globální flag pro aktivní PvP výzvu - zabraňuje překrytí jinými okny
-        let pvpChallengeOverlayActive = false;
+        window.pvpChallengeOverlayActive = false;
         
         function showFullscreenPvPChallenge(challenge) {
             // Označ že je aktivní PvP výzva
-            pvpChallengeOverlayActive = true;
+            window.pvpChallengeOverlayActive = true;
             
             const rank = getPvPRank(challenge.challengerStats?.elo || 1000);
             const html = `
@@ -69549,7 +69749,7 @@ function openFullscreenMap() {
         function closePvPOverlay() {
             const overlay = document.getElementById('pvpFullscreenOverlay');
             if (overlay) overlay.remove();
-            pvpChallengeOverlayActive = false;
+            window.pvpChallengeOverlayActive = false;
         }
         
         async function acceptPvPFromOverlay(challengeId) {
@@ -70303,6 +70503,12 @@ function openFullscreenMap() {
                 state.pvp.elo = Math.max(0, state.pvp.elo + eloChange);
                 state.pvp.totalDamageDealt += battleResult.myDamageDealt;
                 state.pvp.totalDamageReceived += battleResult.damageTaken;
+                
+                // Po PvP souboji - hráč NEZEMŘE, jen má méně HP
+                // Pokud prohrál, má minimálně 10% HP
+                if (!battleResult.iWon && state.char.hp <= state.char.maxHp * 0.1) {
+                    state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.1), 1);
+                }
                 
                 // Ulož do Firebase
                 await firebaseDB.ref('pvp/challenges/' + challengeId).update({
