@@ -61979,22 +61979,26 @@ function openFullscreenMap() {
             }
             
             // === MIGRACE: Reset peněz a stavů pro nové postavy které zdědily data ===
+            // POUZE pro postavy které mají OČIVIDNĚ zdědená data (vysoké peníze/XP které by nová postava nemohla mít)
             if (!state._freshCharMigrationV1 && state.char?.level === 1 && state.char?.name) {
-                // Kontrola: postava level 1 s penězi > 100 = pravděpodobně zdědila data
-                if (state.money > 100) {
-                    console.log('🔧 Migrace: Detekována nová postava se starými penězi, resetuji...');
+                // Kontrola: postava level 1 s penězi > 500 = pravděpodobně zdědila data
+                // (normální nová postava může mít max ~300 po pár akcích)
+                if (state.money > 500) {
+                    console.log('🔧 Migrace: Detekována nová postava se starými penězi (' + state.money + '), resetuji...');
                     state.money = 100; // Základní peníze pro novou postavu
                     notifyInfo('🔧 Oprava účtu', 'Byly resetovány peníze na výchozí hodnotu.');
                 }
                 
-                // Kontrola: level 1 s vysokým XP
-                if (state.char.xp > 100 || state.char.totalXP > 100) {
+                // Kontrola: level 1 s XP > 300 (to je nemožné pro level 1, protože by měl být level 2)
+                // Neresetovat nízké XP (6, 50, 100 atd.) - to je legitimní progress
+                if (state.char.xp > 300 || state.char.totalXP > 500) {
+                    console.log('🔧 Migrace: Detekováno podezřele vysoké XP pro level 1, resetuji...');
                     state.char.xp = 0;
                     state.char.totalXP = 0;
                 }
                 
-                // Kontrola: level 1 s navštívenými lokacemi (kromě shelter)
-                if (state.visitedLocations && state.visitedLocations.length > 1) {
+                // Kontrola: level 1 s více než 5 navštívenými lokacemi
+                if (state.visitedLocations && state.visitedLocations.length > 5) {
                     state.visitedLocations = ['shelter'];
                 }
                 
@@ -65455,9 +65459,19 @@ function openFullscreenMap() {
                         // ALE pouze pokud:
                         // 1. Hra ještě nezačala (nemá confirmed stav)
                         // 2. A uživatel AKTIVNĚ nevytváří novou postavu
-                        // 3. NOVÝ: A není nastaven flag v sessionStorage
+                        // 3. A NEMÁ už lokální postavu s nějakým progressem
                         const isCreatingNewChar = window.creatingNewCharacter === true || 
-                                                  sessionStorage.getItem('creatingNewCharacter') === 'true';
+                                                  sessionStorage.getItem('creatingNewCharacter') === 'true' ||
+                                                  localStorage.getItem('creatingNewCharacter') === 'true';
+                        
+                        // Kontrola zda má lokální postavu s progressem
+                        const hasLocalProgress = state.char?.name && (
+                            state.char.level > 1 ||
+                            (state.char.xp && state.char.xp > 0) ||
+                            (state.char.totalXP && state.char.totalXP > 0) ||
+                            (state.inv && state.inv.length > 1) ||
+                            (state.time?.totalElapsed && state.time.totalElapsed > 60)
+                        );
                         
                         // Odeber flag ze sessionStorage po kontrole
                         if (sessionStorage.getItem('creatingNewCharacter') === 'true') {
@@ -65465,13 +65479,22 @@ function openFullscreenMap() {
                             window.creatingNewCharacter = true;
                             console.log('🆕 Detekován flag nové postavy ze sessionStorage');
                         }
+                        if (localStorage.getItem('creatingNewCharacter') === 'true') {
+                            localStorage.removeItem('creatingNewCharacter');
+                            window.creatingNewCharacter = true;
+                            console.log('🆕 Detekován flag nové postavy z localStorage');
+                        }
                         
-                        if (!isGuest && !state.confirmed && !isCreatingNewChar) {
+                        if (!isGuest && !state.confirmed && !isCreatingNewChar && !hasLocalProgress) {
                             await loadCloudSave();
                         } else if (!isGuest && isCreatingNewChar) {
                             console.log('☁️ Přeskakuji auto-load cloud save - vytváří se nová postava');
                         } else if (!isGuest && state.confirmed) {
                             console.log('☁️ Přeskakuji auto-load cloud save - hra už běží');
+                        } else if (!isGuest && hasLocalProgress) {
+                            console.log('☁️ Přeskakuji auto-load cloud save - hráč má lokální progress');
+                            // Ulož lokální data do cloudu místo přepisování
+                            setTimeout(() => saveCloudSave(), 2000);
                         }
                         
                         // Spusť real-time cloud sync pro registrované uživatele
