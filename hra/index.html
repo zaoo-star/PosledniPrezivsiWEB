@@ -28286,14 +28286,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Šípy pro třídy s lukem (hunter, stalker)
             if (state.char.classId === 'hunter' || state.char.classId === 'stalker') {
-                const arrows = ITEMS.find(i => i.id === 'arrow' || i.ammoType === 'arrow');
+                // OPRAVA: Hledej pouze munici (type === 'ammo'), ne zbraně!
+                const arrows = ITEMS.find(i => i.type === 'ammo' && (i.id === 'ammo_arrow' || i.ammoType === 'arrow'));
                 if (arrows) {
                     state.inv.push({...arrows, count: 20});
                     addLog('Dostal jsi 20 šípů k luku!', '🏹');
                 } else {
                     // Fallback - vytvoř šípy ručně
                     state.inv.push({
-                        id: 'arrow',
+                        id: 'ammo_arrow',
                         name: 'Šípy',
                         icon: '➵',
                         type: 'ammo',
@@ -61843,6 +61844,61 @@ function openFullscreenMap() {
             // Migration: Add karma for NPC quests if missing
             if (!state.karma) {
                 state.karma = { kory: 0, koudy: 0 };
+            }
+            
+            // Migration: Fix duplicate bows/arrows bug (v58 fix)
+            // Někteří hráči dostali Dřevěný luk místo šípů kvůli chybě v ITEMS.find()
+            if (!state._bowArrowMigrationDone) {
+                let fixedSomething = false;
+                
+                // Spočítej luky v inventáři
+                const bows = state.inv.filter(i => 
+                    i.type === 'weapon' && 
+                    (i.id === 'wooden_bow' || i.id === 'hunting_bow' || i.id === 'bow' || i.ammoType === 'arrow')
+                );
+                
+                // Pokud má víc než 1 luk, odstraň přebytečné
+                if (bows.length > 1) {
+                    console.log('🔄 Migrace: Nalezeno ' + bows.length + ' luků, odstraňuji duplicity');
+                    
+                    // Ponech nejsilnější luk
+                    bows.sort((a, b) => (b.damage || 0) - (a.damage || 0));
+                    const keepBow = bows[0];
+                    
+                    // Odstraň ostatní luky
+                    for (let i = 1; i < bows.length; i++) {
+                        const idx = state.inv.findIndex(item => item === bows[i]);
+                        if (idx !== -1) {
+                            state.inv.splice(idx, 1);
+                            fixedSomething = true;
+                        }
+                    }
+                }
+                
+                // Zkontroluj jestli má hráč šípy (pokud má luk)
+                const hasAnyBow = state.inv.some(i => i.type === 'weapon' && i.ammoType === 'arrow');
+                const hasArrows = state.inv.some(i => i.type === 'ammo' && i.ammoType === 'arrow');
+                
+                if (hasAnyBow && !hasArrows) {
+                    // Přidej 20 šípů
+                    state.inv.push({
+                        id: 'ammo_arrow',
+                        name: 'Šípy',
+                        icon: '➵',
+                        type: 'ammo',
+                        ammoType: 'arrow',
+                        weight: 0.05,
+                        count: 20
+                    });
+                    console.log('🔄 Migrace: Přidány chybějící šípy');
+                    fixedSomething = true;
+                }
+                
+                if (fixedSomething) {
+                    notifyInfo('🔧 Oprava inventáře', 'Byly opraveny duplicitní předměty z předchozí verze.');
+                }
+                
+                state._bowArrowMigrationDone = true;
             }
             
             // Migration: Convert old story quests to new story
