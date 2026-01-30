@@ -23,6 +23,48 @@
     <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiUG9zbGVkbsOtIHDFmWXFvml2xaHDrSIsInNob3J0X25hbWUiOiJQxZllxb5pdsWhw60iLCJkZXNjcmlwdGlvbiI6IlBvc3QtYXBva2FseXB0aWNrw6Egc3Vydml2YWwgUlBHIGhyYSIsInN0YXJ0X3VybCI6Ii4iLCJkaXNwbGF5Ijoic3RhbmRhbG9uZSIsImJhY2tncm91bmRfY29sb3IiOiIjMWExYTFhIiwidGhlbWVfY29sb3IiOiIjMWExYTFhIiwiaWNvbnMiOlt7InNyYyI6ImRhdGE6aW1hZ2Uvc3ZnK3htbCwlM0NzdmcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJyB2aWV3Qm94PScwIDAgMTAwIDEwMCclM0UlM0N0ZXh0IHk9Jy45ZW0nIGZvbnQtc2l6ZT0nOTAnJTNFJUUyJTk4JUEyJUVGJUI4JThGJTNDL3RleHQlM0UlM0Mvc3ZnJTNFIiwic2l6ZXMiOiIxOTJ4MTkyIiwidHlwZSI6ImltYWdlL3N2Zyt4bWwifV19">
     <title>☢️ Poslední přeživší v58 | by Zaoo</title>
     
+    <!-- 🔄 SERVICE WORKER KILLER - Vynutí aktualizaci PWA -->
+    <script>
+        (function() {
+            // Verze pro kontrolu aktualizace
+            const FORCE_UPDATE_VERSION = '2.6.1';
+            const storedVersion = localStorage.getItem('appVersion');
+            
+            // Pokud je nová verze, vymaž všechny cache a SW
+            if (storedVersion !== FORCE_UPDATE_VERSION) {
+                console.log('🔄 Nová verze! Mažu cache...');
+                
+                // Odregistruj všechny service workery
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                        for (let registration of registrations) {
+                            registration.unregister();
+                            console.log('🗑️ SW odregistrován');
+                        }
+                    });
+                }
+                
+                // Vymaž všechny cache
+                if ('caches' in window) {
+                    caches.keys().then(function(names) {
+                        for (let name of names) {
+                            caches.delete(name);
+                            console.log('🗑️ Cache smazána:', name);
+                        }
+                    });
+                }
+                
+                // Ulož novou verzi
+                localStorage.setItem('appVersion', FORCE_UPDATE_VERSION);
+                
+                // Reload po krátké pauze (aby se stihly smazat cache)
+                setTimeout(function() {
+                    location.reload(true);
+                }, 500);
+            }
+        })();
+    </script>
+    
     <!-- VYPNUTÍ CONSOLE.LOG V PRODUKCI -->
     <script>
         (function() {
@@ -11045,7 +11087,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '2.6.0';
+        const GAME_VERSION = '2.6.1';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -19996,34 +20038,50 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             state.companions.forEach(comp => {
                 comp.xp = (comp.xp || 0) + amount;
-                comp.level = comp.level || 1;
-                
-                // === PŘIDEJ LOAJALITU ZA BOJ ===
-                const loyaltyGain = Math.max(1, Math.floor(amount / 20)); // 1 loajalita za každých 20 XP
-                comp.loyalty = Math.min(100, (comp.loyalty || 0) + loyaltyGain);
-                
-                // Check level up
+                checkCompanionLevelUp(comp);
+            });
+        }
+        
+        // Kontrola a provedení level up pro companion
+        function checkCompanionLevelUp(comp) {
+            comp.level = comp.level || 1;
+            comp.xp = comp.xp || 0;
+            
+            // === PŘIDEJ LOAJALITU ZA BOJ ===
+            // (toto se volá jen při získání XP, ne při load check)
+            
+            // Check level up - může být víc level upů najednou
+            let leveledUp = false;
+            while (comp.level < 10) {
                 const nextLevelXp = COMPANION_XP_TABLE[comp.level] || 9999;
-                if (comp.xp >= nextLevelXp && comp.level < 10) {
+                if (comp.xp >= nextLevelXp) {
                     comp.xp -= nextLevelXp;
                     comp.level++;
                     comp.skillPoints = (comp.skillPoints || 0) + 1;
                     
                     // Bonus HP při level up
                     const baseCompanion = COMPANIONS.find(c => c.id === comp.id);
-                    comp.maxHp = (comp.maxHp || baseCompanion.hp) + 5;
-                    comp.hp = Math.min(comp.hp + 10, comp.maxHp);
+                    comp.maxHp = (comp.maxHp || baseCompanion?.hp || 50) + 5;
+                    comp.hp = Math.min((comp.hp || 0) + 10, comp.maxHp);
                     
                     // Bonus loajalita za level up
                     comp.loyalty = Math.min(100, (comp.loyalty || 0) + 5);
                     
-                    const companion = COMPANIONS.find(c => c.id === comp.id) || comp;
-                    const compIcon = companion.icon || comp.icon || '👤';
-                    const compName = comp.name || companion.name || 'Společník';
-                    notifySuccess(`${compIcon} Level UP!`, `${compName} je level ${comp.level}! +1 SP`);
-                    addLog(`${compIcon} ${compName} dosáhl level ${comp.level}!`, '⭐');
+                    leveledUp = true;
+                } else {
+                    break;
                 }
-            });
+            }
+            
+            if (leveledUp) {
+                const companion = COMPANIONS.find(c => c.id === comp.id) || comp;
+                const compIcon = companion.icon || comp.icon || '👤';
+                const compName = comp.name || companion.name || 'Společník';
+                notifySuccess(`${compIcon} Level UP!`, `${compName} je level ${comp.level}! +1 SP`);
+                addLog(`${compIcon} ${compName} dosáhl level ${comp.level}!`, '⭐');
+            }
+            
+            return leveledUp;
         }
         
         // === VYBAVENÍ SPOLEČNÍKŮ ===
@@ -61743,6 +61801,19 @@ function openFullscreenMap() {
                     return comp;
                 });
                 console.log('🔧 Migrace: Normalizováno', state.companions.length, 'společníků');
+            }
+            
+            // === KONTROLA COMPANION LEVEL UP ===
+            // Oprava pro případ že companion má více XP než potřebuje pro level up
+            if (state.companions && state.companions.length > 0) {
+                state.companions.forEach(comp => {
+                    if (typeof checkCompanionLevelUp === 'function') {
+                        const leveledUp = checkCompanionLevelUp(comp);
+                        if (leveledUp) {
+                            console.log(`🔧 Migrace: Opraven level companion ${comp.name || comp.id}`);
+                        }
+                    }
+                });
             }
             
             // Pokud je to čerstvý import, přeskoč destruktivní migrace
