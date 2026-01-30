@@ -27,7 +27,7 @@
     <script>
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '2.7.3';
+            const FORCE_UPDATE_VERSION = '2.7.5';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11227,7 +11227,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '2.7.3';
+        const GAME_VERSION = '2.7.5';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -14338,6 +14338,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const chance = customChance !== null ? customChance : disease.chance;
             
+            // === GLOBÁLNÍ SNÍŽENÍ ŠANCE NA NEMOC O 80% ===
+            const globalDiseaseReduction = 0.2; // 20% z původní šance = 80% snížení
+            
             // Bonus odolnost z vybavení nebo skillů
             let resistance = 0;
             
@@ -14356,7 +14359,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Kaple v osadě snižuje šanci na nemoc
             if (state.base?.includes('chapel')) resistance += 0.15;
             
-            const finalChance = Math.max(0.01, chance * (1 - resistance));
+            const finalChance = Math.max(0.01, chance * globalDiseaseReduction * (1 - resistance));
             
             if (Math.random() < finalChance) {
                 // Nakažen!
@@ -15124,6 +15127,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const chance = customChance !== null ? customChance : injury.chance;
             
+            // === GLOBÁLNÍ SNÍŽENÍ ŠANCE NA ZRANĚNÍ O 80% ===
+            const globalInjuryReduction = 0.2; // 20% z původní šance = 80% snížení
+            
             // Bonus odolnost z vybavení
             let resistance = 0;
             
@@ -15148,7 +15154,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 resistance += getSkillTreeBonus('injuryResist') || 0;
             }
             
-            const finalChance = Math.max(0.01, chance * (1 - resistance));
+            const finalChance = Math.max(0.01, chance * globalInjuryReduction * (1 - resistance));
             
             if (Math.random() < finalChance) {
                 // Zraněn!
@@ -33308,16 +33314,39 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.status.hunger = Math.max(0, state.status.hunger - 10);
             state.status.thirst = Math.max(0, state.status.thirst - 10);
             
+            // === LÉČENÍ ZRANĚNÍ ODPOČINKEM ===
+            let healedInjuries = [];
+            if (state.injuries && state.injuries.active && state.injuries.active.length > 0) {
+                state.injuries.active = state.injuries.active.filter(activeInjury => {
+                    const injury = INJURIES.find(i => i.id === activeInjury.id);
+                    if (injury && injury.cures && injury.cures.includes('rest')) {
+                        healedInjuries.push(injury.name);
+                        if (typeof addInjuryImmunity === 'function') {
+                            addInjuryImmunity(activeInjury.id, 1800000);
+                        }
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            
+            let healedText = healedInjuries.length > 0 ? 
+                `<p style="color: #4caf50;">🩹 Vyléčeno: ${healedInjuries.join(', ')}</p>` : '';
+            
             showModal('💤 Odpočinek', 
                 '<div style="text-align: center;">' +
                 '<div style="font-size: 3rem;">⛺</div>' +
                 '<h3>Odpočinul sis v táboře</h3>' +
                 '<p style="color: #8bc34a;">+' + hpGain + ' HP, +' + energyGain + ' energie</p>' +
                 '<p style="color: #ff9800;">-10 hlad, -10 žízeň</p>' +
+                healedText +
                 '</div>' +
                 '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>'
             );
             addLog('Odpočinek v táboře', '⛺');
+            if (healedInjuries.length > 0) {
+                addLog(`🩹 Vyléčeno: ${healedInjuries.join(', ')}`, '🛏️');
+            }
             renderFull();
         }
         
@@ -34449,6 +34478,29 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function restAtShelter() {
             state.char.hp = Math.min(state.char.maxHp, state.char.hp + 30);
             state.status.energy = Math.min(100, state.status.energy + 40);
+            
+            // === LÉČENÍ ZRANĚNÍ ODPOČINKEM ===
+            if (state.injuries && state.injuries.active && state.injuries.active.length > 0) {
+                const healed = [];
+                state.injuries.active = state.injuries.active.filter(activeInjury => {
+                    const injury = INJURIES.find(i => i.id === activeInjury.id);
+                    if (injury && injury.cures && injury.cures.includes('rest')) {
+                        healed.push(injury.name);
+                        // Přidej imunitu
+                        if (typeof addInjuryImmunity === 'function') {
+                            addInjuryImmunity(activeInjury.id, 1800000); // 30 min imunita
+                        }
+                        return false; // Odeber ze seznamu
+                    }
+                    return true; // Ponech
+                });
+                
+                if (healed.length > 0) {
+                    notifySuccess('Vyléčeno odpočinkem!', healed.join(', '));
+                    addLog(`🩹 Odpočinek vyléčil: ${healed.join(', ')}`, '🛏️');
+                }
+            }
+            
             notifySuccess('Odpočinul sis', '+30 HP, +40 ' + ('energie'));
             addLog('Odpočinek v úkrytu', '🛏️');
             renderFull();
@@ -38801,7 +38853,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'exo': '🦾 +50% nosnost, +7% damage',
                 'sturdy': '🔧 +2 defense (stabilita)',
                 'combat_stance': '⚔️ +5% kritický zásah',
-                'light_feet': '🩴 +5% rychlost cestování'
+                'light_feet': '🩴 +1% rychlost cestování'
             };
             const specialText = item.special ? (bootsSpecials[item.special] || `⭐ ${item.special}`) : '';
             const specialClickable = item.special ? `<p onclick="showSpecialEffectDetail('${item.special}')" style="color: #9c27b0; margin: 0.5rem 0; cursor: pointer; text-decoration: underline;">${specialText} ℹ️</p>` : '';
@@ -52785,7 +52837,7 @@ function openFullscreenMap() {
                             'speed_bonus': '🏃+2% rychlost',
                             'dodge_bonus': '💨+10% úhyb',
                             'combat_stance': '⚔️+5% krit',
-                            'light_feet': '🏃+5% rychlost',
+                            'light_feet': '🏃+1% rychlost',
                             'stealth_move': '🥷-20% přepadení',
                             'run_bonus': '🏃+15% útěk',
                             'stomp': '🦶+8 damage',
