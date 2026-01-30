@@ -27,7 +27,7 @@
     <script>
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '2.6.7';
+            const FORCE_UPDATE_VERSION = '2.7.3';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11227,7 +11227,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '2.6.7';
+        const GAME_VERSION = '2.7.3';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -21758,7 +21758,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            // Spotřeba šípů/šipek - zkontroluj EQUIPPED weapon
+            // Najdi loveckou zbraň - zkontroluj EQUIPPED weapon
             const equippedWeapon = state.equipped?.weapon;
             const huntingWeapon = equippedWeapon && (
                 equippedWeapon.id === 'hunting_bow' || equippedWeapon.id === 'crossbow' || 
@@ -21769,8 +21769,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 (i.type === 'weapon' && i.icon === '🏹')
             );
             
+            // Zkontroluj jestli má munici PŘED střelbou
             if (huntingWeapon?.ammoType) {
-                if (!consumeAmmo(huntingWeapon.ammoType, 1)) {
+                const ammoCount = getAmmoCount(huntingWeapon.ammoType);
+                if (ammoCount < 1) {
                     showModal('❌ Chybí munice', `Nemáš ${getAmmoName(huntingWeapon.ammoType)}!<br><button class="btn" onclick="closeModal()" style="width:100%; margin-top:1rem;">OK</button>`);
                     return;
                 }
@@ -21780,6 +21782,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const hitChance = 0.6 + (state.char.attrs.per * 0.02) + (skillBonus * 0.01);
             
             if (Math.random() < hitChance) {
+                // Úspěšný zásah - spotřebuj šíp TEĎ
+                if (huntingWeapon?.ammoType) {
+                    consumeAmmo(huntingWeapon.ammoType, 1);
+                }
+                
                 // Úspěšný zásah
                 state.skills_secondary.hunting = Math.min(10, (state.skills_secondary.hunting || 0) + 0.15);
                 
@@ -21826,8 +21833,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             } else {
                 // Minutí
                 if (animal.aggressive) {
-                    // Zvíře útočí!
+                    // Zvíře útočí! - NE spotřebovat šíp, hráč přechází do normálního boje
+                    // (může bojovat jinou zbraní)
                     closeModal();
+                    notifyWarning('⚠️ ' + animal.name + ' útočí!', 'Minul jsi a zvíře se rozzuřilo!');
                     startCombat({ 
                         id: 'hunt_' + animal.id, 
                         name: animal.name, 
@@ -21839,10 +21848,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         loot: animal.loot
                     });
                 } else {
+                    // Zvíře uteklo - spotřebuj šíp (byl vystřelen, ale minul)
+                    if (huntingWeapon?.ammoType) {
+                        consumeAmmo(huntingWeapon.ammoType, 1);
+                    }
                     showModal('🏹 Minul!', `
                         <div style="text-align: center;">
                             <div style="font-size: 4rem;">💨</div>
                             <p>${animal.name} utekl!</p>
+                            ${huntingWeapon?.ammoType ? `<p style="color: #ff9800; font-size: 0.85rem;">-1 ${getAmmoName(huntingWeapon.ammoType)}</p>` : ''}
                         </div>
                         <button class="btn" onclick="closeModal(); showActionModal('hunt');" style="width: 100%; margin-top: 0.5rem;">🏹 Zkusit znovu</button>
                         <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">${'Hotovo'}</button>
@@ -26355,6 +26369,67 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function renderCreation() {
+            // === RESET PŘI VYTVÁŘENÍ NOVÉ POSTAVY ===
+            // Pokud se vytváří nová postava, resetuj state
+            if (window.creatingNewCharacter || 
+                sessionStorage.getItem('creatingNewCharacter') === 'true' ||
+                localStorage.getItem('creatingNewCharacter') === 'true') {
+                
+                // Resetuj flag - ale až po resetu
+                const shouldReset = !state._alreadyResetForNewChar;
+                
+                if (shouldReset) {
+                    console.log('🔄 renderCreation: Resetuji state pro novou postavu');
+                    state._alreadyResetForNewChar = true;
+                    
+                    // Kompletní reset všech herních dat
+                    state.confirmed = false;
+                    state.isDead = false;
+                    state._characterFinalized = false;
+                    state.money = 0;
+                    state.inv = [{ id: 'lore_1', name: 'Deník vědce I', icon: '📕', type: 'lore', weight: 0, price: 0, rarity: 'rare' }];
+                    state.equipped = { weapon: null, armor: null, helmet: null, gloves: null, boots: null };
+                    state.equippedAccessory = null;
+                    state.npcQuests = {};
+                    state.activeQuest = null;
+                    state.mainQuest = { currentQuest: 'intro', completedQuests: [], questProgress: {}, npcMet: [], storyComplete: false, chapter: 0 };
+                    state.dailyQuests = { quests: [], completed: [], progress: {}, lastRefresh: 0 };
+                    state.quests = [];
+                    state.completedQuests = [];
+                    state.achievements = [];
+                    state.companions = [];
+                    state.settlement = null;
+                    state.faction = null;
+                    state.factionRep = {};
+                    state.mutations = [];
+                    state.perks = [];
+                    state.skills = {};
+                    state.skillTree = {};
+                    state.skillTreePoints = 0;
+                    state.readBooks = [];
+                    state.loadouts = [];
+                    state.log = [];
+                    state.resources = { wood: 0, metal: 0, stone: 0, cloth: 0, fuel: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, copper: 0, silver: 0, gold: 0, crystal: 0, acid: 0, fur: 0, mutant_blood: 0, raw_meat: 0, fish: 0 };
+                    state.stats = { kills: 0, explored: 0, crafted: 0, traveled: 0 };
+                    state.stashes = {};
+                    state.discoveredEnemies = [];
+                    state.killsByType = {};
+                    state.exoticBonuses = {};
+                    state.vacationMode = false;
+                    state.starterToolChosen = false;
+                    state.visitedLocations = ['shelter'];
+                    state.world = { currentLocation: 'shelter', visitedLocations: ['shelter'], unlockedPaths: [], discoveredSecrets: [], traveling: false, bossesDefeated: [], questItems: {}, groundLoot: {} };
+                    state.map = { traveling: false, inBase: true };
+                    state.time = { gameStart: Date.now(), realStart: Date.now(), last: Date.now(), days: 0, hours: 0, mins: 0, totalElapsed: 0 };
+                    state.baseStorage = { food: 0, water: 0 };
+                    state.baseItems = [];
+                    state.status = { hunger: 100, thirst: 100, energy: 100, radiation: 0, mood: 100 };
+                    state.ammo = {};
+                    
+                    console.log('✅ State resetován pro novou postavu');
+                }
+            }
+            
             // === INICIALIZACE CHYBĚJÍCÍCH HODNOT ===
             // Zajisti že state.char a state.char.attrs existují
             if (!state.char) {
@@ -26610,6 +26685,29 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 localStorage.setItem('creatingNewCharacter', 'true');
                 sessionStorage.setItem('creatingNewCharacter', 'true');
                 window.creatingNewCharacter = true;
+                
+                // Smaž staré saves
+                localStorage.removeItem('survival_hero_save_v2');
+                localStorage.removeItem('survival_hero_save');
+                localStorage.removeItem('survival_hero_backup');
+                
+                // === KOMPLETNÍ RESET STATE ===
+                if (typeof resetStateToDefault === 'function') {
+                    resetStateToDefault();
+                } else {
+                    // Fallback - základní reset
+                    state.confirmed = false;
+                    state.char = { name: '', gender: null, level: 1, xp: 0, xpNeed: 400, totalXP: 0, classId: null, points: 10, levelUpPoints: 0, skillPoints: 0, hp: 100, maxHp: 100, attrs: { str: 5, int: 5, agi: 5, per: 5, end: 5, lck: 5 } };
+                    state.equipped = { weapon: null, armor: null, helmet: null, gloves: null, boots: null };
+                    state.inv = [];
+                    state.npcQuests = {};
+                    state.quests = [];
+                    state.completedQuests = [];
+                    state.companions = [];
+                    state.money = 0;
+                    state.resources = {};
+                }
+                
                 renderCreation();
             } else {
                 // Není přihlášen - zobraz přihlášení
@@ -32714,11 +32812,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function continueTravel() {
             // Obnov původní zbraň po boji během cestování
+            // ALE JEN pokud hráč nezměnil zbraň během boje
             if (state.preCombatWeapon) {
-                const weaponName = state.preCombatWeapon.name;
-                state.equipped.weapon = state.preCombatWeapon;
+                const currentWeapon = state.equipped?.weapon;
+                const savedWeapon = state.preCombatWeapon;
+                
+                // Pokud hráč má stále STEJNOU zbraň (nezměnil ji), můžeme ji obnovit
+                // Ale pokud změnil na jinou zbraň, necháme novou
+                const weaponChanged = currentWeapon && savedWeapon && 
+                                     (currentWeapon.id !== savedWeapon.id || 
+                                      currentWeapon.name !== savedWeapon.name);
+                
+                if (!weaponChanged) {
+                    // Hráč nezměnil zbraň - obnov původní
+                    state.equipped.weapon = state.preCombatWeapon;
+                    console.log('🗡️ Obnovena původní zbraň:', savedWeapon.name);
+                } else {
+                    // Hráč změnil zbraň během boje - ponech novou
+                    console.log('🗡️ Hráč změnil zbraň během boje - ponecháno:', currentWeapon?.name);
+                }
+                
                 delete state.preCombatWeapon;
-                console.log('🗡️ Obnovena původní zbraň:', weaponName);
             }
             
             resolveCurrentEvent(); // Označ event jako vyřešený
@@ -34476,11 +34590,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             closeModal();
             
             // Obnov původní zbraň po boji během cestování
+            // ALE JEN pokud hráč nezměnil zbraň během boje
             if (state.preCombatWeapon) {
-                const weaponName = state.preCombatWeapon.name;
-                state.equipped.weapon = state.preCombatWeapon;
+                const currentWeapon = state.equipped?.weapon;
+                const savedWeapon = state.preCombatWeapon;
+                
+                const weaponChanged = currentWeapon && savedWeapon && 
+                                     (currentWeapon.id !== savedWeapon.id || 
+                                      currentWeapon.name !== savedWeapon.name);
+                
+                if (!weaponChanged) {
+                    state.equipped.weapon = state.preCombatWeapon;
+                    console.log('🗡️ Obnovena původní zbraň:', savedWeapon.name);
+                } else {
+                    console.log('🗡️ Hráč změnil zbraň - ponecháno:', currentWeapon?.name);
+                }
+                
                 delete state.preCombatWeapon;
-                console.log('🗡️ Obnovena původní zbraň:', weaponName);
             }
             
             if (!state.map.travelPaused) return;
@@ -55580,11 +55706,19 @@ function openFullscreenMap() {
                 const turnOrder = [...units].sort((a, b) => b.speed - a.speed);
                 
                 // Initialize combat state - 2 AKCE SYSTÉM
+                // Vytvoř enemyGroup z units pro kompatibilitu se starým systémem
+                const enemyUnitsForOldSystem = enemyGroup.map(e => ({
+                    ...e,
+                    alive: true,
+                    maxHp: e.hp
+                }));
+                
                 window.combatState = {
                     units: units,
                     turnOrder: turnOrder,
                     currentTurnIndex: 0,
                     round: 1,
+                    turn: 1, // Pro starý systém
                     selectedUnit: null,
                     selectedAction: null,
                     validMoves: [],
@@ -55594,7 +55728,13 @@ function openFullscreenMap() {
                     isDungeon: combatType === 'dungeon',
                     log: ['⚔️ Boj začíná! Každý má 2 akce za kolo.'],
                     terrain: generateCombatTerrain(),
-                    manualCompanions: state.settings?.manualCompanions || false // Ruční ovládání společníků
+                    manualCompanions: state.settings?.manualCompanions || false,
+                    // Kompatibilita se starým systémem
+                    enemyGroup: enemyUnitsForOldSystem,
+                    playerStamina: 100,
+                    playerDefending: false,
+                    comboCount: 0,
+                    lastAction: null
                 };
                 
                 // === TECHNIK BONUSY - PAST A VĚŽIČKA ===
@@ -56618,16 +56758,19 @@ function openFullscreenMap() {
             if (weapons.length === 0) {
                 weaponsHtml += '<p style="color: #666; text-align: center;">Nemáš žádné zbraně v inventáři</p>';
             } else {
-                weapons.forEach(w => {
-                    const isEquipped = currentWeapon?.id === w.id;
+                weapons.forEach((w, idx) => {
+                    // Najdi skutečný index v inventáři
+                    const invIndex = state.inv.indexOf(w);
+                    // Kontrola jestli je tato KONKRÉTNÍ zbraň vybavená (porovnej objekty, ne ID)
+                    const isEquipped = currentWeapon === w;
                     const hasAmmo = !w.ammoType || getAmmoCount(w.ammoType) > 0;
                     const ammoCount = w.ammoType ? getAmmoCount(w.ammoType) : null;
                     const weaponRange = w.ammoType ? '🎯' : '🗡️';
                     const ammoText = w.ammoType ? ` 🔫${ammoCount}` : '';
                     const bgColor = isEquipped ? '#4a6a4a' : (hasAmmo ? '#2a3a4a' : '#4a2a2a');
                     
-                    weaponsHtml += `<button class="btn" onclick="switchCombatWeapon('${w.id}')" style="display: block; width: 100%; margin-bottom: 0.3rem; padding: 0.4rem; background: ${bgColor}; text-align: left; font-size: 0.85rem;" ${isEquipped ? 'disabled' : ''}>
-                        ${w.icon || '⚔️'} ${w.name} - ⚔️${w.damage || 10} ${weaponRange}${ammoText}${!hasAmmo ? ' ⚠️' : ''}
+                    weaponsHtml += `<button class="btn" onclick="switchCombatWeapon('${invIndex}')" style="display: block; width: 100%; margin-bottom: 0.3rem; padding: 0.4rem; background: ${bgColor}; text-align: left; font-size: 0.85rem;" ${isEquipped ? 'disabled' : ''}>
+                        ${w.icon || '⚔️'} ${w.name} - ⚔️${w.damage || 10} ${weaponRange}${ammoText}${!hasAmmo ? ' ⚠️' : ''}${isEquipped ? ' ✓' : ''}
                     </button>`;
                 });
             }
@@ -56649,19 +56792,24 @@ function openFullscreenMap() {
             `;
         }
         
-        function switchCombatWeapon(weaponId) {
+        function switchCombatWeapon(weaponIndex) {
             const cs = window.combatState;
             const unit = cs.selectedUnit;
             if (!unit || unit.actionsLeft <= 0) return;
             
-            if (weaponId === 'fists') {
+            if (weaponIndex === 'fists') {
                 state.equipped.weapon = null;
                 cs.log.push(`👊 ${unit.name} odložil zbraň`);
             } else {
-                const weapon = state.inv.find(i => i.id === weaponId);
-                if (weapon) {
+                const idx = parseInt(weaponIndex);
+                const weapon = state.inv[idx];
+                if (weapon && weapon.type === 'weapon') {
+                    // Nastav PŘÍMO tento objekt jako equipped weapon
                     state.equipped.weapon = weapon;
                     cs.log.push(`🔄 ${unit.name} tasil ${weapon.name}`);
+                    
+                    // Debug log
+                    console.log('🔄 switchCombatWeapon: Změněna zbraň na:', weapon.name, 'ID:', weapon.id, 'ammoType:', weapon.ammoType);
                 }
             }
             
@@ -56669,6 +56817,7 @@ function openFullscreenMap() {
             unit.damage = calculateDamage();
             
             useAction(unit, 1);
+            renderHeroesCombatUI();
         }
         
         function calculateValidMoves(unit) {
@@ -56830,8 +56979,22 @@ function openFullscreenMap() {
             const playerSkillEffects = !isCompanion ? getPlayerCombatSkillEffects() : {};
             
             // Spotřeba munice pro střelné zbraně (jen hráč)
+            // DŮLEŽITÉ: Vždy čti AKTUÁLNÍ stav z state.equipped
             const weapon = !isCompanion ? state.equipped?.weapon : null;
-            if (weapon?.ammoType) {
+            
+            // DEBUG: Loguj aktuální zbraň při každém útoku
+            if (!isCompanion) {
+                console.log('🗡️ ===== ÚTOK =====');
+                console.log('🗡️ state.equipped.weapon:', state.equipped?.weapon);
+                console.log('🗡️ weapon proměnná:', weapon);
+                console.log('🗡️ weapon.name:', weapon?.name);
+                console.log('🗡️ weapon.id:', weapon?.id);
+                console.log('🗡️ weapon.ammoType:', weapon?.ammoType);
+                console.log('🗡️ ================');
+            }
+            
+            // Kontrola: spotřebuj munici POUZE pokud aktuální zbraň má ammoType
+            if (weapon && weapon.ammoType) {
                 if (!consumeAmmo(weapon.ammoType, 1)) {
                     cs.log.push(`⚠️ Nemáš náboje!`);
                     renderHeroesCombatUI();
@@ -58598,7 +58761,13 @@ function openFullscreenMap() {
             }
             
             // Check ammo for ranged weapons
+            // DŮLEŽITÉ: Čti aktuální zbraň přímo ze state.equipped (ne z cache)
             const weapon = state.equipped?.weapon;
+            
+            // Debug log pro troubleshooting
+            console.log('🗡️ performAttack - equipped weapon:', weapon?.name, 'ammoType:', weapon?.ammoType);
+            
+            // Kontrola: má aktuální zbraň ammoType?
             if (weapon?.ammoType) {
                 const ammoNeeded = isHeavy ? 2 : 1; // Silný útok spotřebuje 2 náboje
                 const currentAmmo = getAmmoCount(weapon.ammoType);
