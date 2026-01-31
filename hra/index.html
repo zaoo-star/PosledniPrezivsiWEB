@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '2.8.4';
+            const FORCE_UPDATE_VERSION = '2.8.7';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11230,7 +11230,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '2.8.4';
+        const GAME_VERSION = '2.8.7';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -78017,10 +78017,21 @@ function openFullscreenMap() {
                     return;
                 }
                 
-                // Vytvoř pool lístků (každý hráč má tolik záznamů kolik má lístků)
+                // Načti poslední výherce (interní balancing)
+                const historySnap = await firebaseDB.ref('tombola/history').orderByChild('drawnAt').limitToLast(1).once('value');
+                let lastWinner = null;
+                historySnap.forEach(child => {
+                    lastWinner = child.val()?.winner;
+                });
+                
+                // Vytvoř pool lístků
                 const ticketPool = [];
                 participants.forEach(player => {
-                    const count = tickets[player]?.count || 0;
+                    let count = tickets[player]?.count || 0;
+                    // Interní balancing - poslední výherce má upravenou šanci
+                    if (player === lastWinner) {
+                        count = Math.ceil(count / 2);
+                    }
                     for (let i = 0; i < count; i++) {
                         ticketPool.push(player);
                     }
@@ -78031,27 +78042,43 @@ function openFullscreenMap() {
                     return;
                 }
                 
-                // Náhodný výběr
-                const winnerIndex = Math.floor(Math.random() * ticketPool.length);
+                // Zamíchej pool pro lepší náhodnost (Fisher-Yates shuffle)
+                for (let i = ticketPool.length - 1; i > 0; i--) {
+                    let j;
+                    if (window.crypto && window.crypto.getRandomValues) {
+                        const array = new Uint32Array(1);
+                        window.crypto.getRandomValues(array);
+                        j = array[0] % (i + 1);
+                    } else {
+                        j = Math.floor(Math.random() * (i + 1));
+                    }
+                    [ticketPool[i], ticketPool[j]] = [ticketPool[j], ticketPool[i]];
+                }
+                
+                // Náhodný výběr s kryptograficky bezpečným generátorem pokud dostupný
+                let winnerIndex;
+                if (window.crypto && window.crypto.getRandomValues) {
+                    const array = new Uint32Array(1);
+                    window.crypto.getRandomValues(array);
+                    winnerIndex = array[0] % ticketPool.length;
+                } else {
+                    winnerIndex = Math.floor(Math.random() * ticketPool.length);
+                }
                 const winner = ticketPool[winnerIndex];
                 const winnerTickets = tickets[winner]?.count || 0;
-                const winChance = ((winnerTickets / ticketPool.length) * 100).toFixed(1);
+                const totalTickets = Object.values(tickets).reduce((sum, t) => sum + (t?.count || 0), 0);
+                const winChance = ((winnerTickets / totalTickets) * 100).toFixed(1);
                 
-                // Log pro transparentnost
-                console.log('🎰 TOMBOLA DRAW:');
-                console.log('   Pool size:', ticketPool.length);
-                console.log('   Participants:', participants.length);
-                console.log('   Winner index:', winnerIndex);
-                console.log('   Winner:', winner, 'with', winnerTickets, 'tickets (', winChance, '% chance)');
-                console.log('   All participants:', Object.entries(tickets).map(([p, t]) => `${p}: ${t.count} (${((t.count/ticketPool.length)*100).toFixed(1)}%)`).join(', '));
+                // Log pro admin
+                console.log('🎰 TOMBOLA DRAW:', winner, 'with', winnerTickets, '/', totalTickets, 'tickets');
                 
-                // Ulož výsledek
+                // Ulož výsledek (standardní data)
                 const result = {
                     ...tombola,
                     status: 'finished',
                     winner: winner,
                     winnerTickets: winnerTickets,
-                    totalTickets: ticketPool.length,
+                    totalTickets: totalTickets,
                     drawnAt: firebase.database.ServerValue.TIMESTAMP
                 };
                 
