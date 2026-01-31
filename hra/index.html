@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.0.0';
+            const FORCE_UPDATE_VERSION = '3.0.2';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11285,7 +11285,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.0.0';
+        const GAME_VERSION = '3.0.2';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -66640,8 +66640,17 @@ function openFullscreenMap() {
         }
         
         function showChangePasswordForm() {
+            const playerName = getPlayerName();
+            const isZaoo = playerName?.toLowerCase() === 'zaoo';
+            
             showModal('🔑 Změnit heslo', `
                 <div style="text-align: left;">
+                    ${isZaoo ? `
+                        <div style="background: #2a1a2a; padding: 0.5rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #9c27b0;">
+                            <p style="color: #ce93d8; margin: 0; font-size: 0.8rem;">👑 Admin mód - bez ověření starého hesla</p>
+                        </div>
+                    ` : ''}
+                    
                     <label style="color: #aaa; font-size: 0.85rem;">Nové heslo (min. 6 znaků):</label>
                     <div style="position: relative;">
                         <input type="password" id="newPassword" placeholder="••••••••"
@@ -66660,7 +66669,7 @@ function openFullscreenMap() {
                     
                     <div id="changePassError" style="color: #f44336; font-size: 0.85rem; margin-bottom: 0.5rem; display: none;"></div>
                     
-                    <button class="btn" onclick="doChangePassword()" style="width: 100%; background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.8rem;">
+                    <button class="btn" onclick="doChangePassword(${isZaoo})" style="width: 100%; background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.8rem;">
                         🔑 Změnit heslo
                     </button>
                 </div>
@@ -66668,7 +66677,7 @@ function openFullscreenMap() {
             `);
         }
         
-        async function doChangePassword() {
+        async function doChangePassword(adminBypass = false) {
             const newPass = document.getElementById('newPassword')?.value;
             const newPass2 = document.getElementById('newPassword2')?.value;
             const errorDiv = document.getElementById('changePassError');
@@ -66686,7 +66695,58 @@ function openFullscreenMap() {
             try {
                 if (errorDiv) { errorDiv.textContent = '⏳ Měním heslo...'; errorDiv.style.display = 'block'; errorDiv.style.color = '#ff9800'; }
                 
-                // Změna hesla (uživatel je již přihlášen)
+                // Admin bypass - přehlásit se a pak změnit
+                if (adminBypass && currentUser?.email) {
+                    // Pro admina: odhlásíme, pošleme custom token nebo prostě změníme přímo
+                    // Protože Firebase neumí změnit heslo bez reauth, musíme to udělat takto:
+                    // 1. Smazat uživatele v Firebase Auth
+                    // 2. Vytvořit nového se stejným emailem a novým heslem
+                    
+                    const email = currentUser.email;
+                    
+                    try {
+                        // Zkus přímo změnit heslo
+                        await currentUser.updatePassword(newPass);
+                        closeModal();
+                        notifySuccess('✅ Heslo změněno!', 'Tvoje heslo bylo úspěšně změněno.');
+                        return;
+                    } catch (e) {
+                        if (e.code === 'auth/requires-recent-login') {
+                            // Potřebujeme jiný přístup - smazat a znovu vytvořit účet
+                            if (confirm('Firebase vyžaduje reautentizaci. Chceš smazat účet a vytvořit nový se stejným emailem?\n\nTvá herní data zůstanou zachována!')) {
+                                try {
+                                    // Smaž aktuálního uživatele
+                                    await currentUser.delete();
+                                    
+                                    // Vytvoř nového se stejným emailem
+                                    const newUserCred = await firebaseAuth.createUserWithEmailAndPassword(email, newPass);
+                                    currentUser = newUserCred.user;
+                                    
+                                    closeModal();
+                                    notifySuccess('✅ Účet obnoven!', 'Nové heslo nastaveno. Jsi přihlášen.');
+                                    renderFull();
+                                    return;
+                                } catch (deleteError) {
+                                    console.error('Delete/recreate error:', deleteError);
+                                    if (deleteError.code === 'auth/requires-recent-login') {
+                                        // Ani smazat nejde - musíme použít Firebase Console
+                                        if (errorDiv) { 
+                                            errorDiv.innerHTML = 'Firebase vyžaduje čerstvé přihlášení.<br><br><strong>Řešení:</strong> Smaž účet ve Firebase Console a zaregistruj se znovu ve hře.'; 
+                                            errorDiv.style.display = 'block'; 
+                                            errorDiv.style.color = '#ff9800'; 
+                                        }
+                                        return;
+                                    }
+                                    throw deleteError;
+                                }
+                            }
+                            return;
+                        }
+                        throw e;
+                    }
+                }
+                
+                // Normální změna hesla (uživatel je již přihlášen)
                 await currentUser.updatePassword(newPass);
                 
                 closeModal();
@@ -66721,7 +66781,7 @@ function openFullscreenMap() {
                     <label style="color: #aaa; font-size: 0.85rem;">Současné heslo:</label>
                     <div style="position: relative;">
                         <input type="password" id="reauthPassword" placeholder="••••••••"
-                            style="width: 100%; padding: 0.6rem; padding-right: 40px; margin-bottom: 1rem; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px;">
+                            style="width: 100%; padding: 0.6rem; padding-right: 40px; margin-bottom: 0.5rem; background: #2a2a2a; color: #fff; border: 1px solid #444; border-radius: 4px;">
                         <span onclick="togglePasswordVisibility('reauthPassword', this)" 
                             style="position: absolute; right: 10px; top: 35%; transform: translateY(-50%); cursor: pointer; font-size: 1.1rem; user-select: none;">👁️</span>
                     </div>
@@ -66731,9 +66791,46 @@ function openFullscreenMap() {
                     <button class="btn" onclick="doReauthAndChangePassword()" style="width: 100%; background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%); padding: 0.8rem;">
                         ✓ Ověřit a změnit heslo
                     </button>
+                    
+                    <p style="color: #666; font-size: 0.75rem; margin-top: 1rem; text-align: center;">
+                        Zapomněl jsi heslo? Zkus se <a href="#" onclick="doLogoutAndReset()" style="color: #2196f3;">odhlásit a použít reset</a>
+                    </p>
                 </div>
                 <button class="btn" onclick="closeModal(); delete window._pendingNewPassword;" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zrušit</button>
             `);
+        }
+        
+        // Odhlásit a nabídnout reset hesla
+        async function doLogoutAndReset() {
+            const email = currentUser?.email;
+            try {
+                await firebaseAuth.signOut();
+                currentUser = null;
+                isGuest = true;
+                
+                if (email) {
+                    // Pošli reset email
+                    await firebaseAuth.sendPasswordResetEmail(email);
+                    showModal('📧 Email odeslán', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem; margin-bottom: 1rem;">📧</div>
+                            <p style="color: #4caf50;">Odkaz pro reset hesla byl odeslán na:</p>
+                            <p style="color: #fff; font-weight: bold;">${email}</p>
+                            <p style="color: #888; font-size: 0.85rem; margin-top: 1rem;">Zkontroluj i spam složku!</p>
+                            <p style="color: #ff9800; font-size: 0.8rem; margin-top: 0.5rem;">⚠️ Pokud email nedorazí, kontaktuj admina na Discordu nebo v chatu.</p>
+                        </div>
+                        <button class="btn" onclick="closeModal(); renderFull();" style="width: 100%; margin-top: 1rem;">OK</button>
+                    `);
+                } else {
+                    closeModal();
+                    renderFull();
+                }
+            } catch (e) {
+                console.error('Logout/reset error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odeslat reset email');
+                closeModal();
+                renderFull();
+            }
         }
         
         async function doReauthAndChangePassword() {
