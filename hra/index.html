@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.0.4';
+            const FORCE_UPDATE_VERSION = '3.0.7';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11312,7 +11312,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.0.4';
+        const GAME_VERSION = '3.0.7';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -19775,6 +19775,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const skillPoints = comp.skillPoints || 0;
                         const learnedSkills = comp.skills || [];
                         
+                        // MRTVÝ SPOLEČNÍK - speciální zobrazení
+                        if (comp.isDead) {
+                            return `
+                                <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; border: 2px solid #c62828; opacity: 0.9;">
+                                    <div style="display: flex; align-items: center; gap: 1rem;">
+                                        <div style="font-size: 2.5rem; filter: grayscale(100%);">💀</div>
+                                        <div style="flex: 1;">
+                                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <h4 style="margin: 0; color: #888; text-decoration: line-through;">${compName}</h4>
+                                                <span style="background: #c62828; color: #fff; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.75rem; font-weight: bold;">MRTVÝ</span>
+                                            </div>
+                                            <p style="color: #c62828; font-size: 0.8rem; margin: 0.2rem 0;">☠️ Zemřel v boji</p>
+                                        </div>
+                                        <div style="font-size: 2rem; filter: grayscale(100%);">${compIcon}</div>
+                                    </div>
+                                    
+                                    <div style="background: #2a1a1a; padding: 0.8rem; border-radius: 6px; margin-top: 0.5rem; text-align: center;">
+                                        <p style="color: #ff9800; margin: 0; font-size: 0.9rem;">⚰️ Společníka můžeš oživit v <strong>OSADĚ</strong></p>
+                                        <p style="color: #666; font-size: 0.75rem; margin: 0.3rem 0 0 0;">Jdi do osady → Společníci 🐕 → Oživit za 💰</p>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                        
                         return `
                             <div style="background: #2a2a2a; padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; border: 2px solid ${skillPoints > 0 ? '#ffd700' : '#333'};">
                                 <div style="display: flex; align-items: center; gap: 1rem;">
@@ -25104,8 +25128,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
-        // reviveCompanionWithMedkit byla odstraněna - oživení pouze za peníze v osadě
-        
+        // Oživení společníka za peníze - POUZE V OSADĚ
         function reviveCompanionWithMoney(companionId, cost) {
             const comp = state.companions?.find(c => (c.uniqueId === companionId || c.id === companionId) && c.isDead);
             if (!comp) return;
@@ -25141,6 +25164,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">✓ Skvělé!</button>
             `);
+            saveGame();
             renderFull();
         }
         
@@ -71029,7 +71053,7 @@ function openFullscreenMap() {
             if (otherOffers.length === 0) {
                 html += `<div style="text-align: center; padding: 1rem; color: #666;">Žádné nabídky...</div>`;
             } else {
-                html += `<div style="max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
+                html += `<div id="marketOffersList" style="max-height: 200px; overflow-y: scroll; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;">`;
                 otherOffers.forEach(offer => {
                     const totalPrice = offer.totalPrice || offer.price;
                     const count = offer.count || 1;
@@ -71076,6 +71100,31 @@ function openFullscreenMap() {
             `;
             
             showModal('🏪 Tržiště přeživších', html);
+            
+            // Fix pro scrollování na mobilech
+            setTimeout(() => {
+                const list = document.getElementById('marketOffersList');
+                if (list) {
+                    list.addEventListener('touchstart', (e) => {
+                        list._startY = e.touches[0].pageY;
+                    }, { passive: true });
+                    list.addEventListener('touchmove', (e) => {
+                        const scrollTop = list.scrollTop;
+                        const scrollHeight = list.scrollHeight;
+                        const clientHeight = list.clientHeight;
+                        const deltaY = e.touches[0].pageY - list._startY;
+                        
+                        // Zabraň pull-to-refresh když scrollujeme dolů a jsme nahoře
+                        if (scrollTop === 0 && deltaY > 0) {
+                            e.preventDefault();
+                        }
+                        // Zabraň když jsme dole a scrollujeme nahoru
+                        if (scrollTop + clientHeight >= scrollHeight && deltaY < 0) {
+                            e.preventDefault();
+                        }
+                    }, { passive: false });
+                }
+            }, 100);
         }
         
         // Detail itemu na tržišti
@@ -71394,6 +71443,12 @@ function openFullscreenMap() {
                 };
                 
                 await firebaseDB.ref('marketplace/offers').push(offer);
+                
+                // Počítej pro denní quest "prodej 3 věci"
+                if (state.dailyQuests?.progress) {
+                    state.dailyQuests.progress.sold = (state.dailyQuests.progress.sold || 0) + sellCount;
+                }
+                
                 notifySuccess('Nabídka vytvořena!', `${sellCount}x ${itemCopy.name} za ${totalPrice} 💰`);
                 
                 renderFull();
