@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '2.8.2';
+            const FORCE_UPDATE_VERSION = '2.8.4';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11230,7 +11230,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '2.8.2';
+        const GAME_VERSION = '2.8.4';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -18340,21 +18340,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             let freshness = '';
             if (perishable[key] && amount > 0) {
-                const timestamp = state.foodTimestamps?.[key] || state.time.days;
-                const daysSince = state.time.days - timestamp;
-                const daysLeft = perishable[key].days - daysSince;
+                const currentDay = state.time?.days || 1;
+                const timestamp = state.foodTimestamps?.[key];
+                // Pokud timestamp neexistuje nebo je v budoucnu, nastav na dnešek
+                const validTimestamp = (timestamp && timestamp <= currentDay) ? timestamp : currentDay;
+                const daysSince = currentDay - validTimestamp;
+                const daysLeft = Math.max(0, perishable[key].days - daysSince);
                 
                 let freshColor = '#8bc34a';
                 let freshText = 'Čerstvé';
-                if (daysLeft <= 1) {
+                if (daysLeft <= 0) {
+                    freshColor = '#f44336';
+                    freshText = '⚠️ ZKAŽENÉ!';
+                } else if (daysLeft <= 1) {
                     freshColor = '#f44336';
                     freshText = '⚠️ ZKAZÍ SE DNES!';
                 } else if (daysLeft <= 2) {
                     freshColor = '#ff9800';
                     freshText = '⚠️ Brzy se zkazí!';
-                } else if (daysLeft <= 4) {
-                    freshColor = '#ffc107';
-                    freshText = 'Ještě čerstvé';
                 }
                 
                 const daysWord = daysLeft === 1 ? 'den' : daysLeft < 5 ? 'dny' : 'dní';
@@ -18363,9 +18366,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div style="color: ${freshColor}; font-weight: bold; font-size: 1.1rem;">🕐 ${freshText}</div>
                         <div style="color: #888; font-size: 0.8rem; margin-top: 0.3rem;">${'Zbývá'} ${daysLeft} ${daysWord}</div>
                         <div style="background: #0a0a0a; height: 8px; border-radius: 4px; margin-top: 0.5rem; overflow: hidden;">
-                            <div style="height: 100%; width: ${(daysLeft / perishable[key].days) * 100}%; background: linear-gradient(90deg, ${freshColor}, ${daysLeft > 4 ? '#8bc34a' : freshColor}); transition: width 0.3s;"></div>
+                            <div style="height: 100%; width: ${(daysLeft / perishable[key].days) * 100}%; background: linear-gradient(90deg, ${freshColor}, ${daysLeft > 2 ? '#8bc34a' : freshColor}); transition: width 0.3s;"></div>
                         </div>
                     </div>
+                `;
+            }
+            
+            // Tlačítko pro snědení syrového masa/ryb (s rizikem nemoci)
+            let eatButton = '';
+            if ((key === 'raw_meat' || key === 'fish') && amount > 0) {
+                eatButton = `
+                    <button class="btn" onclick="eatRawFood('${key}')" style="width: 100%; margin-top: 0.5rem; background: linear-gradient(135deg, #ff5722 0%, #e64a19 100%);">
+                        🍽️ Sníst syrové (⚠️ riziko nemoci!)
+                    </button>
                 `;
             }
             
@@ -18381,6 +18394,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                     
                     ${freshness}
+                    
+                    ${eatButton}
                     
                     ${usedIn.length > 0 ? `
                         <div style="text-align: left; margin-top: 1rem;">
@@ -18408,6 +18423,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">${'Zavřít'}</button>
             `);
+        }
+        
+        // Funkce pro snědení syrového jídla
+        function eatRawFood(key) {
+            if ((state.resources[key] || 0) <= 0) {
+                notifyWarning('Nemáš', 'Nemáš žádné ' + (key === 'raw_meat' ? 'syrové maso' : 'ryby'));
+                return;
+            }
+            
+            state.resources[key]--;
+            
+            // Utíší hlad (méně než uvařené)
+            const hungerRestore = key === 'raw_meat' ? 25 : 20;
+            state.status.hunger = Math.max(0, state.status.hunger - hungerRestore);
+            
+            // 30% šance na nemoc
+            if (Math.random() < 0.30) {
+                const disease = DISEASES.find(d => d.id === 'food_poisoning');
+                if (disease && typeof applyDisease === 'function') {
+                    applyDisease('food_poisoning', 'spoiled_food');
+                    notifyWarning('🤢 Otrava!', 'Syrové jídlo ti neudělalo dobře...');
+                    addLog('🤢 Snědl jsi syrové jídlo a dostal otravu!', '🤮');
+                }
+            } else {
+                notifySuccess('🍽️ Snědeno', `-${hungerRestore} hlad` + (Math.random() < 0.5 ? ' (měl jsi štěstí!)' : ''));
+                addLog(`Snědl jsi syrové ${key === 'raw_meat' ? 'maso' : 'rybu'}`, '🍽️');
+            }
+            
+            closeModal();
+            renderFull();
         }
         
         function showEquipmentSlot(slotType) {
@@ -26341,7 +26386,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Zajisti že všechny properties existují
             if (!state.settlement.settlers) state.settlement.settlers = [];
             if (!state.settlement.buildings) state.settlement.buildings = [];
-            if (!state.settlement.resources) state.settlement.resources = { food: 10, water: 10 };
+            if (!state.settlement.resources) state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 };
+            // Migrace existujících settlement.resources - přidej chybějící klíče
+            const allSettlementResources = ['food', 'water', 'wood', 'metal', 'stone', 'cloth', 'leather', 'herbs', 'chemicals', 'electronics', 'glass', 'rope', 'gunpowder', 'scrap', 'fuel', 'copper'];
+            allSettlementResources.forEach(r => {
+                if (state.settlement.resources[r] === undefined) state.settlement.resources[r] = 0;
+            });
             
             render();
             if (state.confirmed) renderGame();
@@ -26953,8 +27003,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             
                             <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.2rem;">
                                 ${[
-                                    { key: 'raw_meat', icon: '🥩', name: 'Syrové maso', color: '#D32F2F', desc: 'Syrové maso ze zvířat. ⚠️ Kazí se za 6 dní! Upeč ho nebo prodej.' },
-                                    { key: 'fish', icon: '🐟', name: 'Ryby', color: '#1976D2', desc: 'Čerstvé ryby. ⚠️ Kazí se za 4 dny! Chytáš u jezer a řek.' },
+                                    { key: 'raw_meat', icon: '🥩', name: 'Syrové maso', color: '#D32F2F', desc: 'Syrové maso ze zvířat. ⚠️ Kazí se za 2 dny! Upeč ho nebo prodej.' },
+                                    { key: 'fish', icon: '🐟', name: 'Ryby', color: '#1976D2', desc: 'Čerstvé ryby. ⚠️ Kazí se za 2 dny! Chytáš u jezer a řek.' },
                                     { key: 'wood', icon: '🌲', name: 'Dřevo', color: '#8B4513', desc: 'Základní surovina pro stavbu a topení. Najdeš v lesích a hájích.' },
                                     { key: 'metal', icon: '⚙️', name: 'Kov', color: '#607D8B', desc: 'Kovový šrot a součástky. Najdeš všude, nejvíc v ruinách a továrnách.' },
                                     { key: 'stone', icon: '🗿', name: 'Kámen', color: '#757575', desc: 'Pevný materiál pro stavbu a nástroje. Běžně dostupný.' },
@@ -50479,7 +50529,7 @@ function openFullscreenMap() {
                 if (type.id === 'scavenger_s') {
                     // Ujisti se že existuje settlement.resources
                     if (!state.settlement.resources) {
-                        state.settlement.resources = { food: 10, water: 10 };
+                        state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 };
                         console.log('⚠️ Settlement resources neexistovaly - inicializuji');
                     }
                     
@@ -50641,7 +50691,7 @@ function openFullscreenMap() {
             // Ujisti se že settlement.resources existuje PŘED jakoukoliv operací
             if (!state.settlement.resources) {
                 console.warn('⚠️ updateSettlementDaily: settlement.resources neexistuje! Inicializuji...');
-                state.settlement.resources = { food: 10, water: 10 };
+                state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 };
             }
             
             console.log('📅 updateSettlementDaily() called! Day:', state.time.days);
@@ -50766,7 +50816,7 @@ function openFullscreenMap() {
                 if (type.id === 'scavenger_s') {
                     // Ujisti se že existuje settlement.resources
                     if (!state.settlement.resources) {
-                        state.settlement.resources = { food: 10, water: 10 };
+                        state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 };
                         console.warn('⚠️ Settlement resources neexistovaly v denní produkci - inicializuji');
                     }
                     
@@ -61935,11 +61985,16 @@ function openFullscreenMap() {
             
             // === Migrace settlement struktury ===
             if (!state.settlement) {
-                state.settlement = { level: 1, prosperity: 0, settlers: [], buildings: [], resources: { food: 10, water: 10 }, defense: 0 };
+                state.settlement = { level: 1, prosperity: 0, settlers: [], buildings: [], resources: { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 }, defense: 0 };
             }
             if (!state.settlement.settlers) state.settlement.settlers = [];
             if (!state.settlement.buildings) state.settlement.buildings = [];
-            if (!state.settlement.resources) state.settlement.resources = { food: 10, water: 10 };
+            if (!state.settlement.resources) state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0 };
+            // Migrace - přidej chybějící klíče do settlement.resources
+            const settlementResourceKeys = ['food', 'water', 'wood', 'metal', 'stone', 'cloth', 'leather', 'herbs', 'chemicals', 'electronics', 'glass', 'rope', 'gunpowder', 'scrap', 'fuel', 'copper'];
+            settlementResourceKeys.forEach(r => {
+                if (state.settlement.resources[r] === undefined) state.settlement.resources[r] = 0;
+            });
             if (!state.settlement.eventLog) state.settlement.eventLog = []; // Historie událostí
             
             // === Migrace dailyQuests struktury ===
