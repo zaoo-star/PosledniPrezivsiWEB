@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.3.2';
+            const FORCE_UPDATE_VERSION = '3.3.4';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -8957,10 +8957,11 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             
             // === SPECIÁLNÍ ===
             // PvP quest odstraněn - PvP je zamčeno
-            { id: 'gamble', name: 'Hráč', desc: 'Zahraj si v kasinu', icon: '🎰', 
-              target: 1, progressKey: 'gambled',
-              check: () => (state.dailyQuests.progress?.gambled || 0) >= 1, 
-              reward: () => { addXP(15); } }
+            // Casino quest odstraněn - Casino je zamčené v hlavním UI
+            // { id: 'gamble', name: 'Hráč', desc: 'Zahraj si v kasinu', icon: '🎰', 
+            //   target: 1, progressKey: 'gambled',
+            //   check: () => (state.dailyQuests.progress?.gambled || 0) >= 1, 
+            //   reward: () => { addXP(15); } }
         ];
         
         // Překlady daily questů
@@ -11306,7 +11307,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.3.2';
+        const GAME_VERSION = '3.3.4';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -33087,10 +33088,38 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.world.traveling) return;
             
             const now = Date.now();
+            const elapsed = now - state.world.travelStart;
+            const remaining = state.world.travelDuration - elapsed;
+            
+            // Debug log každých 10 sekund
+            if (!window._lastTravelLog || now - window._lastTravelLog > 10000) {
+                console.log('🚶 Travel check:', {
+                    traveling: state.world.traveling,
+                    from: state.world.currentLocation,
+                    to: state.world.travelTo,
+                    elapsed: Math.floor(elapsed / 1000) + 's',
+                    remaining: Math.floor(remaining / 1000) + 's',
+                    duration: Math.floor(state.world.travelDuration / 1000) + 's'
+                });
+                window._lastTravelLog = now;
+            }
+            
             if (now >= state.world.travelStart + state.world.travelDuration) {
                 // OCHRANA: Zabraň dvojímu dokončení cesty
                 if (state._travelCompleting) return;
                 state._travelCompleting = true;
+                
+                // Kontrola že máme kam jít
+                if (!state.world.travelTo) {
+                    console.error('❌ checkTravelComplete: travelTo is null!');
+                    state.world.traveling = false;
+                    state.map.traveling = false;
+                    delete state._travelCompleting;
+                    notifyError('Chyba cesty', 'Cíl cesty nebyl nastaven');
+                    return;
+                }
+                
+                console.log('✅ Travel complete! From:', state.world.currentLocation, 'To:', state.world.travelTo);
                 
                 // Dorazili jsme
                 state.world.traveling = false;
@@ -34851,12 +34880,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function pauseTravelForEvent() {
-            if (!state.map.traveling) return;
+            // Kontrola obou systémů
+            if (!state.map.traveling && !state.world.traveling) return;
             
-            // Ulož zbývající čas
-            const elapsed = Date.now() - state.map.travelStart;
+            // Ulož zbývající čas z aktivního systému
+            const travelStart = state.world.travelStart || state.map.travelStart;
+            const travelDuration = state.world.travelDuration || state.map.travelDuration;
+            const elapsed = Date.now() - travelStart;
+            const remainingTime = Math.max(0, travelDuration - elapsed);
+            
+            // Pozastav NOVÝ WORLD systém
+            state.world.travelPaused = true;
+            state.world.travelRemainingTime = remainingTime;
+            state.world.traveling = false;
+            
+            // Pozastav STARÝ MAP systém (synchronizace)
             state.map.travelPaused = true;
-            state.map.travelRemainingTime = state.map.travelDuration - elapsed;
+            state.map.travelRemainingTime = remainingTime;
             state.map.traveling = false;
             
             // Zruš všechny naplánované eventy (spustíme nové po resumeTravel)
@@ -34889,16 +34929,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 delete state.preCombatWeapon;
             }
             
-            if (!state.map.travelPaused) return;
+            // Kontrola jestli je cesta pozastavená (nový WORLD systém)
+            if (!state.world.travelPaused && !state.map.travelPaused) return;
             
             // Pokračuj v cestě se zbývajícím časem
+            const remainingTime = state.world.travelRemainingTime || state.map.travelRemainingTime || 0;
+            
+            // NOVÝ WORLD SYSTÉM
+            state.world.traveling = true;
+            state.world.travelStart = Date.now();
+            state.world.travelDuration = remainingTime;
+            state.world.travelPaused = false;
+            delete state.world.travelRemainingTime;
+            
+            // Synchronizace se starým systémem
             state.map.traveling = true;
             state.map.travelStart = Date.now();
-            state.map.travelDuration = state.map.travelRemainingTime;
+            state.map.travelDuration = remainingTime;
             state.map.travelPaused = false;
+            delete state.map.travelRemainingTime;
             
             // Naplánuj další eventy pro zbývající čas
-            const remainingMinutes = state.map.travelRemainingTime / 60000;
+            const remainingMinutes = remainingTime / 60000;
             if (remainingMinutes > 0.5) { // Jen pokud zbývá víc než 30 sekund
                 scheduleRandomEvents(remainingMinutes);
             }
