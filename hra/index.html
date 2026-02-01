@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.2.1';
+            const FORCE_UPDATE_VERSION = '3.2.4';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11296,7 +11296,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.2.1';
+        const GAME_VERSION = '3.2.4';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -13201,6 +13201,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Floating number effect (damage, heal, XP, money)
         function showFloatingNumber(value, type = 'damage', x = null, y = null) {
+            // DEBUG - zjistit co způsobuje opakované floating numbers
+            console.log('🎯 FLOATING NUMBER:', value, type, new Error().stack.split('\n').slice(1, 4).join(' <- '));
+            
             const el = document.createElement('div');
             el.className = `floating-number ${type}`;
             
@@ -78693,9 +78696,21 @@ function openFullscreenMap() {
                 const notifSnapshot = await firebaseDB.ref(`notifications/${safeName}`).once('value');
                 const notifications = notifSnapshot.val() || {};
                 
+                console.log('🔍 Kontroluji notifications pro', safeName, ':', Object.keys(notifications).length, 'položek');
+                
                 for (const [key, notif] of Object.entries(notifications)) {
+                    console.log('📬 Notifikace:', key, notif.type, notif.claimed ? '(claimed)' : '(unclaimed)');
+                    
                     // Admin odměna
                     if (notif.type === 'admin_reward' && !notif.claimed) {
+                        // ATOMICKY označ jako claimed HNED - zabrání race condition
+                        try {
+                            await firebaseDB.ref(`notifications/${safeName}/${key}/claimed`).set(true);
+                        } catch (e) {
+                            console.log('⚠️ Notifikace už zpracována jiným klientem');
+                            continue;
+                        }
+                        
                         const money = Math.min(parseInt(notif.money) || 0, 999999);
                         const xp = Math.min(parseInt(notif.xp) || 0, 999999);
                         totalMoney += money;
@@ -78720,13 +78735,21 @@ function openFullscreenMap() {
                             }
                         }
                         
-                        // Smaž notifikaci
+                        // Smaž notifikaci úplně
                         await firebaseDB.ref(`notifications/${safeName}/${key}`).remove();
                         console.log('🎁 Admin odměna vyzveduta:', notif);
                     }
                     
                     // War zone výhra
                     if (notif.type === 'war_reward' && !notif.claimed) {
+                        // ATOMICKY označ jako claimed HNED
+                        try {
+                            await firebaseDB.ref(`notifications/${safeName}/${key}/claimed`).set(true);
+                        } catch (e) {
+                            console.log('⚠️ War reward už zpracován jiným klientem');
+                            continue;
+                        }
+                        
                         const reward = notif.reward || {};
                         const money = Math.min(parseInt(reward.money) || 0, 999999);
                         totalMoney += money;
@@ -81066,12 +81089,24 @@ function openFullscreenMap() {
                 const membersSnap = await firebaseDB.ref('factionMembers').once('value');
                 const members = membersSnap.val() || {};
                 
+                // Unikátní ID pro tuto war zone
+                const warZoneId = `war_${currentWarZone.locationId}_${currentWarZone.endTime}`;
+                
                 let winnersCount = 0;
                 for (const [key, member] of Object.entries(members)) {
                     if (member.faction === winner) {
                         const safeName = member.name.replace(/[\\/.#$\[\]]/g, '_');
+                        
+                        // Kontrola zda už nebyla odměna odeslána
+                        const existingReward = await firebaseDB.ref(`notifications/${safeName}`).orderByChild('warZoneId').equalTo(warZoneId).once('value');
+                        if (existingReward.exists()) {
+                            console.log(`⚔️ Odměna pro ${safeName} už existuje, přeskakuji`);
+                            continue;
+                        }
+                        
                         await firebaseDB.ref('notifications/' + safeName).push({
                             type: 'war_reward',
+                            warZoneId: warZoneId, // Pro kontrolu duplicit
                             title: '⚔️ Vítězství ve válečné zóně!',
                             message: `Tvá frakce ${winnerFaction.icon} ${winnerFaction.name} vyhrála bitvu s ${maxPoints} body! Odměna: ${currentWarZone.reward} 💰`,
                             reward: { money: currentWarZone.reward },
@@ -81117,6 +81152,10 @@ function openFullscreenMap() {
                 
             } catch (e) {
                 console.error('Auto-evaluate war zone error:', e);
+                // Smaž lock i při chybě
+                try {
+                    await firebaseDB.ref('warZone/evaluating').remove();
+                } catch (e2) {}
             }
         }
         
