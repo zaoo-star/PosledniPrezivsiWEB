@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.2.0';
+            const FORCE_UPDATE_VERSION = '3.2.1';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11296,7 +11296,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.2.0';
+        const GAME_VERSION = '3.2.1';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -64341,7 +64341,13 @@ function openFullscreenMap() {
             
             // Settlement daily update
             if (!state.settlement.lastUpdateDay) state.settlement.lastUpdateDay = 0;
+            // Oprava: pokud lastUpdateDay je vyšší než aktuální den (bug), resetuj
+            if (state.settlement.lastUpdateDay > state.time.days) {
+                console.warn('⚠️ lastUpdateDay byl vyšší než aktuální den, resetuji:', state.settlement.lastUpdateDay, '→', state.time.days);
+                state.settlement.lastUpdateDay = state.time.days;
+            }
             if (state.time.days > state.settlement.lastUpdateDay) {
+                console.log('📅 Nový den! Den:', state.time.days, 'Předchozí update:', state.settlement.lastUpdateDay);
                 updateSettlementDaily();
                 checkFoodSpoilage(); // Kontrola kazení jídla
                 feedCompanions(); // Krmení společníků (legacy - teď se volá každou hodinu)
@@ -64413,7 +64419,11 @@ function openFullscreenMap() {
             
             // === OSADNÍCI - produkce každých 12 hodin ===
             if (state.confirmed && state.settlement?.settlers?.length > 0) {
-                if (!state.settlement.lastSettlerProdCheck) state.settlement.lastSettlerProdCheck = 0;
+                // Inicializuj na aktuální čas pokud neexistuje (aby se nespustilo hned)
+                if (!state.settlement.lastSettlerProdCheck) {
+                    state.settlement.lastSettlerProdCheck = now;
+                    console.log('🏘️ Inicializuji lastSettlerProdCheck na:', now);
+                }
                 const SETTLER_PROD_INTERVAL = 12 * 60 * 60 * 1000; // 12 hodin
                 if (now - state.settlement.lastSettlerProdCheck >= SETTLER_PROD_INTERVAL) {
                     state.settlement.lastSettlerProdCheck = now;
@@ -65533,12 +65543,18 @@ function openFullscreenMap() {
                     // Max 10 minut starý modal
                     if (age < 10 * 60 * 1000) {
                         console.log('🔄 Obnovuji uložený modal:', state.pendingModal.title);
+                        const modalToShow = state.pendingModal;
+                        // DŮLEŽITÉ: Smaž PŘED zobrazením aby se neopakoval
+                        delete state.pendingModal;
+                        state.pendingModal = null;
+                        saveGame();
                         setTimeout(() => {
-                            showModal(state.pendingModal.title, state.pendingModal.message, true);
+                            showModal(modalToShow.title, modalToShow.message, true);
                         }, 300);
                         return;
                     } else {
                         delete state.pendingModal;
+                        state.pendingModal = null;
                     }
                 }
                 
@@ -78648,8 +78664,19 @@ function openFullscreenMap() {
         }
         
         // Kontrola nevyzvednutých odměn při načtení
+        let _checkingPendingRewards = false;
+        let _lastPendingRewardsCheck = 0;
         async function checkPendingRewards() {
             if (!multiplayerEnabled || !firebaseDB || !state.char?.name) return;
+            
+            // Ochrana proti opakovanému volání (min 10 sekund mezi voláními)
+            const now = Date.now();
+            if (_checkingPendingRewards || (now - _lastPendingRewardsCheck < 10000)) {
+                console.log('⏳ checkPendingRewards přeskočeno - již běží nebo příliš brzy');
+                return;
+            }
+            _checkingPendingRewards = true;
+            _lastPendingRewardsCheck = now;
             
             const myName = state.char.name;
             // Escapování pro Firebase - musí být stejné jako při ukládání notifikací
@@ -78741,8 +78768,9 @@ function openFullscreenMap() {
                             }
                         }
                         
-                        // Označ jako vyzvednuté
-                        await firebaseDB.ref(`players/${safeName}/pendingRewards/${key}/claimed`).set(true);
+                        // SMAŽ odměnu z Firebase (ne jen claimed flag)
+                        await firebaseDB.ref(`players/${safeName}/pendingRewards/${key}`).remove();
+                        console.log('🎁 PendingReward smazána:', key);
                     }
                 }
                 
@@ -78791,6 +78819,8 @@ function openFullscreenMap() {
                 
             } catch (e) {
                 console.error('Error checking pending rewards:', e);
+            } finally {
+                _checkingPendingRewards = false;
             }
         }
         
