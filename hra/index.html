@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.2.4';
+            const FORCE_UPDATE_VERSION = '3.2.8';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -8123,7 +8123,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 desc: 'Skupina uprchlíků potřebuje pomoc.',
                 details: '🏃 Nasbírej 20 surovin PO přijetí úkolu (dřevo, kov, látky...). Staré zásoby se nepočítají!',
                 requirement: { resources: 20 },
-                reward: { trust: 30, karma: 10 }
+                reward: { money: 200, trust: 30, karma: 10 }
             },
             'hunt_alpha': {
                 name: 'Ulov alfa predátora',
@@ -10542,31 +10542,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                       state.dailyQuests.progress?.kills > 500 ||
                                       state.dailyQuests.progress?.explored > 100;
             
-            if (daysPassed >= 1 || state.dailyQuests.quests.length === 0 || progressCorrupted) {
-                if (progressCorrupted) {
-                    console.warn('⚠️ Daily quest progress byl corrupted, resetuji...');
-                }
-                // Generate 3 random quests
+            // OPRAVA: Pokud uplynul den, resetuj vše
+            if (daysPassed >= 1) {
+                console.log('📅 Nový den - generuji nové denní questy');
                 const shuffled = [...DAILY_QUEST_POOL].sort(() => Math.random() - 0.5);
                 state.dailyQuests.quests = shuffled.slice(0, 3);
                 state.dailyQuests.completed = [];
                 state.dailyQuests.lastReset = now;
                 state.dailyQuests.progress = {
-                    kills: 0,
-                    explored: 0,
-                    crafted: 0,
-                    moneyEarned: 0,
-                    travelled: 0,
-                    itemsFound: 0,
-                    cooked: 0,
-                    sold: 0,
-                    bought: 0,
-                    fedCompanion: 0,
-                    healed: 0,
-                    pvpWins: 0,
-                    gambled: 0
+                    kills: 0, explored: 0, crafted: 0, moneyEarned: 0,
+                    travelled: 0, itemsFound: 0, cooked: 0, sold: 0,
+                    bought: 0, fedCompanion: 0, healed: 0, pvpWins: 0, gambled: 0
                 };
                 addLog('Nové denní úkoly dostupné!', '📋');
+            } 
+            // Pokud questy chybí ale den neuplynul - jen doplň questy, NERESETUJ completed!
+            else if (state.dailyQuests.quests.length === 0) {
+                console.log('⚠️ Questy chybí ale den neuplynul - doplňuji bez resetu');
+                const shuffled = [...DAILY_QUEST_POOL].sort(() => Math.random() - 0.5);
+                state.dailyQuests.quests = shuffled.slice(0, 3);
+                // NERESETUJ completed ani progress!
+            }
+            // Pokud je progress corrupted - resetuj jen progress, ne completed
+            else if (progressCorrupted) {
+                console.warn('⚠️ Daily quest progress byl corrupted, resetuji progress...');
+                state.dailyQuests.progress = {
+                    kills: 0, explored: 0, crafted: 0, moneyEarned: 0,
+                    travelled: 0, itemsFound: 0, cooked: 0, sold: 0,
+                    bought: 0, fedCompanion: 0, healed: 0, pvpWins: 0, gambled: 0
+                };
+                // NERESETUJ completed - hráč by ztratil dokončené questy
             } else {
                 // Odfiltruj neexistující questy (např. travel_distance ze starých savů)
                 const validQuestIds = DAILY_QUEST_POOL.map(q => q.id);
@@ -10598,7 +10603,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Zajisti že completed existuje
                 if (!state.dailyQuests.completed) state.dailyQuests.completed = [];
                 
-                if (!state.dailyQuests.completed.includes(quest.id) && originalQuest.check()) {
+                // DEBUG: Kontrola duplicitního dokončení
+                const isAlreadyCompleted = state.dailyQuests.completed.includes(quest.id);
+                const checkResult = originalQuest.check();
+                
+                if (!isAlreadyCompleted && checkResult) {
+                    console.log('📜 DAILY QUEST:', quest.id, '- completing. Already completed:', state.dailyQuests.completed);
                     state.dailyQuests.completed.push(quest.id);
                     
                     // Počítadlo celkových splněných denních questů (pro skóre)
@@ -11296,7 +11306,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.2.4';
+        const GAME_VERSION = '3.2.8';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -13201,9 +13211,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Floating number effect (damage, heal, XP, money)
         function showFloatingNumber(value, type = 'damage', x = null, y = null) {
-            // DEBUG - zjistit co způsobuje opakované floating numbers
-            console.log('🎯 FLOATING NUMBER:', value, type, new Error().stack.split('\n').slice(1, 4).join(' <- '));
-            
             const el = document.createElement('div');
             el.className = `floating-number ${type}`;
             
@@ -31744,27 +31751,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const remainingMin = Math.ceil((CAPTURE_DURATION - elapsed) / 60000);
                     const loc = WORLD_LOCATIONS.find(l => l.id === captureLocation);
                     
-                    showModal('🏴 Dobývání probíhá!', `
-                        <div style="text-align: center;">
-                            <div style="font-size: 3rem; margin-bottom: 1rem;">🏴</div>
-                            <p style="color: #ffd700; font-size: 1.1rem;">Dobýváš území: ${loc?.name || captureLocation}</p>
-                            <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
-                                <div style="background: #333; height: 20px; border-radius: 10px; overflow: hidden;">
-                                    <div style="background: #4CAF50; height: 100%; width: ${progress}%;"></div>
-                                </div>
-                                <p style="color: #888; margin: 0.5rem 0 0 0;">Progress: <span style="color: #4CAF50; font-weight: bold;">${progress.toFixed(0)}%</span> (zbývá ${remainingMin} min)</p>
-                            </div>
-                            <p style="color: #c62828; font-size: 0.9rem;">⚠️ Pokud odejdeš, dobývání se zruší!</p>
-                        </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
-                            <button class="btn" onclick="closeModal()" style="background: #4CAF50;">
-                                ← Zůstat
-                            </button>
-                            <button class="btn" onclick="cancelTerritoryAndTravel('${targetLocationId}')" style="background: #c62828;">
-                                ❌ Zrušit a odejít
-                            </button>
-                        </div>
-                    `);
+                    // Jen notifikace místo modalu - neruší jiné akce
+                    notifyWarning('🏴 Dobývání probíhá!', `${loc?.name || 'Území'}: ${progress.toFixed(0)}% (${remainingMin} min) - odchod zruší dobývání!`);
                     return;
                 } else {
                     // Capture vypršel, vyčisti ho
@@ -33100,6 +33088,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const now = Date.now();
             if (now >= state.world.travelStart + state.world.travelDuration) {
+                // OCHRANA: Zabraň dvojímu dokončení cesty
+                if (state._travelCompleting) return;
+                state._travelCompleting = true;
+                
                 // Dorazili jsme
                 state.world.traveling = false;
                 state.world.currentLocation = state.world.travelTo;
@@ -33324,6 +33316,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Auto cloud save po dokončení cesty
                 if (typeof triggerAutoCloudSave === 'function') triggerAutoCloudSave();
+                
+                // Reset ochranného flagu
+                delete state._travelCompleting;
                 
                 renderFull();
             }
@@ -64320,7 +64315,13 @@ function openFullscreenMap() {
             const realDate = new Date();
             state.time.hours = realDate.getHours();
             state.time.mins = realDate.getMinutes();
-            state.time.days = Math.floor(state.time.totalElapsed / 86400); // Days from gameplay (24h real = 1 game day)
+            
+            // Dny = reálné dny od vytvoření postavy (ne herní čas)
+            if (state.time.gameStart) {
+                state.time.days = Math.floor((now - state.time.gameStart) / (24 * 60 * 60 * 1000));
+            } else {
+                state.time.days = Math.floor(state.time.totalElapsed / 86400); // Fallback na starý systém
+            }
             
             // Update weather
             if (state.confirmed) {
@@ -67241,7 +67242,12 @@ function openFullscreenMap() {
                 window.territoryCacheTime = Date.now();
                 
                 // Pokud se něco změnilo a jsme na mapě, překresli
-                if (changed && state.activeTab === 'map') {
+                // ALE NE během boje, modalu nebo jiné akce!
+                const modalOpen = document.getElementById('modal')?.classList.contains('show');
+                const inCombat = typeof isInCombat === 'function' && isInCombat();
+                const actionRunning = state.currentAction && state.currentAction.endTime > Date.now();
+                
+                if (changed && state.activeTab === 'map' && !modalOpen && !inCombat && !actionRunning) {
                     console.log('🗺️ Territory real-time update detected');
                     setTimeout(() => renderFull(), 100);
                 }
