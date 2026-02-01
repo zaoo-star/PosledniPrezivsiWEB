@@ -30,7 +30,7 @@
         
         (function() {
             // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.3.0';
+            const FORCE_UPDATE_VERSION = '3.3.2';
             const storedVersion = localStorage.getItem('appVersion');
             
             // Pokud je nová verze, vymaž všechny cache a SW
@@ -11306,7 +11306,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
-        const GAME_VERSION = '3.3.0';
+        const GAME_VERSION = '3.3.2';
         const VERSION_DATE = '2025-01-29';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
@@ -56868,6 +56868,20 @@ function openFullscreenMap() {
             // Základní damage
             let damage = attacker.damage;
             
+            // 🌧️ Počasí efekty na enemy damage
+            if (attacker.team === 'enemy') {
+                const weather = getCurrentWeather();
+                if (weather?.effect?.enemyDmgMod && weather.effect.enemyDmgMod !== 1) {
+                    damage = Math.floor(damage * weather.effect.enemyDmgMod);
+                }
+                
+                // 🌙 Denní doba efekty na enemy damage
+                const dayPhase = getCurrentDayPhase();
+                if (dayPhase?.enemyDmgMod && dayPhase.enemyDmgMod !== 1) {
+                    damage = Math.floor(damage * dayPhase.enemyDmgMod);
+                }
+            }
+            
             // === CLASS PASSIVES - OBRANA ===
             if (target.isPlayer) {
                 // Tank: Fortress - Blokuje 30% příchozího damage
@@ -58591,207 +58605,10 @@ function openFullscreenMap() {
             startCombatWithGroup(enemyGroup, combatType, true); // true = skip pre-combat
         }
         
+        // STARÝ COMBAT UI - přesměrování na nový heroes systém
         function renderCombatUI() {
-            const cs = window.combatState;
-            if (!cs) return;
-            
-            const enemyGroup = cs.enemyGroup;
-            
-            // Fix: Ensure dead enemies are marked as not alive
-            enemyGroup.forEach(e => {
-                if (e.hp <= 0 && e.alive) {
-                    e.alive = false;
-                }
-            });
-            
-            // Check if all enemies are dead - trigger victory
-            const stillAlive = enemyGroup.filter(e => e.alive);
-            if (stillAlive.length === 0) {
-                handleCombatVictory();
-                return;
-            }
-            
-            const enemyData = enemyGroup[0];
-            const aliveEnemies = enemyGroup.filter(e => e.alive);
-            
-            // Zachovat obsah combat logu
-            const existingLog = document.getElementById('combatLog');
-            const combatStartText = '⚔️ Boj začíná!';
-            const logContent = existingLog ? existingLog.innerHTML : `<div style="color: #666;">${combatStartText}</div>`;
-            
-            // Calculate stats - použij NASAZENÉ vybavení
-            let playerDefense = Math.floor(state.char.attrs.end * 1); // END bonus
-            const armor = state.equipped?.armor;
-            const helmet = state.equipped?.helmet;
-            const gloves = state.equipped?.gloves;
-            const boots = state.equipped?.boots;
-            if (armor && armor.defense) playerDefense += armor.defense;
-            if (helmet && helmet.defense) playerDefense += helmet.defense;
-            if (gloves && gloves.defense) playerDefense += gloves.defense;
-            if (boots && boots.defense) playerDefense += boots.defense;
-            playerDefense += getSkillTreeBonus('defense');
-            // Bonusy z mutací (např. Tlustá kůže +8 DEF)
-            const mutBonuses = getMutationBonuses();
-            playerDefense += mutBonuses.defense;
-            if (cs.playerDefending) playerDefense *= 2;
-            
-            const playerDamage = calculateDamage();
-            const critChance = Math.round(calculateCritChance() * 100);
-            const dodgeChance = Math.round(calculateDodgeChance() * 100);
-            
-            const countText = enemyGroup.length > 1 ? ` x${enemyGroup.length}` : '';
-            
-            // Get available items for combat
-            const healItems = state.inv.filter(i => i.type === 'consumable' && i.effect === 'health');
-            const throwables = state.inv.filter(i => i.type === 'throwable');
-            
-            document.getElementById('modalContent').innerHTML = `
-                <div style="background: linear-gradient(180deg, #1a0a0a 0%, #0a0a0a 100%); margin: -1rem; padding: 1rem; border-radius: 8px;">
-                    
-                    <!-- HEADER -->
-                    <div style="text-align: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid #333;">
-                        <h2 style="margin: 0; color: #ff4444;">⚔️ ${t('combat', 'title')} - ${t('combat', 'round') || 'Kolo'} ${cs.turn}</h2>
-                        ${cs.comboCount > 1 ? `<div style="color: #ffd700; font-size: 0.9rem;">🔥 Combo x${cs.comboCount}!</div>` : ''}
-                    </div>
-                    
-                    <!-- COMBATANTS -->
-                    <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.5rem; margin-bottom: 1rem;">
-                        
-                        <!-- PLAYER -->
-                        <div style="background: linear-gradient(135deg, #1a2a1a 0%, #0a1a0a 100%); padding: 0.8rem; border-radius: 8px; border: 2px solid #4a7c4a;">
-                            <div style="text-align: center; margin-bottom: 0.5rem;">
-                                <div style="font-size: 2rem;">🧍</div>
-                                <div style="font-weight: bold; color: #8bc34a;">${state.char.name || 'Ty'}</div>
-                            </div>
-                            
-                            <!-- HP Bar -->
-                            <div style="margin-bottom: 0.3rem;">
-                                <div style="display: flex; justify-content: space-between; font-size: 0.75rem;">
-                                    <span>❤️ HP</span>
-                                    <span>${Math.round(state.char.hp)}/${state.char.maxHp}</span>
-                                </div>
-                                <div style="height: 8px; background: #1a0a0a; border-radius: 4px; overflow: hidden;">
-                                    <div style="height: 100%; width: ${(state.char.hp/state.char.maxHp)*100}%; background: linear-gradient(90deg, #c62828, #f44336); transition: width 0.3s;"></div>
-                                </div>
-                            </div>
-                            
-                            <!-- Stamina Bar -->
-                            <div style="margin-bottom: 0.5rem;">
-                                <div style="display: flex; justify-content: space-between; font-size: 0.75rem;">
-                                    <span>⚡ Stamina</span>
-                                    <span>${cs.playerStamina}%</span>
-                                </div>
-                                <div style="height: 6px; background: #1a1a0a; border-radius: 3px; overflow: hidden;">
-                                    <div style="height: 100%; width: ${cs.playerStamina}%; background: linear-gradient(90deg, #ff9800, #ffc107); transition: width 0.3s;"></div>
-                                </div>
-                            </div>
-                            
-                            <!-- STATUS EFEKTY -->
-                            ${(() => {
-                                let statusHtml = '';
-                                if (state.char.stunned) statusHtml += '<span style="color: #ffeb3b;" title="Omráčen">💫</span> ';
-                                if (state.char.confused) statusHtml += `<span style="color: #9c27b0;" title="Zmatení ${state.char.confused} kol">🔮${state.char.confused}</span> `;
-                                if (state.char.bleeding && state.char.bleedRounds > 0) statusHtml += `<span style="color: #f44336;" title="Krvácení ${state.char.bleedRounds} kol">🩸${state.char.bleedRounds}</span> `;
-                                if (state.char.poisoned && state.char.poisonRounds > 0) statusHtml += `<span style="color: #9c27b0;" title="Otrava ${state.char.poisonRounds} kol">☠️${state.char.poisonRounds}</span> `;
-                                if (state.char.burning && state.char.burnRounds > 0) statusHtml += `<span style="color: #ff5722;" title="Hoření ${state.char.burnRounds} kol">🔥${state.char.burnRounds}</span> `;
-                                return statusHtml ? `<div style="font-size: 0.85rem; margin-bottom: 0.3rem;">${statusHtml}</div>` : '';
-                            })()}
-                            
-                            <div style="font-size: 0.75rem; color: #888;">
-                                <div>⚔️ ${playerDamage} DMG | 🛡️ ${playerDefense} DEF</div>
-                                <div>💥 ${critChance}% krit | 💨 ${dodgeChance}% úhyb</div>
-                                ${(() => {
-                                    const weapon = state.equipped?.weapon;
-                                    if (weapon?.ammoType) {
-                                        const ammoCount = getAmmoCount(weapon.ammoType);
-                                        const ammoColor = ammoCount > 10 ? '#8bc34a' : ammoCount > 3 ? '#ff9800' : '#f44336';
-                                        return `<div style="color: ${ammoColor};">🔸 ${getAmmoName(weapon.ammoType)}: ${ammoCount}</div>`;
-                                    }
-                                    return '';
-                                })()}
-                            </div>
-                        </div>
-                        
-                        <!-- VS -->
-                        <div style="display: flex; align-items: center; font-size: 1.5rem; color: #666;">⚔️</div>
-                        
-                        <!-- ENEMIES -->
-                        <div onclick="showEnemyInfo('${enemyData.id}')" style="background: linear-gradient(135deg, #2a1a1a 0%, #1a0a0a 100%); padding: 0.8rem; border-radius: 8px; border: 2px solid #7c4a4a; cursor: pointer;" title="Klikni pro info">
-                            <div style="text-align: center; margin-bottom: 0.5rem;">
-                                <div style="font-size: 2rem;">${enemyData.icon}</div>
-                                <div style="font-weight: bold; color: #ff6666;">${enemyData.name}${countText} <span style="font-size: 0.7rem; color: #666;">ℹ️</span></div>
-                            </div>
-                            
-                            <!-- Enemy HP Bars -->
-                            ${enemyGroup.map((e, i) => `
-                                <div class="enemyRow" data-index="${i}" style="margin-bottom: 0.3rem; opacity: ${e.alive ? 1 : 0.3};">
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.7rem;">
-                                        <span class="enemyStatus">${e.alive ? '❤️' : '💀'} #${i+1}</span>
-                                        <span><span class="enemyHp">${Math.max(0, e.hp)}</span>/${e.maxHp}</span>
-                                    </div>
-                                    <div style="height: 6px; background: #0a0a0a; border-radius: 3px; overflow: hidden;">
-                                        <div class="enemyHpBar" style="height: 100%; width: ${Math.max(0, (e.hp/e.maxHp)*100)}%; background: ${e.alive ? '#c62828' : '#333'}; transition: width 0.3s;"></div>
-                                    </div>
-                                    ${e.stunned ? '<span style="font-size: 0.6rem; color: #ffeb3b;">💫 Omráčen</span>' : ''}
-                                    ${e.poisoned > 0 ? '<span style="font-size: 0.6rem; color: #9c27b0;">☠️ Otráven</span>' : ''}
-                                    ${e.bleeding > 0 ? '<span style="font-size: 0.6rem; color: #f44336;">🩸 Krvácí</span>' : ''}
-                                </div>
-                            `).join('')}
-                            
-                            <div style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
-                                ⚔️ ${enemyData.damage} DMG | 🛡️ ${enemyData.defense} DEF
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- COMBAT LOG -->
-                    <div id="combatLog" style="background: #0a0a0a; padding: 0.8rem; border-radius: 6px; max-height: 120px; overflow-y: auto; -webkit-overflow-scrolling: touch; margin-bottom: 1rem; font-family: monospace; font-size: 0.8rem; border: 1px solid #333;">
-                        ${logContent}
-                    </div>
-                    
-                    <!-- ACTION BUTTONS -->
-                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 0.5rem;">
-                        <button class="btn" onclick="combatAction('attack')" style="background: linear-gradient(135deg, #8B0000 0%, #5a0000 100%); padding: 0.8rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem;">
-                            <span style="font-size: 1.3rem;">⚔️</span>
-                            <span style="font-size: 0.85rem; font-weight: bold;">Útok</span>
-                            <span style="font-size: 0.65rem; color: #ffa;">-20 stamina</span>
-                        </button>
-                        
-                        <button class="btn" onclick="combatAction('heavy')" ${cs.playerStamina < 40 ? 'disabled style="opacity: 0.5;"' : ''} style="background: linear-gradient(135deg, #6a0000 0%, #3a0000 100%); padding: 0.8rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem;">
-                            <span style="font-size: 1.3rem;">💥</span>
-                            <span style="font-size: 0.85rem; font-weight: bold;">Silný útok</span>
-                            <span style="font-size: 0.65rem; color: #ffa;">-40 stamina, 2x DMG</span>
-                        </button>
-                        
-                        <button class="btn" onclick="combatAction('defend')" style="background: linear-gradient(135deg, #1a4a1a 0%, #0a2a0a 100%); padding: 0.8rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem;">
-                            <span style="font-size: 1.3rem;">🛡️</span>
-                            <span style="font-size: 0.85rem; font-weight: bold;">${currentLang === "en" ? "Defense" : "Obrana"}</span>
-                            <span style="font-size: 0.65rem; color: #8f8;">+20 stamina, 2x DEF</span>
-                        </button>
-                        
-                        <button class="btn" onclick="combatAction('dodge')" ${cs.playerStamina < 30 ? 'disabled style="opacity: 0.5;"' : ''} style="background: linear-gradient(135deg, #1a1a4a 0%, #0a0a2a 100%); padding: 0.8rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem;">
-                            <span style="font-size: 1.3rem;">💨</span>
-                            <span style="font-size: 0.85rem; font-weight: bold;">Úhyb</span>
-                            <span style="font-size: 0.65rem; color: #88f;">-30 stamina, vyhni se</span>
-                        </button>
-                    </div>
-                    
-                    <!-- SPECIAL ACTIONS -->
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;">
-                        <button class="btn" onclick="showCombatItems('heal')" style="background: #2a2a2a; padding: 0.6rem; font-size: 0.8rem;" ${healItems.length === 0 ? 'disabled' : ''}>
-                            💊 Léčit (${healItems.reduce((sum, i) => sum + (i.count || 1), 0)})
-                        </button>
-                        
-                        <button class="btn" onclick="showCombatItems('throw')" style="background: #2a2a2a; padding: 0.6rem; font-size: 0.8rem;" ${throwables.length === 0 ? 'disabled' : ''}>
-                            💣 Hodit (${throwables.reduce((sum, i) => sum + (i.count || 1), 0)})
-                        </button>
-                        
-                        <button class="btn" onclick="combatAction('flee')" style="background: #444; padding: 0.6rem; font-size: 0.8rem;">
-                            🏃 Utéct
-                        </button>
-                    </div>
-                </div>
-            `;
+            console.log('⚔️ renderCombatUI -> přesměrování na renderHeroesCombatUI');
+            renderHeroesCombatUI();
         }
         
         // Zobrazí info o nepříteli během boje
@@ -59047,7 +58864,7 @@ function openFullscreenMap() {
             
             // POUZE renderuj combat UI pokud boj stále probíhá
             if (enemyGroup.some(e => e.alive)) {
-                renderCombatUI();
+                renderHeroesCombatUI();
             }
         }
         
@@ -59448,7 +59265,7 @@ function openFullscreenMap() {
                     </button>
                 `;
             });
-            html += '</div><button class="btn" onclick="renderCombatUI()" style="width: 100%; margin-top: 1rem; background: #555;">' + ('Zpět') + '</button>';
+            html += '</div><button class="btn" onclick="renderHeroesCombatUI()" style="width: 100%; margin-top: 1rem; background: #555;">' + ('Zpět') + '</button>';
             
             document.getElementById('modalContent').innerHTML = html;
         }
@@ -59512,7 +59329,7 @@ function openFullscreenMap() {
             }
             
             cs.turn++;
-            renderCombatUI();
+            renderHeroesCombatUI();
         }
         
         function handleCombatVictory() {
@@ -65572,8 +65389,8 @@ function openFullscreenMap() {
                 if (window.combatState && !window.combatState.ended) {
                     console.log('⚔️ Obnovuji aktivní boj...');
                     setTimeout(() => {
-                        if (typeof renderCombatUI === 'function') {
-                            renderCombatUI();
+                        if (typeof renderHeroesCombatUI === 'function') {
+                            renderHeroesCombatUI();
                         }
                     }, 300);
                     return;
