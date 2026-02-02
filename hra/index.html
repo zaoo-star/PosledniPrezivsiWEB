@@ -32427,8 +32427,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Reset faction ambush flag - max 1 za cestu
             state.world.factionAmbushTriggered = false;
             
-            // PRVNÍ CESTA - garantovaný pes
-            if (!state.firstTravelDone && !state.companions?.length && !state.rejectedCompanions?.includes('dog')) {
+            // PRVNÍ CESTA - garantovaný pes (ale jen pokud ho ještě nemá)
+            const hasDog = state.companions?.some(c => c.id === 'dog');
+            const rejectedDog = state.rejectedCompanions?.includes('dog');
+            
+            if (!state.firstTravelDone && !hasDog && !rejectedDog) {
                 state.firstTravelDone = true;
                 const eventTime = startTime + (duration * 0.3); // 30% cesty
                 state.world.scheduledEvents.push({
@@ -32506,8 +32509,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function showUnresolvedEvent(event) {
             if (event.type === 'companion') {
                 const dogEvent = TRAVEL_EVENTS.find(e => e.id === event.eventId);
+                
+                // KONTROLA: Pokud hráč už má tohoto společníka nebo ho odmítl, přeskoč
+                const companionId = dogEvent?.companionId;
+                if (companionId) {
+                    const alreadyHas = state.companions?.some(c => c.id === companionId);
+                    const alreadyRejected = state.rejectedCompanions?.includes(companionId);
+                    if (alreadyHas || alreadyRejected) {
+                        console.log('⚠️ showUnresolvedEvent: Hráč už má/odmítl společníka, přeskakuji');
+                        event.resolved = true;
+                        // Obnov cestu pokud je pozastavená
+                        if (state.world.travelPaused || state.map?.travelPaused) {
+                            resumeTravel();
+                        }
+                        return;
+                    }
+                }
+                
                 if (dogEvent) {
+                    // Označ jako resolved HNED aby se nezacyklilo
+                    event.resolved = true;
                     handleCompanionEvent(dogEvent);
+                } else {
+                    // Event neexistuje, označ jako vyřešený
+                    event.resolved = true;
                 }
             } else if (event.type === 'random' && event.selectedEventId) {
                 // Máme uložený konkrétní event - najdi ho a zpracuj
@@ -32953,9 +32978,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function handleCompanionEvent(event) {
+            // KONTROLA: Pokud hráč už má tohoto společníka (živého nebo mrtvého), přeskoč
+            const companionId = event.companionId;
+            const alreadyHas = state.companions?.some(c => c.id === companionId);
+            const alreadyRejected = state.rejectedCompanions?.includes(companionId);
+            
+            if (alreadyHas || alreadyRejected) {
+                console.log('⚠️ Companion event přeskočen - hráč už má/odmítl:', companionId);
+                // Označ event jako vyřešený aby se nezacyklil
+                resolveCurrentEvent();
+                continueTravel();
+                return;
+            }
+            
             pauseTravelForEvent(); // Pausovat cestu při zobrazení eventu
-            const companion = getCompanionData(event.companionId);
-            if (!companion) return;
+            const companion = getCompanionData(companionId);
+            if (!companion) {
+                resolveCurrentEvent();
+                continueTravel();
+                return;
+            }
             
             // Systémová notifikace
             sendSystemNotification(event.name, event.text || 'Našel jsi společníka!', event.icon);
@@ -63229,6 +63271,24 @@ function openFullscreenMap() {
                 state.world.scheduledEvents = [];
             }
             
+            // === OPRAVA: Vyčisti zaseknuté companion eventy ===
+            if (state.world.scheduledEvents && state.world.scheduledEvents.length > 0) {
+                state.world.scheduledEvents = state.world.scheduledEvents.filter(event => {
+                    // Pokud je to companion event a hráč už má/odmítl společníka, odstraň
+                    if (event.type === 'companion') {
+                        const dogEvent = typeof TRAVEL_EVENTS !== 'undefined' ? TRAVEL_EVENTS.find(e => e.id === event.eventId) : null;
+                        const companionId = dogEvent?.companionId || 'dog';
+                        const alreadyHas = state.companions?.some(c => c.id === companionId);
+                        const alreadyRejected = state.rejectedCompanions?.includes(companionId);
+                        if (alreadyHas || alreadyRejected) {
+                            console.log('🔧 Migrace: Odstraňuji zaseknutý companion event pro', companionId);
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+            }
+            
             // === OPRAVA: Resetuj zaseknutý travel stav ===
             // Pokud je cesta pozastavená déle než 10 minut, resetuj ji (pravděpodobně bug)
             if (state.world.travelPaused || state.map?.travelPaused) {
@@ -63249,6 +63309,40 @@ function openFullscreenMap() {
                 }
                 
                 console.log('✅ Travel stav resetován');
+            }
+            
+            // === OPRAVA: Vyčisti zaseknuté companion eventy ===
+            // Pokud má hráč psa (živého nebo mrtvého) nebo ho odmítl, vyčisti všechny companion eventy
+            if (state.world.scheduledEvents?.length > 0) {
+                const hasDog = state.companions?.some(c => c.id === 'dog');
+                const rejectedDog = state.rejectedCompanions?.includes('dog');
+                
+                if (hasDog || rejectedDog) {
+                    const before = state.world.scheduledEvents.length;
+                    state.world.scheduledEvents = state.world.scheduledEvents.filter(e => e.type !== 'companion');
+                    const after = state.world.scheduledEvents.length;
+                    if (before !== after) {
+                        console.log(`✅ Migrace: Odstraněno ${before - after} zaseknutých companion eventů`);
+                    }
+                }
+                
+                // Vyčisti všechny nevyřešené eventy které jsou starší než 1 hodina
+                const oneHourAgo = Date.now() - 3600000;
+                state.world.scheduledEvents = state.world.scheduledEvents.filter(e => {
+                    if (e.triggered && !e.resolved && e.triggerAt < oneHourAgo) {
+                        console.log('⚠️ Migrace: Odstraňuji starý nevyřešený event:', e.type);
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            
+            // Pokud hráč má psa, zajisti že firstTravelDone = true
+            if (state.companions?.some(c => c.id === 'dog') || state.rejectedCompanions?.includes('dog')) {
+                if (!state.firstTravelDone) {
+                    state.firstTravelDone = true;
+                    console.log('✅ Migrace: firstTravelDone nastaveno na true (hráč má/odmítl psa)');
+                }
             }
             
             // Pokud traveling=true ale travelTo je null, resetuj
