@@ -9959,7 +9959,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             alchemist: { name: 'Jedovatý oblak', icon: '☠️', cooldown: 300, desc: 'Otrávíš všechny nepřátele na 3 kola', action: 'poisonCloud' },
             hunter: { name: 'Stopování', icon: '🐾', cooldown: 180, desc: 'Najde nejbližší zvíře na mapě', action: 'track' },
             demolitionist: { name: 'Mega bomba', icon: '💣', cooldown: 360, desc: '70 damage všem nepřátelům', action: 'megaBomb' },
-            nomad: { name: 'Pouštní vítr', icon: '🏜️', cooldown: 120, desc: 'Okamžitě dokončí cestování', action: 'desertWind' },
+            nomad: { name: 'Písečná bouře', icon: '🏜️', cooldown: 180, desc: '+30% úhyb na 60s', action: 'sandStorm' },
             mutant: { name: 'Radiační výbuch', icon: '☢️', cooldown: 300, desc: '35 damage + radiace nepřátelům', action: 'radBurst' },
             psychic: { name: 'Mentální útok', icon: '🔮', cooldown: 240, desc: 'Nepřítel přeskočí tah', action: 'mindBlast' }
         };
@@ -25855,16 +25855,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     showModal(ability.icon + ' ' + ability.name, '💥 MEGA BOMBA připravena! 100 damage všem nepřátelům!');
                     break;
                     
-                case 'desertWind':
-                    // Nomád - okamžité cestování
-                    if (state.map.traveling) {
-                        state.map.traveling = false;
-                        state.map.travelProgress = 0;
-                        showModal(ability.icon + ' ' + ability.name, 'Dorazil jsi okamžitě!');
-                    } else {
-                        showModal('❌ Nelze použít', 'Nejsi na cestách!');
-                        state.char.abilityLastUsed = 0;
-                    }
+                case 'sandStorm':
+                    // Nomád - písečná bouře (úhyb bonus)
+                    state.combatBonuses.sandStorm = { dodgeBonus: 0.30, duration: Date.now() + 60000 };
+                    showModal(ability.icon + ' ' + ability.name, '🏜️ Písečná bouře tě chrání! +30% úhyb na 60 sekund.');
                     break;
                     
                 case 'radBurst':
@@ -29910,13 +29904,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const now = Date.now();
                 const travelEnd = (state.world.travelStart || 0) + (state.world.travelDuration || 0);
                 
-                // Pokud cestování mělo skončit před více než 10 sekundami, resetuj
-                if (travelEnd > 0 && now > travelEnd + 10000) {
-                    console.log('🔧 Auto-reset: Cestování mělo skončit, resetuji stav');
-                    state.world.traveling = false;
-                    state.map.traveling = false;
-                    state.world.travelTo = null;
-                    state.world.scheduledEvents = [];
+                // Pokud cestování mělo skončit - DOKONČI CESTU (ne resetuj!)
+                if (travelEnd > 0 && now > travelEnd) {
+                    console.log('🔧 Auto-complete: Cestování skončilo, dokončuji cestu');
+                    // Zavolej checkTravelComplete které správně dokončí cestu
+                    setTimeout(() => checkTravelComplete(), 50);
                 } 
                 // Pokud chybí cílová destinace, resetuj
                 else if (!state.world.travelTo) {
@@ -32336,8 +32328,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // 4. Aplikuj bonusy na čas PO počasí
+            // OMEZENÍ: Maximálně 50% redukce času (travelBonus min 0.5)
+            travelBonus = Math.max(0.5, travelBonus);
+            
             if (travelBonus < 1.0) {
-                travelTimeMin = Math.max(1, Math.ceil(travelTimeMin * Math.max(0.1, travelBonus)));
+                travelTimeMin = Math.ceil(travelTimeMin * travelBonus);
             }
             
             // 5. Aplikuj zpomalení z nemocí a zranění
@@ -32374,8 +32369,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
-            // Minimum 1 minuta
-            travelTimeMin = Math.max(1, travelTimeMin);
+            // Minimum 2 minuty (aby cestování nebylo příliš rychlé)
+            travelTimeMin = Math.max(2, travelTimeMin);
             
             // Debug log
             console.log(`🚶 Travel: base=${baseTime}, weatherMod=${weatherMod}, afterWeather=${Math.ceil(baseTime/weatherMod)}, bonus=${travelBonus.toFixed(2)}, final=${travelTimeMin}`);
@@ -32560,18 +32555,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const alreadyRejected = state.rejectedCompanions?.includes(companionId);
                 
                 if (alreadyHas || alreadyRejected) {
-                    console.log('⚠️ showUnresolvedEvent: Hráč už má/odmítl společníka, mažu event');
+                    console.log('⚠️ showUnresolvedEvent: Hráč už má/odmítl společníka, přeskakuji event');
                     event.resolved = true;
-                    // NEVOLAT resumeTravel! Jen resetuj travel stav
-                    state.world.travelPaused = false;
-                    state.world.traveling = false;
-                    state.world.scheduledEvents = [];
-                    if (state.map) {
-                        state.map.travelPaused = false;
-                        state.map.traveling = false;
-                    }
-                    closeModal();
-                    renderFull();
+                    // Pokračuj v cestě - neukončuj ji!
                     return;
                 }
                 
@@ -33582,6 +33568,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function continueTravel() {
+            console.log('🚶 continueTravel called, traveling =', state.world.traveling, ', travelTo =', state.world.travelTo);
+            
             // Obnov původní zbraň po boji během cestování
             if (state.preCombatWeapon) {
                 const currentWeapon = state.equipped?.weapon;
