@@ -10321,6 +10321,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'genesis_document', name: 'Dokumenty Genesis', icon: '📜', type: 'quest', weight: 0, cantDrop: true, cantSell: true, desc: 'Roztrhané dokumenty odhalující pravdu o Projektu Genesis. Přečti si je v inventáři.' },
             // Companion quest items
             { id: 'old_collar', name: 'Starý obojek', icon: '📿', type: 'quest', weight: 0.1, desc: 'Starý, opotřebovaný psí obojek s vybledlým jménem.' },
+            { id: 'dog_collar', name: 'Psí obojek', icon: '📿', type: 'accessory', weight: 0.2, price: 50, rarity: 'common', findChance: 0.05, companionBonus: { damage: 2, defense: 1 }, desc: 'Obyčejný psí obojek. Lze nasadit společníkovi.' },
             { id: 'dogtags', name: 'Identifikační známky', icon: '🪪', type: 'quest', weight: 0.1, desc: 'Vojenské identifikační známky padlých vojáků.' },
             { id: 'medical_records', name: 'Lékařské záznamy', icon: '📋', type: 'quest', weight: 0.2, desc: 'Staré nemocniční záznamy z doby před válkou.' },
             { id: 'lab_samples', name: 'Laboratorní vzorky', icon: '🧪', type: 'quest', weight: 0.5, desc: 'Vzorky z výzkumné laboratoře v ochranných nádobách.' },
@@ -11741,8 +11742,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 minRate: 0.005, // 0.5%
                 maxRate: 0.03, // 3%
                 defaultRate: 0.01, // 1%
-                mayorShare: 0.5, // 50% jde šéfovi
-                publicShare: 0.5 // 50% do veřejné kasy
+                mayorDailyShare: 0.01, // 1% z veřejné kasy denně pro šéfa
+                publicShare: 1.0 // 100% daní jde do veřejné kasy
             },
             
             // Impéachment systém
@@ -25500,6 +25501,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const comp = state.companions?.find(c => (c.uniqueId === companionId || c.id === companionId) && c.isDead);
             if (!comp) return;
             
+            // Kontrola jestli máš místo pro aktivního společníka
+            const activeCount = state.companions.filter(c => !c.isDead && !c.inSettlement).length;
+            const maxCount = getMaxCompanions();
+            
+            if (activeCount >= maxCount) {
+                showModal('⚠️ Plný tým', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem;">👥</div>
+                        <p>Už máš maximální počet aktivních společníků (${maxCount}).</p>
+                        <p style="color: #888;">Propusť jednoho společníka, aby sis mohl oživit tohoto.</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">OK</button>
+                `);
+                return;
+            }
+            
             if (state.money < cost) {
                 showModal(t('notifications', 'notEnoughMoney'), `Potřebuješ ${cost} peněz!`);
                 return;
@@ -25620,7 +25637,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             state.companions = state.companions || [];
             
-            if (state.companions.length >= getMaxCompanions()) {
+            // Počítej jen aktivní společníky (ne mrtvé, ne v osadě)
+            const activeCount = state.companions.filter(c => !c.isDead && !c.inSettlement).length;
+            if (activeCount >= getMaxCompanions()) {
                 // Plno - ulož info o nákupu a nabídni výměnu
                 window.pendingHireCompanion = { companion: newCompanion, cost: companion.cost };
                 showCompanionSwapModal(newCompanion, 'hire');
@@ -33070,11 +33089,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (!state.companions) state.companions = [];
             
-            // Max společníci podle levelu
-            if (state.companions.length >= getMaxCompanions()) {
+            // Max společníci podle levelu - počítej jen AKTIVNÍ (ne mrtvé, ne v osadě)
+            const activeCompanions = state.companions.filter(c => !c.isDead && !c.inSettlement);
+            if (activeCompanions.length >= getMaxCompanions()) {
                 showModal('⚠️ Plný tým', 
                     '<div style="text-align: center;">' +
-                    '<p>Už máš maximální počet společníků (' + getMaxCompanions() + ').</p>' +
+                    '<p>Už máš maximální počet aktivních společníků (' + getMaxCompanions() + ').</p>' +
                     '<p style="color: #888;">Propusť jednoho ve správě společníků, pokud chceš nového.</p>' +
                     '<p style="color: #4caf50; font-size: 0.85rem; margin-top: 0.5rem;">💡 Vyšší level = více společníků!</p>' +
                     '</div>' +
@@ -35222,7 +35242,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 state.companions = state.companions || [];
                 
-                if (state.companions.length < getMaxCompanions()) {
+                // Počítej jen aktivní společníky
+                const activeCount = state.companions.filter(c => !c.isDead && !c.inSettlement).length;
+                if (activeCount < getMaxCompanions()) {
                     // Místo je volné
                     state.companions.push(newCompanion);
                     companionHtml = `
@@ -54994,40 +55016,15 @@ function openFullscreenMap() {
             // Odeber daň hráči
             removeMoney(taxAmount);
             
-            // 50% jde šéfovi, 50% do veřejné kasy
-            const mayorShare = Math.floor(taxAmount * MAYOR_SYSTEM.taxation.mayorShare);
-            const publicShare = taxAmount - mayorShare;
-            
             try {
-                // Přidej do veřejné kasy s logováním
-                await addToPublicTreasury(publicShare, 'daily_tax', `Denní daň od ${getPlayerName()}`);
-                
-                // Pokud je šéf, přidej mu jeho podíl
-                const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
-                const mayor = mayorSnap.val();
-                
-                if (mayor && mayor.name) {
-                    // Přidej k šéfově příjmu
-                    const mayorIncomeRef = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
-                    const incomeSnap = await mayorIncomeRef.once('value');
-                    const currentIncome = incomeSnap.val() || 0;
-                    await mayorIncomeRef.set(currentIncome + mayorShare);
-                    
-                    // Pokud jsem šéf, dostanu peníze přímo
-                    if (mayor.name === getPlayerName()) {
-                        addMoney(mayorShare);
-                        addLog(`👑 Daňový příjem šéfa: +${mayorShare} 💰`, '🏛️');
-                    }
-                } else {
-                    // Pokud není šéf, jde vše do kasy
-                    await addToPublicTreasury(mayorShare, 'daily_tax_no_mayor', 'Podíl šéfa (není zvolen)');
-                }
+                // 100% daní jde do veřejné kasy
+                await addToPublicTreasury(taxAmount, 'daily_tax', `Denní daň od ${getPlayerName()}`);
                 
                 // Log pro hráče
                 const taxPercent = (taxRate * 100).toFixed(1);
-                addLog(`🏛️ Denní daň (${taxPercent}%): -${taxAmount} 💰 (${publicShare} do kasy${mayor ? `, ${mayorShare} šéfovi` : ''})`, '💰');
+                addLog(`🏛️ Denní daň (${taxPercent}%): -${taxAmount} 💰 → veřejná kasa`, '💰');
                 
-                console.log(`🏛️ Daň: -${taxAmount} od ${getPlayerName()}, ${publicShare} kasa, ${mayorShare} šéf`);
+                console.log(`🏛️ Daň: -${taxAmount} od ${getPlayerName()} → veřejná kasa`);
                 
             } catch (e) {
                 console.error('Tax error:', e);
@@ -55036,7 +55033,60 @@ function openFullscreenMap() {
             }
         }
         
-        // Funkce pro šéfa k vyzvednutí nahromaděného příjmu z daní
+        // Šéf dostává 1% z veřejné kasy denně (volá se jednou denně serverově nebo při resetu dne)
+        async function processMayorDailyIncome() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            try {
+                // Zkontroluj jestli je šéf
+                const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
+                const mayor = mayorSnap.val();
+                if (!mayor || !mayor.name) return;
+                
+                // Zkontroluj jestli už dnes dostal (aby se nevolalo víckrát)
+                const today = new Date().toDateString();
+                const lastPayoutSnap = await firebaseDB.ref('politics/mayorLastPayout').once('value');
+                if (lastPayoutSnap.val() === today) return; // Už dostal dnes
+                
+                // Získej veřejnou kasu
+                const kasaSnap = await firebaseDB.ref('politics/publicMoney').once('value');
+                const publicMoney = kasaSnap.val() || 0;
+                
+                if (publicMoney <= 0) return;
+                
+                // 1% z veřejné kasy
+                const mayorIncome = Math.floor(publicMoney * MAYOR_SYSTEM.taxation.mayorDailyShare);
+                if (mayorIncome <= 0) return;
+                
+                // Odeber z veřejné kasy
+                await firebaseDB.ref('politics/publicMoney').set(publicMoney - mayorIncome);
+                
+                // Přidej k šéfově příjmu (čeká na vyzvednutí)
+                const mayorIncomeRef = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
+                const incomeSnap = await mayorIncomeRef.once('value');
+                const currentIncome = incomeSnap.val() || 0;
+                await mayorIncomeRef.set(currentIncome + mayorIncome);
+                
+                // Označ že dnes už dostal
+                await firebaseDB.ref('politics/mayorLastPayout').set(today);
+                
+                // Pokud jsem šéf, dostanu notifikaci
+                if (mayor.name === getPlayerName()) {
+                    addLog(`👑 Denní příjem šéfa: +${mayorIncome} 💰 (1% z kasy)`, '🏛️');
+                    notifySuccess('💰 Denní příjem', `+${mayorIncome} 💰 z veřejné kasy`);
+                }
+                
+                // Log do treasury
+                await logTreasuryTransaction(-mayorIncome, 'mayor_salary', `Denní příjem šéfa ${mayor.name}`);
+                
+                console.log(`👑 Šéf ${mayor.name} dostal ${mayorIncome} 💰 (1% z ${publicMoney})`);
+                
+            } catch (e) {
+                console.error('Mayor income error:', e);
+            }
+        }
+        
+        // Funkce pro šéfa k vyzvednutí nahromaděného příjmu
         async function collectMayorTaxIncome() {
             if (!isMayor() || !multiplayerEnabled || !firebaseDB) return;
             
@@ -65259,8 +65309,11 @@ function openFullscreenMap() {
                 processFactionTerritoryIncome(); // Příjem z PvP frakcí a území
                 processTerritoryCounting(); // Denní sčítání bodů na územích
                 
-                // 🏛️ DANĚ PRO ŠÉFA PUSTINY - 1% z peněz hráče
+                // 🏛️ DANĚ - jdou 100% do veřejné kasy
                 processDailyTax();
+                
+                // 👑 PŘÍJEM ŠÉFA - 1% z veřejné kasy denně
+                processMayorDailyIncome();
                 
                 // 🤖 POWER ARMOR - kontrola paliva (každých 24 hodin reálného času)
                 if (typeof checkPowerArmorFuel === 'function') {
@@ -80187,8 +80240,8 @@ function openFullscreenMap() {
                                         <div style="color: #888; font-size: 0.65rem;">lepší loot</div>
                                     </div>
                                     <div style="background: #1a2a1a; padding: 0.4rem; border-radius: 4px; text-align: center;">
-                                        <div style="color: #ffd700; font-weight: bold;">50%</div>
-                                        <div style="color: #888; font-size: 0.65rem;">z denních daní</div>
+                                        <div style="color: #ffd700; font-weight: bold;">1%</div>
+                                        <div style="color: #888; font-size: 0.65rem;">z kasy denně</div>
                                     </div>
                                 </div>
                             </div>
@@ -80289,16 +80342,19 @@ function openFullscreenMap() {
                             <p style="color: #888; font-size: 0.85rem;">Požadavky: Level ${MAYOR_SYSTEM.requirements.minLevel}+, ${MAYOR_SYSTEM.requirements.minSupporters} podporovatelé</p>
                             
                             ${candidateList.length > 0 ? `
-                                <div style="max-height: 150px; overflow-y: auto; margin: 0.5rem 0;">
+                                <div style="max-height: 200px; overflow-y: auto; margin: 0.5rem 0;">
                                     ${candidateList.map(([name, data]) => `
-                                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: #222; border-radius: 4px; margin-bottom: 0.3rem;">
-                                            <span style="color: #fff;">${escapeHtml(name)} (Lvl ${data.level})</span>
-                                            <div>
-                                                <span style="color: #888; margin-right: 0.5rem;">${data.supporters?.length || 0}/${MAYOR_SYSTEM.requirements.minSupporters} 👥</span>
-                                                ${name !== playerName && !data.supporters?.includes(playerName) ? `
-                                                    <button class="btn" onclick="supportCandidate('${escapeHtml(name)}')" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #4caf50;">Podpořit</button>
-                                                ` : ''}
+                                        <div style="background: #222; border-radius: 4px; margin-bottom: 0.3rem; padding: 0.5rem;">
+                                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                <span onclick="showCandidateProgram('${escapeHtml(name)}', '${escapeHtml(data.program || 'Bez programu')}')" style="color: #fff; cursor: pointer; text-decoration: underline;">${escapeHtml(name)} (Lvl ${data.level})</span>
+                                                <div>
+                                                    <span style="color: #888; margin-right: 0.5rem;">${data.supporters?.length || 0}/${MAYOR_SYSTEM.requirements.minSupporters} 👥</span>
+                                                    ${name !== playerName && !data.supporters?.includes(playerName) ? `
+                                                        <button class="btn" onclick="supportCandidate('${escapeHtml(name)}')" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #4caf50;">Podpořit</button>
+                                                    ` : ''}
+                                                </div>
                                             </div>
+                                            ${data.program ? `<div style="color: #888; font-size: 0.75rem; margin-top: 0.3rem; font-style: italic;">"${escapeHtml(data.program.substring(0, 60))}${data.program.length > 60 ? '...' : ''}"</div>` : ''}
                                         </div>
                                     `).join('')}
                                 </div>
@@ -80322,20 +80378,24 @@ function openFullscreenMap() {
                     html += `
                         <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                             <h4 style="color: #ff9800; margin: 0 0 0.5rem 0;">🗳️ Hlasování</h4>
+                            <p style="color: #888; font-size: 0.75rem; margin-bottom: 0.5rem;">Klikni na jméno pro zobrazení programu</p>
                             
                             ${validCandidates.length > 0 ? `
                                 <div style="margin: 0.5rem 0;">
                                     ${validCandidates.map(([name, data]) => {
                                         const voteCount = Object.values(votes).filter(v => v === name).length;
                                         return `
-                                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: #222; border-radius: 4px; margin-bottom: 0.3rem;">
-                                                <span style="color: #fff;">${escapeHtml(name)}</span>
-                                                <div>
-                                                    <span style="color: #ffd700; margin-right: 0.5rem;">${voteCount} hlasů</span>
-                                                    ${!hasVoted ? `
-                                                        <button class="btn" onclick="voteForCandidate('${escapeHtml(name)}')" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #ff9800;">Volit</button>
-                                                    ` : ''}
+                                            <div style="background: #222; border-radius: 4px; margin-bottom: 0.3rem; padding: 0.5rem;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                                    <span onclick="showCandidateProgram('${escapeHtml(name)}', '${escapeHtml((data.program || 'Bez programu').replace(/'/g, "\\'"))}')" style="color: #fff; cursor: pointer; text-decoration: underline;">${escapeHtml(name)}</span>
+                                                    <div>
+                                                        <span style="color: #ffd700; margin-right: 0.5rem;">${voteCount} hlasů</span>
+                                                        ${!hasVoted ? `
+                                                            <button class="btn" onclick="voteForCandidate('${escapeHtml(name)}')" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #ff9800;">Volit</button>
+                                                        ` : ''}
+                                                    </div>
                                                 </div>
+                                                ${data.program ? `<div style="color: #888; font-size: 0.75rem; margin-top: 0.3rem; font-style: italic;">"${escapeHtml(data.program.substring(0, 80))}${data.program.length > 80 ? '...' : ''}"</div>` : ''}
                                             </div>
                                         `;
                                     }).join('')}
@@ -80542,6 +80602,25 @@ function openFullscreenMap() {
             }
         }
         
+        // Zobrazit program kandidáta
+        function showCandidateProgram(name, program) {
+            showModal(`📋 Program: ${name}`, `
+                <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <div style="text-align: center; margin-bottom: 1rem;">
+                        <div style="font-size: 2rem;">🎤</div>
+                        <h3 style="color: #ce93d8; margin: 0.5rem 0;">${escapeHtml(name)}</h3>
+                    </div>
+                    
+                    <div style="background: #0d0d0d; padding: 1rem; border-radius: 6px; border: 1px solid #333;">
+                        <h4 style="color: #9c27b0; margin: 0 0 0.5rem 0; font-size: 0.9rem;">📜 Volební sliby:</h4>
+                        <p style="color: #ccc; font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap;">${program === 'Bez programu' ? '<span style="color: #666; font-style: italic;">Kandidát zatím nepředstavil svůj program</span>' : escapeHtml(program)}</p>
+                    </div>
+                </div>
+                
+                <button class="btn" onclick="showPoliticsPanel()" style="width: 100%; background: #333;">← Zpět</button>
+            `);
+        }
+        
         // Podpořit kandidáta
         async function supportCandidate(candidateName) {
             if (!multiplayerEnabled || !firebaseDB) return;
@@ -80696,7 +80775,7 @@ function openFullscreenMap() {
                         
                         <div style="background: #0a150a; padding: 0.5rem; border-radius: 4px;">
                             <div style="color: #ffd700; font-size: 0.8rem; text-align: center;">
-                                👑 Šéf automaticky dostává: <b>-10% v obchodě</b>, <b>+5% XP</b>, <b>+5% loot</b>, <b>50% z daní</b>
+                                👑 Šéf automaticky dostává: <b>-10% v obchodě</b>, <b>+5% XP</b>, <b>+5% loot</b>, <b>1% z veřejné kasy denně</b>
                             </div>
                         </div>
                     </div>
@@ -85560,6 +85639,7 @@ function openFullscreenMap() {
         window.withdrawCandidacy = withdrawCandidacy;
         window.supportCandidate = supportCandidate;
         window.voteForCandidate = voteForCandidate;
+        window.showCandidateProgram = showCandidateProgram;
         window.useMayorPower = useMayorPower;
         window.showDecreeForm = showDecreeForm;
         window.publishDecree = publishDecree;
