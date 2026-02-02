@@ -13393,6 +13393,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (item.type === 'resource') {
                 const resourceId = item.id;
                 state.resources[resourceId] = (state.resources[resourceId] || 0) + count;
+                
+                // === UPDATE NPC QUEST PROGRESS pro resource questy ===
+                if (state.npcQuests) {
+                    Object.keys(state.npcQuests).forEach(npcId => {
+                        const quest = state.npcQuests[npcId];
+                        if (quest && quest.id) {
+                            const questDef = typeof NPC_QUESTS !== 'undefined' ? NPC_QUESTS[quest.id] : null;
+                            if (questDef?.requirement?.resources) {
+                                // Inkrementuj resourcesCollected
+                                if (!quest.progress) quest.progress = {};
+                                quest.progress.resourcesCollected = (quest.progress.resourcesCollected || 0) + count;
+                                console.log(`📦 Resource quest progress: ${quest.progress.resourcesCollected}/${questDef.requirement.resources}`);
+                            }
+                        }
+                    });
+                }
+                
                 SoundSystem.play('pickup');
                 if (!silent) {
                     notifySuccess(item.icon + ' +' + count, item.name);
@@ -30244,6 +30261,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // === FRIENDLY NPC na lokacích ===
             const npcsHere = FRIENDLY_NPCS.filter(n => n.location === location.id);
+            console.log('👥 NPC na lokaci', location.id, ':', npcsHere.map(n => n.name));
             if (npcsHere.length > 0) {
                 npcsHere.forEach(npc => {
                     html += renderActionButton(npc.icon, npc.name, `showNPCDetail('${npc.id}')`, '#E91E63');
@@ -49873,11 +49891,8 @@ function openFullscreenMap() {
             let html = '<ul style="margin: 0; padding-left: 1.2rem; color: #aaa; font-size: 0.9rem;">';
             
             if (req.resources) {
-                // Počítej nasbírané suroviny od přijetí questu (všechny sbíratelné)
-                const gatherableResources = ['wood', 'metal', 'cloth', 'leather', 'electronics', 'chemicals', 'herbs', 'gunpowder', 'glass', 'stone', 'fuel', 'rope', 'scrap', 'copper', 'silver', 'gold', 'crystal', 'acid', 'fur'];
-                const startResources = gatherableResources.reduce((sum, r) => sum + (start[r] || 0), 0);
-                const currentResources = gatherableResources.reduce((sum, r) => sum + (state.resources?.[r] || 0), 0);
-                const collected = Math.max(0, currentResources - startResources);
+                // Použij přímo progress.resourcesCollected (inkrementuje se při každém získání suroviny)
+                const collected = activeQuest.progress?.resourcesCollected || 0;
                 html += `<li style="color: ${collected >= req.resources ? '#8bc34a' : '#ff9800'};">Suroviny: ${collected}/${req.resources}</li>`;
                 
                 // Pokud je to deliver quest a máme dost surovin, ukaž cíl
@@ -49930,10 +49945,8 @@ function openFullscreenMap() {
             
             // Sběr různých surovin (počítá se od přijetí)
             if (req.resources) {
-                const gatherableResources = ['wood', 'metal', 'cloth', 'leather', 'electronics', 'chemicals', 'herbs', 'gunpowder', 'glass', 'stone', 'fuel', 'rope', 'scrap', 'copper', 'silver', 'gold', 'crystal', 'acid', 'fur'];
-                const startResources = gatherableResources.reduce((sum, r) => sum + (start[r] || 0), 0);
-                const currentResources = gatherableResources.reduce((sum, r) => sum + (state.resources?.[r] || 0), 0);
-                const collected = currentResources - startResources;
+                // Použij přímo progress.resourcesCollected
+                const collected = prog.resourcesCollected || 0;
                 if (collected < req.resources) return false;
             }
             
@@ -50017,11 +50030,8 @@ function openFullscreenMap() {
             let result = { current: 0, required: 1, label: '', complete: false, percent: 0 };
             
             if (req.resources) {
-                // Všechny sbíratelné suroviny
-                const gatherableResources = ['wood', 'metal', 'cloth', 'leather', 'electronics', 'chemicals', 'herbs', 'gunpowder', 'glass', 'stone', 'fuel', 'rope', 'scrap', 'copper', 'silver', 'gold', 'crystal', 'acid', 'fur'];
-                const startResources = gatherableResources.reduce((sum, r) => sum + (start[r] || 0), 0);
-                const currentResources = gatherableResources.reduce((sum, r) => sum + (state.resources?.[r] || 0), 0);
-                result.current = Math.max(0, currentResources - startResources);
+                // Použij přímo progress.resourcesCollected
+                result.current = prog.resourcesCollected || 0;
                 result.required = req.resources;
                 result.label = '📦 Suroviny';
             }
@@ -50201,7 +50211,7 @@ function openFullscreenMap() {
             state.npcQuests[npcId] = {
                 id: questId,
                 startTime: Date.now(),
-                progress: { explored: 0, kills: 0, escortLocations: 0, talked: isTalkQuest },
+                progress: { explored: 0, kills: 0, escortLocations: 0, talked: isTalkQuest, resourcesCollected: 0 },
                 // Uložit startovní stav pro sledování progressu - VŠECHNY suroviny
                 startState: {
                     // Základní suroviny
@@ -63404,7 +63414,7 @@ function openFullscreenMap() {
                 });
             }
             
-            // Migration: Fix npcQuests - přidej progress objekt pro staré questy
+            // Migration: Fix npcQuests - přidej progress objekt a startState pro staré questy
             if (state.npcQuests) {
                 Object.keys(state.npcQuests).forEach(npcId => {
                     const quest = state.npcQuests[npcId];
@@ -63418,6 +63428,39 @@ function openFullscreenMap() {
                         if (quest.progress.kills === undefined) quest.progress.kills = 0;
                         if (quest.progress.escortLocations === undefined) quest.progress.escortLocations = 0;
                         if (quest.progress.travels === undefined) quest.progress.travels = 0;
+                        if (quest.progress.resourcesCollected === undefined) quest.progress.resourcesCollected = 0;
+                        
+                        // === FIX: Přidej startState pokud chybí ===
+                        // Pro staré questy nastavíme startState na AKTUÁLNÍ hodnoty
+                        // To znamená že hráč musí nasbírat suroviny OD TEĎ
+                        if (!quest.startState) {
+                            console.log(`🔧 Migrace: Přidávám startState pro quest ${quest.id}`);
+                            quest.startState = {
+                                herbs: state.resources?.herbs || 0,
+                                metal: state.resources?.metal || 0,
+                                wood: state.resources?.wood || 0,
+                                cloth: state.resources?.cloth || 0,
+                                leather: state.resources?.leather || 0,
+                                electronics: state.resources?.electronics || 0,
+                                chemicals: state.resources?.chemicals || 0,
+                                gunpowder: state.resources?.gunpowder || 0,
+                                glass: state.resources?.glass || 0,
+                                stone: state.resources?.stone || 0,
+                                fuel: state.resources?.fuel || 0,
+                                rope: state.resources?.rope || 0,
+                                scrap: state.resources?.scrap || 0,
+                                copper: state.resources?.copper || 0,
+                                silver: state.resources?.silver || 0,
+                                gold: state.resources?.gold || 0,
+                                crystal: state.resources?.crystal || 0,
+                                acid: state.resources?.acid || 0,
+                                fur: state.resources?.fur || 0,
+                                kills: state.stats?.kills || 0,
+                                explored: state.world?.visitedLocations?.length || 0,
+                                money: state.money || 0
+                            };
+                        }
+                        
                         console.log(`🔧 Migrace: Progress pro NPC quest ${quest.id}:`, quest.progress);
                     }
                 });
@@ -78288,6 +78331,14 @@ function openFullscreenMap() {
                         <div style="color: #f44336; font-size: 0.75rem; text-align: center; margin-bottom: 0.5rem;">👑 POUZE ADMIN</div>
                     </div>
                     
+                    <button class="btn" onclick="adminTeleport()" style="background: linear-gradient(135deg, #9c27b0 0%, #6a1b9a 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">🌀</span>
+                        <div>
+                            <div style="font-weight: bold;">Teleport</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Okamžitě se přesunout na lokaci</div>
+                        </div>
+                    </button>
+                    
                     <button class="btn" onclick="adminManageLeaderboard()" style="background: linear-gradient(135deg, #ffd700 0%, #ff8f00 100%); color: #000; padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
                         <span style="font-size: 1.5rem;">🏆</span>
                         <div>
@@ -78806,6 +78857,89 @@ function openFullscreenMap() {
             } catch (e) {
                 notifyWarning('Chyba', e.message);
             }
+        }
+        
+        // === ADMIN TELEPORT ===
+        function adminTeleport() {
+            if (!isAdmin()) return;
+            
+            // Seřadit lokace podle zóny a abecedně
+            const sortedLocations = [...WORLD_LOCATIONS].sort((a, b) => {
+                const zoneOrder = { safe: 0, medium: 1, hard: 2, extreme: 3 };
+                const zoneA = zoneOrder[a.zone] || 99;
+                const zoneB = zoneOrder[b.zone] || 99;
+                if (zoneA !== zoneB) return zoneA - zoneB;
+                return a.name.localeCompare(b.name, 'cs');
+            });
+            
+            let locationsHtml = '';
+            let currentZone = null;
+            
+            sortedLocations.forEach(loc => {
+                // Záhlaví zóny
+                if (loc.zone !== currentZone) {
+                    currentZone = loc.zone;
+                    const zoneNames = { safe: '🟢 Bezpečná zóna', medium: '🟡 Střední zóna', hard: '🟠 Nebezpečná zóna', extreme: '🔴 Extrémní zóna' };
+                    const zoneColors = { safe: '#4caf50', medium: '#ff9800', hard: '#f44336', extreme: '#9c27b0' };
+                    locationsHtml += `<div style="background: ${zoneColors[currentZone]}22; padding: 0.3rem 0.5rem; margin: 0.5rem 0 0.3rem 0; border-left: 3px solid ${zoneColors[currentZone]}; font-weight: bold; font-size: 0.85rem;">${zoneNames[currentZone] || currentZone}</div>`;
+                }
+                
+                // Tlačítko lokace
+                const isCurrent = state.world?.currentLocation === loc.id;
+                const npcsHere = FRIENDLY_NPCS.filter(n => n.location === loc.id);
+                const npcInfo = npcsHere.length > 0 ? ` <span style="color: #E91E63;">(${npcsHere.map(n => n.icon).join('')})</span>` : '';
+                
+                locationsHtml += `
+                    <button class="btn" onclick="adminTeleportTo('${loc.id}')" style="width: 100%; margin: 0.2rem 0; padding: 0.5rem; text-align: left; background: ${isCurrent ? '#2a3a2a' : '#1a1a1a'}; border: 1px solid ${isCurrent ? '#4caf50' : '#333'}; font-size: 0.85rem;">
+                        ${loc.icon} ${loc.name}${npcInfo}
+                        ${isCurrent ? ' <span style="color: #4caf50;">✓ Jsi tady</span>' : ''}
+                    </button>
+                `;
+            });
+            
+            showModal('🌀 Admin Teleport', `
+                <div style="max-height: 60vh; overflow-y: auto;">
+                    <p style="color: #888; font-size: 0.85rem; margin-bottom: 0.5rem;">Klikni na lokaci pro okamžitý teleport. Růžové ikony = NPC na lokaci.</p>
+                    ${locationsHtml}
+                </div>
+                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">Zavřít</button>
+            `);
+        }
+        
+        function adminTeleportTo(locationId) {
+            if (!isAdmin()) return;
+            
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            if (!loc) {
+                notifyWarning('Chyba', 'Lokace nenalezena');
+                return;
+            }
+            
+            // Zruš cestování pokud probíhá
+            if (state.world.traveling) {
+                state.world.traveling = false;
+                state.world.travelTo = null;
+                state.world.scheduledEvents = [];
+                if (state.map) state.map.traveling = false;
+            }
+            
+            // Teleportuj
+            state.world.currentLocation = locationId;
+            if (!state.world.visitedLocations.includes(locationId)) {
+                state.world.visitedLocations.push(locationId);
+            }
+            state.map.inBase = (locationId === 'shelter');
+            
+            // NPC na lokaci
+            const npcsHere = FRIENDLY_NPCS.filter(n => n.location === locationId);
+            const npcNames = npcsHere.map(n => `${n.icon} ${n.name}`).join(', ');
+            
+            closeModal();
+            saveGame();
+            renderFull();
+            
+            notifySuccess('🌀 Teleportováno!', `${loc.icon} ${loc.name}${npcsHere.length > 0 ? `\n👥 NPC: ${npcNames}` : ''}`);
+            addLog(`🌀 Admin teleport: ${loc.name}`, '👑');
         }
         
         // === SPRÁVA ŽEBŘÍČKU ===
@@ -85874,6 +86008,10 @@ function openFullscreenMap() {
         window.adminResetTreasury = adminResetTreasury;
         window.adminRemoveMayor = adminRemoveMayor;
         window.adminResetElection = adminResetElection;
+        
+        // Admin teleport
+        window.adminTeleport = adminTeleport;
+        window.adminTeleportTo = adminTeleportTo;
         
         // Chat funkce
         window.showChatModal = showChatModal;
