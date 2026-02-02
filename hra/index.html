@@ -30417,7 +30417,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const playerFaction = getPlayerFaction();
                 if (playerFaction) {
                     const factionData = PVP_FACTIONS[playerFaction];
-                    html += renderActionButton(factionData.icon, 'Území', 'showTerritoryActions()', factionData.color);
+                    html += renderActionButton(factionData.icon, 'Dobývat', 'quickTerritoryCapture()', factionData.color);
                 } else {
                     html += renderActionButton('🏴', 'Frakce', 'showFactionSelection()', '#ff9800');
                 }
@@ -69793,17 +69793,8 @@ function openFullscreenMap() {
                         await contributeToTerritory(50);
                         window.territoryCache = null;
                         
-                        setTimeout(() => {
-                            showModal('🏆 Území dobyto!', `
-                                <div style="text-align: center;">
-                                    <div style="font-size: 4rem;">🏆</div>
-                                    <p style="color: #4caf50; font-size: 1.2rem;">Všichni strážci poraženi!</p>
-                                    <p style="color: ${PVP_FACTIONS[faction].color};">Území nyní patří ${PVP_FACTIONS[faction].name}!</p>
-                                    <p style="color: #ffd700;">+50 bodů pro frakci</p>
-                                </div>
-                                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
-                            `);
-                        }, 500);
+                        // Jen notifikace, ne modal
+                        notifySuccess('🏆 Území dobyto!', `Území nyní patří ${PVP_FACTIONS[faction].name}! +50 bodů`);
                     } catch(e) {
                         console.error('Territory capture error:', e);
                     }
@@ -69910,6 +69901,62 @@ function openFullscreenMap() {
             
             notifySuccess('Území obsazeno!', `+20 bodů pro ${PVP_FACTIONS[faction].name}`);
             closeModal();
+        }
+        
+        // RYCHLÉ dobývání - bez modalu, jen notifikace
+        async function quickTerritoryCapture() {
+            const faction = getPlayerFaction();
+            if (!faction) {
+                showFactionSelection();
+                return;
+            }
+            
+            const locationId = state.world?.currentLocation;
+            if (!locationId || locationId === 'shelter') {
+                notifyWarning('Nelze', 'Tady nemůžeš dobývat území');
+                return;
+            }
+            
+            const myName = getPlayerName();
+            const CAPTURE_DURATION = 15 * 60 * 1000; // 15 minut
+            const factionData = PVP_FACTIONS[faction];
+            
+            // KONTROLA: Už dobýváme toto území?
+            if (state.territoryCapture?.[locationId]) {
+                const elapsed = Date.now() - state.territoryCapture[locationId].startTime;
+                if (elapsed < CAPTURE_DURATION) {
+                    const remaining = Math.ceil((CAPTURE_DURATION - elapsed) / 60000);
+                    notifyInfo('🏴 Dobývání probíhá', `Zbývá ${remaining} min - zůstaň na místě!`);
+                    return;
+                }
+            }
+            
+            // Zapiš do Firebase
+            if (multiplayerEnabled && firebaseDB) {
+                try {
+                    const startTime = Date.now();
+                    await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + myName.replace(/[.#$\[\]]/g, '_')).set({
+                        player: myName,
+                        faction: faction,
+                        startTime: startTime
+                    });
+                } catch(e) {
+                    console.error('Start capture error:', e);
+                    notifyWarning('Chyba', 'Nepodařilo se začít dobývání');
+                    return;
+                }
+            }
+            
+            // Inicializuj lokální stav
+            if (!state.territoryCapture) state.territoryCapture = {};
+            state.territoryCapture[locationId] = {
+                startTime: Date.now(),
+                faction: faction
+            };
+            
+            notifySuccess(`🏴 Dobývání začalo!`, `${factionData.icon} +10 bodů za 15 min - zůstaň na místě!`);
+            saveGame(true);
+            renderFull();
         }
         
         // Začít obsazovat území bez strážce (30 min čekání)
