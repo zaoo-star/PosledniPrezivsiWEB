@@ -33703,15 +33703,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 // === UPDATE NPC QUEST PROGRESS (pro KAŽDOU cestu) ===
+                console.log('🗺️ Checking NPC quest progress, npcQuests:', state.npcQuests);
                 if (state.npcQuests) {
                     Object.keys(state.npcQuests).forEach(npcId => {
                         const quest = state.npcQuests[npcId];
+                        console.log(`🗺️ Processing quest for NPC ${npcId}:`, quest);
                         if (!quest || !quest.id) {
                             console.log(`⚠️ NPC quest pro ${npcId} nemá ID:`, quest);
                             return;
                         }
                         
                         const questDef = NPC_QUESTS[quest.id];
+                        console.log(`🗺️ Quest def for ${quest.id}:`, questDef);
                         if (!questDef || !questDef.requirement) {
                             console.log(`⚠️ NPC quest ${quest.id} neexistuje v NPC_QUESTS`);
                             return;
@@ -33738,6 +33741,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (questDef.requirement.escort) {
                             quest.progress.escortLocations = (quest.progress.escortLocations || 0) + 1;
                             console.log(`🐪 Escort progress pro ${quest.id}: ${quest.progress.escortLocations}/${questDef.requirement.travels || 3}`);
+                            
+                            // Notifikace pro hráče
+                            const reqTravels = questDef.requirement.travels || 3;
+                            if (quest.progress.escortLocations <= reqTravels) {
+                                notifyInfo('📍 Quest progress', `${questDef.name}: ${quest.progress.escortLocations}/${reqTravels} lokací`);
+                            }
                         }
                         
                         // TRAVELS questy (např. deliver_package - navštiv X lokací)
@@ -60857,11 +60866,11 @@ function openFullscreenMap() {
             }
             
             // Handle special combat types
-            let continueAction = "endCombat(); closeModal(); checkAchievements(); renderFull();";
+            let continueAction = "window.combatState = null; delete state.activeCombat; closeModal(); checkAchievements(); renderFull();";
             
             // DŮLEŽITÉ: Pokud cestujeme, po boji pokračuj (cesta běží na pozadí)
             if (state.world?.traveling || state.map?.traveling || state.world?.travelPaused || state.map?.travelPaused) {
-                continueAction = "endCombat(); closeModal(); checkAchievements(); continueTravel();";
+                continueAction = "window.combatState = null; delete state.activeCombat; closeModal(); checkAchievements(); continueTravel();";
                 console.log('🚶 Traveling - will continue after combat');
             }
             
@@ -63377,9 +63386,17 @@ function openFullscreenMap() {
             if (state.npcQuests) {
                 Object.keys(state.npcQuests).forEach(npcId => {
                     const quest = state.npcQuests[npcId];
-                    if (quest && quest.id && !quest.progress) {
-                        quest.progress = { explored: 0, kills: 0, visits: 0 };
-                        console.log(`🔧 Migrace: Přidán progress pro NPC quest ${quest.id}`);
+                    if (quest && quest.id) {
+                        // Vždy zajisti kompletní progress objekt
+                        if (!quest.progress) {
+                            quest.progress = {};
+                        }
+                        // Přidej chybějící vlastnosti
+                        if (quest.progress.explored === undefined) quest.progress.explored = 0;
+                        if (quest.progress.kills === undefined) quest.progress.kills = 0;
+                        if (quest.progress.escortLocations === undefined) quest.progress.escortLocations = 0;
+                        if (quest.progress.travels === undefined) quest.progress.travels = 0;
+                        console.log(`🔧 Migrace: Progress pro NPC quest ${quest.id}:`, quest.progress);
                     }
                 });
             }
@@ -63485,26 +63502,14 @@ function openFullscreenMap() {
                 });
             }
             
-            // === OPRAVA: Resetuj zaseknutý travel stav ===
-            // Pokud je cesta pozastavená déle než 10 minut, resetuj ji (pravděpodobně bug)
-            if (state.world.travelPaused || state.map?.travelPaused) {
-                console.warn('⚠️ Migrace: Nalezen zaseknutý travelPaused stav, resetuji...');
+            // === OPRAVA: Resetuj zaseknutý travelPaused flag ===
+            // travelPaused se už nepoužívá - jen ho vyčistíme
+            if (state.world.travelPaused) {
+                console.log('🔧 Migrace: Odstraňuji starý travelPaused flag');
                 state.world.travelPaused = false;
-                state.world.traveling = false;
-                state.world.travelTo = null;
-                state.world.travelStart = null;
-                state.world.travelDuration = null;
-                state.world.travelRemainingTime = null;
-                state.world.resumeAfterCombat = false;
-                state.world.scheduledEvents = [];
-                
-                if (state.map) {
-                    state.map.travelPaused = false;
-                    state.map.traveling = false;
-                    state.map.travelRemainingTime = null;
-                }
-                
-                console.log('✅ Travel stav resetován');
+            }
+            if (state.map?.travelPaused) {
+                state.map.travelPaused = false;
             }
             
             // === OPRAVA: Vyčisti zaseknuté companion eventy ===
@@ -65695,16 +65700,12 @@ function openFullscreenMap() {
                     if (hadCompanionEvent) {
                         state.world.scheduledEvents = state.world.scheduledEvents.filter(e => e.type !== 'companion');
                         console.log('🗑️ TVRDÝ FIX: Smazány companion eventy - hráč už má psa');
-                        // Obnov cestu pokud je pozastavená
+                        // Vyčisti jen travelPaused flag, NE traveling!
                         if (state.world.travelPaused) {
                             state.world.travelPaused = false;
-                            state.world.traveling = false;
-                            state.world.travelTo = null;
-                            state.world.scheduledEvents = [];
-                            if (state.map) {
-                                state.map.travelPaused = false;
-                                state.map.traveling = false;
-                            }
+                        }
+                        if (state.map?.travelPaused) {
+                            state.map.travelPaused = false;
                         }
                     }
                 }
@@ -66540,14 +66541,27 @@ function openFullscreenMap() {
                     console.log('✓ Migrace: state.world inicializován pro nový mapový systém');
                 }
                 
-                // === RESET NEPLATNÉHO TRAVELING STAVU ===
+                // === DOKONČENÍ CESTOVÁNÍ POKUD ČAS VYPRŠEL ===
                 if (state.world.traveling) {
                     const now = Date.now();
                     const travelEnd = (state.world.travelStart || 0) + (state.world.travelDuration || 0);
                     
-                    // Resetuj pokud: cestování mělo dávno skončit, chybí cíl, nebo chybí duration
-                    if ((travelEnd > 0 && now > travelEnd + 5000) || !state.world.travelTo || !state.world.travelDuration) {
-                        console.log('🔧 Migrace: Reset neplatného traveling stavu');
+                    // Pokud chybí cíl nebo duration, resetuj (corrupted state)
+                    if (!state.world.travelTo || !state.world.travelDuration) {
+                        console.log('🔧 Migrace: Reset corrupted traveling stavu (chybí travelTo nebo duration)');
+                        state.world.traveling = false;
+                        state.world.travelTo = null;
+                        state.world.travelPath = null;
+                        state.world.scheduledEvents = [];
+                        state.map.traveling = false;
+                    }
+                    // Pokud čas vypršel, DOKONČI cestu (ne resetuj!)
+                    else if (travelEnd > 0 && now > travelEnd) {
+                        console.log('🔧 Migrace: Cestování dokončeno (čas vypršel), cíl:', state.world.travelTo);
+                        state.world.currentLocation = state.world.travelTo;
+                        if (!state.world.visitedLocations.includes(state.world.travelTo)) {
+                            state.world.visitedLocations.push(state.world.travelTo);
+                        }
                         state.world.traveling = false;
                         state.world.travelTo = null;
                         state.world.travelPath = null;
@@ -70889,10 +70903,11 @@ function openFullscreenMap() {
                     }
                 }
                 
-                notifySuccess('Skóre odesláno!', `${score.toLocaleString()} bodů | ELO: ${state.pvp?.elo || 1000}`);
+                // Tiché odeslání - žádná notifikace
+                console.log(`📤 Skóre odesláno: ${score.toLocaleString()} bodů`);
             } catch (e) {
                 console.error('Chyba při odesílání skóre:', e);
-                notifyWarning('Chyba', 'Nepodařilo se odeslat skóre');
+                // Žádná notifikace ani při chybě
             }
         }
         
