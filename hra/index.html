@@ -57018,6 +57018,9 @@ function openFullscreenMap() {
                     lastAction: null
                 };
                 
+                // UKLÁDÁNÍ BOJE - aby se zachoval při refreshi
+                state.activeCombat = window.combatState;
+                
                 // === TECHNIK BONUSY - PAST A VĚŽIČKA ===
                 const companionBonuses = getAllCompanionBonuses();
                 
@@ -58812,7 +58815,7 @@ function openFullscreenMap() {
             if (Math.random() < fleeChance) {
                 cs.log.push(`🏃 Útěk se podařil! (${Math.round(fleeChance * 100)}% šance)`);
                 setTimeout(() => {
-                    window.combatState = null;
+                    endCombat();
                     closeModal();
                     notifyWarning('Uprchl jsi!', 'Boj ukončen bez odměny');
                     // DŮLEŽITÉ: Pokud cestujeme, pokračuj
@@ -58874,6 +58877,10 @@ function openFullscreenMap() {
                 `;
                 return;
             }
+            
+            // UKLÁDÁNÍ BOJE - průběžné ukládání při každé změně
+            state.activeCombat = cs;
+            saveGame(); // Ulož stav boje
             
             const currentUnit = cs.selectedUnit;
             // Hráčův tah = hráč NEBO společník při manuálním ovládání
@@ -59172,6 +59179,13 @@ function openFullscreenMap() {
             return html;
         }
         
+        // Helper funkce pro ukončení boje - vyčistí combatState i uložený stav
+        function endCombat() {
+            window.combatState = null;
+            delete state.activeCombat;
+            saveGame(); // Uložit že boj skončil
+        }
+        
         function handleCombatDefeat() {
             const cs = window.combatState;
             
@@ -59182,7 +59196,7 @@ function openFullscreenMap() {
             if (state.warZoneFight?.active) {
                 const warFight = state.warZoneFight;
                 state.warZoneFight = null;
-                window.combatState = null;
+                endCombat();
                 
                 // Obnov původní HP (před bojem)
                 state.char.hp = warFight.savedHp || Math.max(1, Math.floor(state.char.maxHp * 0.5));
@@ -59212,7 +59226,7 @@ function openFullscreenMap() {
             // Pokud to byl boj se strážci území, zpracuj ho zvlášť
             if (cs?.combatType === 'territory_guard' && window.territoryBattle) {
                 onTerritoryBattleEnd(false);
-                window.combatState = null;
+                endCombat();
                 // Při prohře v území boji se neprohrává celá hra
                 state.char.hp = Math.max(1, Math.floor(state.char.maxHp * 0.1)); // 10% HP
                 notifyWarning('💀 Prohra!', 'Strážci tě porazili. Utekl jsi s těžkými zraněními.');
@@ -59229,7 +59243,7 @@ function openFullscreenMap() {
             
             // Speciální handling pro Abyss - opravdová smrt bez možnosti respawnu
             if (cs?.combatType === 'abyss') {
-                window.combatState = null;
+                endCombat();
                 if (typeof handleAbyssDefeat === 'function') {
                     handleAbyssDefeat();
                 } else {
@@ -59249,7 +59263,7 @@ function openFullscreenMap() {
                 return;
             }
             
-            window.combatState = null;
+            endCombat();
             
             // === TEST MODE ===
             // Hráč nezemře, jen se vyléčí - pro testování
@@ -60362,7 +60376,7 @@ function openFullscreenMap() {
             // Pokud to byl boj se strážci území, zpracuj ho zvlášť
             if (cs.combatType === 'territory_guard' && window.territoryBattle) {
                 onTerritoryBattleEnd(true);
-                window.combatState = null;
+                endCombat();
                 renderFull();
                 return;
             }
@@ -60381,7 +60395,7 @@ function openFullscreenMap() {
                 closeModal();
                 renderFull();
                 notifySuccess('🏆 Vítězství!', 'Porazil jsi všechny nepřátele!');
-                window.combatState = null;
+                endCombat();
                 return;
             }
             
@@ -60524,7 +60538,7 @@ function openFullscreenMap() {
             if (state.warZoneFight?.active) {
                 const warFight = state.warZoneFight;
                 state.warZoneFight = null;
-                window.combatState = null;
+                endCombat();
                 
                 // Obnov původní HP (před bojem)
                 state.char.hp = warFight.savedHp || state.char.hp;
@@ -60855,11 +60869,11 @@ function openFullscreenMap() {
             }
             
             // Handle special combat types
-            let continueAction = "window.combatState = null; closeModal(); checkAchievements(); renderFull();";
+            let continueAction = "endCombat(); closeModal(); checkAchievements(); renderFull();";
             
             // DŮLEŽITÉ: Pokud cestujeme, po boji pokračuj (cesta běží na pozadí)
             if (state.world?.traveling || state.map?.traveling || state.world?.travelPaused || state.map?.travelPaused) {
-                continueAction = "window.combatState = null; closeModal(); checkAchievements(); continueTravel();";
+                continueAction = "endCombat(); closeModal(); checkAchievements(); continueTravel();";
                 console.log('🚶 Traveling - will continue after combat');
             }
             
@@ -62664,7 +62678,7 @@ function openFullscreenMap() {
         
         // Helper pro vyčištění combat state (volat při konci boje)
         function clearCombatState() {
-            window.combatState = null;
+            endCombat();
             delete state.savedCombatState;
             saveGame(true);
         }
@@ -62927,15 +62941,14 @@ function openFullscreenMap() {
                     migrateState();
                     
                     // === OBNOVENÍ COMBAT STATE ===
-                    if (state.savedCombatState) {
-                        window.combatState = state.savedCombatState;
+                    if (state.activeCombat) {
+                        window.combatState = state.activeCombat;
                         console.log('⚔️ Combat state obnoven po refreshi');
                         // Zobraz boj místo běžného UI
                         setTimeout(() => {
                             document.getElementById('modal').classList.add('show');
                             renderHeroesCombatUI();
                         }, 100);
-                        return; // Nepokračuj s normálním renderem
                     }
                     
                     // Po načtení vždy přepni na Online tab
