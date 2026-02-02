@@ -32698,6 +32698,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         console.log('Faction ambush triggered! Raiders rep:', rep);
                         addLog('⚠️ Nájezdníci ti nastražili past!', '💀');
                         
+                        // DŮLEŽITÉ: Pozastav cestování
+                        pauseTravelForEvent();
+                        
                         // Spawn raiders combat
                         const raiderEnemy = ENEMIES.find(e => e.id === 'raider') || ENEMIES.find(e => e.faction === 'raiders');
                         if (raiderEnemy) {
@@ -33114,8 +33117,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             notifySuccess('Nový společník!', newCompanion.name + ' se k tobě přidal!');
             addLog(newCompanion.name + ' se stal tvým společníkem!', companion.icon);
             
-            // Pokud cestujeme, pokračuj
-            renderFull();
+            // Pokud cestujeme, pokračuj v cestě
+            continueTravel();
         }
         
         function confirmAdoptCompanion(companionId) {
@@ -33133,7 +33136,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             closeModal();
             notifySuccess('Výměna!', oldCompanion.name + ' → ' + newCompanion.name);
             addLog('Vyměnil společníka: ' + newCompanion.name, newCompanion.icon);
-            renderFull();
+            continueTravel();
         }
         
         function handleResourceEvent(event) {
@@ -35453,11 +35456,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Kontrola obou systémů
             if (!state.map.traveling && !state.world.traveling) return;
             
+            // DŮLEŽITÉ: Ověř že máme platný cíl cesty
+            if (!state.world.travelTo) {
+                console.error('❌ pauseTravelForEvent: travelTo je null! Cesta není validní.');
+                return;
+            }
+            
             // Ulož zbývající čas z aktivního systému
             const travelStart = state.world.travelStart || state.map.travelStart;
             const travelDuration = state.world.travelDuration || state.map.travelDuration;
             const elapsed = Date.now() - travelStart;
             const remainingTime = Math.max(0, travelDuration - elapsed);
+            
+            console.log('⏸️ pauseTravelForEvent:', {
+                travelTo: state.world.travelTo,
+                remainingTime: Math.floor(remainingTime / 1000) + 's',
+                elapsed: Math.floor(elapsed / 1000) + 's'
+            });
             
             // Pozastav NOVÝ WORLD systém
             state.world.travelPaused = true;
@@ -35500,10 +35515,45 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Kontrola jestli je cesta pozastavená (nový WORLD systém)
-            if (!state.world.travelPaused && !state.map.travelPaused) return;
+            if (!state.world.travelPaused && !state.map.travelPaused) {
+                console.log('⚠️ resumeTravel: cesta není pozastavená, renderuji...');
+                renderFull();
+                return;
+            }
+            
+            // DŮLEŽITÉ: Kontrola že máme kam jít
+            if (!state.world.travelTo) {
+                console.error('❌ resumeTravel: travelTo je null! Nelze pokračovat v cestě.');
+                // OPRAVA: Resetuj travel stav úplně
+                state.world.travelPaused = false;
+                state.world.traveling = false;
+                state.map.travelPaused = false;
+                state.map.traveling = false;
+                notifyWarning('Cesta přerušena', 'Cíl cesty nebyl zachován');
+                renderFull();
+                return;
+            }
             
             // Pokračuj v cestě se zbývajícím časem
             const remainingTime = state.world.travelRemainingTime || state.map.travelRemainingTime || 0;
+            
+            console.log('▶️ resumeTravel:', {
+                travelTo: state.world.travelTo,
+                remainingTime: Math.floor(remainingTime / 1000) + 's',
+                currentLocation: state.world.currentLocation
+            });
+            
+            // Pokud zbývá velmi málo času, ihned dokonči cestu
+            if (remainingTime < 1000) {
+                console.log('✅ Zbývá méně než 1s - dokončuji cestu ihned');
+                state.world.travelPaused = false;
+                state.map.travelPaused = false;
+                state.world.traveling = true;
+                state.world.travelStart = Date.now() - state.world.travelDuration; // Nastav jako dokončeno
+                state.map.traveling = true;
+                checkTravelComplete();
+                return;
+            }
             
             // NOVÝ WORLD SYSTÉM
             state.world.traveling = true;
@@ -35994,7 +36044,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal('📋 Výsledek', `
                 <div style="text-align: center;">
                     ${resultHtml}
-                    <button class="btn" onclick="closeModal(); if(state.map.travelPaused) resumeTravel(); else renderFull();" style="width: 100%; margin-top: 1rem;">✓ Pokračovat</button>
+                    <button class="btn" onclick="closeModal(); if(state.map.travelPaused || state.world.travelPaused) resumeTravel(); else renderFull();" style="width: 100%; margin-top: 1rem;">✓ Pokračovat</button>
                 </div>
             `);
             
@@ -58822,9 +58872,15 @@ function openFullscreenMap() {
             if (Math.random() < fleeChance) {
                 cs.log.push(`🏃 Útěk se podařil! (${Math.round(fleeChance * 100)}% šance)`);
                 setTimeout(() => {
+                    window.combatState = null;
                     closeModal();
-                    renderFull();
                     notifyWarning('Uprchl jsi!', 'Boj ukončen bez odměny');
+                    // DŮLEŽITÉ: Pokud bylo cestování pozastaveno, pokračuj
+                    if (state.world?.travelPaused || state.map?.travelPaused) {
+                        resumeTravel();
+                    } else {
+                        renderFull();
+                    }
                 }, 500);
             } else {
                 cs.log.push(`❌ Útěk se nezdařil! (${Math.round(fleeChance * 100)}% šance)`);
@@ -59262,14 +59318,21 @@ function openFullscreenMap() {
             // Přidej do herního deníku
             addLog(`💀 Prohra v boji! (TEST MODE - HP obnoveno)`, '💀');
             
+            // DŮLEŽITÉ: Kontrola jestli bylo cestování pozastaveno
+            const wasTraveling = state.world?.travelPaused || state.map?.travelPaused;
+            const continueAction = wasTraveling 
+                ? "closeModal(); resumeTravel();" 
+                : "closeModal(); renderFull();";
+            
             showModal('💀 PROHRA', `
                 <div style="text-align: center; padding: 1rem;">
                     <div style="font-size: 4rem;">🧪</div>
                     <h2 style="color: #ff9800;">TEST MODE</h2>
                     <p style="color: #888;">Normálně bys umřel, ale pro testování pokračuješ.</p>
                     <p style="color: #4caf50;">HP obnoveno na maximum!</p>
-                    <button class="btn" onclick="closeModal(); renderFull();" style="width: 100%; margin-top: 1rem;">
-                        ✓ Pokračovat v testování
+                    ${wasTraveling ? '<p style="color: #2196f3;">▶️ Cesta bude pokračovat...</p>' : ''}
+                    <button class="btn" onclick="${continueAction}" style="width: 100%; margin-top: 1rem;">
+                        ✓ Pokračovat ${wasTraveling ? 'v cestě' : 'v testování'}
                     </button>
                 </div>
             `);
@@ -60853,6 +60916,13 @@ function openFullscreenMap() {
             
             // Handle special combat types
             let continueAction = "window.combatState = null; closeModal(); checkAchievements(); renderFull();";
+            
+            // DŮLEŽITÉ: Pokud bylo cestování pozastaveno, pokračuj v něm
+            if (state.world?.travelPaused || state.map?.travelPaused) {
+                continueAction = "window.combatState = null; closeModal(); checkAchievements(); resumeTravel();";
+                console.log('🚶 Travel was paused - will resume after combat');
+            }
+            
             let specialRewardHtml = '';
             
             // Označ lokaci jako vyčištěnou pokud to byl raid
