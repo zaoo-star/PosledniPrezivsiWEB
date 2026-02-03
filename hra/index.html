@@ -8035,7 +8035,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             'find_goods': { 
                 name: 'Dones zásoby', 
                 desc: 'Můj známý potřebuje zásoby. Doneseš mu je?', 
-                details: '📦 Nasbírej 10 surovin a dones je cílovému NPC. Cíl se ti zobrazí po nasbírání.',
+                details: '📦 Nasbírej 10 jakýchkoliv surovin (dřevo, kov, látka, kůže, elektronika, byliny, chemikálie, sklo, kámen, palivo, lano, šrot, měď...) a dones je cílovému NPC. Počítají se suroviny nasbírané PO přijetí úkolu – průzkumem, těžbou, bojem. Cíl doručení se zobrazí po nasbírání.',
                 requirement: { resources: 10, deliver: true }, 
                 reward: { money: 100, trust: 15, xp: 50 },
                 deliverTargets: ['elder_tomas', 'mysterious_woman', 'blacksmith_ivan', 'doc_harris', 'grandma_marta', 'teacher_vera']
@@ -29615,7 +29615,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const isResultModal = title.includes('🏹') || title.includes('⛏️') || title.includes('🧺') || 
                                   title.includes('Úspěšný') || title.includes('Minul') || title.includes('Vytěženo') ||
                                   title.includes('Quest') || title.includes('💎');
-            if (window._resultModalActive && !isResultModal) {
+            // Uživatelské akce (NPC questy, inventář, obchod) MUSÍ projít i přes _resultModalActive
+            const isUserAction = title.includes('📜') || title.includes('📦') || title.includes('👤') || 
+                                 title.includes('📋') || title.includes('🎁') || title.includes('💬') ||
+                                 title.includes('🏪') || title.includes('🎒') || title.includes('📍');
+            if (window._resultModalActive && !isResultModal && !isUserAction) {
                 console.log('⚠️ showModal blocked - result modal active:', title);
                 return;
             }
@@ -51155,7 +51159,7 @@ function openFullscreenMap() {
             const req = quest.requirement;
             let html = '<ul style="margin: 0; padding-left: 1.2rem; color: #aaa; font-size: 0.9rem;">';
             
-            if (req.resources) html += `<li>Přines ${req.resources} různých surovin</li>`;
+            if (req.resources) html += `<li>Nasbírej ${req.resources} jakýchkoliv surovin (dřevo, kov, látka, byliny, šrot, měď...)</li>`;
             if (req.herbs) html += `<li>Přines ${req.herbs}× byliny</li>`;
             if (req.metal) html += `<li>Přines ${req.metal}× kov</li>`;
             if (req.explore) html += `<li>Prozkoumej ${req.explore} lokací</li>`;
@@ -51184,6 +51188,9 @@ function openFullscreenMap() {
                     if (diff > collected) collected = Math.max(0, diff);
                 }
                 html += `<li style="color: ${collected >= req.resources ? '#8bc34a' : '#ff9800'};">Suroviny: ${collected}/${req.resources}</li>`;
+                if (collected < req.resources) {
+                    html += `<li style="color: #666; font-size: 0.8rem;">🔧 Počítá se jakákoliv surovina nasbíraná po přijetí úkolu (dřevo, kov, látka, kůže, byliny, šrot, měď...)</li>`;
+                }
                 
                 // Pokud je to deliver quest a máme dost surovin, ukaž cíl
                 if (req.deliver && collected >= req.resources) {
@@ -51224,6 +51231,12 @@ function openFullscreenMap() {
             
             html += '</ul>';
             return html;
+        }
+        
+        // Najdi lokaci NPC podle jeho ID
+        function findNPCLocation(npcId) {
+            const npc = FRIENDLY_NPCS.find(n => n.id === npcId);
+            return npc ? npc.location : null;
         }
         
         function checkNPCQuestProgress(activeQuest, quest) {
@@ -51868,6 +51881,39 @@ function openFullscreenMap() {
                 state.karma.koudy = (state.karma.koudy || 0) + quest.reward.karma_koudy;
             }
             
+            // Item odměna (podpora přímého ID i kategorie jako 'rare', 'legendary' atd.)
+            let rewardItemGiven = null;
+            if (quest.reward.item) {
+                let rewardItem = ITEMS.find(i => i.id === quest.reward.item);
+                // Pokud není přímý item, zkus kategorie
+                if (!rewardItem) {
+                    const categoryItems = {
+                        'rare': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
+                        'rare_item': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
+                        'rare_weapon': ITEMS.filter(i => i.type === 'weapon' && (i.rarity === 'rare' || i.rarity === 'epic')),
+                        'rare_armor': ITEMS.filter(i => i.type === 'armor' && (i.rarity === 'rare' || i.rarity === 'epic')),
+                        'legendary': ITEMS.filter(i => i.rarity === 'legendary'),
+                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary'),
+                        'weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity !== 'legendary'),
+                        'armor': ITEMS.filter(i => i.type === 'armor' && i.rarity !== 'legendary'),
+                        'medkit': ITEMS.filter(i => i.id === 'medkit' || i.id === 'first_aid'),
+                    };
+                    const pool = categoryItems[quest.reward.item];
+                    if (pool && pool.length > 0) {
+                        rewardItem = pool[Math.floor(Math.random() * pool.length)];
+                    }
+                }
+                if (rewardItem) {
+                    const existing = state.inv.find(i => i.id === rewardItem.id);
+                    if (existing) {
+                        existing.count = (existing.count || 1) + 1;
+                    } else {
+                        state.inv.push({...rewardItem, count: 1});
+                    }
+                    rewardItemGiven = rewardItem;
+                }
+            }
+            
             // Ulož quest do seznamu dokončených
             const completedQuestId = activeQuest.id;
             if (!state.npcQuests[npcId].completed) {
@@ -51894,6 +51940,7 @@ function openFullscreenMap() {
                         ${quest.reward.money ? `<div>💰 +${quest.reward.money} peněz</div>` : ''}
                         ${quest.reward.xp ? `<div>⭐ +${quest.reward.xp} XP</div>` : ''}
                         ${quest.reward.trust ? `<div>❤️ +${quest.reward.trust} důvěry s ${npc?.name || 'NPC'}</div>` : ''}
+                        ${rewardItemGiven ? `<div>🎁 ${rewardItemGiven.icon || '📦'} ${rewardItemGiven.name}</div>` : ''}
                         ${quest.reward.karma_kory ? `<div style="color: ${quest.reward.karma_kory > 0 ? '#ff5722' : '#4caf50'};">🔥 Karma Kory: ${quest.reward.karma_kory > 0 ? '+' : ''}${quest.reward.karma_kory}</div>` : ''}
                         ${quest.reward.karma_koudy ? `<div style="color: ${quest.reward.karma_koudy > 0 ? '#2196f3' : '#ff5722'};">🔬 Karma Koudy: ${quest.reward.karma_koudy > 0 ? '+' : ''}${quest.reward.karma_koudy}</div>` : ''}
                     </div>
