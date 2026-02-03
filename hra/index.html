@@ -12878,12 +12878,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const droppedItem = state.inv[invIndex];
             const droppedName = droppedItem.name || getItemName(droppedItem.id) || droppedItem.id;
             
+            // Ulož na zem
+            addToGroundLoot({...droppedItem});
+            
             // Odeber předmět z inventáře
             state.inv.splice(invIndex, 1);
             updateCarryWeight();
             
-            addLog('Vyhodil jsi: ' + droppedName, '🗑️');
-            notifyWarning('Vyhozeno', droppedName);
+            addLog('Vyhodil jsi: ' + droppedName + ' na zem', '🗑️');
+            notifyWarning('Vyhozeno na zem', droppedItem.icon + ' ' + droppedName);
             
             // Zkus znovu přidat nový předmět
             if (pendingPickupItem) {
@@ -13550,6 +13553,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = groundItems[index];
             const count = item.count || 1;
             
+            // Pokud má víc kusů, zobraz dialog pro výběr počtu
+            if (count > 1) {
+                showPickupAmountDialog(index);
+                return;
+            }
+            
             if (canAddItem(item, count)) {
                 // Vytvoř kopii bez droppedAt
                 const itemCopy = {...item};
@@ -13568,6 +13577,112 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } else {
                 notifyWarning('Plný inventář!', 'Uvolni místo v inventáři');
+            }
+        }
+        
+        // Dialog pro výběr počtu kusů k sebrání ze země
+        function showPickupAmountDialog(index) {
+            const location = state.world?.currentLocation || 'shelter';
+            const groundItems = state.world.groundLoot?.[location];
+            if (!groundItems || !groundItems[index]) return;
+            
+            const item = groundItems[index];
+            const maxCount = item.count || 1;
+            const itemWeight = item.weight || 0;
+            const freeWeight = (state.maxCarryWeight || 50) - (state.carryWeight || 0);
+            const maxByWeight = itemWeight > 0 ? Math.floor(freeWeight / itemWeight) : maxCount;
+            const maxPickup = Math.min(maxCount, Math.max(1, maxByWeight));
+            
+            showModal(`📦 Sebrat ${item.icon} ${item.name}`, `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <div style="font-size: 3rem;">${item.icon || '📦'}</div>
+                    <p style="color: #888;">Na zemi: <strong style="color: #ffd700;">${maxCount}x</strong></p>
+                    <p style="color: #666; font-size: 0.8rem;">Uneseš max: ${maxByWeight}x (volno ${freeWeight.toFixed(1)} kg)</p>
+                </div>
+                
+                <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <label style="color: #888; display: block; margin-bottom: 0.5rem;">Kolik sebrat?</label>
+                    <input type="range" id="pickupAmount" min="1" max="${maxPickup}" value="${maxPickup}" 
+                        style="width: 100%;"
+                        oninput="document.getElementById('pickupValue').textContent = this.value; document.getElementById('remainValue').textContent = (${maxCount} - parseInt(this.value));">
+                    <div style="display: flex; justify-content: space-between; margin-top: 0.5rem;">
+                        <span style="color: #666;">1</span>
+                        <span style="color: #4caf50; font-size: 1.2rem; font-weight: bold;" id="pickupValue">${maxPickup}</span>
+                        <span style="color: #666;">${maxPickup}</span>
+                    </div>
+                </div>
+                
+                <div style="display: flex; justify-content: space-around; background: #0a0a0a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <div style="text-align: center;">
+                        <div style="color: #888; font-size: 0.8rem;">Sebrat</div>
+                        <div style="color: #4caf50; font-size: 1.5rem; font-weight: bold;" id="pickupValueDisplay">${maxPickup}</div>
+                    </div>
+                    <div style="color: #555; font-size: 2rem;">📦</div>
+                    <div style="text-align: center;">
+                        <div style="color: #888; font-size: 0.8rem;">Zůstane na zemi</div>
+                        <div style="color: #ff9800; font-size: 1.5rem; font-weight: bold;" id="remainValue">${maxCount - maxPickup}</div>
+                    </div>
+                </div>
+                
+                <button class="btn" onclick="confirmPickupAmount(${index})" style="width: 100%; background: #4caf50;">
+                    ✅ Sebrat
+                </button>
+                <button class="btn" onclick="showGroundLoot()" style="width: 100%; margin-top: 0.5rem; background: #555;">
+                    ← Zpět
+                </button>
+            `);
+            
+            // Synchronizuj oba displeje
+            const maxVal = maxPickup;
+            const totalCount = maxCount;
+            setTimeout(() => {
+                const slider = document.getElementById('pickupAmount');
+                if (slider) {
+                    slider.oninput = function() {
+                        document.getElementById('pickupValue').textContent = this.value;
+                        document.getElementById('pickupValueDisplay').textContent = this.value;
+                        document.getElementById('remainValue').textContent = totalCount - parseInt(this.value);
+                    };
+                }
+            }, 100);
+        }
+        
+        // Potvrzení sebrání vybraného počtu
+        function confirmPickupAmount(index) {
+            const location = state.world?.currentLocation || 'shelter';
+            const groundItems = state.world.groundLoot?.[location];
+            if (!groundItems || !groundItems[index]) return;
+            
+            const item = groundItems[index];
+            const pickupCount = parseInt(document.getElementById('pickupAmount')?.value || 1);
+            const totalCount = item.count || 1;
+            
+            // Vytvoř kopii pro inventář
+            const itemCopy = {...item, count: pickupCount};
+            delete itemCopy.droppedAt;
+            
+            if (!canAddItem(item, pickupCount)) {
+                notifyWarning('Plný inventář!', 'Uvolni místo');
+                return;
+            }
+            
+            addItemToInventory(itemCopy, pickupCount);
+            
+            // Aktualizuj nebo odeber ze země
+            if (totalCount > pickupCount) {
+                groundItems[index] = {...item, count: totalCount - pickupCount};
+            } else {
+                groundItems.splice(index, 1);
+            }
+            
+            notifySuccess('Sebráno!', `${pickupCount}x ${item.icon} ${item.name}`);
+            
+            // Zobraz zbytek nebo zavři
+            if (groundItems.length > 0) {
+                showGroundLoot();
+            } else {
+                closeModal();
+                renderFull();
             }
         }
         
@@ -40701,6 +40816,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.equipped?.boots === item) state.equipped.boots = null;
             if (state.equipped?.helmet === item) state.equipped.helmet = null;
             
+            // Ulož na zem
+            addToGroundLoot({...item, count: 1});
+            
             // Odeber z inventáře
             state.inv.splice(idx, 1);
             
@@ -40708,8 +40826,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateCarryWeight();
             
             closeModal();
-            addLog('Zahodil jsi ' + item.name, '🗑️');
-            notifyWarning('Zahozeno', item.name);
+            addLog('Zahodil jsi ' + item.name + ' na zem', '🗑️');
+            notifyWarning('Zahozeno na zem', item.icon + ' ' + item.name);
             renderFull();
         }
         
@@ -40791,6 +40909,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.equipped?.boots === item) state.equipped.boots = null;
             if (state.equipped?.helmet === item) state.equipped.helmet = null;
             
+            // Ulož na zem
+            addToGroundLoot({...item, count: dropAmount});
+            
             // Odeber z inventáře
             if (item.count && item.count > dropAmount) {
                 item.count -= dropAmount;
@@ -40802,8 +40923,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateCarryWeight();
             
             closeModal();
-            addLog('Zahodil jsi ' + dropAmount + 'x ' + item.name, '🗑️');
-            notifyWarning('Zahozeno', dropAmount + 'x ' + item.name);
+            addLog('Zahodil jsi ' + dropAmount + 'x ' + item.name + ' na zem', '🗑️');
+            notifyWarning('Zahozeno na zem', dropAmount + 'x ' + item.icon + ' ' + item.name);
             renderFull();
         }
         
@@ -40820,6 +40941,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.equipped?.boots === item) state.equipped.boots = null;
             if (state.equipped?.helmet === item) state.equipped.helmet = null;
             
+            // Ulož na zem
+            addToGroundLoot({...item, count: dropAmount});
+            
             // Odeber celý stack
             state.inv.splice(idx, 1);
             
@@ -40827,8 +40951,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateCarryWeight();
             
             closeModal();
-            addLog('Zahodil jsi ' + dropAmount + 'x ' + item.name, '🗑️');
-            notifyWarning('Zahozeno', dropAmount + 'x ' + item.name);
+            addLog('Zahodil jsi ' + dropAmount + 'x ' + item.name + ' na zem', '🗑️');
+            notifyWarning('Zahozeno na zem', dropAmount + 'x ' + item.icon + ' ' + item.name);
             renderFull();
         }
         
