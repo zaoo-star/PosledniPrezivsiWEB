@@ -10148,6 +10148,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         
         // === ALCHYMIE/VAŘENÍ ===
         // Uvařená jídla s trvanlivostí (4 herní dny)
+        // PERISHABLE_FOODS - vařená jídla (DEPRECATED - sjednoceno do PERISHABLE_FOOD)
+        // Ponecháno pro zpětnou kompatibilitu se starými save daty
         const PERISHABLE_FOODS = {
             'cooked_meat': { days: 4, name: 'Pečené maso' },
             'grilled_fish': { days: 4, name: 'Grilovaná ryba' },
@@ -10155,10 +10157,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             'stew': { days: 4, name: 'Guláš' },
             'fish_soup': { days: 4, name: 'Rybí polévka' },
             'mutant_steak': { days: 4, name: 'Mutantí steak' }
-            // jerky (sušené maso) záměrně chybí - vydrží dlouho
         };
         
-        const PERISHABLE_FOOD_EXPIRY_MS = 4 * 24 * 60 * 60 * 1000; // 4 reálné dny v ms pro marketplace
+        const PERISHABLE_FOOD_EXPIRY_MS = 4 * 24 * 60 * 60 * 1000; // Legacy - pro staré marketplace nabídky s cookedAt
         
         const RECIPES = [
             // Vaření
@@ -13925,6 +13926,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const resourceId = item.id;
                 state.resources[resourceId] = (state.resources[resourceId] || 0) + count;
                 
+                // Perishable resources (raw_meat, fish, herbs) - nastav čerstvost
+                if (typeof markFoodAsNew === 'function' && typeof PERISHABLE_FOOD !== 'undefined' && PERISHABLE_FOOD[resourceId]) {
+                    markFoodAsNew(resourceId, count);
+                }
+                
                 // === UPDATE NPC QUEST PROGRESS pro resource questy ===
                 if (state.npcQuests) {
                     Object.keys(state.npcQuests).forEach(npcId => {
@@ -13977,6 +13983,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const existing = state.inv.find(i => i.id === item.id && !i.stackId);
                 if (existing && !item.stackId) {
                     existing.count = (existing.count || 1) + count;
+                    // Perishable food: NEMĚNÍME obtainedDay - staré se zkazí normálně v checkFoodSpoilage
                     SoundSystem.play('pickup');
                     updateCarryWeight();
                     return true;
@@ -13985,6 +13992,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Přidej nový předmět
             const newItem = {...item};
+            
+            // Perishable food: nastav obtainedDay při prvním přidání
+            if (PERISHABLE_FOOD[newItem.id] && !newItem.obtainedDay) {
+                newItem.obtainedDay = state.time?.days || 1;
+            }
             
             // Doplň chybějící vlastnosti z ITEMS definice (price, weight, atd.)
             if (!newItem.price || !newItem.weight || !newItem.special) {
@@ -18223,7 +18235,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             if (!item) {
-                notifyWarning('Chyba', 'Item nenalezen');
+                notifyWarning('Chyba', 'Předmět nenalezen');
                 state.money += 50;
                 return;
             }
@@ -19374,21 +19386,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Najdi zbraně které používají tuto surovinu jako munici (např. palivo pro řetězovou pilu)
             const weaponsUsing = ITEMS.filter(i => i.type === 'weapon' && i.ammoType === key);
             
-            // Kontrola trvanlivosti
-            const perishable = {
-                'raw_meat': { days: 2, name: 'Syrové maso' },
-                'fish': { days: 2, name: 'Ryba' },
-                'herbs': { days: 5, name: 'Byliny' }
-            };
-            
+            // Kontrola trvanlivosti - sjednocený systém
             let freshness = '';
-            if (perishable[key] && amount > 0) {
+            if (PERISHABLE_FOOD[key] && amount > 0) {
                 const currentDay = state.time?.days || 1;
                 const timestamp = state.foodTimestamps?.[key];
-                // Pokud timestamp neexistuje nebo je v budoucnu, nastav na dnešek
                 const validTimestamp = (timestamp && timestamp <= currentDay) ? timestamp : currentDay;
                 const daysSince = currentDay - validTimestamp;
-                const daysLeft = Math.max(0, perishable[key].days - daysSince);
+                const daysLeft = Math.max(0, PERISHABLE_FOOD[key].days - daysSince);
                 
                 let freshColor = '#8bc34a';
                 let freshText = 'Čerstvé';
@@ -19409,7 +19414,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div style="color: ${freshColor}; font-weight: bold; font-size: 1.1rem;">🕐 ${freshText}</div>
                         <div style="color: #888; font-size: 0.8rem; margin-top: 0.3rem;">${'Zbývá'} ${daysLeft} ${daysWord}</div>
                         <div style="background: #0a0a0a; height: 8px; border-radius: 4px; margin-top: 0.5rem; overflow: hidden;">
-                            <div style="height: 100%; width: ${(daysLeft / perishable[key].days) * 100}%; background: linear-gradient(90deg, ${freshColor}, ${daysLeft > 2 ? '#8bc34a' : freshColor}); transition: width 0.3s;"></div>
+                            <div style="height: 100%; width: ${(daysLeft / PERISHABLE_FOOD[key].days) * 100}%; background: linear-gradient(90deg, ${freshColor}, ${daysLeft > 2 ? '#8bc34a' : freshColor}); transition: width 0.3s;"></div>
                         </div>
                     </div>
                 `;
@@ -22088,7 +22093,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const item = state.inv.find(i => i.id === itemId);
             if (!item) {
-                notifyWarning('Chyba', 'Item nenalezen');
+                notifyWarning('Chyba', 'Předmět nenalezen');
                 return;
             }
             
@@ -23177,17 +23182,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 count: 1
             };
             
-            // Přidej cookedAt timestamp pro trvanlivost
-            if (PERISHABLE_FOODS[recipe.id]) {
-                food.cookedAt = Date.now();
+            // Přidej čerstvost - sjednocený systém přes obtainedDay (herní dny)
+            if (PERISHABLE_FOOD[recipe.id]) {
+                food.obtainedDay = state.time?.days || 1;
+                food.cookedAt = Date.now(); // Legacy kompatibilita pro staré marketplace nabídky
             }
             
             const existing = state.inv.find(i => i.id === recipe.id);
             if (existing) {
                 existing.count = (existing.count || 1) + 1;
-                // Aktualizuj cookedAt na nejstarší (zachovej původní)
-                if (!existing.cookedAt && PERISHABLE_FOODS[recipe.id]) {
+                // Neměníme obtainedDay - staré se zkazí normálně v checkFoodSpoilage
+                if (!existing.cookedAt && PERISHABLE_FOOD[recipe.id]) {
                     existing.cookedAt = Date.now();
+                }
+                if (!existing.obtainedDay && PERISHABLE_FOOD[recipe.id]) {
+                    existing.obtainedDay = state.time?.days || 1;
                 }
             }
             else state.inv.push(food);
@@ -35077,10 +35086,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 gathered.push({ name: 'Byliny', amount: herbs, icon: '🌿' });
                 
                 // Přidej jídlo (bobule)
-                const berryItem = { id: 'berries', name: 'Borůvky', icon: '🫐', type: 'consumable', effect: 'hunger', value: 15, weight: 0.2, count: berries };
+                const berryItem = { id: 'berries', name: 'Borůvky', icon: '🫐', type: 'consumable', effect: 'hunger', value: 15, weight: 0.2, count: berries, obtainedDay: state.time?.days || 1 };
                 const existing = state.inv.find(i => i.id === 'berries');
                 if (existing) {
                     existing.count = (existing.count || 1) + berries;
+                    // Neměníme obtainedDay - staré borůvky se zkazí normálně
+                    // checkFoodSpoilage odstraní jen starou dávku a resetuje datum
                 } else {
                     state.inv.push(berryItem);
                 }
@@ -41249,7 +41260,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.equipped?.helmet === item) state.equipped.helmet = null;
             
             // Zkažené jídlo se ZNIČÍ (nejde na zem)
-            const isSpoiledFood = PERISHABLE_FOODS[item.id] && item.cookedAt && (Date.now() - item.cookedAt > PERISHABLE_FOOD_EXPIRY_MS);
+            const isSpoiledFood = (function() {
+                if (!PERISHABLE_FOOD[item.id]) return false;
+                // Nový systém přes obtainedDay (herní dny)
+                if (item.obtainedDay) {
+                    const currentDay = state.time?.days || 1;
+                    return (currentDay - item.obtainedDay) >= PERISHABLE_FOOD[item.id].days;
+                }
+                // Legacy kompatibilita přes cookedAt (reálný čas)
+                if (item.cookedAt) {
+                    return (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                }
+                return false;
+            })();
             
             if (!isSpoiledFood) {
                 // Normální item → ulož na zem
@@ -41626,24 +41649,34 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${item.count > 1 ? `<p style="color: #ffd700;">${`📦 Počet: ${item.count}x`}</p>` : ''}
                     
                     ${(() => {
-                        if (PERISHABLE_FOODS[item.id]) {
-                            const ca = item.cookedAt || 0;
-                            if (ca > 0) {
-                                const hoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - ca)) / (1000 * 60 * 60)));
-                                const daysLeft = Math.floor(hoursLeft / 24);
-                                const hLeft = hoursLeft % 24;
-                                const spoiled = hoursLeft <= 0;
-                                const fColor = spoiled ? '#f44336' : hoursLeft < 24 ? '#f44336' : hoursLeft < 48 ? '#ff9800' : '#8bc34a';
-                                const fText = spoiled ? '⚠️ ZKAŽENÉ!' : hoursLeft < 24 ? '⚠️ Brzy se zkazí!' : 'Čerstvé';
-                                const pct = spoiled ? 0 : Math.min(100, (hoursLeft / (4 * 24)) * 100);
-                                return '<div style="background: #1a1a0a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 2px solid ' + fColor + ';">' +
-                                    '<div style="color: ' + fColor + '; font-weight: bold;">🕐 ' + fText + '</div>' +
-                                    (spoiled ? '' : '<div style="color: #888; font-size: 0.8rem; margin-top: 0.2rem;">Zbývá ' + (daysLeft > 0 ? daysLeft + 'd ' : '') + hLeft + 'h</div>') +
-                                    '<div style="background: #0a0a0a; height: 6px; border-radius: 3px; margin-top: 0.4rem; overflow: hidden;">' +
-                                    '<div style="height: 100%; width: ' + pct + '%; background: ' + fColor + '; transition: width 0.3s;"></div>' +
-                                    '</div></div>';
+                        // Sjednocený systém čerstvosti pro VŠECHNA kazitelná jídla
+                        if (PERISHABLE_FOOD[item.id]) {
+                            const perishDays = PERISHABLE_FOOD[item.id].days;
+                            let daysLeft = perishDays;
+                            
+                            // Nový systém přes obtainedDay (herní dny)
+                            if (item.obtainedDay) {
+                                const currentDay = state.time?.days || 1;
+                                daysLeft = Math.max(0, perishDays - (currentDay - item.obtainedDay));
                             }
-                            return '<div style="color: #888; font-size: 0.8rem; margin: 0.3rem 0;">🕐 Trvanlivost: 4 dny od uvaření</div>';
+                            // Legacy kompatibilita přes cookedAt (reálný čas)
+                            else if (item.cookedAt) {
+                                const hoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - item.cookedAt)) / (1000 * 60 * 60)));
+                                daysLeft = Math.max(0, Math.ceil(hoursLeft / 24));
+                            }
+                            
+                            const spoiled = daysLeft <= 0;
+                            const fColor = spoiled ? '#f44336' : daysLeft <= 1 ? '#ff9800' : '#8bc34a';
+                            const fText = spoiled ? '⚠️ ZKAŽENÉ!' : daysLeft <= 1 ? '⚠️ Brzy se zkazí!' : 'Čerstvé';
+                            const pct = spoiled ? 0 : Math.min(100, (daysLeft / perishDays) * 100);
+                            const daysWord = daysLeft === 1 ? 'den' : daysLeft < 5 ? 'dny' : 'dní';
+                            
+                            return '<div style="background: #1a1a0a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 2px solid ' + fColor + ';">' +
+                                '<div style="color: ' + fColor + '; font-weight: bold;">🕐 ' + fText + '</div>' +
+                                (spoiled ? '' : '<div style="color: #888; font-size: 0.8rem; margin-top: 0.2rem;">Zbývá ' + daysLeft + ' ' + daysWord + '</div>') +
+                                '<div style="background: #0a0a0a; height: 6px; border-radius: 3px; margin-top: 0.4rem; overflow: hidden;">' +
+                                '<div style="height: 100%; width: ' + pct + '%; background: ' + fColor + '; transition: width 0.3s;"></div>' +
+                                '</div></div>';
                         }
                         return '';
                     })()}
@@ -41800,10 +41833,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            // === KONTROLA ZKAŽENÝCH UVAŘENÝCH JÍDEL ===
-            if (PERISHABLE_FOODS[item.id] && item.cookedAt) {
-                const foodAge = Date.now() - item.cookedAt;
-                if (foodAge > PERISHABLE_FOOD_EXPIRY_MS) {
+            // === KONTROLA ZKAŽENÝCH JÍDEL (sjednocený systém) ===
+            if (PERISHABLE_FOOD[item.id]) {
+                let isSpoiled = false;
+                // Nový systém přes obtainedDay
+                if (item.obtainedDay) {
+                    const currentDay = state.time?.days || 1;
+                    isSpoiled = (currentDay - item.obtainedDay) >= PERISHABLE_FOOD[item.id].days;
+                }
+                // Legacy kompatibilita přes cookedAt
+                else if (item.cookedAt) {
+                    isSpoiled = (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                }
+                
+                if (isSpoiled) {
                     // Jídlo je zkažené - sníst s otravou, nebo vyhodit
                     showModal('🤢 Zkažené jídlo!', `
                         <div style="text-align: center; padding: 1rem;">
@@ -53066,13 +53109,22 @@ function openFullscreenMap() {
         // === SYSTÉM KAZENÍ JÍDLA ===
         // Syrové jídlo se kazí po určitém počtu dní
         const PERISHABLE_FOOD = {
+            // Syrové - krátká trvanlivost
             'raw_meat': { days: 2, name: 'Syrové maso', icon: '🥩' },
             'fish': { days: 2, name: 'Ryba', icon: '🐟' },
             'small_fish': { days: 2, name: 'Malá ryba', icon: '🐟' },
             'medium_fish': { days: 2, name: 'Kapr', icon: '🐠' },
             'big_fish': { days: 2, name: 'Sumec', icon: '🐡' },
             'berries': { days: 3, name: 'Borůvky', icon: '🫐' },
-            'herbs': { days: 5, name: 'Byliny', icon: '🌿' }
+            'herbs': { days: 5, name: 'Byliny', icon: '🌿' },
+            // Vařená - delší trvanlivost
+            'cooked_meat': { days: 4, name: 'Pečené maso', icon: '🍖' },
+            'grilled_fish': { days: 4, name: 'Grilovaná ryba', icon: '🐟' },
+            'steak': { days: 4, name: 'Steak', icon: '🥩' },
+            'stew': { days: 4, name: 'Guláš', icon: '🍲' },
+            'fish_soup': { days: 4, name: 'Rybí polévka', icon: '🍜' },
+            'mutant_steak': { days: 4, name: 'Mutantí steak', icon: '🥩' }
+            // jerky (sušené maso) záměrně chybí - vydrží dlouho
         };
         
         function checkFoodSpoilage() {
@@ -53102,15 +53154,15 @@ function openFullscreenMap() {
                     const daysSinceObtained = currentDay - state.foodTimestamps[itemId];
                     
                     if (daysSinceObtained >= perishInfo.days) {
-                        // Jídlo se zkazilo!
-                        const spoiledAmount = Math.min(amount, Math.ceil(amount * 0.5)); // Zkazí se polovina
+                        // Zkazí se jen nejstarší dávka (max třetina, min 1)
+                        const spoiledAmount = Math.min(amount, Math.max(1, Math.ceil(amount * 0.34)));
                         state.resources[itemId] = Math.max(0, amount - spoiledAmount);
                         
                         if (spoiledAmount > 0) {
                             spoiledItems.push(`${perishInfo.icon} ${spoiledAmount}x ${perishInfo.name}`);
                         }
                         
-                        // Reset timestamp pro zbývající jídlo
+                        // Reset timestamp pro zbývající jídlo (to čerstvější přežilo)
                         if (state.resources[itemId] > 0) {
                             state.foodTimestamps[itemId] = currentDay;
                         } else {
@@ -53123,10 +53175,16 @@ function openFullscreenMap() {
                 }
             });
             
-            // Kontrola inventáře - ryby a maso
-            state.inv = state.inv.filter(item => {
+            // Kontrola inventáře - VŠECHNA kazitelná jídla (syrová i vařená)
+            state.inv.forEach(item => {
                 if (PERISHABLE_FOOD[item.id]) {
                     const perishInfo = PERISHABLE_FOOD[item.id];
+                    
+                    // Migrace: staré vařené jídlo s cookedAt → přepočítej na obtainedDay
+                    if (!item.obtainedDay && item.cookedAt) {
+                        const realDaysSince = Math.floor((Date.now() - item.cookedAt) / (1000 * 60 * 60 * 24));
+                        item.obtainedDay = Math.max(1, currentDay - realDaysSince);
+                    }
                     
                     // Nastav timestamp pokud neexistuje
                     if (!item.obtainedDay) {
@@ -53136,10 +53194,25 @@ function openFullscreenMap() {
                     const daysSinceObtained = currentDay - item.obtainedDay;
                     
                     if (daysSinceObtained >= perishInfo.days) {
-                        spoiledItems.push(`${perishInfo.icon} ${item.count || 1}x ${perishInfo.name}`);
-                        return false; // Odstranit z inventáře
+                        const count = item.count || 1;
+                        // Zkazí se nejstarší dávka (max třetina, min 1)
+                        const spoiledAmount = Math.min(count, Math.max(1, Math.ceil(count * 0.34)));
+                        item.count = count - spoiledAmount;
+                        
+                        if (spoiledAmount > 0) {
+                            spoiledItems.push(`${perishInfo.icon} ${spoiledAmount}x ${perishInfo.name}`);
+                        }
+                        
+                        // Reset timestamp pro zbývající (čerstvější přežily)
+                        if (item.count > 0) {
+                            item.obtainedDay = currentDay;
+                        }
                     }
                 }
+            });
+            // Odstraň prázdné stacky
+            state.inv = state.inv.filter(item => {
+                if (PERISHABLE_FOOD[item.id] && (item.count || 1) <= 0) return false;
                 return true;
             });
             
@@ -53151,6 +53224,9 @@ function openFullscreenMap() {
         }
         
         // Při získání syrového jídla nastav/aktualizuj timestamp
+        // Realistický přístup: nové jídlo NEOVLIVŇUJE staré - staré se zkazí, nové vydrží
+        // Proto markFoodAsNew NEMĚNÍ existující timestamp v resources (staré se zkazí normálně)
+        // Pro inventář: nové borůvky = nový stack entry s vlastním datem
         function markFoodAsNew(itemId, addedAmount = 1) {
             if (PERISHABLE_FOOD[itemId]) {
                 if (!state.foodTimestamps) state.foodTimestamps = {};
@@ -53158,21 +53234,12 @@ function openFullscreenMap() {
                 const currentAmount = state.resources?.[itemId] || 0;
                 const currentDay = state.time.days;
                 
-                if (!state.foodTimestamps[itemId] || currentAmount === 0) {
+                if (!state.foodTimestamps[itemId] || currentAmount <= addedAmount) {
                     // První kus nebo prázdné - nastav na dnešek
                     state.foodTimestamps[itemId] = currentDay;
-                } else {
-                    // Už máme nějaké - spočítej vážený průměr čerstvosti
-                    const oldTimestamp = state.foodTimestamps[itemId];
-                    const oldAmount = Math.max(1, currentAmount - addedAmount); // Kolik jsme měli před přidáním
-                    
-                    // Vážený průměr: (staré * staré_množství + nové * nové_množství) / celkem
-                    const weightedTimestamp = Math.round(
-                        (oldTimestamp * oldAmount + currentDay * addedAmount) / (oldAmount + addedAmount)
-                    );
-                    
-                    state.foodTimestamps[itemId] = weightedTimestamp;
                 }
+                // Pokud už máme staré → NEMĚNÍME timestamp! Staré se zkazí normálně.
+                // (Resources se kazí po dávkách v checkFoodSpoilage)
             }
         }
         
@@ -73798,17 +73865,22 @@ function openFullscreenMap() {
         async function createMarketOffer(item, price) {
             if (!multiplayerEnabled || !firebaseDB) return;
             
-            // Blokuj prodej zkažených jídel na tržnici
-            if (PERISHABLE_FOODS[item.id] && item.cookedAt) {
-                const age = Date.now() - item.cookedAt;
-                if (age > PERISHABLE_FOOD_EXPIRY_MS) {
+            // Sjednocená kontrola zkažení - blokuj prodej zkažených jídel
+            if (PERISHABLE_FOOD[item.id]) {
+                let isSpoiled = false;
+                if (item.obtainedDay) {
+                    const currentDay = state.time?.days || 1;
+                    isSpoiled = (currentDay - item.obtainedDay) >= PERISHABLE_FOOD[item.id].days;
+                } else if (item.cookedAt) {
+                    isSpoiled = (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                }
+                if (isSpoiled) {
                     notifyWarning('Zkažené jídlo!', 'Toto jídlo je zkažené a nemůže být prodáno na tržnici.');
                     return;
                 }
             }
             
             // Vyfiltruj všechny undefined hodnoty pro Firebase
-            // Firebase validace vyžaduje damage a defense - přidej defaulty
             const cleanItem = {
                 id: item.id || 'unknown',
                 name: item.name || 'Předmět',
@@ -73822,9 +73894,24 @@ function openFullscreenMap() {
             if (item.rarity && typeof item.rarity === 'string') cleanItem.rarity = item.rarity;
             if (item.effect && typeof item.effect === 'string') cleanItem.effect = item.effect;
             if (typeof item.value === 'number') cleanItem.value = item.value;
-            // Přidej cookedAt pro trvanlivost jídla na tržnici
-            if (PERISHABLE_FOODS[item.id]) {
-                cleanItem.cookedAt = item.cookedAt || Date.now();
+            // Sjednocená čerstvost pro tržnici - všechno přes daysLeft
+            if (PERISHABLE_FOOD[item.id]) {
+                const currentDay = state.time?.days || 1;
+                let daysSince = 0;
+                if (item.obtainedDay) {
+                    daysSince = currentDay - item.obtainedDay;
+                } else if (item.cookedAt) {
+                    daysSince = Math.floor((Date.now() - item.cookedAt) / (1000 * 60 * 60 * 24));
+                }
+                const perishDays = PERISHABLE_FOOD[item.id].days;
+                const daysLeft = Math.max(0, perishDays - daysSince);
+                cleanItem.perishable = true;
+                cleanItem.daysLeft = daysLeft;
+                cleanItem.perishDays = perishDays;
+                cleanItem.listedAt = Date.now(); // Legacy
+                cleanItem.listedDay = state.time?.days || 0; // Herní den = reálný den
+                // Legacy kompatibilita
+                if (item.cookedAt) cleanItem.cookedAt = item.cookedAt;
             }
             
             const offer = {
@@ -73852,10 +73939,20 @@ function openFullscreenMap() {
             const offer = marketplaceOffers.find(o => o.id === offerId);
             if (!offer) return;
             
-            // Blokuj nákup zkažených jídel
-            if (PERISHABLE_FOODS[offer.item?.id]) {
-                const ca = offer.item.cookedAt || offer.timestamp || 0;
-                if (Date.now() - ca > PERISHABLE_FOOD_EXPIRY_MS) {
+            // Sjednocená kontrola zkažení na tržnici
+            if (offer.item?.perishable && offer.item.daysLeft !== undefined) {
+                const currentDay = state.time?.days || 0;
+                const listedDay = offer.item.listedDay || 0;
+                const daysPassed = Math.max(0, currentDay - listedDay);
+                const adjustedDays = Math.max(0, offer.item.daysLeft - daysPassed);
+                if (adjustedDays <= 0) {
+                    notifyWarning('🤢 Zkažené jídlo', 'Toto jídlo se na tržnici zkazilo, nelze ho koupit.');
+                    return;
+                }
+            }
+            // Legacy kontrola pro staré nabídky bez listedDay
+            else if (PERISHABLE_FOOD[offer.item?.id] && offer.item?.cookedAt) {
+                if (Date.now() - offer.item.cookedAt > PERISHABLE_FOOD_EXPIRY_MS) {
                     notifyWarning('🤢 Zkažené jídlo', 'Toto jídlo je zkažené, nelze ho koupit.');
                     return;
                 }
@@ -73990,6 +74087,16 @@ function openFullscreenMap() {
                 const newItem = {
                     ...offer.item
                 };
+                // Jídlo z tržnice - nastav obtainedDay podle zbývající čerstvosti
+                if (newItem.perishable && newItem.daysLeft !== undefined) {
+                    const currentDay = state.time?.days || 1;
+                    const listedDay = newItem.listedDay || 0;
+                    const daysPassed = Math.max(0, currentDay - listedDay);
+                    const adjustedDaysLeft = Math.max(0, newItem.daysLeft - daysPassed);
+                    const perishDays = newItem.perishDays || PERISHABLE_FOOD[newItem.id]?.days || 3;
+                    // Nastav obtainedDay tak, aby zbývající dny odpovídaly
+                    newItem.obtainedDay = currentDay - (perishDays - adjustedDaysLeft);
+                }
                 // OPRAVA: Použij actualBuyCount jako druhý parametr pro správný počet
                 addItemToInventory(newItem, actualBuyCount, true);
                 
@@ -74275,20 +74382,34 @@ function openFullscreenMap() {
                     const timeColor = hoursLeft < 24 ? '#f44336' : hoursLeft < 48 ? '#ff9800' : '#8bc34a';
                     const timeText = daysLeft > 0 ? `${daysLeft}d ${hoursRem}h` : `${hoursLeft}h`;
                     
-                    // Kontrola zkažení jídla
+                    // Kontrola zkažení jídla - sjednocený systém
                     let mySpoiled = false;
                     let myFreshInfo = '';
-                    if (PERISHABLE_FOODS[offer.item.id]) {
-                        const ca = offer.item.cookedAt || offer.timestamp || 0;
-                        const foodHoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - ca)) / (1000 * 60 * 60)));
+                    if (offer.item.perishable && typeof offer.item.daysLeft === 'number') {
+                        const cd = state.time?.days || 0;
+                        const ld = offer.item.listedDay || 0;
+                        const dp = Math.max(0, cd - ld);
+                        const dl = Math.max(0, offer.item.daysLeft - dp);
+                        mySpoiled = dl <= 0;
+                        if (mySpoiled) {
+                            myFreshInfo = '<div style="color: #f44336; font-size: 0.7rem;">🤢 ZKAŽENÉ</div>';
+                        } else {
+                            const fC = dl <= 1 ? '#f44336' : dl <= 2 ? '#ff9800' : '#8bc34a';
+                            const dw = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                            myFreshInfo = `<div style="color: ${fC}; font-size: 0.7rem;">🕐 Zbývá ${dl} ${dw}</div>`;
+                        }
+                    }
+                    // Legacy
+                    else if (PERISHABLE_FOOD[offer.item.id] && offer.item.cookedAt) {
+                        const foodHoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - offer.item.cookedAt)) / (1000 * 60 * 60)));
                         mySpoiled = foodHoursLeft <= 0;
                         if (mySpoiled) {
                             myFreshInfo = '<div style="color: #f44336; font-size: 0.7rem;">🤢 ZKAŽENÉ</div>';
                         } else {
-                            const fC = foodHoursLeft < 24 ? '#f44336' : foodHoursLeft < 48 ? '#ff9800' : '#8bc34a';
-                            const fD = Math.floor(foodHoursLeft / 24);
-                            const fH = foodHoursLeft % 24;
-                            myFreshInfo = `<div style="color: ${fC}; font-size: 0.7rem;">🕐 Čerstvost: ${fD > 0 ? fD + 'd ' : ''}${fH}h</div>`;
+                            const dl = Math.ceil(foodHoursLeft / 24);
+                            const fC = dl <= 1 ? '#f44336' : dl <= 2 ? '#ff9800' : '#8bc34a';
+                            const dw = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                            myFreshInfo = `<div style="color: ${fC}; font-size: 0.7rem;">🕐 ~${dl} ${dw}</div>`;
                         }
                     }
                     
@@ -74328,20 +74449,34 @@ function openFullscreenMap() {
                     const itemType = offer.item.type || 'misc';
                     const specialInfo = offer.item.special ? `✨ ${offer.item.special}` : '';
                     
-                    // Kontrola zkažení jídla
+                    // Kontrola zkažení jídla - sjednocený systém
                     let isSpoiled = false;
                     let freshInfo = '';
-                    if (PERISHABLE_FOODS[offer.item.id]) {
-                        const ca = offer.item.cookedAt || offer.timestamp || 0;
-                        const hoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - ca)) / (1000 * 60 * 60)));
-                        const daysLeft = Math.floor(hoursLeft / 24);
-                        const hLeft = hoursLeft % 24;
+                    if (offer.item.perishable && typeof offer.item.daysLeft === 'number') {
+                        const currentDay = state.time?.days || 0;
+                        const listedDay = offer.item.listedDay || 0;
+                        const daysPassed = Math.max(0, currentDay - listedDay);
+                        const dl = Math.max(0, offer.item.daysLeft - daysPassed);
+                        isSpoiled = dl <= 0;
+                        if (isSpoiled) {
+                            freshInfo = '<span style="color: #f44336;">🤢 ZKAŽENÉ</span>';
+                        } else {
+                            const fColor = dl <= 1 ? '#f44336' : dl <= 2 ? '#ff9800' : '#8bc34a';
+                            const dw = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                            freshInfo = `<span style="color: ${fColor};">🕐 ${dl} ${dw}</span>`;
+                        }
+                    }
+                    // Legacy kontrola pro staré nabídky bez perishable flagu
+                    else if (PERISHABLE_FOOD[offer.item.id] && offer.item.cookedAt) {
+                        const hoursLeft = Math.max(0, Math.floor((PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - offer.item.cookedAt)) / (1000 * 60 * 60)));
                         isSpoiled = hoursLeft <= 0;
                         if (isSpoiled) {
                             freshInfo = '<span style="color: #f44336;">🤢 ZKAŽENÉ</span>';
                         } else {
-                            const fColor = hoursLeft < 24 ? '#f44336' : hoursLeft < 48 ? '#ff9800' : '#8bc34a';
-                            freshInfo = `<span style="color: ${fColor};">🍖 Čerstvost: ${daysLeft > 0 ? daysLeft + 'd ' : ''}${hLeft}h</span>`;
+                            const dl = Math.ceil(hoursLeft / 24);
+                            const fColor = dl <= 1 ? '#f44336' : dl <= 2 ? '#ff9800' : '#8bc34a';
+                            const dw = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                            freshInfo = `<span style="color: ${fColor};">🕐 ~${dl} ${dw}</span>`;
                         }
                     }
                     
@@ -74533,28 +74668,50 @@ function openFullscreenMap() {
                 </div>
                 
                 ${(() => {
-                    if (PERISHABLE_FOODS[item.id]) {
-                        const ca = item.cookedAt || offer.timestamp || 0;
-                        const msLeft = PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - ca);
-                        const hoursLeft = Math.max(0, Math.floor(msLeft / (1000 * 60 * 60)));
-                        const daysLeft = Math.floor(hoursLeft / 24);
-                        const hLeft = hoursLeft % 24;
-                        const spoiled = hoursLeft <= 0;
-                        const pct = spoiled ? 0 : Math.min(100, (hoursLeft / (4 * 24)) * 100);
-                        const barColor = spoiled ? '#f44336' : hoursLeft < 24 ? '#f44336' : hoursLeft < 48 ? '#ff9800' : '#8bc34a';
-                        const statusText = spoiled ? '🤢 ZKAŽENÉ - nelze koupit!' : hoursLeft < 24 ? '⚠️ Brzy se zkazí!' : '✅ Čerstvé';
-                        const borderCol = spoiled ? '#f44336' : '#ff9800';
+                    // Sjednocené zobrazení čerstvosti na tržnici
+                    if (item.perishable && typeof item.daysLeft === 'number') {
+                        const currentDay = state.time?.days || 0;
+                        const listedDay = item.listedDay || 0;
+                        const daysPassed = Math.max(0, currentDay - listedDay);
+                        const dl = Math.max(0, item.daysLeft - daysPassed);
+                        const total = item.perishDays || PERISHABLE_FOOD[item.id]?.days || 3;
+                        const spoiled = dl <= 0;
+                        const pct = spoiled ? 0 : Math.min(100, (dl / total) * 100);
+                        const barColor = spoiled ? '#f44336' : dl <= 1 ? '#f44336' : dl <= 2 ? '#ff9800' : '#8bc34a';
+                        const statusText = spoiled ? '🤢 ZKAŽENÉ - nelze koupit!' : dl <= 1 ? '⚠️ Zkazí se dnes!' : '✅ Čerstvé';
+                        const daysWord = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                        const borderCol = spoiled ? '#f44336' : dl <= 1 ? '#f44336' : '#ff9800';
                         
                         return '<div style="background: ' + (spoiled ? '#2a1010' : '#2a2a1a') + '; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid ' + borderCol + ';">' +
-                            '<h4 style="margin: 0 0 0.5rem 0; color: ' + barColor + ';">🍖 Čerstvost jídla</h4>' +
+                            '<h4 style="margin: 0 0 0.5rem 0; color: ' + barColor + ';">🕐 Čerstvost</h4>' +
                             '<div style="display: flex; justify-content: space-between; margin-bottom: 0.3rem;">' +
                                 '<span style="color: ' + barColor + '; font-weight: bold;">' + statusText + '</span>' +
-                                (spoiled ? '' : '<span style="color: #888;">' + (daysLeft > 0 ? daysLeft + 'd ' : '') + hLeft + 'h</span>') +
+                                (spoiled ? '' : '<span style="color: #888;">Zbývá ' + dl + ' ' + daysWord + '</span>') +
                             '</div>' +
                             '<div style="background: #0a0a0a; height: 8px; border-radius: 4px; overflow: hidden;">' +
                                 '<div style="height: 100%; width: ' + pct + '%; background: ' + barColor + '; transition: width 0.3s;"></div>' +
                             '</div>' +
-                            '<p style="color: #666; font-size: 0.75rem; margin: 0.4rem 0 0 0;">Uvařená jídla vydrží čerstvá 4 dny. Po zkaženíse nedají koupit.</p>' +
+                            '<p style="color: #666; font-size: 0.75rem; margin: 0.4rem 0 0 0;">Toto jídlo vydrží ' + total + ' ' + (total < 5 ? 'dny' : 'dní') + '. Po zkaženíse nedá koupit.</p>' +
+                        '</div>';
+                    }
+                    // Legacy kontrola pro staré nabídky
+                    if (PERISHABLE_FOOD[item.id] && item.cookedAt) {
+                        const msLeft = PERISHABLE_FOOD_EXPIRY_MS - (Date.now() - item.cookedAt);
+                        const hoursLeft = Math.max(0, Math.floor(msLeft / (1000 * 60 * 60)));
+                        const dl = Math.max(0, Math.ceil(hoursLeft / 24));
+                        const total = PERISHABLE_FOOD[item.id].days || 4;
+                        const spoiled = dl <= 0;
+                        const pct = spoiled ? 0 : Math.min(100, (dl / total) * 100);
+                        const barColor = spoiled ? '#f44336' : dl <= 1 ? '#ff9800' : '#8bc34a';
+                        const statusText = spoiled ? '🤢 ZKAŽENÉ!' : dl <= 1 ? '⚠️ Brzy se zkazí!' : '✅ Čerstvé';
+                        const daysWord = dl === 1 ? 'den' : dl < 5 ? 'dny' : 'dní';
+                        
+                        return '<div style="background: ' + (spoiled ? '#2a1010' : '#2a2a1a') + '; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #ff9800;">' +
+                            '<h4 style="margin: 0 0 0.5rem 0; color: ' + barColor + ';">🕐 Čerstvost</h4>' +
+                            '<div style="color: ' + barColor + '; font-weight: bold;">' + statusText + (spoiled ? '' : ' (~' + dl + ' ' + daysWord + ')') + '</div>' +
+                            '<div style="background: #0a0a0a; height: 8px; border-radius: 4px; margin-top: 0.3rem; overflow: hidden;">' +
+                                '<div style="height: 100%; width: ' + pct + '%; background: ' + barColor + ';"></div>' +
+                            '</div>' +
                         '</div>';
                     }
                     return '';
@@ -74563,23 +74720,47 @@ function openFullscreenMap() {
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="showMarketplace()" style="background: #555;">← Zpět</button>
                     <button class="btn" onclick="promptBuyOffer('${offerId}', ${count}, ${offer.price})" style="background: ${(() => {
-                        if (PERISHABLE_FOODS[item.id]) {
-                            const ca2 = item.cookedAt || offer.timestamp || 0;
-                            if (Date.now() - ca2 > PERISHABLE_FOOD_EXPIRY_MS) return '#4a2a2a';
-                        }
+                        const spoiledOnMarket = (() => {
+                            if (item.perishable && typeof item.daysLeft === 'number') {
+                                const cd = state.time?.days || 0;
+                                const ld = item.listedDay || 0;
+                                return (item.daysLeft - Math.max(0, cd - ld)) <= 0;
+                            }
+                            if (PERISHABLE_FOOD[item.id] && item.cookedAt) {
+                                return (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                            }
+                            return false;
+                        })();
+                        if (spoiledOnMarket) return '#4a2a2a';
                         return canBuy ? '#4CAF50' : '#555';
                     })()};" ${(() => {
-                        if (PERISHABLE_FOODS[item.id]) {
-                            const ca2 = item.cookedAt || offer.timestamp || 0;
-                            if (Date.now() - ca2 > PERISHABLE_FOOD_EXPIRY_MS) return 'disabled';
-                        }
+                        const spoiledOnMarket = (() => {
+                            if (item.perishable && typeof item.daysLeft === 'number') {
+                                const cd = state.time?.days || 0;
+                                const ld = item.listedDay || 0;
+                                return (item.daysLeft - Math.max(0, cd - ld)) <= 0;
+                            }
+                            if (PERISHABLE_FOOD[item.id] && item.cookedAt) {
+                                return (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                            }
+                            return false;
+                        })();
+                        if (spoiledOnMarket) return 'disabled';
                         return !canBuy ? 'disabled' : '';
                     })()}>
                         ${(() => {
-                            if (PERISHABLE_FOODS[item.id]) {
-                                const ca2 = item.cookedAt || offer.timestamp || 0;
-                                if (Date.now() - ca2 > PERISHABLE_FOOD_EXPIRY_MS) return '🤢 Zkažené';
-                            }
+                            const spoiledOnMarket = (() => {
+                                if (item.perishable && typeof item.daysLeft === 'number') {
+                                    const cd = state.time?.days || 0;
+                                    const ld = item.listedDay || 0;
+                                    return (item.daysLeft - Math.max(0, cd - ld)) <= 0;
+                                }
+                                if (PERISHABLE_FOOD[item.id] && item.cookedAt) {
+                                    return (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                                }
+                                return false;
+                            })();
+                            if (spoiledOnMarket) return '🤢 Zkažené';
                             return canBuy ? '🛒 Koupit' : '❌ Málo 💰';
                         })()}
                     </button>
@@ -74889,7 +75070,7 @@ function openFullscreenMap() {
             
             const item = state.inv[invIndex];
             if (!item) {
-                notifyWarning('Chyba', 'Item nenalezen v inventáři');
+                notifyWarning('Chyba', 'Předmět nenalezen v inventáři');
                 return;
             }
             
@@ -74902,10 +75083,16 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Blokuj prodej zkažených jídel na tržnici
-            if (PERISHABLE_FOODS[item.id] && item.cookedAt) {
-                const age = Date.now() - item.cookedAt;
-                if (age > PERISHABLE_FOOD_EXPIRY_MS) {
+            // Blokuj prodej zkažených jídel na tržnici - sjednocený systém
+            if (PERISHABLE_FOOD[item.id]) {
+                let isSpoiled = false;
+                if (item.obtainedDay) {
+                    const currentDay = state.time?.days || 1;
+                    isSpoiled = (currentDay - item.obtainedDay) >= PERISHABLE_FOOD[item.id].days;
+                } else if (item.cookedAt) {
+                    isSpoiled = (Date.now() - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                }
+                if (isSpoiled) {
                     notifyWarning('Zkažené jídlo!', 'Toto jídlo je zkažené a nemůže být prodáno na tržnici.');
                     return;
                 }
@@ -74943,9 +75130,23 @@ function openFullscreenMap() {
             if (itemCopy.rarity && typeof itemCopy.rarity === 'string') itemForOffer.rarity = itemCopy.rarity;
             if (itemCopy.effect && typeof itemCopy.effect === 'string') itemForOffer.effect = itemCopy.effect;
             if (typeof itemCopy.value === 'number') itemForOffer.value = itemCopy.value;
-            // Přidej cookedAt pro trvanlivost jídla na tržnici
-            if (PERISHABLE_FOODS[itemCopy.id]) {
-                itemForOffer.cookedAt = itemCopy.cookedAt || Date.now();
+            // Sjednocená čerstvost pro tržnici
+            if (PERISHABLE_FOOD[itemCopy.id]) {
+                const currentDay = state.time?.days || 1;
+                let daysSince = 0;
+                if (itemCopy.obtainedDay) {
+                    daysSince = currentDay - itemCopy.obtainedDay;
+                } else if (itemCopy.cookedAt) {
+                    daysSince = Math.floor((Date.now() - itemCopy.cookedAt) / (1000 * 60 * 60 * 24));
+                }
+                const perishDays = PERISHABLE_FOOD[itemCopy.id].days;
+                const daysLeft = Math.max(0, perishDays - daysSince);
+                itemForOffer.perishable = true;
+                itemForOffer.daysLeft = daysLeft;
+                itemForOffer.perishDays = perishDays;
+                itemForOffer.listedAt = Date.now();
+                itemForOffer.listedDay = currentDay;
+                if (itemCopy.cookedAt) itemForOffer.cookedAt = itemCopy.cookedAt;
             }
             
             const totalPrice = price * sellCount;
