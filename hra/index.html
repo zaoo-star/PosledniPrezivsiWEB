@@ -27405,6 +27405,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 checkDailyQuests();
             }
             
+            // 🏦 Celá cena nákupu od karavany jde do veřejné kasy
+            if (price > 0 && multiplayerEnabled && firebaseDB) {
+                addToPublicTreasury(price, 'shop_purchase', `Karavana: ${item.name}`);
+            }
+            
             openCaravanShop(); // Refresh
         }
         
@@ -39444,10 +39449,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            // 🏛️ 5% daň z nákupu jde do veřejné kasy
-            const purchaseTax = Math.floor(totalPrice * 0.05);
-            if (purchaseTax > 0 && multiplayerEnabled && firebaseDB) {
-                addToPublicTreasury(purchaseTax, 'shop_purchase', itemData.name);
+            // 🏦 Celá cena nákupu jde do veřejné kasy (obchodník přijímá peníze)
+            if (totalPrice > 0 && multiplayerEnabled && firebaseDB) {
+                addToPublicTreasury(totalPrice, 'shop_purchase', `${amount}x ${itemData.name}`);
             }
             
             // Přidání do inventáře
@@ -39630,10 +39634,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const totalPrice = sellPrice * amount;
             
-            // === 5% DAŇ Z PRODEJE DO VEŘEJNÉ KASY ===
-            const salesTax = Math.floor(totalPrice * 0.05);
-            const playerReceives = totalPrice - salesTax;
-            
             // === KONTROLA PENĚZ OBCHODU ===
             const shopMoney = getShopMoney();
             if (shopMoney < totalPrice) {
@@ -39658,13 +39658,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Odečti z peněz obchodu
             reduceShopMoney(totalPrice);
             
-            // Hráč dostane cenu mínus daň
-            addMoney(playerReceives);
+            // 🏦 Hráč dostane plnou cenu, odečte se z veřejné kasy (obchodník platí z fondu)
+            addMoney(totalPrice);
             state.stats.itemsSold = (state.stats.itemsSold || 0) + amount;
             
-            // Přidej daň do veřejné kasy (async, nečekáme)
-            if (salesTax > 0 && multiplayerEnabled && firebaseDB) {
-                addToPublicTreasury(salesTax, 'shop_sale', item.name || itemData.name);
+            // Odečti z veřejné kasy (async, nečekáme)
+            if (totalPrice > 0 && multiplayerEnabled && firebaseDB) {
+                removeFromPublicTreasury(totalPrice, 'shop_sale', `${amount}x ${item.name || itemData.name}`);
             }
             
             // Odebrání z inventáře
@@ -39676,8 +39676,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 state.inv.splice(itemIndex, 1);
             }
             
-            console.log('sellItem: Sold', amount + 'x', item.name, 'for', playerReceives, '(tax:', salesTax, ')');
-            notifySuccess('Prodáno!', item.name + (amount > 1 ? ' x' + amount : '') + ' +' + playerReceives + ' 💰' + (salesTax > 0 ? ' (daň: ' + salesTax + ')' : ''));
+            console.log('sellItem: Sold', amount + 'x', item.name, 'for', totalPrice);
+            notifySuccess('Prodáno!', item.name + (amount > 1 ? ' x' + amount : '') + ' +' + totalPrice + ' 💰');
             
             // Daily quest progress
             if (state.dailyQuests?.progress) {
@@ -39845,8 +39845,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Odečti z peněz obchodu
             reduceShopMoney(totalPrice);
             
+            // 🏦 Hráč dostane plnou cenu, odečte se z veřejné kasy
             addMoney(totalPrice);
             state.stats.itemsSold = (state.stats.itemsSold || 0) + amount;
+            
+            // Odečti z veřejné kasy (async, nečekáme)
+            if (totalPrice > 0 && multiplayerEnabled && firebaseDB) {
+                removeFromPublicTreasury(totalPrice, 'shop_sale', `${amount}x ${item.name}`);
+            }
             
             // Odebrání z inventáře
             if (item.count && item.count > amount) {
@@ -74172,6 +74178,12 @@ function openFullscreenMap() {
                 });
                 
                 notifySuccess('Koupeno!', `${actualBuyCount}x ${offer.item.name} za ${totalPrice} 💰`);
+                
+                // 🏦 Poplatek z tržiště do veřejné kasy
+                if (marketFee > 0 && typeof addToPublicTreasury === 'function') {
+                    addToPublicTreasury(marketFee, 'marketplace_fee', `Prodej: ${offer.item.name} (${actualBuyCount}x) od ${offer.seller}`);
+                }
+                
                 saveGame();
                 
                 // Auto cloud save při nákupu
@@ -79459,10 +79471,10 @@ function openFullscreenMap() {
                 // Koupě proběhla úspěšně!
                 state.money -= price;
                 
-                // Daň z prodeje do pokladny (10%)
+                // Daň z prodeje pozemku do veřejné kasy (10%)
                 const tax = Math.floor(price * 0.1);
-                if (typeof updatePublicMoney === 'function') {
-                    updatePublicMoney(tax, 'land_purchase', `Prodej pozemku: ${loc.name}`);
+                if (typeof addToPublicTreasury === 'function' && tax > 0) {
+                    addToPublicTreasury(tax, 'land_purchase', `Koupě pozemku: ${loc.name} od ${myName}`);
                 }
                 
                 // Invalidate cache
@@ -79644,7 +79656,14 @@ function openFullscreenMap() {
             if (!isOwner && fee > 0) {
                 state.money -= fee;
                 
-                // Přidej příjem majiteli (vyzvedne si ho sám, daň se strhne při vyzvednutí)
+                // 🏦 Daň z poplatku za službu do veřejné kasy (10%)
+                const landServiceTax = Math.max(1, Math.floor(fee * 0.1));
+                const ownerReceives = fee - landServiceTax;
+                if (typeof addToPublicTreasury === 'function' && landServiceTax > 0) {
+                    addToPublicTreasury(landServiceTax, 'land_service_fee', `Poplatek za ${building.name} na pozemku ${land.customName || land.locationName || locationId}`);
+                }
+                
+                // Přidej příjem majiteli (po dani)
                 try {
                     const landRef = firebaseDB.ref('landOwnership/' + locationId);
                     
@@ -79652,8 +79671,8 @@ function openFullscreenMap() {
                     const currentLand = snap.val();
                     if (currentLand) {
                         await landRef.update({
-                            totalEarnings: (currentLand.totalEarnings || 0) + fee,
-                            pendingEarnings: (currentLand.pendingEarnings || 0) + fee,
+                            totalEarnings: (currentLand.totalEarnings || 0) + ownerReceives,
+                            pendingEarnings: (currentLand.pendingEarnings || 0) + ownerReceives,
                             visitors: (currentLand.visitors || 0) + 1
                         });
                     }
@@ -81292,7 +81311,7 @@ function openFullscreenMap() {
                         <span>👥</span>
                         <span style="font-size: 0.7rem; color: #7a5a7a;">PŘÁTELÉ [${friendsList.length}]</span>
                     </button>
-                    <button class="btn" onclick="showTombola()" style="background: linear-gradient(180deg, ${currentTombola ? '#1a1a0a' : '#100a0a'} 0%, ${currentTombola ? '#0d0d04' : '#080404'} 100%); border: 1px solid ${currentTombola ? '#ffd700' : '#3a2a2a'}; padding: 0.5rem; border-radius: 2px; display: flex; align-items: center; gap: 0.3rem; font-family: 'Courier New', monospace;${currentTombola ? ' animation: tombola-pulse 2s ease-in-out infinite;' : ''}">
+                    <button id="tombolaBtn" class="btn" onclick="showTombola()" style="background: linear-gradient(180deg, ${currentTombola ? '#1a1a0a' : '#100a0a'} 0%, ${currentTombola ? '#0d0d04' : '#080404'} 100%); border: 1px solid ${currentTombola ? '#ffd700' : '#3a2a2a'}; padding: 0.5rem; border-radius: 2px; display: flex; align-items: center; gap: 0.3rem; font-family: 'Courier New', monospace;${currentTombola ? ' animation: tombola-pulse 2s ease-in-out infinite;' : ''}">
                         <span>🎟️</span>
                         <span style="font-size: 0.7rem; color: ${currentTombola ? '#ffd700' : '#9a5a6a'};">${currentTombola ? '🎰 TOMBOLA [!]' : 'TOMBOLA'}</span>
                     </button>
@@ -84332,18 +84351,23 @@ function openFullscreenMap() {
                 const log = logData ? Object.values(logData).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)) : [];
                 
                 // Spočítej statistiky
-                let totalShopSales = 0, totalMarketFees = 0, totalTaxes = 0, totalExpenses = 0;
+                let totalShopIncome = 0, totalShopExpenses = 0, totalMarketFees = 0, totalTaxes = 0, totalLandIncome = 0, totalExpenses = 0;
                 log.forEach(entry => {
                     if (entry.type === 'income') {
-                        if (entry.source === 'shop_sale' || entry.source === 'shop_purchase') totalShopSales += entry.amount || 0;
+                        if (entry.source === 'shop_purchase') totalShopIncome += entry.amount || 0;
                         else if (entry.source === 'marketplace_fee') totalMarketFees += entry.amount || 0;
+                        else if (entry.source === 'land_purchase' || entry.source === 'land_service_fee') totalLandIncome += entry.amount || 0;
                         else if (entry.source?.includes('tax')) totalTaxes += entry.amount || 0;
+                        // shop_sale s typem income = starý systém (5% daň), počítej jako příjem
+                        else if (entry.source === 'shop_sale') totalShopIncome += entry.amount || 0;
                     } else {
-                        totalExpenses += entry.amount || 0;
+                        if (entry.reason === 'shop_sale') totalShopExpenses += entry.amount || 0;
+                        else totalExpenses += entry.amount || 0;
                     }
                 });
                 
-                const totalIncome = totalShopSales + totalMarketFees + totalTaxes;
+                const totalIncome = totalShopIncome + totalMarketFees + totalTaxes + totalLandIncome;
+                const totalAllExpenses = totalExpenses + totalShopExpenses;
                 
                 let html = `
                     <div style="background: linear-gradient(135deg, #1a2a1a 0%, #0d1a0d 100%); padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid #4caf50; text-align: center;">
@@ -84358,20 +84382,29 @@ function openFullscreenMap() {
                             <div style="color: #888; font-size: 0.8rem;">📈 Celkové příjmy</div>
                         </div>
                         <div style="background: #1a0d0d; padding: 1rem; border-radius: 8px; text-align: center; border: 1px solid #4a2a2a;">
-                            <div style="color: #f44336; font-size: 1.5rem; font-weight: bold;">-${formatNumber(totalExpenses)}</div>
+                            <div style="color: #f44336; font-size: 1.5rem; font-weight: bold;">-${formatNumber(totalAllExpenses)}</div>
                             <div style="color: #888; font-size: 0.8rem;">📉 Celkové výdaje</div>
                         </div>
                     </div>
                     
-                    <h4 style="color: #8bc34a; margin: 1rem 0 0.5rem 0;">📊 Přehled zdrojů příjmů</h4>
+                    <h4 style="color: #8bc34a; margin: 1rem 0 0.5rem 0;">📊 Přehled zdrojů</h4>
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                         <div style="margin-bottom: 0.75rem;">
                             <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
-                                <span style="color: #ccc;">🏪 Daň z prodeje v obchodech (5%)</span>
-                                <span style="color: #4caf50; font-weight: bold;">${formatNumber(totalShopSales)} 💰</span>
+                                <span style="color: #ccc;">🏪 Nákupy v obchodech (příjem)</span>
+                                <span style="color: #4caf50; font-weight: bold;">${formatNumber(totalShopIncome)} 💰</span>
                             </div>
                             <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
-                                <div style="background: linear-gradient(90deg, #4caf50, #8bc34a); height: 100%; width: ${totalIncome > 0 ? (totalShopSales / totalIncome * 100) : 0}%;"></div>
+                                <div style="background: linear-gradient(90deg, #4caf50, #8bc34a); height: 100%; width: ${totalIncome > 0 ? (totalShopIncome / totalIncome * 100) : 0}%;"></div>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 0.75rem;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                <span style="color: #ccc;">🏪 Výkupy od hráčů (výdaj)</span>
+                                <span style="color: #f44336; font-weight: bold;">-${formatNumber(totalShopExpenses)} 💰</span>
+                            </div>
+                            <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: linear-gradient(90deg, #f44336, #ef9a9a); height: 100%; width: ${totalAllExpenses > 0 ? (totalShopExpenses / totalAllExpenses * 100) : 0}%;"></div>
                             </div>
                         </div>
                         <div style="margin-bottom: 0.75rem;">
@@ -84381,6 +84414,15 @@ function openFullscreenMap() {
                             </div>
                             <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
                                 <div style="background: linear-gradient(90deg, #2196f3, #64b5f6); height: 100%; width: ${totalIncome > 0 ? (totalMarketFees / totalIncome * 100) : 0}%;"></div>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 0.75rem;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                <span style="color: #ccc;">🏗️ Daň z pozemků (10%)</span>
+                                <span style="color: #9c27b0; font-weight: bold;">${formatNumber(totalLandIncome)} 💰</span>
+                            </div>
+                            <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: linear-gradient(90deg, #9c27b0, #ce93d8); height: 100%; width: ${totalIncome > 0 ? (totalLandIncome / totalIncome * 100) : 0}%;"></div>
                             </div>
                         </div>
                         <div>
@@ -84399,11 +84441,13 @@ function openFullscreenMap() {
                         ${log.length > 0 ? log.slice(0, 20).map(entry => {
                             const isIncome = entry.type === 'income';
                             const sourceNames = {
-                                'shop_sale': '🏪 Daň z prodeje',
-                                'shop_purchase': '🏪 Daň z nákupu',
+                                'shop_sale': '🏪 Výkup od hráče',
+                                'shop_purchase': '🏪 Nákup hráčem',
                                 'marketplace_fee': '🛒 Poplatek tržiště',
                                 'daily_tax': '📊 Denní daň',
                                 'daily_tax_no_mayor': '📊 Daň (bez šéfa)',
+                                'land_purchase': '🏗️ Daň z koupě pozemku',
+                                'land_service_fee': '🏗️ Daň ze služeb pozemku',
                                 'mayor_event': '⚡ Event šéfa',
                                 'grant': '💰 Grant',
                                 'bounty': '🎯 Bounty',
@@ -85954,12 +85998,18 @@ function openFullscreenMap() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
             firebaseDB.ref('tombola/active').on('value', (snap) => {
-                const prev = currentTombola;
                 currentTombola = snap.val();
                 console.log('🎟️ Tombola update:', currentTombola);
-                // Překresli UI aby se zobrazilo/skrylo blikání tlačítka
-                if ((!!prev) !== (!!currentTombola)) {
-                    if (typeof renderFull === 'function' && state.confirmed) renderFull();
+                // Dynamicky aktualizuj tlačítko tomboly
+                const btn = document.getElementById('tombolaBtn');
+                if (btn) {
+                    const active = !!currentTombola;
+                    btn.style.background = active 
+                        ? 'linear-gradient(180deg, #1a1a0a 0%, #0d0d04 100%)' 
+                        : 'linear-gradient(180deg, #100a0a 0%, #080404 100%)';
+                    btn.style.borderColor = active ? '#ffd700' : '#3a2a2a';
+                    btn.style.animation = active ? 'tombola-pulse 2s ease-in-out infinite' : 'none';
+                    btn.innerHTML = '<span>🎟️</span><span style="font-size: 0.7rem; color: ' + (active ? '#ffd700' : '#9a5a6a') + ';">' + (active ? '🎰 TOMBOLA [!]' : 'TOMBOLA') + '</span>';
                 }
             });
         }
