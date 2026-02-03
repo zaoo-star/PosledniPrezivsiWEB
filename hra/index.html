@@ -29451,6 +29451,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } catch(e) { /* ignore */ }
             
+            // === BLOKOVÁNÍ MODALŮ BĚHEM DOBÝVÁNÍ ÚZEMÍ ===
+            // Během aktivního capture nesmí vyskočit ŽÁDNÉ okno
+            try {
+                if (state.territoryCapture && Object.keys(state.territoryCapture).length > 0) {
+                    const isCritical = title.includes('SMRT') || title.includes('💀') || 
+                                       title.includes('⚔️') || title.includes('Boj');
+                    if (!isCritical) {
+                        console.log('⚠️ showModal blocked - territory capture active:', title);
+                        return;
+                    }
+                }
+            } catch(e) { /* ignore */ }
+            
             // Pokud čekáme na heslo pro chráněný účet, ten má přednost
             if (window._pendingPasswordPrompt && !title.includes('Chráněný účet') && !title.includes('SMRT')) {
                 console.log('⚠️ showModal blocked - waiting for password prompt');
@@ -32859,30 +32872,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const captureLocation = Object.keys(state.territoryCapture)[0];
                 const capture = state.territoryCapture[captureLocation];
                 const elapsed = Date.now() - capture.startTime;
-                const CAPTURE_DURATION = 15 * 60 * 1000; // 15 minut
+                const CAPTURE_DURATION = 15 * 60 * 1000;
                 
-                // Pokud capture ještě běží
                 if (elapsed < CAPTURE_DURATION) {
-                    const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
                     const remainingMin = Math.ceil((CAPTURE_DURATION - elapsed) / 60000);
-                    const loc = WORLD_LOCATIONS.find(l => l.id === captureLocation);
-                    
-                    // Nabídni zrušení dobývání s možností cestovat
-                    showModal('🏴 Dobývání probíhá!', `
-                        <div style="text-align: center;">
-                            <p style="color: #ff9800;">⚠️ Právě dobýváš <strong>${loc?.name || 'území'}</strong></p>
-                            <p style="color: #888;">Progres: ${progress.toFixed(0)}% (zbývá ${remainingMin} min)</p>
-                        </div>
-                        <button class="btn" onclick="cancelTerritoryCapture('${captureLocation}')" style="width: 100%; margin-top: 1rem; background: #c62828;">
-                            ❌ Zrušit dobývání
-                        </button>
-                        <button class="btn" onclick="cancelTerritoryAndTravel('${targetLocationId}')" style="width: 100%; margin-top: 0.5rem; background: #555;">
-                            🚶 Zrušit a odejít jinam
-                        </button>
-                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #333;">
-                            ← Pokračovat v dobývání
-                        </button>
-                    `);
+                    notifyWarning('🏴 Dobývání probíhá!', `Zbývá ${remainingMin} min. Zruš dobývání v panelu území.`);
                     return;
                 } else {
                     // Capture vypršel, vyčisti ho
@@ -32964,25 +32958,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const CAPTURE_DURATION = 15 * 60 * 1000;
                 
                 if (elapsed < CAPTURE_DURATION) {
-                    const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
                     const remainingMin = Math.ceil((CAPTURE_DURATION - elapsed) / 60000);
-                    const loc = WORLD_LOCATIONS.find(l => l.id === captureLocation);
-                    
-                    showModal('🏴 Dobývání probíhá!', `
-                        <div style="text-align: center;">
-                            <p style="color: #ff9800;">⚠️ Právě dobýváš <strong>${loc?.name || 'území'}</strong></p>
-                            <p style="color: #888;">Progres: ${progress.toFixed(0)}% (zbývá ${remainingMin} min)</p>
-                        </div>
-                        <button class="btn" onclick="cancelTerritoryCapture('${captureLocation}')" style="width: 100%; margin-top: 1rem; background: #c62828;">
-                            ❌ Zrušit dobývání
-                        </button>
-                        <button class="btn" onclick="cancelTerritoryAndTravel('${targetLocationId}')" style="width: 100%; margin-top: 0.5rem; background: #555;">
-                            🚶 Zrušit a odejít jinam
-                        </button>
-                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #333;">
-                            ← Pokračovat v dobývání
-                        </button>
-                    `);
+                    notifyWarning('🏴 Dobývání probíhá!', `Zbývá ${remainingMin} min. Zruš dobývání v panelu území.`);
                     return;
                 }
             }
@@ -41845,9 +41822,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.secrets) state.secrets = [];
             state.secrets.push('used_mutant_heart');
             
-            // Přidej +50 max HP
-            state.char.maxHp += 50;
-            state.char.hp += 50; // Vyléč o stejnou hodnotu
+            // Přepočítej maxHp (calculateMaxHp nyní počítá s used_mutant_heart)
+            const oldMaxHp = state.char.maxHp;
+            state.char.maxHp = calculateMaxHp();
+            const diff = state.char.maxHp - oldMaxHp;
+            state.char.hp += diff; // Vyléč o přidanou hodnotu
             
             // Odeber srdce z inventáře
             removeItemFromInventory(heart, 1);
@@ -62272,6 +62251,11 @@ function openFullscreenMap() {
                 maxHp += 5;
             }
             
+            // Bonus ze Srdce Behemotha (+50 HP permanentně)
+            if (Array.isArray(state.secrets) && state.secrets.includes('used_mutant_heart')) {
+                maxHp += 50;
+            }
+            
             // Gender bonus (male +3%) - sníženo z 5%
             if (state.char.gender === 'male') {
                 maxHp = Math.floor(maxHp * 1.03);
@@ -70625,6 +70609,19 @@ function openFullscreenMap() {
         
         // Zobrazit akce na teritoriu (tlačítko na lokaci)
         async function showTerritoryActions() {
+            // Pokud právě doběhl capture, nezobrazuj modal
+            if (window._territoryCaptureJustCompleted) {
+                window._territoryCaptureJustCompleted = false;
+                stopTerritoryRefresh();
+                return;
+            }
+            
+            // Nezobrazuj během boje
+            if (typeof isInCombat === 'function' && isInCombat()) {
+                stopTerritoryRefresh();
+                return;
+            }
+            
             // Zastav předchozí refresh interval
             stopTerritoryRefresh();
             
@@ -70792,17 +70789,45 @@ function openFullscreenMap() {
                 <button class="btn" onclick="stopTerritoryRefresh(); closeModal();" style="width: 100%; margin-top: 0.5rem; background: #555;">Zavřít</button>
             `);
             
-            // Pokud probíhá capture, spusť auto-refresh každou sekundu
+            // Pokud probíhá capture, spusť tichý auto-refresh progress baru každou sekundu
+            // DŮLEŽITÉ: NIKDY nevolá showTerritoryActions() ani showModal() - jen aktualizuje DOM
             if (state.territoryCapture?.[locationId]) {
                 territoryRefreshInterval = setInterval(() => {
-                    // Zkontroluj jestli je modal ještě otevřený a capture běží
-                    const modalEl = document.getElementById('modalContainer');
-                    if (!modalEl || modalEl.style.display === 'none' || !state.territoryCapture?.[locationId]) {
+                    const capture = state.territoryCapture?.[locationId];
+                    
+                    // Capture skončil nebo byl zrušen - zastav
+                    if (!capture || window._territoryCaptureJustCompleted) {
                         stopTerritoryRefresh();
                         return;
                     }
-                    // Refresh modal
-                    showTerritoryActions();
+                    
+                    const elapsed = Date.now() - capture.startTime;
+                    const CAPTURE_DURATION = 15 * 60 * 1000;
+                    
+                    // Capture vypršel - zastav (completeTerritoryCapture se postará o zbytek)
+                    if (elapsed >= CAPTURE_DURATION) {
+                        stopTerritoryRefresh();
+                        return;
+                    }
+                    
+                    // Tiše aktualizuj progress bar v modalu (jen pokud je territory modal otevřený)
+                    const modalContent = document.getElementById('modalContent');
+                    if (!modalContent) return;
+                    const isTerritoryModal = modalContent.innerHTML?.includes('Dobýváš území');
+                    if (!isTerritoryModal) return; // Jiný modal - nedělej nic, ale nech interval běžet
+                    
+                    // Aktualizuj jen čísla v existujícím DOM
+                    const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
+                    const remainingMs = Math.max(0, CAPTURE_DURATION - elapsed);
+                    const remainingMin = Math.ceil(remainingMs / 60000);
+                    
+                    const progressBar = modalContent.querySelector('[style*="transition: width"]');
+                    if (progressBar) progressBar.style.width = progress + '%';
+                    
+                    const timerEl = modalContent.querySelector('[style*="color: #888"][style*="text-align: center"]');
+                    if (timerEl && timerEl.textContent.includes('Zbývá:')) {
+                        timerEl.textContent = `Zbývá: ${remainingMin} min (+10 bodů pro frakci)`;
+                    }
                 }, 1000);
             }
         }
@@ -71532,6 +71557,11 @@ function openFullscreenMap() {
                 return;
             }
             
+            // Okamžitě zastav refresh interval a zavři modal - PŘED čímkoliv jiným
+            stopTerritoryRefresh();
+            window._territoryCaptureJustCompleted = true;
+            closeModal();
+            
             const myName = getPlayerName();
             const POINTS_PER_CAPTURE = 10;
             
@@ -71625,10 +71655,8 @@ function openFullscreenMap() {
                     console.log('🏴 COMPLETE SUCCESS - +10 points for', faction, 'at', locationId, 'final:', finalValue);
                     notifySuccess('🏴 Dobývání dokončeno!', `+${POINTS_PER_CAPTURE} bodů pro ${PVP_FACTIONS[faction].name} (celkem: ${finalValue})`);
                     
-                    // Refresh modal pokud je otevřený
-                    if (document.getElementById('modal')?.classList.contains('show')) {
-                        setTimeout(() => showTerritoryActions(locationId), 500);
-                    }
+                    // Invaliduj territory cache pro další zobrazení
+                    window.territoryCache = null;
                     
                 } catch(e) {
                     console.error('🏴 Complete capture error:', e);
@@ -71640,6 +71668,9 @@ function openFullscreenMap() {
             }
             
             saveGame(true);
+            
+            // Reset flag po 3s aby neblokoval navždy
+            setTimeout(() => { window._territoryCaptureJustCompleted = false; }, 3000);
         }
         
         // Zobrazit mapu území (zjednodušená)
@@ -73763,7 +73794,7 @@ function openFullscreenMap() {
         function showSellToMarketplace() {
             // Na online tržišti lze prodat VŠECHNO (včetně fromShop, fromCaravan, crafted)
             const sellableItems = state.inv.filter(i => {
-                const validTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'tool', 'component', 'ammo', 'material', 'throwable', 'accessory', 'power_armor'];
+                const validTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'tool', 'component', 'ammo', 'material', 'throwable', 'accessory', 'power_armor', 'trophy'];
                 if (!validTypes.includes(i.type)) return false;
                 if (isItemEquipped(i)) return false;
                 // Získej cenu
