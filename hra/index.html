@@ -27857,8 +27857,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     <button class="btn" onclick="confirmCharacter()" style="width: 100%; margin-top: 1rem;">✓ Potvrdit Postavu</button>
                     
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #333;">
-                        <button class="btn" onclick="showImportSave()" style="width: 100%; background: #6A1B9A;">📱 ${'Importovat postavu z jiného zařízení'}</button>
+                    ${(!currentUser || currentUser.isAnonymous) ? `
+                    <div style="margin-top: 1.5rem; padding: 1rem; background: linear-gradient(135deg, #1a2a1a 0%, #0a1a0a 100%); border-radius: 10px; border: 2px solid #4CAF50; text-align: center;">
+                        <p style="color: #4CAF50; font-weight: bold; margin: 0 0 0.5rem 0;">🔑 Máš už účet?</p>
+                        <p style="color: #888; font-size: 0.85rem; margin: 0 0 0.8rem 0;">Přihlas se a načti svou uloženou postavu z cloudu</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                            <button class="btn" onclick="showLoginForm()" style="background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%); padding: 0.8rem;">🔑 Přihlásit se</button>
+                            <button class="btn" onclick="showRegisterForm()" style="background: #555; padding: 0.8rem;">📝 Registrace</button>
+                        </div>
+                    </div>
+                    ` : `
+                    <div style="margin-top: 1rem; padding: 0.6rem; background: #1a2a1a; border-radius: 8px; text-align: center; border: 1px solid #2a4a2a;">
+                        <span style="color: #4CAF50; font-size: 0.85rem;">✅ Přihlášen: ${escapeHtml(currentUser.displayName || currentUser.email || '')}</span>
+                    </div>
+                    `}
+                    
                     </div>
                 </div>
             `;
@@ -29451,6 +29464,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } catch(e) { /* ignore */ }
             
+            // === BLOKOVÁNÍ TERRITORY MODALU PŘES JINÉ DŮLEŽITÉ MODALY ===
+            // Territory modal nesmí překrýt boj, loot, quest, obchod atd.
+            try {
+                const isTerritoryModal = title.includes('🏴');
+                if (isTerritoryModal) {
+                    // Blokuj během boje
+                    if (typeof isInCombat === 'function' && isInCombat()) {
+                        console.log('⚠️ showModal blocked - territory modal during combat');
+                        return;
+                    }
+                    // Blokuj pokud je otevřený jiný důležitý modal
+                    const currentModal = document.getElementById('modal');
+                    if (currentModal?.classList.contains('show')) {
+                        const currentContent = document.getElementById('modalContent')?.textContent || '';
+                        const isAnotherImportantModal = !currentContent.includes('Dobýváš území') && 
+                                                         !currentContent.includes('Dobývat území') &&
+                                                         currentContent.length > 10;
+                        if (isAnotherImportantModal) {
+                            console.log('⚠️ showModal blocked - territory modal over existing modal');
+                            return;
+                        }
+                    }
+                    // Blokuj po dokončení capture
+                    if (window._territoryCaptureJustCompleted) {
+                        console.log('⚠️ showModal blocked - territory capture just completed');
+                        return;
+                    }
+                }
+            } catch(e) { /* ignore */ }
+            
             // === BLOKOVÁNÍ MODALŮ BĚHEM DOBÝVÁNÍ ÚZEMÍ ===
             // Během aktivního capture nesmí vyskočit ŽÁDNÉ okno
             try {
@@ -29656,7 +29699,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
-        function confirmCharacter() {
+        async function confirmCharacter() {
             // === KONTROLA REGISTRACE ===
             if (window.guestsDisabled && (!currentUser || currentUser.isAnonymous)) {
                 showForceRegistrationScreen();
@@ -68910,8 +68953,42 @@ function openFullscreenMap() {
                 closeModal();
                 notifySuccess('✅ Přihlášeno!', 'Vítej zpět, ' + (userCredential.user.displayName || email));
                 
-                // Překresli pokud jsme na creation obrazovce (po vynucené registraci)
+                // Po přihlášení na novém zařízení: zkontroluj cloud save PŘED zobrazením creation screenu
                 if (!state.confirmed) {
+                    try {
+                        const snapshot = await firebaseDB.ref('cloudSaves/' + userCredential.user.uid).once('value');
+                        const cloudData = snapshot.val();
+                        
+                        if (cloudData && cloudData.state && cloudData.state.confirmed) {
+                            // Cloud save existuje! Nabídni hráči načtení
+                            const savedDate = cloudData.savedAt ? new Date(cloudData.savedAt).toLocaleString('cs-CZ') : 'Neznámé';
+                            const charName = cloudData.playerName || cloudData.state.char?.name || '?';
+                            const charLevel = cloudData.playerLevel || cloudData.state.char?.level || 1;
+                            const charClass = cloudData.state.char?.classId || '?';
+                            
+                            showModal('☁️ Nalezen cloud save!', `
+                                <div style="text-align: center;">
+                                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">☁️</div>
+                                    <p style="color: #4CAF50; font-size: 1.1rem; font-weight: bold;">Na tomto účtu existuje uložená hra!</p>
+                                    <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0; border: 1px solid #4caf50;">
+                                        <p style="margin: 0.3rem 0; color: #ccc;">👤 <strong>${escapeHtml(charName)}</strong></p>
+                                        <p style="margin: 0.3rem 0; color: #ccc;">⭐ Level ${charLevel}</p>
+                                        <p style="margin: 0.3rem 0; color: #888; font-size: 0.85rem;">📅 Uloženo: ${savedDate}</p>
+                                    </div>
+                                    <p style="color: #ff9800; font-size: 0.9rem;">Chceš načíst tuto postavu, nebo začít novou hru?</p>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
+                                    <button class="btn" onclick="closeModal(); skipToCharacterCreation();" style="background: #555;">🆕 Nová hra</button>
+                                    <button class="btn" onclick="closeModal(); loadCloudSave(true);" style="background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%);">📥 Načíst save</button>
+                                </div>
+                            `);
+                            return; // Nepřekresluj na creation screen!
+                        }
+                    } catch(e) {
+                        console.log('☁️ Kontrola cloud save po loginu selhala:', e);
+                    }
+                    
+                    // Žádný cloud save - zobraz creation screen
                     renderFull();
                 }
                 
