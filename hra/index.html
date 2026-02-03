@@ -17081,6 +17081,29 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 item.id !== 'flashlight'
             );
             
+            // Přidej suroviny z state.resources jako virtuální itemy pro obchodníka
+            const shopResourceItems = [];
+            if (state.resources) {
+                Object.entries(state.resources).forEach(([resId, amount]) => {
+                    if (amount > 0) {
+                        const resDef = ITEMS.find(i => i.id === resId && i.type === 'resource');
+                        if (resDef && resDef.price) {
+                            shopResourceItems.push({
+                                id: resId,
+                                name: resDef.name,
+                                icon: resDef.icon,
+                                type: 'resource',
+                                price: resDef.price,
+                                weight: resDef.weight || 1,
+                                count: amount,
+                                _isResource: true
+                            });
+                        }
+                    }
+                });
+            }
+            const allShopSellable = [...sellableItems, ...shopResourceItems];
+            
             // Stav shopu - co zobrazujeme
             state.factionShopTab = state.factionShopTab || 'buy';
             state.factionShopPage = state.factionShopPage || 0;
@@ -17135,18 +17158,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } else {
                 // PRODÁVÁNÍ
-                if (sellableItems.length === 0) {
+                if (allShopSellable.length === 0) {
                     contentHtml = '<p style="text-align: center; color: #888; padding: 2rem;">Nemáš nic na prodej.</p>';
                 } else {
                     const startIdx = state.factionShopPage * ITEMS_PER_PAGE;
-                    const pageItems = sellableItems.slice(startIdx, startIdx + ITEMS_PER_PAGE);
-                    const totalPages = Math.ceil(sellableItems.length / ITEMS_PER_PAGE);
+                    const pageItems = allShopSellable.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+                    const totalPages = Math.ceil(allShopSellable.length / ITEMS_PER_PAGE);
                     
                     contentHtml = '<div style="min-height: 280px;">';
                     pageItems.forEach((item, idx) => {
+                        const isResource = item._isResource;
                         // Najdi skutečný index v state.inv (ne v sellableItems!)
-                        const realInvIndex = state.inv.indexOf(item);
-                        if (realInvIndex === -1) return; // Bezpečnostní kontrola
+                        const realInvIndex = isResource ? -1 : state.inv.indexOf(item);
+                        if (!isResource && realInvIndex === -1) return; // Bezpečnostní kontrola
                         
                         // Použij item.price, ne item.value
                         const basePrice = item.price || Math.abs(item.value) || 20;
@@ -17154,19 +17178,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const count = item.count || 1;
                         
                         contentHtml += `
-                            <div style="display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid #333;">
+                            <div style="display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem; background: ${isResource ? '#1a2a1a' : '#1a1a1a'}; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid ${isResource ? '#3a4a3a' : '#333'};">
                                 <span style="font-size: 1.3rem; width: 30px; text-align: center;">${item.icon}</span>
                                 <div style="flex: 1; min-width: 0;">
                                     <div style="font-weight: bold; font-size: 0.9rem;">${item.name} ${count > 1 ? `(${count}x)` : ''}</div>
-                                    <div style="font-size: 0.7rem; color: #888;">${item.type || ''}</div>
+                                    <div style="font-size: 0.7rem; color: #888;">${isResource ? 'Surovina' : (item.type || '')}</div>
                                 </div>
                                 <div style="display: flex; gap: 0.3rem;">
-                                    <button class="btn" onclick="sellToFactionShop('${factionId}', ${realInvIndex}, 1, ${sellPrice})" 
+                                    <button class="btn" onclick="${isResource ? `sellResourceToFactionShop('${factionId}', '${item.id}', 1, ${sellPrice})` : `sellToFactionShop('${factionId}', ${realInvIndex}, 1, ${sellPrice})`}" 
                                             style="padding: 0.25rem 0.4rem; font-size: 0.75rem;">
                                         1x ${sellPrice}💰
                                     </button>
                                     ${count > 1 ? `
-                                        <button class="btn" onclick="sellToFactionShop('${factionId}', ${realInvIndex}, ${count}, ${sellPrice * count})" 
+                                        <button class="btn" onclick="${isResource ? `sellResourceToFactionShop('${factionId}', '${item.id}', ${count}, ${sellPrice * count})` : `sellToFactionShop('${factionId}', ${realInvIndex}, ${count}, ${sellPrice * count})`}" 
                                                 style="padding: 0.25rem 0.4rem; font-size: 0.75rem; background: #4a4a2a;">
                                             Vše ${sellPrice * count}💰
                                         </button>
@@ -17290,6 +17314,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             renderFull();
             openFactionShop(factionId); // Refresh shopu
+        }
+        
+        function sellResourceToFactionShop(factionId, resourceId, amount, totalPrice) {
+            const available = state.resources[resourceId] || 0;
+            const resDef = ITEMS.find(i => i.id === resourceId && i.type === 'resource');
+            if (!resDef || available <= 0) return;
+            
+            const toSell = Math.min(amount, available);
+            const actualPrice = Math.max(1, Math.floor((resDef.price || 5) * 0.35)) * toSell;
+            
+            addMoney(actualPrice);
+            state.resources[resourceId] = available - toSell;
+            if (state.resources[resourceId] <= 0) delete state.resources[resourceId];
+            
+            addLog(`Prodal jsi ${resDef.name}${toSell > 1 ? ` (${toSell}x)` : ''} za ${actualPrice} 💰`, '💵');
+            notifySuccess('Prodáno', `${resDef.icon} ${toSell}x ${resDef.name} → +${actualPrice} 💰`);
+            
+            if (state.dailyQuests?.progress) {
+                state.dailyQuests.progress.sold = (state.dailyQuests.progress.sold || 0) + toSell;
+                checkDailyQuests();
+            }
+            
+            renderFull();
+            openFactionShop(factionId);
         }
         
         function investInFaction(factionId) {
@@ -23845,6 +23893,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
+            // Cooldown na skenování rádia (60 sekund)
+            state.radio = state.radio || {};
+            const radioCooldown = 60 * 1000; // 60 sekund
+            if (state.radio.lastScan && (Date.now() - state.radio.lastScan) < radioCooldown) {
+                const secsLeft = Math.ceil((radioCooldown - (Date.now() - state.radio.lastScan)) / 1000);
+                notifyWarning('📻 Šum...', `Rádio se ladí, zkus za ${secsLeft}s`);
+                return;
+            }
+            state.radio.lastScan = Date.now();
+            
             const message = RADIO_MESSAGES[Math.floor(Math.random() * RADIO_MESSAGES.length)];
             let content = message.message;
             
@@ -23871,6 +23929,124 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.radio.messages = state.radio.messages || [];
             state.radio.messages.push({ message: content, time: Date.now() });
             
+            // Zpracuj event typy - aktivuj skutečné eventy
+            if (message.type === 'event' && message.eventType === 'caravan') {
+                state.caravan = state.caravan || {};
+                const radioCaravanCooldown = 30 * 60 * 1000; // 30 minut cooldown
+                const lastRadioCaravan = state.caravan.lastRadioSpawn || 0;
+                if (!state.caravan.active && (Date.now() - lastRadioCaravan) > radioCaravanCooldown) {
+                    state.caravan.active = true;
+                    state.caravan.until = Date.now() + 10 * 60 * 1000; // 10 minut
+                    state.caravan.lastRadioSpawn = Date.now();
+                    state.caravanPresent = true;
+                    notifySuccess('🐪 Karavana dorazila!', 'Obchodníci budou v oblasti 10 minut');
+                    addLog('Rádio přilákalo karavanu obchodníků!', '🐪');
+                } else if (state.caravan.active) {
+                    // Už je aktivní, jen info
+                } else {
+                    // Cooldown - zpráva přijde ale karavana nepřijede
+                    const minsLeft = Math.ceil((radioCaravanCooldown - (Date.now() - lastRadioCaravan)) / 60000);
+                    content += ` (signál slabý, zkus za ~${minsLeft} min)`;
+                }
+            }
+            
+            // SOS/Rescue - označ lokaci s přeživším (bonus XP a trust při návštěvě)
+            if (message.type === 'quest' && message.questType === 'rescue') {
+                const rescueLocations = WORLD_LOCATIONS.filter(l => 
+                    l.type !== 'home' && l.type !== 'empty' && l.zone !== 'safe'
+                );
+                if (rescueLocations.length > 0) {
+                    const rescueLoc = rescueLocations[Math.floor(Math.random() * rescueLocations.length)];
+                    state.radioRescue = {
+                        locationId: rescueLoc.id,
+                        locationName: rescueLoc.name,
+                        expiresAt: Date.now() + 5 * 60 * 60 * 1000 // 5 hodin na záchranu
+                    };
+                    content = `SOS! Přeživší potřebuje pomoc! [${rescueLoc.name}]`;
+                }
+            }
+            
+            // Horde warning - okamžitý boj s vlnou mutantů! Lepší loot.
+            if (message.type === 'danger' && message.eventType === 'horde') {
+                // Vyber nepřátele podle levelu hráče (min tier 3!)
+                const playerLevel = state.char.level || 1;
+                let hordeEnemies = [];
+                
+                if (playerLevel <= 5) {
+                    // Tier 3 - banditi, mutanti, ghúlové
+                    hordeEnemies = ['bandit', 'mutant', 'ghoul'];
+                } else if (playerLevel <= 10) {
+                    // Tier 3 těžší - robot, toxic, raider boss
+                    hordeEnemies = ['raider_boss', 'toxic_zombie', 'electric_mutant', 'ghoul'];
+                } else if (playerLevel <= 15) {
+                    // Tier 3-4 mix
+                    hordeEnemies = ['robot', 'slaver_boss', 'acid_beast', 'raider_boss', 'ghoul'];
+                } else if (playerLevel <= 20) {
+                    // Tier 4 - alpha, giant, glowing ghoul
+                    hordeEnemies = ['giant_mutant', 'alpha_wolf', 'glowing_ghoul', 'toxic_beast', 'sentinel'];
+                } else {
+                    // Tier 4-5 endgame - brutus, deathclaw, elite robot
+                    hordeEnemies = ['mutant_brute', 'elite_robot', 'glowing_one', 'giant_mutant', 'alpha_wolf', 'acid_beast'];
+                }
+                
+                // Sestav skupinu nepřátel
+                const enemyGroup = [];
+                hordeEnemies.forEach(eId => {
+                    const enemyDef = ENEMIES.find(e => e.id === eId);
+                    if (enemyDef) {
+                        enemyGroup.push({
+                            ...enemyDef,
+                            hp: enemyDef.hp,
+                            maxHp: enemyDef.hp,
+                            alive: true,
+                            stunned: false,
+                            poisoned: 0,
+                            bleeding: 0
+                        });
+                    }
+                });
+                
+                if (enemyGroup.length > 0) {
+                    // Nastav bonus loot flag
+                    state.hordeWarning = {
+                        active: true,
+                        until: Date.now() + 2 * 60 * 60 * 1000, // 2 hodiny
+                        lootBonus: 1.5 // +50% loot z boje
+                    };
+                    
+                    addLog('⚠️ Horda mutantů zaútočila! ' + enemyGroup.length + ' nepřátel!', '👹');
+                    
+                    // Zavři rádio modal a spusť boj
+                    closeModal();
+                    setTimeout(() => {
+                        showModal('👹 HORDA MUTANTŮ!', `
+                            <div style="text-align: center;">
+                                <div style="font-size: 3rem;">👹⚔️👹</div>
+                                <h3 style="color: #f44336;">Horda útočí!</h3>
+                                <p style="color: #aaa;">Rádiový signál přilákal vlnu ${enemyGroup.length} mutantů!</p>
+                                <p style="color: #ffd700;">🎁 Bonus: +50% loot za přežití!</p>
+                                <div style="background: #2a1a1a; padding: 0.5rem; border-radius: 8px; margin: 0.5rem 0;">
+                                    ${enemyGroup.map(e => `<span style="margin: 0.2rem;">${e.icon} ${e.name}</span>`).join(' ')}
+                                </div>
+                            </div>
+                            <button class="btn" onclick="closeModal(); startCombatWithGroup(window._hordeEnemies, 'horde');" style="width: 100%; margin-top: 0.5rem; background: #8B0000;">⚔️ Bojovat!</button>
+                            <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.3rem; background: #333;">🏃 Utéct (ztratíš bonus)</button>
+                        `);
+                        window._hordeEnemies = enemyGroup;
+                    }, 300);
+                    return; // Nepokračuj dál - rádio UI se nezobrazí
+                }
+            }
+            
+            // Weather - varování před radiační bouří
+            if (message.type === 'info' && message.eventType === 'weather') {
+                state.weatherWarning = {
+                    stormIn: Date.now() + 10 * 60 * 1000, // bouře za 10 minut
+                    warned: true
+                };
+                addLog('📻 Rádio varuje před blížící se radiační bouří!', '☢️');
+            }
+            
             // Získej info o karavanách
             const caravanActive = state.caravan?.active || state.caravanPresent;
             const caravanTimeLeft = caravanActive && state.caravan?.until ? Math.max(0, Math.ceil((state.caravan.until - Date.now()) / 1000)) : 0;
@@ -23893,8 +24069,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (timeLeft > 0) {
                     treasureInfo = `<div style="color: #ffd700; margin-top: 0.5rem;">💎 ${'Poklad v'}: <strong>${state.treasureLocation.locationName}</strong> <span style="color: #888;">(${timeLeft} min)</span></div>`;
                 } else {
-                    // Vypršelo
                     state.treasureLocation = null;
+                }
+            }
+            
+            // Rescue info
+            let rescueInfo = '';
+            if (state.radioRescue && state.radioRescue.locationId) {
+                const timeLeftMs = state.radioRescue.expiresAt ? Math.max(0, state.radioRescue.expiresAt - Date.now()) : 0;
+                if (timeLeftMs > 0) {
+                    const hoursLeft = Math.floor(timeLeftMs / 3600000);
+                    const minsLeft = Math.floor((timeLeftMs % 3600000) / 60000);
+                    const timeStr = hoursLeft > 0 ? `${hoursLeft}h ${minsLeft}m` : `${minsLeft} min`;
+                    rescueInfo = `<div style="color: #ff6666; margin-top: 0.5rem;">🆘 Přeživší v: <strong>${state.radioRescue.locationName}</strong> <span style="color: #888;">(${timeStr})</span></div>`;
+                } else {
+                    state.radioRescue = null;
+                }
+            }
+            
+            // Horde loot bonus info
+            let hordeInfo = '';
+            if (state.hordeWarning?.active && Date.now() < state.hordeWarning.until) {
+                const timeLeft = Math.max(0, Math.ceil((state.hordeWarning.until - Date.now()) / 60000));
+                hordeInfo = `<div style="color: #ff9800; margin-top: 0.5rem;">👹 Horda poražena! +50% loot bonus <span style="color: #888;">(${timeLeft} min)</span></div>`;
+            }
+            
+            // Weather info
+            let weatherInfo = '';
+            if (state.weatherWarning?.warned && state.weatherWarning.stormIn) {
+                const timeLeft = Math.max(0, Math.ceil((state.weatherWarning.stormIn - Date.now()) / 60000));
+                if (timeLeft > 0) {
+                    weatherInfo = `<div style="color: #9c27b0; margin-top: 0.5rem;">☢️ Radiační bouře za ~${timeLeft} min! Schovej se!</div>`;
                 }
             }
             
@@ -23921,6 +24126,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #333;">
                         ${caravanInfo}
                         ${treasureInfo}
+                        ${rescueInfo}
+                        ${hordeInfo}
+                        ${weatherInfo}
                     </div>
                 </div>
                 
@@ -34097,6 +34305,65 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Speciální quest triggery při průzkumu
                 checkSpecialQuestTriggers(state.world.currentLocation);
                 
+                // === RADIO RESCUE - kontrola při příchodu na lokaci ===
+                if (state.radioRescue && state.radioRescue.locationId === state.world.currentLocation) {
+                    if (Date.now() < state.radioRescue.expiresAt) {
+                        const rescueXP = 100 + Math.floor(Math.random() * 100);
+                        const rescueMoney = 50 + Math.floor(Math.random() * 100);
+                        state.char.xp = (state.char.xp || 0) + rescueXP;
+                        state.money = (state.money || 0) + rescueMoney;
+                        state.stats.rescues = (state.stats.rescues || 0) + 1;
+                        showModal('🆘 Přeživší zachráněn!', `
+                            <div style="text-align: center;">
+                                <div style="font-size: 4rem;">🙏</div>
+                                <h3 style="color: #8bc34a;">Našel jsi přeživšího!</h3>
+                                <p style="color: #aaa;">Díky rádiovému signálu jsi zachránil člověka v nesnázích.</p>
+                                <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; border: 1px solid #4caf50;">
+                                    <div style="color: #ffd700;">⭐ +${rescueXP} XP</div>
+                                    <div style="color: #ffd700;">💰 +${rescueMoney} peněz</div>
+                                </div>
+                            </div>
+                            <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">OK</button>
+                        `);
+                        addLog(`🆘 Zachránil jsi přeživšího v ${state.radioRescue.locationName}! +${rescueXP} XP`, '🙏');
+                        state.radioRescue = null;
+                    } else {
+                        notifyWarning('🆘 Pozdě...', 'Přeživší už tu není. Signál vypršel.');
+                        state.radioRescue = null;
+                    }
+                }
+                
+                // === TREASURE LOCATION - kontrola při příchodu ===
+                if (state.treasureLocation && state.treasureLocation.locationId === state.world.currentLocation) {
+                    if (Date.now() < state.treasureLocation.expiresAt) {
+                        const treasureMoney = 200 + Math.floor(Math.random() * 300);
+                        state.money = (state.money || 0) + treasureMoney;
+                        // Bonus loot
+                        const bonusResources = ['metal', 'electronics', 'chemicals', 'gunpowder'];
+                        const bonusRes = bonusResources[Math.floor(Math.random() * bonusResources.length)];
+                        const bonusAmt = 3 + Math.floor(Math.random() * 5);
+                        state.resources[bonusRes] = (state.resources[bonusRes] || 0) + bonusAmt;
+                        const resName = RESOURCE_NAMES[bonusRes] || bonusRes;
+                        showModal('💎 Poklad nalezen!', `
+                            <div style="text-align: center;">
+                                <div style="font-size: 4rem;">💰</div>
+                                <h3 style="color: #ffd700;">Našel jsi skrýš!</h3>
+                                <p style="color: #aaa;">Rádio tě dovedlo ke skrytému skladu.</p>
+                                <div style="background: #2a2a1a; padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; border: 1px solid #ffd700;">
+                                    <div style="color: #ffd700;">💰 +${treasureMoney} peněz</div>
+                                    <div style="color: #ffd700;">📦 +${bonusAmt} ${resName}</div>
+                                </div>
+                            </div>
+                            <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">OK</button>
+                        `);
+                        addLog(`💎 Nalezen poklad v ${state.treasureLocation.locationName}! +${treasureMoney} 💰`, '💎');
+                        state.treasureLocation = null;
+                    } else {
+                        notifyWarning('💎 Prázdno...', 'Někdo tu byl dříve. Poklad je pryč.');
+                        state.treasureLocation = null;
+                    }
+                }
+                
                 travelEventTimeouts.forEach(t => clearTimeout(t));
                 travelEventTimeouts = [];
                 
@@ -40739,7 +41006,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn" onclick="closeModal(); useItem('${item.id}');" style="background: #4caf50;">✓ Použít</button>
+                    <button class="btn" onclick="closeModal(); useItem('${item.id}', ${idx});" style="background: #4caf50;">✓ Použít</button>
                     ${item.count > 1 ? `<button class="btn" onclick="showSplitStackDialog(${idx})" style="background: #2196f3;">✂️ Rozdělit stack (${item.count}x)</button>` : ''}
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
@@ -40754,9 +41021,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
         }
         
-        function useItem(itemId) {
+        function useItem(itemId, specificIdx) {
             console.log('=== useItem called ===');
-            console.log('itemId:', itemId);
+            console.log('itemId:', itemId, 'specificIdx:', specificIdx);
             
             // Blokace během dovolené
             if (state.vacationMode) {
@@ -40764,7 +41031,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            const item = state.inv.find(i => i.id === itemId);
+            // Pokud je zadán konkrétní index, použij ten (správný stack)
+            const item = (specificIdx !== undefined && state.inv[specificIdx]?.id === itemId) 
+                ? state.inv[specificIdx] 
+                : state.inv.find(i => i.id === itemId);
             console.log('item from inventory:', item);
             
             if (!item) {
@@ -61197,6 +61467,13 @@ function openFullscreenMap() {
             
             let xpGain = (enemyData?.xp || 25) * enemyCount;
             
+            // Horde warning z rádia - bonus XP a loot
+            const hordeActiveInCombat = state.hordeWarning?.active && Date.now() < state.hordeWarning?.until;
+            if (hordeActiveInCombat) {
+                const hordeXPBonus = Math.floor(xpGain * ((state.hordeWarning.lootBonus || 1.3) - 1));
+                xpGain += hordeXPBonus;
+            }
+            
             // Tracking (Hunter set 2) - +50% XP z lovu zvířat
             const setEffectsXP = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
             if (setEffectsXP.tracking) {
@@ -61322,7 +61599,11 @@ function openFullscreenMap() {
                 }
                 
                 if (lootId === 'money') {
-                    const moneyGain = Math.floor(Math.random() * 75) + 30;
+                    let moneyGain = Math.floor(Math.random() * 75) + 30;
+                    // Horde bonus na peníze
+                    if (state.hordeWarning?.active && Date.now() < state.hordeWarning?.until) {
+                        moneyGain = Math.floor(moneyGain * (state.hordeWarning.lootBonus || 1.3));
+                    }
                     totalMoney += moneyGain;
                     return;
                 }
@@ -72758,17 +73039,23 @@ function openFullscreenMap() {
                 const offer = marketplaceOffers.find(o => o.id === offerId);
                 
                 if (offer && offer.item) {
-                    // Vrať předmět do inventáře
+                    // Vrať předmět do inventáře nebo resources
                     const count = offer.count || 1;
-                    const existingItem = state.inv.find(i => i.id === offer.item.id);
                     
-                    if (existingItem && (existingItem.type === 'consumable' || existingItem.type === 'resource' || existingItem.type === 'ammo')) {
-                        // Stackovatelné - přidej k existujícímu
-                        existingItem.count = (existingItem.count || 1) + count;
+                    if (offer.item.type === 'resource') {
+                        // Surovina → zpět do state.resources
+                        state.resources[offer.item.id] = (state.resources[offer.item.id] || 0) + count;
                     } else {
-                        // Přidej jako nový item (nebo pro každý kus zvlášť)
-                        for (let i = 0; i < count; i++) {
-                            state.inv.push({...offer.item, count: 1});
+                        const existingItem = state.inv.find(i => i.id === offer.item.id);
+                        
+                        if (existingItem && (existingItem.type === 'consumable' || existingItem.type === 'ammo')) {
+                            // Stackovatelné - přidej k existujícímu
+                            existingItem.count = (existingItem.count || 1) + count;
+                        } else {
+                            // Přidej jako nový item (nebo pro každý kus zvlášť)
+                            for (let i = 0; i < count; i++) {
+                                state.inv.push({...offer.item, count: 1});
+                            }
                         }
                     }
                     
@@ -72969,6 +73256,18 @@ function openFullscreenMap() {
                             <div style="text-align: right;">
                                 <div style="color: #ffd700; font-weight: bold;">${totalPrice} 💰</div>
                                 ${count > 1 ? `<div style="color: #888; font-size: 0.7rem;">(${offer.price}/ks)</div>` : ''}
+                                ${(() => {
+                                    const bDef = ITEMS.find(ii => ii.id === offer.item.id);
+                                    const bP = bDef?.price || offer.item.price || offer.item.value || 0;
+                                    const ppu = count > 1 ? Math.floor(totalPrice / count) : totalPrice;
+                                    if (bP > 0) {
+                                        const r = ppu / bP;
+                                        if (r > 2) return '<div style="font-size: 0.65rem; color: #f44336;">⬆️ ' + Math.floor(r) + '× ceny</div>';
+                                        if (r > 1.3) return '<div style="font-size: 0.65rem; color: #ff9800;">⬆️ nad cenou</div>';
+                                        if (r <= 0.8) return '<div style="font-size: 0.65rem; color: #4caf50;">✅ levné!</div>';
+                                    }
+                                    return '';
+                                })()}
                                 <button class="btn" onclick="promptBuyOffer('${escapeHtml(offer.id)}', ${count}, ${offer.price})" style="background: ${canBuy ? '#4CAF50' : '#555'}; padding: 0.2rem 0.5rem; font-size: 0.75rem;" ${!canBuy ? 'disabled' : ''}>
                                     ${canBuy ? '🛒 Koupit' : '❌ Málo 💰'}
                                 </button>
@@ -73095,6 +73394,26 @@ function openFullscreenMap() {
                         <span style="color: #ffd700; font-weight: bold;">${totalPrice} 💰</span>
                     </div>
                     ${count > 1 ? `<div style="text-align: right; font-size: 0.8rem; color: #888;">(${offer.price} 💰/ks)</div>` : ''}
+                    ${(() => {
+                        const baseDef = ITEMS.find(i => i.id === item.id);
+                        const bPrice = baseDef?.price || item.price || item.value || 0;
+                        const pricePerUnit = count > 1 ? Math.floor(totalPrice / count) : totalPrice;
+                        if (bPrice > 0) {
+                            const ratio = pricePerUnit / bPrice;
+                            let labelColor, labelText, bgColor, borderColor;
+                            if (ratio <= 0.8) {
+                                labelColor = '#4caf50'; labelText = '✅ Pod cenou!'; bgColor = '#1a2a1a'; borderColor = '#4caf50';
+                            } else if (ratio <= 1.3) {
+                                labelColor = '#8bc34a'; labelText = '👍 Férová cena'; bgColor = '#1a2a1a'; borderColor = '#3a4a3a';
+                            } else if (ratio <= 2) {
+                                labelColor = '#ff9800'; labelText = '⚠️ Nad cenou'; bgColor = '#2a2a1a'; borderColor = '#ff9800';
+                            } else {
+                                labelColor = '#f44336'; labelText = '🚫 Předražené! (' + Math.floor(ratio) + '×)'; bgColor = '#2a1a1a'; borderColor = '#f44336';
+                            }
+                            return '<div style="margin-top: 0.5rem; padding: 0.5rem; background: ' + bgColor + '; border: 1px solid ' + borderColor + '; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;"><span style="color: #888; font-size: 0.85rem;">📉 Běžná cena: ~' + bPrice + ' 💰</span><span style="color: ' + labelColor + '; font-weight: bold; font-size: 0.85rem;">' + labelText + '</span></div>';
+                        }
+                        return '';
+                    })()}
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
@@ -73109,7 +73428,7 @@ function openFullscreenMap() {
         function showSellToMarketplace() {
             // Na online tržišti lze prodat VŠECHNO (včetně fromShop, fromCaravan, crafted)
             const sellableItems = state.inv.filter(i => {
-                const validTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'tool', 'component', 'ammo', 'material'];
+                const validTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'tool', 'component', 'ammo', 'material', 'throwable', 'accessory', 'power_armor'];
                 if (!validTypes.includes(i.type)) return false;
                 if (isItemEquipped(i)) return false;
                 // Získej cenu
@@ -73118,7 +73437,31 @@ function openFullscreenMap() {
                 return hasPrice;
             });
             
-            if (sellableItems.length === 0) {
+            // Přidej suroviny z state.resources jako virtuální itemy
+            const resourceItems = [];
+            if (state.resources) {
+                Object.entries(state.resources).forEach(([resId, amount]) => {
+                    if (amount > 0) {
+                        const resDef = ITEMS.find(i => i.id === resId && i.type === 'resource');
+                        if (resDef) {
+                            resourceItems.push({
+                                id: resId,
+                                name: resDef.name,
+                                icon: resDef.icon,
+                                type: 'resource',
+                                price: resDef.price || 5,
+                                weight: resDef.weight || 1,
+                                count: amount,
+                                _isResource: true
+                            });
+                        }
+                    }
+                });
+            }
+            
+            const allSellable = [...sellableItems, ...resourceItems];
+            
+            if (allSellable.length === 0) {
                 showModal('Prodat na tržišti', `
                     <div style="text-align: center; padding: 1rem; color: #888;">
                         Nemáš nic k prodeji!
@@ -73130,8 +73473,9 @@ function openFullscreenMap() {
             
             let html = `<div style="max-height: 300px; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
             
-            sellableItems.forEach((item) => {
-                const realIdx = state.inv.indexOf(item);
+            allSellable.forEach((item) => {
+                const isResource = item._isResource;
+                const realIdx = isResource ? -1 : state.inv.indexOf(item);
                 const count = item.count || 1;
                 // Získej cenu z itemu nebo z ITEMS definice
                 const itemDef = ITEMS.find(i => i.id === item.id);
@@ -73150,16 +73494,16 @@ function openFullscreenMap() {
                 if (item.value && item.type === 'consumable') desc += `+${item.value} `;
                 
                 html += `
-                    <div style="display: flex; align-items: center; gap: 0.5rem; background: #2a2a2a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.3rem;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; background: ${isResource ? '#1a2a1a' : '#2a2a2a'}; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.3rem; ${isResource ? 'border-left: 3px solid #4caf50;' : ''}">
                         <span style="font-size: 1.5rem;">${item.icon}</span>
                         <div style="flex: 1;">
                             <div style="color: #fff;">
                                 ${item.name}
                                 ${isStackable ? `<span style="color: #ffd700; font-weight: bold;"> ×${count}</span>` : ''}
                             </div>
-                            <div style="font-size: 0.75rem; color: #888;">${desc || item.type}</div>
+                            <div style="font-size: 0.75rem; color: #888;">${isResource ? 'Surovina' : (desc || item.type)}</div>
                         </div>
-                        <button class="btn" onclick="promptSellPrice(${realIdx}, ${suggestedPrice}, ${count})" style="background: #ff9800; padding: 0.3rem 0.6rem; font-size: 0.8rem;">${'💰 Prodat'}</button>
+                        <button class="btn" onclick="${isResource ? `promptSellResource('${item.id}', ${suggestedPrice}, ${count})` : `promptSellPrice(${realIdx}, ${suggestedPrice}, ${count})`}" style="background: #ff9800; padding: 0.3rem 0.6rem; font-size: 0.8rem;">${'💰 Prodat'}</button>
                     </div>
                 `;
             });
@@ -73176,6 +73520,11 @@ function openFullscreenMap() {
             if (!item) return;
             
             const count = item.count || 1;
+            
+            // Max cena - 3x base price
+            const itemDefPrice = ITEMS.find(i => i.id === item.id);
+            const basePrice = item.price || itemDefPrice?.price || item.value || 50;
+            const maxPrice = Math.max(Math.floor(basePrice * 3), 100);
             
             showModal(`💰 Prodat ${item.name}`, `
                 <div style="text-align: center;">
@@ -73198,10 +73547,11 @@ function openFullscreenMap() {
                     ` : ''}
                     
                     <div style="margin-bottom: 1rem;">
-                        <label style="color: #888; font-size: 0.85rem;">Cena za kus:</label>
-                        <input type="number" id="sellPriceInput" value="${suggestedPrice}" min="1" max="99999"
+                        <label style="color: #888; font-size: 0.85rem;">Cena za kus (max ${maxPrice} 💰):</label>
+                        <input type="number" id="sellPriceInput" value="${suggestedPrice}" min="1" max="${maxPrice}"
                             style="width: 100%; padding: 0.8rem; font-size: 1.3rem; background: #1a1a1a; border: 2px solid #ffd700; border-radius: 8px; color: #ffd700; text-align: center; margin-top: 0.3rem;"
-                            onchange="updateSellTotal(${suggestedPrice})">
+                            onchange="const v=parseInt(this.value)||0; if(v>${maxPrice}){this.value=${maxPrice}; } updateSellTotal(${suggestedPrice})">
+                        <div style="color: #666; font-size: 0.7rem; margin-top: 0.2rem;">💡 Základní hodnota: ${basePrice} 💰 | Max: ${maxPrice} 💰</div>
                     </div>
                     
                     <div id="sellTotalDisplay" style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4CAF50;">
@@ -73215,6 +73565,122 @@ function openFullscreenMap() {
                     </div>
                 </div>
             `);
+        }
+        
+        function promptSellResource(resourceId, suggestedPrice, maxCount) {
+            const resDef = ITEMS.find(i => i.id === resourceId && i.type === 'resource');
+            if (!resDef) return;
+            const available = state.resources[resourceId] || 0;
+            if (available <= 0) { notifyWarning('Chyba', 'Nemáš tuto surovinu'); return; }
+            const basePrice = resDef.price || 5;
+            const maxPrice = Math.max(Math.floor(basePrice * 3), 100);
+            
+            showModal(`💰 Prodat ${resDef.name}`, `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">${resDef.icon}</div>
+                    <div style="color: #4caf50; font-size: 0.85rem; margin-bottom: 0.5rem;">📦 Surovina (máš: ${available})</div>
+                    
+                    <div style="margin-bottom: 1rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Počet kusů (max ${available}):</label>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; justify-content: center; margin-top: 0.5rem;">
+                            <button class="btn" onclick="adjustSellCount(-10)" style="padding: 0.3rem 0.6rem; background: #555;">-10</button>
+                            <button class="btn" onclick="adjustSellCount(-1)" style="padding: 0.3rem 0.6rem; background: #555;">-</button>
+                            <input type="number" id="sellCountInput" value="1" min="1" max="${available}"
+                                style="width: 60px; padding: 0.5rem; font-size: 1.1rem; background: #1a1a1a; border: 2px solid #8bc34a; border-radius: 8px; color: #8bc34a; text-align: center;"
+                                onchange="updateSellTotal()">
+                            <button class="btn" onclick="adjustSellCount(1)" style="padding: 0.3rem 0.6rem; background: #555;">+</button>
+                            <button class="btn" onclick="adjustSellCount(10)" style="padding: 0.3rem 0.6rem; background: #555;">+10</button>
+                        </div>
+                        <button class="btn" onclick="document.getElementById('sellCountInput').value=${available}; updateSellTotal();" style="margin-top: 0.3rem; padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #333;">Vše (${available})</button>
+                    </div>
+                    
+                    <div style="margin-bottom: 1rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Cena za kus (max ${maxPrice} 💰):</label>
+                        <input type="number" id="sellPriceInput" value="${suggestedPrice}" min="1" max="${maxPrice}"
+                            style="width: 100%; padding: 0.8rem; font-size: 1.3rem; background: #1a1a1a; border: 2px solid #ffd700; border-radius: 8px; color: #ffd700; text-align: center; margin-top: 0.3rem;"
+                            onchange="const v=parseInt(this.value)||0; if(v>${maxPrice}){this.value=${maxPrice}; } updateSellTotal()">
+                        <div style="color: #666; font-size: 0.7rem; margin-top: 0.2rem;">💡 Základní hodnota: ${basePrice} 💰 | Max: ${maxPrice} 💰</div>
+                    </div>
+                    
+                    <div id="sellTotalDisplay" style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4CAF50;">
+                        <span style="color: #888;">Celkem:</span>
+                        <span style="color: #4CAF50; font-size: 1.3rem; font-weight: bold;"> ${suggestedPrice} 💰</span>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        <button class="btn" onclick="showSellToMarketplace()" style="background: #555;">❌ Zrušit</button>
+                        <button class="btn" onclick="confirmSellResourceToMarket('${resourceId}')" style="background: #4CAF50;">✓ Prodat</button>
+                    </div>
+                </div>
+            `);
+        }
+        
+        async function confirmSellResourceToMarket(resourceId) {
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Tržiště není dostupné');
+                return;
+            }
+            
+            const priceInput = document.getElementById('sellPriceInput');
+            const countInput = document.getElementById('sellCountInput');
+            const price = parseInt(priceInput?.value) || 0;
+            const count = parseInt(countInput?.value) || 1;
+            
+            if (price < 1) { notifyWarning('Neplatná cena', 'Musí být alespoň 1 💰'); return; }
+            
+            const resDef = ITEMS.find(i => i.id === resourceId && i.type === 'resource');
+            if (!resDef) return;
+            
+            const available = state.resources[resourceId] || 0;
+            if (available < count) { notifyWarning('Nedostatek', `Máš jen ${available}x ${resDef.name}`); return; }
+            
+            const basePrice = resDef.price || 5;
+            const maxPrice = Math.max(basePrice * 3, 100);
+            if (price > maxPrice) { notifyWarning('Příliš drahé!', `Max cena je ${maxPrice} 💰`); return; }
+            
+            // Odeber suroviny
+            state.resources[resourceId] -= count;
+            if (state.resources[resourceId] <= 0) delete state.resources[resourceId];
+            saveGame();
+            
+            const totalPrice = price * count;
+            const itemForOffer = {
+                id: resourceId,
+                name: resDef.name,
+                icon: resDef.icon,
+                type: 'resource',
+                damage: 0,
+                defense: 0,
+                count: count
+            };
+            if (resDef.rarity) itemForOffer.rarity = resDef.rarity;
+            
+            try {
+                const offer = {
+                    seller: getPlayerName(),
+                    item: itemForOffer,
+                    price: price,
+                    totalPrice: totalPrice,
+                    count: count,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    status: 'active'
+                };
+                
+                await firebaseDB.ref('marketplace/offers').push(offer);
+                
+                if (state.dailyQuests?.progress) {
+                    state.dailyQuests.progress.sold = (state.dailyQuests.progress.sold || 0) + count;
+                }
+                
+                notifySuccess('Nabídka vytvořena!', `${count}x ${resDef.name} za ${totalPrice} 💰`);
+                renderFull();
+                showMarketplace();
+            } catch (e) {
+                // Vrať suroviny zpět při chybě
+                state.resources[resourceId] = (state.resources[resourceId] || 0) + count;
+                saveGame();
+                notifyError('Chyba', 'Nepodařilo se vytvořit nabídku: ' + e.message);
+            }
         }
         
         function adjustSellCount(delta) {
@@ -73262,6 +73728,15 @@ function openFullscreenMap() {
             const item = state.inv[invIndex];
             if (!item) {
                 notifyWarning('Chyba', 'Item nenalezen v inventáři');
+                return;
+            }
+            
+            // Cenový limit - max 3x base cena itemu (ochrana proti scamu)
+            const itemDefPrice = ITEMS.find(i => i.id === item.id);
+            const basePrice = item.price || itemDefPrice?.price || item.value || 50;
+            const maxPrice = Math.max(basePrice * 3, 100); // Min 100, max 3x base
+            if (price > maxPrice) {
+                notifyWarning('Příliš drahé!', `Max cena za ${item.name} je ${maxPrice} 💰 (3× základní hodnota)`);
                 return;
             }
             
@@ -77804,12 +78279,17 @@ function openFullscreenMap() {
             if (!confirm(`Opravdu chceš zrušit nabídku? ${offer.item.icon} ${offer.item.name} se ti vrátí.`)) return;
             
             try {
-                // Vrať předmět do inventáře
-                const existingItem = state.inv.find(i => i.id === offer.item.id && i.name === offer.item.name);
-                if (existingItem && (existingItem.count !== undefined || offer.item.type === 'consumable')) {
-                    existingItem.count = (existingItem.count || 1) + 1;
+                // Vrať předmět do inventáře nebo resources
+                if (offer.item.type === 'resource') {
+                    // Surovina → zpět do state.resources
+                    state.resources[offer.item.id] = (state.resources[offer.item.id] || 0) + 1;
                 } else {
-                    state.inv.push({...offer.item, count: 1});
+                    const existingItem = state.inv.find(i => i.id === offer.item.id && i.name === offer.item.name);
+                    if (existingItem && (existingItem.count !== undefined || offer.item.type === 'consumable')) {
+                        existingItem.count = (existingItem.count || 1) + 1;
+                    } else {
+                        state.inv.push({...offer.item, count: 1});
+                    }
                 }
                 
                 // Smaž nabídku z Firebase
@@ -77841,11 +78321,16 @@ function openFullscreenMap() {
                 let collected = [];
                 for (const [key, ret] of Object.entries(returns)) {
                     if (ret.item) {
-                        const existingItem = state.inv.find(i => i.id === ret.item.id && i.name === ret.item.name);
-                        if (existingItem && (existingItem.count !== undefined || ret.item.type === 'consumable')) {
-                            existingItem.count = (existingItem.count || 1) + 1;
+                        if (ret.item.type === 'resource') {
+                            // Surovina → zpět do state.resources
+                            state.resources[ret.item.id] = (state.resources[ret.item.id] || 0) + (ret.item.count || 1);
                         } else {
-                            state.inv.push({...ret.item, count: 1});
+                            const existingItem = state.inv.find(i => i.id === ret.item.id && i.name === ret.item.name);
+                            if (existingItem && (existingItem.count !== undefined || ret.item.type === 'consumable')) {
+                                existingItem.count = (existingItem.count || 1) + 1;
+                            } else {
+                                state.inv.push({...ret.item, count: 1});
+                            }
                         }
                         collected.push(`${ret.item.icon} ${ret.item.name}`);
                     }
@@ -77887,13 +78372,37 @@ function openFullscreenMap() {
             // Všechny prodejné předměty z inventáře
             const allItems = state.inv.filter(i => i.name && i.type !== 'quest');
             
-            if (allItems.length === 0) {
+            // Přidej suroviny z state.resources
+            const resourceItems = [];
+            if (state.resources) {
+                Object.entries(state.resources).forEach(([resId, amount]) => {
+                    if (amount > 0) {
+                        const resDef = ITEMS.find(i => i.id === resId && i.type === 'resource');
+                        if (resDef) {
+                            resourceItems.push({
+                                id: resId,
+                                name: resDef.name,
+                                icon: resDef.icon,
+                                type: 'resource',
+                                price: resDef.price || 5,
+                                weight: resDef.weight || 1,
+                                count: amount,
+                                _isResource: true
+                            });
+                        }
+                    }
+                });
+            }
+            
+            const combinedItems = [...allItems, ...resourceItems];
+            
+            if (combinedItems.length === 0) {
                 notifyWarning('Prázdný inventář', 'Nemáš žádné předměty k nabídnutí!');
                 return;
             }
             
             // Najdi předměty které odpovídají poptávce (pro předvýběr)
-            const matchingIdx = allItems.findIndex(i => 
+            const matchingIdx = combinedItems.findIndex(i => 
                 i.name?.toLowerCase().includes(itemName.toLowerCase()) ||
                 itemName.toLowerCase().includes(i.name?.toLowerCase() || '')
             );
@@ -77908,9 +78417,10 @@ function openFullscreenMap() {
                     <label style="display: block; color: #8bc34a; margin-bottom: 0.3rem; font-weight: bold;">📦 Vyber předmět z inventáře:</label>
                     <select id="offerItemSelect" style="width: 100%; padding: 0.6rem; border-radius: 6px; background: #2a2a2a; border: 1px solid #4caf50; color: #fff; margin-bottom: 0.8rem;">
                         <option value="">-- Vyber předmět --</option>
-                        ${allItems.map((item, idx) => {
+                        ${combinedItems.map((item, idx) => {
                             const isMatch = item.name?.toLowerCase().includes(itemName.toLowerCase()) || itemName.toLowerCase().includes(item.name?.toLowerCase() || '');
-                            return `<option value="${idx}" ${idx === matchingIdx ? 'selected' : ''} style="${isMatch ? 'background: #1a3a1a;' : ''}">${item.icon} ${item.name} ${item.count > 1 ? '(x' + item.count + ')' : ''} ${isMatch ? '✓' : ''}</option>`;
+                            const resLabel = item._isResource ? ' [surovina]' : '';
+                            return `<option value="${idx}" ${idx === matchingIdx ? 'selected' : ''} style="${isMatch ? 'background: #1a3a1a;' : ''}">${item.icon} ${item.name}${resLabel} ${item.count > 1 ? '(x' + item.count + ')' : ''} ${isMatch ? '✓' : ''}</option>`;
                         }).join('')}
                     </select>
                     
@@ -77930,7 +78440,7 @@ function openFullscreenMap() {
             `);
             
             // Ulož všechny items pro pozdější použití
-            window._offerMatchingItems = allItems;
+            window._offerMatchingItems = combinedItems;
         }
         
         // Odeslat nabídku na poptávku - ODEBERE PŘEDMĚT Z INVENTÁŘE
@@ -77954,6 +78464,49 @@ function openFullscreenMap() {
             const myName = getPlayerName();
             const item = window._offerMatchingItems[selectedIdx];
             
+            // Rozlišení: surovina vs inventářový item
+            if (item._isResource) {
+                // Je to surovina z state.resources
+                const available = state.resources[item.id] || 0;
+                if (available <= 0) {
+                    notifyWarning('Chyba', 'Nemáš tuto surovinu!');
+                    return;
+                }
+                
+                // Odeber 1 surovinu
+                state.resources[item.id]--;
+                if (state.resources[item.id] <= 0) delete state.resources[item.id];
+                
+                const itemData = {
+                    id: item.id, name: item.name, icon: item.icon,
+                    type: 'resource', price: item.price, weight: item.weight, count: 1
+                };
+                if (item.rarity) itemData.rarity = item.rarity;
+                
+                const offer = {
+                    seller: myName,
+                    price: price,
+                    message: message || null,
+                    item: itemData,
+                    createdAt: firebase.database.ServerValue.TIMESTAMP
+                };
+                
+                try {
+                    await firebaseDB.ref('marketplace/wanted/' + adId + '/offers/' + myName.replace(/[.#$/\\[\\]]/g, '_')).set(offer);
+                    notifySuccess('✓ Nabídka odeslána!', `${item.icon} ${item.name} za ${price} 💰`);
+                    addLog(`💰 Nabídnuto ${item.name} za ${price} na poptávku`, '💰');
+                    saveGame(true);
+                    showWantedAds();
+                } catch (e) {
+                    // Vrať surovinu zpět
+                    state.resources[item.id] = (state.resources[item.id] || 0) + 1;
+                    saveGame();
+                    notifyError('Chyba', 'Nepodařilo se odeslat nabídku');
+                }
+                return;
+            }
+            
+            // Standardní inventory item
             // Najdi předmět v inventáři a odeber ho
             const invIndex = state.inv.findIndex(i => i.id === item.id && i.name === item.name);
             if (invIndex === -1) {
@@ -78076,13 +78629,18 @@ function openFullscreenMap() {
                 const itemToAdd = {...offer.item};
                 delete itemToAdd.count; // Odstraň count, přidáme jen 1 kus
                 
-                const existingItem = state.inv.find(i => i.id === itemToAdd.id && i.name === itemToAdd.name && !i.damage && !i.defense);
-                if (existingItem && existingItem.count !== undefined) {
-                    existingItem.count = (existingItem.count || 1) + 1;
-                } else if (existingItem && itemToAdd.type === 'consumable') {
-                    existingItem.count = (existingItem.count || 1) + 1;
+                if (itemToAdd.type === 'resource') {
+                    // Surovina → do state.resources
+                    state.resources[itemToAdd.id] = (state.resources[itemToAdd.id] || 0) + 1;
                 } else {
-                    state.inv.push({...itemToAdd, count: 1});
+                    const existingItem = state.inv.find(i => i.id === itemToAdd.id && i.name === itemToAdd.name && !i.damage && !i.defense);
+                    if (existingItem && existingItem.count !== undefined) {
+                        existingItem.count = (existingItem.count || 1) + 1;
+                    } else if (existingItem && itemToAdd.type === 'consumable') {
+                        existingItem.count = (existingItem.count || 1) + 1;
+                    } else {
+                        state.inv.push({...itemToAdd, count: 1});
+                    }
                 }
                 
                 // Přidej peníze prodávajícímu (5% poplatek do veřejné kasy)
@@ -82321,12 +82879,14 @@ function openFullscreenMap() {
             }
             
             try {
-                // Získej online hráče
+                // Získej online hráče (bez šéfa - nemůže dávat grant sám sobě)
+                const myName = getPlayerName().replace(/[\\/\\.#$\[\]]/g, '_');
                 const onlineSnap = await firebaseDB.ref('online').once('value');
-                const onlinePlayers = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                const onlinePlayers = allOnline.filter(p => p !== myName);
                 
                 if (onlinePlayers.length === 0) {
-                    notifyWarning('Nikdo online', 'Nejsou žádní online hráči');
+                    notifyWarning('Nikdo online', 'Nejsou žádní jiní online hráči');
                     return;
                 }
                 
