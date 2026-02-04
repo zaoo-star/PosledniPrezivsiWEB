@@ -21273,6 +21273,51 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
+        function showAccessoryOptionsByIndex(idx) {
+            const item = state.inv[idx];
+            if (!item) return;
+            
+            const isEquipped = state.equippedAccessory === item.id;
+            const rarityColor = RARITY_COLORS[item.rarity] || '#888';
+            const rarityName = { common: 'Běžný', uncommon: 'Neobvyklý', rare: 'Vzácný', epic: 'Epický', legendary: 'Legendární' }[item.rarity] || '';
+            
+            let statsHtml = '';
+            if (item.defense) statsHtml += `<div style="color: #4caf50;">🛡️ +${item.defense} Obrana</div>`;
+            if (item.damage) statsHtml += `<div style="color: #f44336;">⚔️ +${item.damage} Útok</div>`;
+            if (item.special) statsHtml += `<div style="color: #9c27b0;">✨ Speciál: ${item.special}</div>`;
+            
+            showModal(`${item.icon} ${item.name}`, `
+                <div style="text-align: center;">
+                    <div style="font-size: 4rem; margin-bottom: 0.5rem;">${item.icon}</div>
+                    <h3 style="margin: 0; color: ${rarityColor};">${item.name}</h3>
+                    ${rarityName ? `<div style="color: ${rarityColor}; font-size: 0.8rem; margin: 0.3rem 0;">${rarityName}</div>` : ''}
+                    <div style="color: #888; margin: 0.2rem 0; font-size: 0.75rem;">Doplněk</div>
+                    
+                    ${statsHtml ? `<div style="background: #1a1a1a; padding: 0.6rem; border-radius: 6px; margin: 0.8rem 0; border: 1px solid ${rarityColor}44;">${statsHtml}</div>` : ''}
+                    
+                    <p style="color: #aaa; margin: 0.8rem 0; font-size: 0.9rem;">${item.desc || ''}</p>
+                    
+                    ${isEquipped ? `<div style="background: #1a2a1a; padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; border: 1px solid #4caf50;">
+                        <span style="color: #4caf50;">✓ Nasazeno</span>
+                    </div>` : ''}
+                    
+                    <div style="font-size: 0.75rem; color: #666; margin-top: 0.5rem;">
+                        ⚖️ Váha: ${item.weight || 0} kg
+                    </div>
+                </div>
+                
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem;">
+                    ${!isEquipped 
+                        ? `<button class="btn" onclick="closeModal(); equipAccessoryByIndex(${idx});" style="background: #4caf50;">✋ Nasadit</button>`
+                        : `<button class="btn" onclick="closeModal(); unequipAccessory();" style="background: #ff9800;">👋 Sundat</button>`
+                    }
+                    <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
+                    <button class="btn" onclick="closeModal()" style="background: #333;">✕ Zavřít</button>
+                </div>
+            `);
+        }
+        window.showAccessoryOptionsByIndex = showAccessoryOptionsByIndex;
+        
         function equipAccessoryByIndex(idx) {
             const accessory = state.inv[idx];
             if (!accessory) return;
@@ -29209,7 +29254,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     let clickAction = '';
                                     if (i.type === 'consumable') clickAction = "confirmUseItemByIndex(" + realIdx + ")";
                                     else if (i.type === 'weapon_coating') clickAction = "applyWeaponCoatingByIndex(" + realIdx + ")";
-                                    else if (i.type === 'accessory') clickAction = "equipAccessoryByIndex(" + realIdx + ")";
+                                    else if (i.type === 'accessory') clickAction = "showAccessoryOptionsByIndex(" + realIdx + ")";
                                     else if (i.type === 'weapon') clickAction = "showWeaponOptionsByIndex(" + realIdx + ")";
                                     else if (i.type === 'tool') clickAction = "showToolOptionsByIndex(" + realIdx + ")";
                                     else if (i.type === 'armor') clickAction = "showArmorOptionsByIndex(" + realIdx + ")";
@@ -80657,14 +80702,19 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Načti i nabídky prodeje
-            firebaseDB.ref('landOffers').once('value').then(snap => {
-                window.landOffersCache = snap.val() || {};
-            }).catch(e => console.error('Land offers load error:', e));
-            
             firebaseDB.ref('landOwnership').once('value').then(snap => {
-                window.landOwnershipCache = snap.val() || {};
+                const data = snap.val() || {};
+                window.landOwnershipCache = data;
                 window.landOwnershipCacheTime = Date.now();
+                
+                // Extrahuj nabídky z landOwnership dat
+                window.landOffersCache = {};
+                Object.entries(data).forEach(([locId, land]) => {
+                    if (land && land.offer) {
+                        window.landOffersCache[locId] = land.offer;
+                    }
+                });
+                
                 if (callback) callback(window.landOwnershipCache);
             }).catch(e => {
                 console.error('Land ownership load error:', e);
@@ -80690,12 +80740,16 @@ function openFullscreenMap() {
             
             try {
                 // Načti všechny pozemky z Firebase
-                const landsSnap = await firebaseDB.ref('lands').once('value');
+                const landsSnap = await firebaseDB.ref('landOwnership').once('value');
                 const allLands = landsSnap.val() || {};
                 
-                // Načti nabídky prodeje
-                const offersSnap = await firebaseDB.ref('landOffers').once('value');
-                const allOffers = offersSnap.val() || {};
+                // Extrahuj nabídky prodeje z pozemků (offer je uvnitř každého pozemku)
+                const allOffers = {};
+                Object.entries(allLands).forEach(([locId, land]) => {
+                    if (land && land.offer) {
+                        allOffers[locId] = land.offer;
+                    }
+                });
                 
                 // Rozděl pozemky
                 const myLands = [];
@@ -80704,8 +80758,7 @@ function openFullscreenMap() {
                 
                 // Spočítej kolik je celkem dostupných lokací pro koupi
                 const buyableLocations = WORLD_LOCATIONS.filter(loc => 
-                    loc.canOwn !== false && 
-                    !['shelter', 'settlement'].includes(loc.id) &&
+                    loc.type === 'empty' && 
                     !allLands[loc.id]
                 );
                 
@@ -80840,22 +80893,22 @@ function openFullscreenMap() {
                     </details>
                     
                     <!-- OSTATNÍ VLASTNĚNÉ -->
-                    ${ownedNotForSale.length > 0 ? `
-                        <details style="margin-bottom: 0.6rem;">
-                            <summary style="cursor: pointer; background: #0a0a0a; padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #333; font-size: 0.8rem; color: #888;">
-                                👥 Pozemky jiných hráčů (${ownedNotForSale.length})
-                            </summary>
-                            <div style="background: #050505; padding: 0.5rem; border-radius: 0 0 6px 6px; border: 1px solid #333; border-top: none; max-height: 150px; overflow-y: auto;">
-                                ${otherLandsHtml}
-                            </div>
-                        </details>
-                    ` : ''}
+                    <details style="margin-bottom: 0.6rem;">
+                        <summary style="cursor: pointer; background: #0a0a0a; padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #333; font-size: 0.8rem; color: #888;">
+                            👥 Pozemky jiných hráčů (${ownedNotForSale.length})
+                        </summary>
+                        <div style="background: #050505; padding: 0.5rem; border-radius: 0 0 6px 6px; border: 1px solid #333; border-top: none; max-height: 150px; overflow-y: auto;">
+                            ${ownedNotForSale.length > 0 ? otherLandsHtml : `<div style="text-align: center; padding: 0.8rem; color: #555; font-size: 0.75rem;">Zatím nikdo jiný nevlastní pozemky.</div>`}
+                        </div>
+                    </details>
                     
                     <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; border: 1px dashed #333; margin-top: 0.5rem;">
                         <div style="font-size: 0.65rem; color: #555; text-align: center;">
                             💡 Pozemky můžeš koupit na mapě. Postav na nich budovy a nastav poplatky pro ostatní hráče!
                         </div>
                     </div>
+                    
+                    <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.8rem; background: #1a1a1a; border: 1px solid #333; padding: 0.5rem;">✕ Zavřít</button>
                 `);
                 
             } catch (e) {
@@ -80923,7 +80976,7 @@ function openFullscreenMap() {
             const myName = getPlayerName();
             
             try {
-                await firebaseDB.ref(`landOffers/${locationId}`).set({
+                await firebaseDB.ref(`landOwnership/${locationId}/offer`).set({
                     seller: myName,
                     price: price,
                     active: true,
@@ -80953,9 +81006,9 @@ function openFullscreenMap() {
             
             try {
                 // Smaž pozemek
-                await firebaseDB.ref(`lands/${locationId}`).remove();
+                await firebaseDB.ref(`landOwnership/${locationId}`).remove();
                 // Smaž případnou nabídku
-                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                await firebaseDB.ref(`landOwnership/${locationId}/offer`).remove();
                 // Aktualizuj cache
                 if (window.landOwnershipCache) delete window.landOwnershipCache[locationId];
                 
@@ -80989,7 +81042,7 @@ function openFullscreenMap() {
             
             try {
                 // Načti aktuální data
-                const offerSnap = await firebaseDB.ref(`landOffers/${locationId}`).once('value');
+                const offerSnap = await firebaseDB.ref(`landOwnership/${locationId}/offer`).once('value');
                 const offer = offerSnap.val();
                 
                 if (!offer || !offer.active) {
@@ -81006,11 +81059,11 @@ function openFullscreenMap() {
                 addMoney(-price);
                 
                 // 2. Převeď vlastnictví
-                await firebaseDB.ref(`lands/${locationId}/owner`).set(myName);
-                await firebaseDB.ref(`lands/${locationId}/boughtAt`).set(Date.now());
+                await firebaseDB.ref(`landOwnership/${locationId}/owner`).set(myName);
+                await firebaseDB.ref(`landOwnership/${locationId}/boughtAt`).set(Date.now());
                 
                 // 3. Smaž nabídku
-                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                await firebaseDB.ref(`landOwnership/${locationId}/offer`).remove();
                 
                 // 4. Přidej peníze prodávajícímu (přes inbox notifikaci)
                 await firebaseDB.ref(`players/${seller}/pendingMoney`).transaction(current => (current || 0) + price);
@@ -81055,7 +81108,7 @@ function openFullscreenMap() {
             // Načti nabídku
             let offer = null;
             try {
-                const offerSnap = await firebaseDB.ref(`landOffers/${locationId}`).once('value');
+                const offerSnap = await firebaseDB.ref(`landOwnership/${locationId}/offer`).once('value');
                 offer = offerSnap.val();
             } catch(e) {}
             
@@ -81083,7 +81136,7 @@ function openFullscreenMap() {
         // Zrušit nabídku prodeje
         async function cancelLandOffer(locationId) {
             try {
-                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                await firebaseDB.ref(`landOwnership/${locationId}/offer`).remove();
                 notifySuccess('✅ Zrušeno', 'Nabídka prodeje byla zrušena.');
                 closeModal();
                 setTimeout(() => showLandsOverview(), 300);
