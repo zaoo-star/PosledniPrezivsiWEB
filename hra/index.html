@@ -30386,6 +30386,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.inv.push({ id: 'energy', name: 'Energetický nápoj', icon: '🔋', type: 'consumable', effect: 'energy', value: 50, count: 2, weight: 0.5 });
             state.inv.push({ id: 'sleeping_bag', name: 'Spacák', icon: '🛏️', type: 'tool', effect: 'sleep', value: 1, weight: 2, stackable: false });
             addMoney(100);
+            // Odečti startovní peníze z veřejné kasy
+            if (typeof addToPublicTreasury === 'function') {
+                addToPublicTreasury(-100, 'new_player', 'Startovní příspěvek novému hráči: ' + (state.char.name || 'Nový hráč'));
+            }
             
             // Flag pro první cestu - setkání se psem
             state.firstJourneyDogEvent = true;
@@ -51883,14 +51887,15 @@ function openFullscreenMap() {
             let html = '<ul style="margin: 0; padding-left: 1.2rem; color: #aaa; font-size: 0.9rem;">';
             
             if (req.resources) {
-                // Použij progress.resourcesCollected + fallback na startState
+                // Použij progress.resourcesCollected (inkrementální, nedotčený prodejem)
                 let collected = activeQuest.progress?.resourcesCollected || 0;
-                if (collected < req.resources && start) {
+                // Fallback pro starší questy bez trackingu - ale NIKDY nesnižuj
+                if (collected < req.resources && start && !activeQuest.progress?.resourcesCollected) {
                     const gatherableRes = ['wood', 'metal', 'cloth', 'leather', 'electronics', 'chemicals', 'herbs', 'gunpowder', 'glass', 'stone', 'fuel', 'rope', 'scrap', 'copper', 'silver', 'gold', 'crystal', 'acid', 'fur'];
                     const startTotal = gatherableRes.reduce((sum, r) => sum + (start[r] || 0), 0);
                     const currentTotal = gatherableRes.reduce((sum, r) => sum + (state.resources?.[r] || 0), 0);
-                    const diff = currentTotal - startTotal;
-                    if (diff > collected) collected = Math.max(0, diff);
+                    const diff = Math.max(0, currentTotal - startTotal);
+                    if (diff > collected) collected = diff;
                 }
                 html += `<li style="color: ${collected >= req.resources ? '#8bc34a' : '#ff9800'};">Suroviny: ${collected}/${req.resources}</li>`;
                 if (collected < req.resources) {
@@ -51951,15 +51956,15 @@ function openFullscreenMap() {
             
             // Sběr různých surovin (počítá se od přijetí)
             if (req.resources) {
-                // Primárně použij progress.resourcesCollected
+                // Primárně použij progress.resourcesCollected (inkrementální, nedotčený prodejem)
                 let collected = prog.resourcesCollected || 0;
-                // Fallback: pokud resourcesCollected je 0 ale hráč zjevně nasbíral (starší questy bez trackingu)
-                if (collected < req.resources && start) {
+                // Fallback pro starší questy bez trackingu - ale NIKDY nesnižuj hodnotu
+                if (collected < req.resources && start && !prog.resourcesCollected) {
                     const gatherableRes = ['wood', 'metal', 'cloth', 'leather', 'electronics', 'chemicals', 'herbs', 'gunpowder', 'glass', 'stone', 'fuel', 'rope', 'scrap', 'copper', 'silver', 'gold', 'crystal', 'acid', 'fur'];
                     const startTotal = gatherableRes.reduce((sum, r) => sum + (start[r] || 0), 0);
                     const currentTotal = gatherableRes.reduce((sum, r) => sum + (state.resources?.[r] || 0), 0);
-                    const diff = currentTotal - startTotal;
-                    if (diff > collected) collected = Math.max(0, diff);
+                    const diff = Math.max(0, currentTotal - startTotal);
+                    if (diff > collected) collected = diff;
                 }
                 if (collected < req.resources) return false;
             }
@@ -84994,7 +84999,7 @@ function openFullscreenMap() {
                 const log = logData ? Object.values(logData).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)) : [];
                 
                 // Spočítej statistiky
-                let totalShopIncome = 0, totalShopExpenses = 0, totalMarketFees = 0, totalTaxes = 0, totalLandIncome = 0, totalExpenses = 0;
+                let totalShopIncome = 0, totalShopExpenses = 0, totalMarketFees = 0, totalTaxes = 0, totalLandIncome = 0, totalExpenses = 0, totalMayorSalary = 0, totalNewPlayer = 0;
                 log.forEach(entry => {
                     if (entry.type === 'income') {
                         if (entry.source === 'shop_purchase') totalShopIncome += entry.amount || 0;
@@ -85005,12 +85010,14 @@ function openFullscreenMap() {
                         else if (entry.source === 'shop_sale') totalShopIncome += entry.amount || 0;
                     } else {
                         if (entry.reason === 'shop_sale') totalShopExpenses += entry.amount || 0;
+                        else if (entry.source === 'mayor_salary' || entry.reason === 'mayor_salary') totalMayorSalary += entry.amount || 0;
+                        else if (entry.source === 'new_player' || entry.reason === 'new_player') totalNewPlayer += entry.amount || 0;
                         else totalExpenses += entry.amount || 0;
                     }
                 });
                 
                 const totalIncome = totalShopIncome + totalMarketFees + totalTaxes + totalLandIncome;
-                const totalAllExpenses = totalExpenses + totalShopExpenses;
+                const totalAllExpenses = totalExpenses + totalShopExpenses + totalMayorSalary + totalNewPlayer;
                 
                 let html = `
                     <div style="background: linear-gradient(135deg, #1a2a1a 0%, #0d1a0d 100%); padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid #4caf50; text-align: center;">
@@ -85068,7 +85075,7 @@ function openFullscreenMap() {
                                 <div style="background: linear-gradient(90deg, #9c27b0, #ce93d8); height: 100%; width: ${totalIncome > 0 ? (totalLandIncome / totalIncome * 100) : 0}%;"></div>
                             </div>
                         </div>
-                        <div>
+                        <div style="margin-bottom: 0.75rem;">
                             <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
                                 <span style="color: #ccc;">📊 Denní daň od hráčů (${(MAYOR_SYSTEM?.taxation?.dailyTax || 0.01) * 100}%)</span>
                                 <span style="color: #ff9800; font-weight: bold;">${formatNumber(totalTaxes)} 💰</span>
@@ -85077,6 +85084,24 @@ function openFullscreenMap() {
                                 <div style="background: linear-gradient(90deg, #ff9800, #ffc107); height: 100%; width: ${totalIncome > 0 ? (totalTaxes / totalIncome * 100) : 0}%;"></div>
                             </div>
                         </div>
+                        ${totalMayorSalary > 0 ? `<div style="margin-bottom: 0.75rem;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                <span style="color: #ccc;">👑 Plat šéfa (1% z kasy/den)</span>
+                                <span style="color: #f44336; font-weight: bold;">-${formatNumber(totalMayorSalary)} 💰</span>
+                            </div>
+                            <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: linear-gradient(90deg, #e91e63, #f48fb1); height: 100%; width: ${totalAllExpenses > 0 ? (totalMayorSalary / totalAllExpenses * 100) : 0}%;"></div>
+                            </div>
+                        </div>` : ''}
+                        ${totalNewPlayer > 0 ? `<div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                <span style="color: #ccc;">🆕 Příspěvky novým hráčům</span>
+                                <span style="color: #f44336; font-weight: bold;">-${formatNumber(totalNewPlayer)} 💰</span>
+                            </div>
+                            <div style="background: #0d0d0d; height: 8px; border-radius: 4px; overflow: hidden;">
+                                <div style="background: linear-gradient(90deg, #607d8b, #90a4ae); height: 100%; width: ${totalAllExpenses > 0 ? (totalNewPlayer / totalAllExpenses * 100) : 0}%;"></div>
+                            </div>
+                        </div>` : ''}
                     </div>
                     
                     <h4 style="color: #ff9800; margin: 1rem 0 0.5rem 0;">📜 Poslední transakce</h4>
@@ -85094,7 +85119,8 @@ function openFullscreenMap() {
                                 'mayor_event': '⚡ Event šéfa',
                                 'grant': '💰 Grant',
                                 'bounty': '🎯 Bounty',
-                                'mayor_salary': '👑 Příjem šéfa'
+                                'mayor_salary': '👑 Plat šéfa',
+                                'new_player': '🆕 Příspěvek novému hráči'
                             };
                             const sourceName = sourceNames[entry.source || entry.reason] || entry.source || entry.reason || 'Transakce';
                             const time = entry.timestamp ? new Date(entry.timestamp).toLocaleString('cs-CZ', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}) : '';
