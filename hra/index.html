@@ -30367,8 +30367,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.inv.push({ id: 'sleeping_bag', name: 'Spacák', icon: '🛏️', type: 'tool', effect: 'sleep', value: 1, weight: 2, stackable: false });
             addMoney(100);
             // Odečti startovní peníze z veřejné kasy
-            if (typeof addToPublicTreasury === 'function') {
-                addToPublicTreasury(-100, 'new_player', 'Startovní příspěvek novému hráči: ' + (state.char.name || 'Nový hráč'));
+            if (typeof removeFromPublicTreasury === 'function') {
+                removeFromPublicTreasury(100, 'new_player', 'Startovní příspěvek novému hráči: ' + (state.char.name || 'Nový hráč'));
             }
             
             // Flag pro první cestu - setkání se psem
@@ -57077,7 +57077,8 @@ function openFullscreenMap() {
                 const currentSnap = await treasuryRef.once('value');
                 const current = currentSnap.val() || 0;
                 
-                if (current < amount) {
+                // Kontrola dostatku - vynechej pro příspěvky novým hráčům (ty jdou i do mínusu)
+                if (current < amount && reason !== 'new_player') {
                     return false; // Nedostatek prostředků
                 }
                 
@@ -57170,44 +57171,57 @@ function openFullscreenMap() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
             // Kontrola: max 1x za 24h reálného času per hráč
+            // Dvojitá kontrola - lokální + Firebase
             const now = Date.now();
             const lastTax = state._lastRealTaxTime || 0;
-            if (now - lastTax < 23 * 60 * 60 * 1000) return; // 23h cooldown
-            state._lastRealTaxTime = now;
+            if (now - lastTax < 23 * 60 * 60 * 1000) return; // 23h cooldown lokální
             
-            const playerMoney = getMoney();
-            if (playerMoney <= 0) return;
-            
-            // Získej aktuální daňovou sazbu (default 1%)
-            let taxRate = MAYOR_SYSTEM.taxation.defaultRate;
+            // Firebase kontrola - aby refresh stránky nespustil daň znovu
+            const playerName = getPlayerName();
             try {
-                const rateSnap = await firebaseDB.ref('politics/taxRate').once('value');
-                if (rateSnap.val()) {
-                    taxRate = rateSnap.val();
+                const taxRef = firebaseDB.ref('politics/lastTax/' + playerName.replace(/[.#$\/\[\]]/g, '_'));
+                const taxSnap = await taxRef.once('value');
+                const lastFirebaseTax = taxSnap.val() || 0;
+                if (now - lastFirebaseTax < 23 * 60 * 60 * 1000) {
+                    // Firebase říká, že daň už byla stržena - synchronizuj lokální stav
+                    state._lastRealTaxTime = lastFirebaseTax;
+                    return;
                 }
-            } catch (e) {}
-            
-            // Daň z celkových peněz
-            const taxAmount = Math.floor(playerMoney * taxRate);
-            if (taxAmount <= 0) return;
-            
-            // Odeber daň hráči
-            removeMoney(taxAmount);
-            
-            try {
+                
+                const playerMoney = getMoney();
+                if (playerMoney <= 0) return;
+                
+                // Získej aktuální daňovou sazbu (default 1%)
+                let taxRate = MAYOR_SYSTEM.taxation.defaultRate;
+                try {
+                    const rateSnap = await firebaseDB.ref('politics/taxRate').once('value');
+                    if (rateSnap.val()) {
+                        taxRate = rateSnap.val();
+                    }
+                } catch (e) {}
+                
+                // Daň z celkových peněz
+                const taxAmount = Math.floor(playerMoney * taxRate);
+                if (taxAmount <= 0) return;
+                
+                // Zapiš do Firebase PŘED odečtením (prevence race condition)
+                await taxRef.set(firebase.database.ServerValue.TIMESTAMP);
+                state._lastRealTaxTime = now;
+                
+                // Odeber daň hráči
+                removeMoney(taxAmount);
+                
                 // 100% daní jde do veřejné kasy
-                await addToPublicTreasury(taxAmount, 'daily_tax', `Denní daň od ${getPlayerName()}`);
+                await addToPublicTreasury(taxAmount, 'daily_tax', `Denní daň od ${playerName}`);
                 
                 // Log pro hráče
                 const taxPercent = (taxRate * 100).toFixed(1);
                 addLog(`🏛️ Denní daň (${taxPercent}%): -${taxAmount} 💰 → veřejná kasa`, '💰');
                 
-                console.log(`🏛️ Daň: -${taxAmount} od ${getPlayerName()} → veřejná kasa`);
+                console.log(`🏛️ Daň: -${taxAmount} od ${playerName} → veřejná kasa`);
                 
             } catch (e) {
                 console.error('Tax error:', e);
-                // Vrať peníze hráči při chybě
-                addMoney(taxAmount);
             }
         }
         
@@ -67811,14 +67825,21 @@ function openFullscreenMap() {
             }
             
             // 🏛️ DENNÍ DAŇ + PLAT ŠÉFA - nezávisle na settlement, na reálném čase
-            // Strhne se 1x za reálný den, jen online hráčům
-            if (state.confirmed && multiplayerEnabled) {
-                const today = new Date().toDateString();
-                if (state._lastTaxDay !== today) {
-                    processDailyTax();
-                    processMayorDailyIncome();
-                    state._lastTaxDay = today;
-                    saveGame();
+            // Kontrola přes lokální flag + Firebase (uvnitř processDailyTax)
+            if (state.confirmed && multiplayerEnabled && !window._taxProcessing) {
+                const now = Date.now();
+                const lastTax = state._lastRealTaxTime || 0;
+                // Lokální quick check - nevolej Firebase každou sekundu
+                if (now - lastTax >= 23 * 60 * 60 * 1000) {
+                    window._taxProcessing = true;
+                    Promise.all([
+                        processDailyTax(),
+                        processMayorDailyIncome()
+                    ]).then(() => {
+                        saveGame(true);
+                    }).finally(() => {
+                        window._taxProcessing = false;
+                    });
                 }
             }
             
@@ -77853,20 +77874,30 @@ function openFullscreenMap() {
             };
             
             return `
-                <!-- TERMINAL HEADER - kompaktní -->
-                <div style="background: #0a0a0a; padding: 0.6rem; border-radius: 4px; margin-bottom: 0.5rem; border: 1px solid #333; font-family: 'Courier New', monospace;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div style="color: #76ff03; font-size: 0.8rem; text-shadow: 0 0 5px #76ff03;">
-                            > TERMINAL v2.7 ${isActive ? '[ONLINE]' : '[OFFLINE]'}
+                <!-- VEŘEJNÁ KASA - kompaktní přehled -->
+                <div onclick="showTreasuryDetails()" style="cursor: pointer; background: linear-gradient(135deg, #0d1a0d 0%, #0a120a 100%); padding: 0.7rem 0.8rem; border-radius: 4px; margin-bottom: 0.5rem; border: 1px solid #2a4a2a; display: flex; justify-content: space-between; align-items: center; transition: border-color 0.2s;" onmouseover="this.style.borderColor='#4caf50'" onmouseout="this.style.borderColor='#2a4a2a'">
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="font-size: 1.3rem;">🏦</span>
+                        <div>
+                            <div style="color: #8bc34a; font-size: 0.7rem; letter-spacing: 1px;">VEŘEJNÁ KASA</div>
+                            <div style="color: #ffd700; font-weight: bold; font-size: 1.1rem;" id="online-treasury-display">...</div>
                         </div>
-                        <div style="color: #666; font-size: 0.7rem;">${myName}</div>
                     </div>
-                    <div style="display: flex; gap: 1rem; margin-top: 0.4rem; font-size: 0.75rem;">
-                        <span style="color: #ffd700;">⚡${myScore.toLocaleString()}</span>
-                        <span style="color: #8bc34a;">LV.${state.char.level}</span>
-                        <span style="color: #ff6b6b;">☠${state.stats?.kills || 0}</span>
-                    </div>
+                    <div style="color: #555; font-size: 0.7rem;">📊 Detail →</div>
                 </div>
+                ${(() => { 
+                    // Načti kasu asynchronně
+                    setTimeout(async () => {
+                        try {
+                            if (firebaseDB) {
+                                const snap = await firebaseDB.ref('politics/publicMoney').once('value');
+                                const el = document.getElementById('online-treasury-display');
+                                if (el) el.textContent = formatNumber(snap.val() || 0) + ' 💰';
+                            }
+                        } catch(e) {}
+                    }, 100);
+                    return '';
+                })()}
                 
                 <!-- TERMINAL BUTTONS - 2x2 grid - rezavé terminálové tlačítka -->
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-bottom: 0.5rem;">
@@ -78316,6 +78347,7 @@ function openFullscreenMap() {
                                     <span style="font-size: 0.75rem; padding: 0.2rem 0.5rem; background: ${status.color}33; color: ${status.color}; border-radius: 4px;">${status.icon} ${status.text}</span>
                                 </div>
                                 <p style="margin: 0.3rem 0; color: #bbb; font-size: 0.85rem;">${escapeHtml(report.description).substring(0, 100)}${report.description.length > 100 ? '...' : ''}</p>
+                                ${report.adminReply ? `<div style="margin-top: 0.3rem; padding: 0.3rem 0.5rem; background: #0a1a0a; border-radius: 4px; border-left: 2px solid #4caf50;"><span style="color: #4caf50; font-size: 0.7rem;">💬 Odpověď vývojáře</span></div>` : ''}
                                 <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #666; margin-top: 0.3rem;">
                                     <span>${isMyReport ? '👤 Tvůj report' : '👤 ' + report.player}</span>
                                     <span>${date}</span>
@@ -78387,6 +78419,43 @@ function openFullscreenMap() {
                             <div>📍 ${report.location || 'Neznámá'}</div>
                             <div style="text-align: right;">🆔 ${reportId.substring(0, 8)}...</div>
                         </div>
+                        
+                        ${report.adminReply ? `
+                        <div style="margin-top: 1rem; padding: 0.8rem; background: linear-gradient(135deg, #0a1a0a, #0d1f0d); border-radius: 8px; border: 1px solid #2a5a2a;">
+                            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem;">
+                                <span style="font-size: 1rem;">💬</span>
+                                <span style="color: #4caf50; font-weight: bold; font-size: 0.85rem;">Odpověď vývojáře:</span>
+                            </div>
+                            <p style="color: #c8e6c9; margin: 0; line-height: 1.5; white-space: pre-wrap; word-break: break-word;">${escapeHtml(report.adminReply)}</p>
+                        </div>
+                        ` : `
+                        <div style="margin-top: 1rem; padding: 0.6rem; background: #1a1a1a; border-radius: 6px; text-align: center;">
+                            <span style="color: #666; font-size: 0.8rem;">⏳ Zatím bez odpovědi</span>
+                        </div>
+                        `}
+                        
+                        ${(() => {
+                            // Zobraz komentáře (konverzace)
+                            const comments = report.comments ? Object.values(report.comments).sort((a,b) => (a.timestamp||0) - (b.timestamp||0)) : [];
+                            let commentsHtml = '';
+                            if (report.adminReply || comments.length > 0) {
+                                commentsHtml += '<div style="margin-top: 0.8rem; max-height: 200px; overflow-y: auto;">';
+                                comments.forEach(c => {
+                                    const isAdmin = c.isAdmin;
+                                    const cTime = c.timestamp ? new Date(c.timestamp).toLocaleString('cs-CZ', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '';
+                                    commentsHtml += '<div style="padding: 0.5rem; margin-bottom: 0.4rem; border-radius: 6px; background: ' + (isAdmin ? '#0a1a0a' : '#1a1a2a') + '; border-left: 2px solid ' + (isAdmin ? '#4caf50' : '#64b5f6') + ';">';
+                                    commentsHtml += '<div style="display: flex; justify-content: space-between; margin-bottom: 0.2rem;"><span style="color: ' + (isAdmin ? '#4caf50' : '#64b5f6') + '; font-size: 0.7rem; font-weight: bold;">' + (isAdmin ? '🛠️ Vývojář' : '👤 ' + escapeHtml(c.player || 'Hráč')) + '</span><span style="color: #555; font-size: 0.65rem;">' + cTime + '</span></div>';
+                                    commentsHtml += '<p style="color: #ccc; margin: 0; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word;">' + escapeHtml(c.text) + '</p></div>';
+                                });
+                                commentsHtml += '</div>';
+                            }
+                            return commentsHtml;
+                        })()}
+                        
+                        <div style="margin-top: 0.8rem;">
+                            <textarea id="bugCommentText" rows="2" placeholder="Napiš odpověď..." style="width: 100%; background: #111; color: #ddd; border: 1px solid #333; border-radius: 6px; padding: 0.5rem; font-size: 0.85rem; resize: vertical; box-sizing: border-box;"></textarea>
+                            <button class="btn" onclick="submitBugComment('${reportId.replace(/'/g, "\\'")}')" style="width: 100%; margin-top: 0.3rem; background: linear-gradient(135deg, #1565c0, #0d47a1); padding: 0.5rem; font-size: 0.85rem;">💬 Odpovědět</button>
+                        </div>
                     </div>
                     
                     <button class="btn" onclick="showBugReportModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět na seznam</button>
@@ -78434,6 +78503,37 @@ function openFullscreenMap() {
             } catch (error) {
                 console.error('Bug report error:', error);
                 notifyWarning('Chyba při odesílání!');
+            }
+        }
+        
+        // Odeslat komentář k bug reportu
+        async function submitBugComment(reportId) {
+            const text = document.getElementById('bugCommentText')?.value?.trim();
+            if (!text) {
+                notifyWarning('Napiš odpověď!');
+                return;
+            }
+            if (text.length > 500) {
+                notifyWarning('Odpověď je příliš dlouhá (max 500 znaků)');
+                return;
+            }
+            
+            try {
+                const isAdmin = window.isAdmin && window.isAdmin();
+                await firebaseDB.ref('bugReports/' + reportId + '/comments').push({
+                    text: text,
+                    player: getPlayerName(),
+                    isAdmin: isAdmin || false,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                });
+                
+                notifySuccess('💬 Odpověď odeslána!');
+                // Znovu otevři detail
+                showBugReportDetail(reportId);
+                
+            } catch (error) {
+                console.error('Bug comment error:', error);
+                notifyWarning('Chyba při odesílání odpovědi');
             }
         }
         
@@ -79042,6 +79142,17 @@ function openFullscreenMap() {
                                 </div>
                                 ${report.steps ? `<details style="margin-top: 0.5rem;"><summary style="color: #888; font-size: 0.75rem; cursor: pointer;">Kroky k reprodukci</summary><p style="color: #aaa; font-size: 0.8rem; white-space: pre-line; margin: 0.5rem 0;">${escapeHtml(report.steps)}</p></details>` : ''}
                                 ${report.adminReply ? `<div style="margin-top: 0.5rem; padding: 0.5rem; background: #1a2a1a; border-radius: 4px; border-left: 2px solid #4caf50;"><span style="color: #4caf50; font-size: 0.7rem;">💬 Admin odpověď:</span><p style="color: #aaa; font-size: 0.8rem; margin: 0.3rem 0 0 0;">${escapeHtml(report.adminReply)}</p></div>` : ''}
+                                ${(() => {
+                                    const comments = report.comments ? Object.values(report.comments).sort((a,b) => (a.timestamp||0) - (b.timestamp||0)) : [];
+                                    if (comments.length === 0) return '';
+                                    let ch = '<details style="margin-top: 0.5rem;"><summary style="color: #64b5f6; font-size: 0.75rem; cursor: pointer;">💬 Konverzace (' + comments.length + ')</summary><div style="margin-top: 0.3rem; max-height: 150px; overflow-y: auto;">';
+                                    comments.forEach(c => {
+                                        const cTime = c.timestamp ? new Date(c.timestamp).toLocaleString('cs-CZ', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+                                        ch += '<div style="padding: 0.3rem 0.5rem; margin-bottom: 0.3rem; border-radius: 4px; background: ' + (c.isAdmin ? '#0a1a0a' : '#0a0a1a') + '; border-left: 2px solid ' + (c.isAdmin ? '#4caf50' : '#64b5f6') + '; font-size: 0.8rem;"><div style="display: flex; justify-content: space-between;"><span style="color: ' + (c.isAdmin ? '#4caf50' : '#64b5f6') + '; font-size: 0.65rem;">' + (c.isAdmin ? '🛠️ Vývojář' : '👤 ' + escapeHtml(c.player || 'Hráč')) + '</span><span style="color: #555; font-size: 0.6rem;">' + cTime + '</span></div><p style="color: #bbb; margin: 0.1rem 0 0 0;">' + escapeHtml(c.text) + '</p></div>';
+                                    });
+                                    ch += '</div></details>';
+                                    return ch;
+                                })()}
                                 <div style="display: flex; gap: 0.3rem; margin-top: 0.5rem;">
                                     <button onclick="showAdminReplyDialog('${id}')" style="padding: 0.2rem 0.5rem; background: #2196f3; border: none; color: #fff; border-radius: 4px; font-size: 0.7rem; cursor: pointer;">💬 Odpovědět</button>
                                     <button onclick="deleteBugReport('${id}')" style="padding: 0.2rem 0.5rem; background: #c62828; border: none; color: #fff; border-radius: 4px; font-size: 0.7rem; cursor: pointer;">🗑️ Smazat</button>
@@ -79116,9 +79227,16 @@ function openFullscreenMap() {
             }
             
             try {
+                // Uložit jako adminReply (zpětná kompatibilita) a zároveň do comments
                 await firebaseDB.ref('bugReports/' + reportId).update({
                     adminReply: replyText,
                     adminReplyTime: firebase.database.ServerValue.TIMESTAMP
+                });
+                await firebaseDB.ref('bugReports/' + reportId + '/comments').push({
+                    text: replyText,
+                    player: getPlayerName(),
+                    isAdmin: true,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 notifySuccess('Odpověď odeslána!');
                 showAdminBugReports(); // Refresh
@@ -85027,12 +85145,13 @@ function openFullscreenMap() {
             try {
                 const [balanceSnap, logSnap] = await Promise.all([
                     firebaseDB.ref('politics/publicMoney').once('value'),
-                    firebaseDB.ref('politics/treasuryLog').orderByChild('timestamp').limitToLast(30).once('value')
+                    firebaseDB.ref('politics/treasuryLog').orderByChild('timestamp').once('value')
                 ]);
                 
                 const balance = balanceSnap.val() || 0;
                 const logData = logSnap.val();
-                const log = logData ? Object.values(logData).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)) : [];
+                const allEntries = logData ? Object.values(logData) : [];
+                const log = allEntries.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
                 
                 // Spočítej statistiky
                 let totalShopIncome = 0, totalShopExpenses = 0, totalMarketFees = 0, totalTaxes = 0, totalLandIncome = 0, totalExpenses = 0, totalMayorSalary = 0, totalNewPlayer = 0;
