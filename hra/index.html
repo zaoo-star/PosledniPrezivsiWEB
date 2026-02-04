@@ -32071,12 +32071,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const isOwner = landData.owner === myName;
                     const buildingCount = landData.buildings ? Object.keys(landData.buildings).length : 0;
                     
-                    html += `<div style="background: linear-gradient(135deg, #1a2a1a, #0d1a0d); padding: 0.6rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid ${isOwner ? '#4caf50' : '#ffd700'}; width: 100%;">
+                    // Zjisti jestli je na prodej (z cache nebo async)
+                    const saleOffer = window.landOffersCache?.[location.id];
+                    const isForSale = saleOffer && saleOffer.active && !isOwner;
+                    
+                    html += `<div style="background: linear-gradient(135deg, #1a2a1a, #0d1a0d); padding: 0.6rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid ${isOwner ? '#4caf50' : isForSale ? '#ffd700' : '#888'}; width: 100%;">
                         <div style="text-align: center; color: ${isOwner ? '#4caf50' : '#ffd700'}; font-weight: bold;">
                             🏗️ ${landData.customName ? escapeHtml(landData.customName) : (isOwner ? 'Tvůj pozemek' : 'Pozemek hráče ' + escapeHtml(landData.owner))}
                         </div>
                         ${landData.customName ? `<div style="text-align: center; color: #888; font-size: 0.7rem;">👑 ${isOwner ? 'Tvůj pozemek' : escapeHtml(landData.owner)}</div>` : ''}
+                        ${isForSale ? `<div style="text-align: center; margin-top: 0.4rem; padding: 0.3rem; background: #2a2a0a; border-radius: 4px; border: 1px solid #4a4a2a;">
+                            <span style="color: #ffd700; font-size: 0.8rem; font-weight: bold;">💰 NA PRODEJ: ${formatNumber(saleOffer.price)} 💰</span>
+                        </div>` : ''}
                     </div>`;
+                    
+                    // Tlačítko koupit pokud je na prodej
+                    if (isForSale) {
+                        html += renderActionButton('🛒', `Koupit za ${formatNumber(saleOffer.price)} 💰`, `buyLandFromPlayer('${location.id}', ${saleOffer.price})`, '#4CAF50');
+                    }
                     
                     // Tlačítka budov
                     if (landData.buildings && buildingCount > 0) {
@@ -78490,6 +78502,12 @@ function openFullscreenMap() {
                     </button>
                 </div>
                 
+                <!-- POZEMKY - nové tlačítko -->
+                <button class="btn" onclick="showLandsOverview()" style="width: 100%; background: linear-gradient(180deg, #0f1a0a 0%, #050a03 100%); border: 1px solid #3a5a2a; padding: 0.5rem; border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Courier New', monospace; margin-bottom: 0.3rem;">
+                    <span>🏗️</span>
+                    <span style="font-size: 0.75rem; color: #7a9a5a;">POZEMKY</span>
+                </button>
+                
                 <!-- ŠÉF PUSTINY -->
                 <button id="politicsBtn" class="btn" onclick="showPoliticsPanel()" data-active="${(() => { try { if (mayorElection?.cycleStart && !window._politicsSeen) { const p = getElectionPhase(); if (p && ['nomination','campaign','voting'].includes(p.phase)) return 'true'; } } catch(e) {} return 'false'; })()}" style="width: 100%; padding: 0.5rem; border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 0.3rem; font-family: 'Courier New', monospace; margin-bottom: 0.3rem;">
                     <span>👑</span>
@@ -80627,6 +80645,7 @@ function openFullscreenMap() {
         // Cache pro pozemky z Firebase
         window.landOwnershipCache = {};
         window.landOwnershipCacheTime = 0;
+        window.landOffersCache = {};
         
         // Načti pozemky z Firebase
         function loadLandOwnership(callback) {
@@ -80638,6 +80657,11 @@ function openFullscreenMap() {
                 return;
             }
             
+            // Načti i nabídky prodeje
+            firebaseDB.ref('landOffers').once('value').then(snap => {
+                window.landOffersCache = snap.val() || {};
+            }).catch(e => console.error('Land offers load error:', e));
+            
             firebaseDB.ref('landOwnership').once('value').then(snap => {
                 window.landOwnershipCache = snap.val() || {};
                 window.landOwnershipCacheTime = Date.now();
@@ -80647,6 +80671,427 @@ function openFullscreenMap() {
                 if (callback) callback(window.landOwnershipCache || {});
             });
         }
+        
+        // === PŘEHLED POZEMKŮ ===
+        async function showLandsOverview() {
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Pozemky vyžadují online připojení!');
+                return;
+            }
+            
+            const myName = getPlayerName();
+            
+            showModal('🏗️ Pozemky', `
+                <div style="text-align: center; padding: 2rem;">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">⏳</div>
+                    <div style="color: #888;">Načítám data pozemků...</div>
+                </div>
+            `);
+            
+            try {
+                // Načti všechny pozemky z Firebase
+                const landsSnap = await firebaseDB.ref('lands').once('value');
+                const allLands = landsSnap.val() || {};
+                
+                // Načti nabídky prodeje
+                const offersSnap = await firebaseDB.ref('landOffers').once('value');
+                const allOffers = offersSnap.val() || {};
+                
+                // Rozděl pozemky
+                const myLands = [];
+                const otherLands = [];
+                const forSale = [];
+                
+                // Spočítej kolik je celkem dostupných lokací pro koupi
+                const buyableLocations = WORLD_LOCATIONS.filter(loc => 
+                    loc.canOwn !== false && 
+                    !['shelter', 'settlement'].includes(loc.id) &&
+                    !allLands[loc.id]
+                );
+                
+                Object.entries(allLands).forEach(([locId, land]) => {
+                    const loc = WORLD_LOCATIONS.find(l => l.id === locId);
+                    if (!loc) return;
+                    
+                    const landInfo = {
+                        id: locId,
+                        name: land.customName || loc.name,
+                        icon: loc.icon,
+                        owner: land.owner,
+                        buildings: land.buildings || {},
+                        boughtAt: land.boughtAt,
+                        offer: allOffers[locId] || null
+                    };
+                    
+                    if (land.owner === myName) {
+                        myLands.push(landInfo);
+                    } else {
+                        otherLands.push(landInfo);
+                        if (allOffers[locId] && allOffers[locId].active) {
+                            forSale.push({ ...landInfo, price: allOffers[locId].price });
+                        }
+                    }
+                });
+                
+                // HTML pro moje pozemky
+                let myLandsHtml = '';
+                if (myLands.length > 0) {
+                    myLandsHtml = myLands.map(land => {
+                        const buildingCount = Object.keys(land.buildings).length;
+                        const hasOffer = land.offer && land.offer.active;
+                        return `
+                            <div style="background: #0d150d; padding: 0.6rem; border-radius: 6px; border: 1px solid #2a4a2a; margin-bottom: 0.4rem;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                        <span style="font-size: 1.3rem;">${land.icon}</span>
+                                        <div>
+                                            <div style="font-size: 0.85rem; color: #8bc34a; font-weight: bold;">${escapeHtml(land.name)}</div>
+                                            <div style="font-size: 0.65rem; color: #666;">🏗️ ${buildingCount} budov</div>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; gap: 0.3rem;">
+                                        ${hasOffer ? `<span style="color: #ffd700; font-size: 0.65rem; padding: 0.2rem 0.4rem; background: #2a2a0a; border-radius: 3px;">📢 Na prodej: ${formatNumber(land.offer.price)} 💰</span>` : ''}
+                                        <button class="btn" onclick="showLandManageModal('${land.id}')" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #333;">⚙️</button>
+                                        <button class="btn" onclick="showSellLandModal('${land.id}')" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #c62828;">💰</button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    myLandsHtml = `<div style="text-align: center; padding: 1rem; color: #555; font-size: 0.8rem;">Nevlastníš žádné pozemky. Prozkoumej mapu a kup si nějaký!</div>`;
+                }
+                
+                // HTML pro pozemky na prodej
+                let forSaleHtml = '';
+                if (forSale.length > 0) {
+                    forSaleHtml = forSale.map(land => `
+                        <div style="background: #1a1a0a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4a4a2a; margin-bottom: 0.4rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <span style="font-size: 1.3rem;">${land.icon}</span>
+                                    <div>
+                                        <div style="font-size: 0.85rem; color: #ffd700;">${escapeHtml(land.name)}</div>
+                                        <div style="font-size: 0.65rem; color: #888;">👑 ${escapeHtml(land.owner)}</div>
+                                    </div>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <span style="color: #ffd700; font-weight: bold;">${formatNumber(land.price)} 💰</span>
+                                    <button class="btn" onclick="buyLandFromPlayer('${land.id}', ${land.price})" style="padding: 0.3rem 0.6rem; font-size: 0.7rem; background: #4caf50;">🛒 Koupit</button>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    forSaleHtml = `<div style="text-align: center; padding: 0.8rem; color: #555; font-size: 0.75rem;">Žádné pozemky nejsou aktuálně na prodej.</div>`;
+                }
+                
+                // HTML pro ostatní pozemky
+                let otherLandsHtml = '';
+                const ownedNotForSale = otherLands.filter(l => !forSale.find(f => f.id === l.id));
+                if (ownedNotForSale.length > 0) {
+                    otherLandsHtml = ownedNotForSale.slice(0, 10).map(land => `
+                        <div style="display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0; border-bottom: 1px solid #1a1a1a;">
+                            <span style="font-size: 0.9rem;">${land.icon}</span>
+                            <span style="flex: 1; font-size: 0.75rem; color: #888;">${escapeHtml(land.name)}</span>
+                            <span style="font-size: 0.65rem; color: #666;">👑 ${escapeHtml(land.owner)}</span>
+                        </div>
+                    `).join('');
+                    if (ownedNotForSale.length > 10) {
+                        otherLandsHtml += `<div style="text-align: center; color: #555; font-size: 0.65rem; padding: 0.3rem;">... a ${ownedNotForSale.length - 10} dalších</div>`;
+                    }
+                }
+                
+                showModal('🏗️ Pozemky', `
+                    <!-- STATISTIKY -->
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin-bottom: 0.8rem;">
+                        <div style="background: #0d150d; padding: 0.5rem; border-radius: 6px; text-align: center; border: 1px solid #2a4a2a;">
+                            <div style="font-size: 1.2rem; color: #8bc34a; font-weight: bold;">${myLands.length}</div>
+                            <div style="font-size: 0.6rem; color: #666;">TVOJE</div>
+                        </div>
+                        <div style="background: #1a1a0a; padding: 0.5rem; border-radius: 6px; text-align: center; border: 1px solid #4a4a2a;">
+                            <div style="font-size: 1.2rem; color: #ffd700; font-weight: bold;">${forSale.length}</div>
+                            <div style="font-size: 0.6rem; color: #666;">NA PRODEJ</div>
+                        </div>
+                        <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; text-align: center; border: 1px solid #333;">
+                            <div style="font-size: 1.2rem; color: #4caf50; font-weight: bold;">${buyableLocations.length}</div>
+                            <div style="font-size: 0.6rem; color: #666;">VOLNÝCH</div>
+                        </div>
+                    </div>
+                    
+                    <!-- MOJE POZEMKY -->
+                    <details open style="margin-bottom: 0.6rem;">
+                        <summary style="cursor: pointer; background: #0d150d; padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #2a4a2a; font-size: 0.8rem; color: #8bc34a;">
+                            🏠 Moje pozemky (${myLands.length})
+                        </summary>
+                        <div style="background: #050a05; padding: 0.5rem; border-radius: 0 0 6px 6px; border: 1px solid #2a4a2a; border-top: none; max-height: 200px; overflow-y: auto;">
+                            ${myLandsHtml}
+                        </div>
+                    </details>
+                    
+                    <!-- NA PRODEJ -->
+                    <details ${forSale.length > 0 ? 'open' : ''} style="margin-bottom: 0.6rem;">
+                        <summary style="cursor: pointer; background: #1a1a0a; padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #4a4a2a; font-size: 0.8rem; color: #ffd700;">
+                            💰 Pozemky na prodej (${forSale.length})
+                        </summary>
+                        <div style="background: #0a0a05; padding: 0.5rem; border-radius: 0 0 6px 6px; border: 1px solid #4a4a2a; border-top: none; max-height: 200px; overflow-y: auto;">
+                            ${forSaleHtml}
+                        </div>
+                    </details>
+                    
+                    <!-- OSTATNÍ VLASTNĚNÉ -->
+                    ${ownedNotForSale.length > 0 ? `
+                        <details style="margin-bottom: 0.6rem;">
+                            <summary style="cursor: pointer; background: #0a0a0a; padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid #333; font-size: 0.8rem; color: #888;">
+                                👥 Pozemky jiných hráčů (${ownedNotForSale.length})
+                            </summary>
+                            <div style="background: #050505; padding: 0.5rem; border-radius: 0 0 6px 6px; border: 1px solid #333; border-top: none; max-height: 150px; overflow-y: auto;">
+                                ${otherLandsHtml}
+                            </div>
+                        </details>
+                    ` : ''}
+                    
+                    <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; border: 1px dashed #333; margin-top: 0.5rem;">
+                        <div style="font-size: 0.65rem; color: #555; text-align: center;">
+                            💡 Pozemky můžeš koupit na mapě. Postav na nich budovy a nastav poplatky pro ostatní hráče!
+                        </div>
+                    </div>
+                `);
+                
+            } catch (e) {
+                console.error('Lands overview error:', e);
+                showModal('❌ Chyba', `<p style="color: #c62828;">Nepodařilo se načíst pozemky: ${e.message}</p>`);
+            }
+        }
+        window.showLandsOverview = showLandsOverview;
+        
+        // Zobrazit modal pro prodej pozemku s vlastní cenou
+        function showSellLandModal(locationId) {
+            const land = getLandData(locationId);
+            if (!land) return;
+            
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            const basePrice = loc?.landPrice || 500;
+            const suggestedPrice = Math.floor(basePrice * 0.7); // 70% původní ceny jako výchozí
+            
+            showModal('💰 Prodat pozemek', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <span style="font-size: 2.5rem;">${loc?.icon || '🏗️'}</span>
+                    <div style="font-size: 1rem; color: #ffd700; margin-top: 0.3rem;">${escapeHtml(land.customName || loc?.name || locationId)}</div>
+                </div>
+                
+                <div style="background: #0d0d0d; padding: 0.8rem; border-radius: 8px; border: 1px solid #333; margin-bottom: 1rem;">
+                    <div style="font-size: 0.75rem; color: #888; margin-bottom: 0.5rem;">Nastav prodejní cenu:</div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="number" id="sellLandPrice" value="${suggestedPrice}" min="100" max="999999" style="flex: 1; background: #1a1a1a; border: 1px solid #444; padding: 0.5rem; border-radius: 4px; color: #ffd700; font-size: 1rem; text-align: center;">
+                        <span style="font-size: 1.2rem;">💰</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.65rem; color: #555;">
+                        <span>Doporučeno: ${formatNumber(suggestedPrice)}</span>
+                        <span>Původní: ${formatNumber(basePrice)}</span>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <button class="btn" onclick="createLandOffer('${locationId}')" style="background: #4caf50; padding: 0.6rem;">
+                        📢 Vystavit nabídku
+                    </button>
+                    <button class="btn" onclick="sellLandToSystem('${locationId}')" style="background: #ff9800; padding: 0.6rem;">
+                        🏦 Prodat systému<br><span style="font-size: 0.65rem;">(${formatNumber(Math.floor(basePrice * 0.5))} 💰)</span>
+                    </button>
+                </div>
+                
+                <div style="font-size: 0.65rem; color: #666; text-align: center;">
+                    📢 Nabídka = ostatní hráči uvidí tvou cenu na mapě i v přehledu<br>
+                    🏦 Systém = okamžitý prodej za 50% původní ceny
+                </div>
+            `);
+        }
+        window.showSellLandModal = showSellLandModal;
+        
+        // Vytvořit nabídku prodeje
+        async function createLandOffer(locationId) {
+            const priceInput = document.getElementById('sellLandPrice');
+            if (!priceInput) return;
+            
+            const price = parseInt(priceInput.value);
+            if (isNaN(price) || price < 100) {
+                notifyWarning('Špatná cena', 'Minimální cena je 100 💰');
+                return;
+            }
+            
+            const myName = getPlayerName();
+            
+            try {
+                await firebaseDB.ref(`landOffers/${locationId}`).set({
+                    seller: myName,
+                    price: price,
+                    active: true,
+                    createdAt: Date.now()
+                });
+                
+                notifySuccess('📢 Nabídka vytvořena', `Pozemek je na prodej za ${formatNumber(price)} 💰`);
+                addLog(`📢 Vystavil jsi pozemek na prodej za ${formatNumber(price)} 💰`, '💰');
+                closeModal();
+                
+                // Obnovit přehled
+                setTimeout(() => showLandsOverview(), 300);
+                
+            } catch (e) {
+                notifyError('Chyba', 'Nepodařilo se vytvořit nabídku: ' + e.message);
+            }
+        }
+        window.createLandOffer = createLandOffer;
+        
+        // Prodat pozemek zpět systému (okamžitě)
+        async function sellLandToSystem(locationId) {
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            const basePrice = loc?.landPrice || 500;
+            const sellPrice = Math.floor(basePrice * 0.5);
+            
+            if (!confirm(`Opravdu prodat pozemek systému za ${formatNumber(sellPrice)} 💰? Tato akce je nevratná!`)) return;
+            
+            try {
+                // Smaž pozemek
+                await firebaseDB.ref(`lands/${locationId}`).remove();
+                // Smaž případnou nabídku
+                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                // Aktualizuj cache
+                if (window.landOwnershipCache) delete window.landOwnershipCache[locationId];
+                
+                // Přidej peníze
+                addMoney(sellPrice);
+                
+                notifySuccess('💰 Prodáno!', `Pozemek prodán systému za ${formatNumber(sellPrice)} 💰`);
+                addLog(`💰 Prodal jsi pozemek systému za ${formatNumber(sellPrice)} 💰`, '💰');
+                closeModal();
+                
+                // Obnovit přehled
+                setTimeout(() => showLandsOverview(), 300);
+                
+            } catch (e) {
+                notifyError('Chyba', 'Nepodařilo se prodat pozemek: ' + e.message);
+            }
+        }
+        window.sellLandToSystem = sellLandToSystem;
+        
+        // Koupit pozemek od jiného hráče
+        async function buyLandFromPlayer(locationId, price) {
+            const myName = getPlayerName();
+            const myMoney = getMoney();
+            
+            if (myMoney < price) {
+                notifyWarning('Nedostatek peněz', `Potřebuješ ${formatNumber(price)} 💰, máš ${formatNumber(myMoney)} 💰`);
+                return;
+            }
+            
+            if (!confirm(`Koupit pozemek za ${formatNumber(price)} 💰?`)) return;
+            
+            try {
+                // Načti aktuální data
+                const offerSnap = await firebaseDB.ref(`landOffers/${locationId}`).once('value');
+                const offer = offerSnap.val();
+                
+                if (!offer || !offer.active) {
+                    notifyWarning('Nabídka neplatná', 'Tato nabídka už není aktivní.');
+                    showLandsOverview();
+                    return;
+                }
+                
+                const seller = offer.seller;
+                const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+                
+                // Transakce
+                // 1. Odeber peníze kupujícímu
+                addMoney(-price);
+                
+                // 2. Převeď vlastnictví
+                await firebaseDB.ref(`lands/${locationId}/owner`).set(myName);
+                await firebaseDB.ref(`lands/${locationId}/boughtAt`).set(Date.now());
+                
+                // 3. Smaž nabídku
+                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                
+                // 4. Přidej peníze prodávajícímu (přes inbox notifikaci)
+                await firebaseDB.ref(`players/${seller}/pendingMoney`).transaction(current => (current || 0) + price);
+                
+                // 5. Pošli notifikaci prodávajícímu
+                await firebaseDB.ref(`privateMessages`).push({
+                    from: '🏦 Systém',
+                    to: seller,
+                    text: `${myName} koupil tvůj pozemek "${loc?.name || locationId}" za ${formatNumber(price)} 💰. Peníze ti byly připsány!`,
+                    timestamp: Date.now(),
+                    read: false
+                });
+                
+                // Aktualizuj cache
+                if (window.landOwnershipCache) {
+                    window.landOwnershipCache[locationId] = {
+                        ...window.landOwnershipCache[locationId],
+                        owner: myName
+                    };
+                }
+                
+                notifySuccess('🏗️ Koupeno!', `Získal jsi pozemek "${loc?.name || locationId}"!`);
+                addLog(`🏗️ Koupil jsi pozemek od ${seller} za ${formatNumber(price)} 💰`, '🏗️');
+                closeModal();
+                
+                // Obnovit přehled
+                setTimeout(() => showLandsOverview(), 300);
+                
+            } catch (e) {
+                notifyError('Chyba', 'Nepodařilo se koupit pozemek: ' + e.message);
+            }
+        }
+        window.buyLandFromPlayer = buyLandFromPlayer;
+        
+        // Spravovat pozemek (přejmenovat, zrušit nabídku)
+        async function showLandManageModal(locationId) {
+            const land = getLandData(locationId);
+            if (!land) return;
+            
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            
+            // Načti nabídku
+            let offer = null;
+            try {
+                const offerSnap = await firebaseDB.ref(`landOffers/${locationId}`).once('value');
+                offer = offerSnap.val();
+            } catch(e) {}
+            
+            showModal('⚙️ Správa pozemku', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <span style="font-size: 2.5rem;">${loc?.icon || '🏗️'}</span>
+                    <div style="font-size: 1rem; color: #8bc34a; margin-top: 0.3rem;">${escapeHtml(land.customName || loc?.name || locationId)}</div>
+                </div>
+                
+                ${offer && offer.active ? `
+                    <div style="background: #1a1a0a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4a4a2a; margin-bottom: 0.8rem; text-align: center;">
+                        <div style="color: #ffd700; font-size: 0.8rem;">📢 Na prodej za ${formatNumber(offer.price)} 💰</div>
+                        <button class="btn" onclick="cancelLandOffer('${locationId}')" style="margin-top: 0.5rem; background: #c62828; padding: 0.4rem 0.8rem; font-size: 0.75rem;">❌ Zrušit nabídku</button>
+                    </div>
+                ` : ''}
+                
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <button class="btn" onclick="renameLand('${locationId}')" style="background: #5c6bc0; padding: 0.5rem;">✏️ Přejmenovat</button>
+                    <button class="btn" onclick="closeModal(); switchTab('map'); setTimeout(() => { if(typeof goToLocation === 'function') goToLocation('${locationId}'); }, 300);" style="background: #333; padding: 0.5rem;">🗺️ Zobrazit na mapě</button>
+                </div>
+            `);
+        }
+        window.showLandManageModal = showLandManageModal;
+        
+        // Zrušit nabídku prodeje
+        async function cancelLandOffer(locationId) {
+            try {
+                await firebaseDB.ref(`landOffers/${locationId}`).remove();
+                notifySuccess('✅ Zrušeno', 'Nabídka prodeje byla zrušena.');
+                closeModal();
+                setTimeout(() => showLandsOverview(), 300);
+            } catch (e) {
+                notifyError('Chyba', 'Nepodařilo se zrušit nabídku: ' + e.message);
+            }
+        }
+        window.cancelLandOffer = cancelLandOffer;
         
         // Získej data pozemku
         function getLandData(locationId) {
@@ -84970,6 +85415,16 @@ function openFullscreenMap() {
                         await firebaseDB.ref(`players/${safeName}/pendingRewards/${key}`).remove();
                         console.log('🎁 PendingReward smazána:', key);
                     }
+                }
+                
+                // === 2b. Kontrola pendingMoney (peníze z prodeje pozemků) ===
+                const pendingMoneySnap = await firebaseDB.ref(`players/${safeName}/pendingMoney`).once('value');
+                const pendingMoney = pendingMoneySnap.val() || 0;
+                if (pendingMoney > 0) {
+                    totalMoney += pendingMoney;
+                    reasons.push('💰 Prodej pozemku');
+                    await firebaseDB.ref(`players/${safeName}/pendingMoney`).remove();
+                    console.log('💰 PendingMoney vybrán:', pendingMoney);
                 }
                 
                 // === 3. Zobraz výsledky ===
