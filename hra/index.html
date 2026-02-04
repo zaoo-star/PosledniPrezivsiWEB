@@ -12479,7 +12479,45 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             purchasePrice: 3000,
             visitIncome: 1,
             dailyTaxRate: 0.05,
+            // Hodnota pozemku - bonusy
+            valueMultipliers: {
+                perBuilding: 250,      // +250 za každou budovu
+                perVisit: 1,           // +1 za každou návštěvu
+                perServiceUse: 2       // +2 za každé použití služby
+            },
+            // Bonusy pro majitele na vlastním pozemku
+            ownerBonuses: {
+                hpRegen: 2,           // +2 HP/min na vlastním pozemku
+                energyRegen: 1        // +1 energie/min na vlastním pozemku
+            },
+            // Soukromý sklad
+            storage: {
+                maxSlots: 20,         // Max 20 slotů ve skladu
+                maxStackSize: 99      // Max stack size
+            },
             buildings: {
+                storage: {
+                    id: 'storage',
+                    name: 'Soukromý sklad',
+                    icon: '📦',
+                    desc: 'Osobní úložiště pouze pro majitele. Věci zůstanou i po smrti!',
+                    cost: { money: 1000, wood: 30, metal: 15 },
+                    ownerOnly: true,
+                    defaultFee: 0,
+                    minFee: 0,
+                    maxFee: 0
+                },
+                bulletin: {
+                    id: 'bulletin',
+                    name: 'Nástěnka',
+                    icon: '📝',
+                    desc: 'Vzkazy pro návštěvníky, nabídky, poptávky. Tvůj profil!',
+                    cost: { money: 200, wood: 10 },
+                    ownerOnly: false,
+                    defaultFee: 0,
+                    minFee: 0,
+                    maxFee: 0
+                },
                 repair_shop: {
                     id: 'repair_shop',
                     name: 'Opravna',
@@ -12519,6 +12557,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     defaultFee: 8,
                     minFee: 2,
                     maxFee: 25
+                },
+                tavern: {
+                    id: 'tavern',
+                    name: 'Hospoda',
+                    icon: '🍺',
+                    desc: 'Návštěvníci si mohou zvednout náladu a odpočinout',
+                    cost: { money: 1500, wood: 25, stone: 15, cloth: 10 },
+                    defaultFee: 25,
+                    minFee: 10,
+                    maxFee: 75,
+                    effects: { morale: 15, energy: 20 }
                 }
             }
         };
@@ -32125,6 +32174,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             🏗️ ${landData.customName ? escapeHtml(landData.customName) : (isOwner ? 'Tvůj pozemek' : 'Pozemek hráče ' + escapeHtml(landData.owner))}
                         </div>
                         ${landData.customName ? `<div style="text-align: center; color: #888; font-size: 0.7rem;">👑 ${isOwner ? 'Tvůj pozemek' : escapeHtml(landData.owner)}</div>` : ''}
+                        ${isOwner ? `<div style="text-align: center; margin-top: 0.4rem; padding: 0.3rem; background: #0d1a0d; border-radius: 4px; border: 1px solid #2a4a2a;">
+                            <span style="color: #8bc34a; font-size: 0.7rem;">🏠 +${LAND_CONFIG.ownerBonuses.hpRegen} HP/min • +${LAND_CONFIG.ownerBonuses.energyRegen} ⚡/min</span>
+                        </div>` : ''}
                         ${isForSale ? `<div style="text-align: center; margin-top: 0.4rem; padding: 0.3rem; background: #2a2a0a; border-radius: 4px; border: 1px solid #4a4a2a;">
                             <span style="color: #ffd700; font-size: 0.8rem; font-weight: bold;">💰 NA PRODEJ: ${formatNumber(saleOffer.price)} 💰</span>
                         </div>` : ''}
@@ -68443,6 +68495,43 @@ function openFullscreenMap() {
                 }
             }
             
+            // === VLASTNÍ POZEMEK - REGENERACE ===
+            if (state.confirmed && !state.vacationMode && state.currentLocation) {
+                if (!state.lastLandRegenTick) state.lastLandRegenTick = now;
+                const timeSinceLandRegen = now - state.lastLandRegenTick;
+                
+                if (timeSinceLandRegen >= 60000) { // 1 minuta
+                    state.lastLandRegenTick = now;
+                    
+                    // Zkontroluj jestli jsme na vlastním pozemku
+                    const landData = getLandData(state.currentLocation);
+                    const myName = getPlayerName();
+                    
+                    if (landData && landData.owner === myName) {
+                        const bonuses = LAND_CONFIG.ownerBonuses;
+                        let healed = false;
+                        
+                        // HP regenerace
+                        if (state.char.hp < state.char.maxHp && bonuses.hpRegen > 0) {
+                            const hpBefore = state.char.hp;
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + bonuses.hpRegen);
+                            if (state.char.hp > hpBefore) healed = true;
+                        }
+                        
+                        // Energie regenerace
+                        if (state.energy < (state.maxEnergy || 100) && bonuses.energyRegen > 0) {
+                            const energyBefore = state.energy;
+                            state.energy = Math.min(state.maxEnergy || 100, (state.energy || 0) + bonuses.energyRegen);
+                            if (state.energy > energyBefore) healed = true;
+                        }
+                        
+                        if (healed && Math.random() < 0.1) { // 10% šance na log (aby nespamovalo)
+                            addLog(`🏠 Vlastní pozemek: +${bonuses.hpRegen} HP, +${bonuses.energyRegen} energie`, '🏠');
+                        }
+                    }
+                }
+            }
+            
             // Process building queue
             if (state.confirmed) {
                 processBuildQueue();
@@ -80773,7 +80862,11 @@ function openFullscreenMap() {
                         owner: land.owner,
                         buildings: land.buildings || {},
                         boughtAt: land.boughtAt,
-                        offer: allOffers[locId] || null
+                        offer: allOffers[locId] || null,
+                        // Pro výpočet hodnoty
+                        visitors: land.visitors || 0,
+                        buildingStats: land.buildingStats || {},
+                        rawLand: land
                     };
                     
                     if (land.owner === myName) {
@@ -80792,6 +80885,7 @@ function openFullscreenMap() {
                     myLandsHtml = myLands.map(land => {
                         const buildingCount = Object.keys(land.buildings).length;
                         const hasOffer = land.offer && land.offer.active;
+                        const landValue = calculateLandValue(land.rawLand);
                         return `
                             <div style="background: #0d150d; padding: 0.6rem; border-radius: 6px; border: 1px solid #2a4a2a; margin-bottom: 0.4rem;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -80799,11 +80893,11 @@ function openFullscreenMap() {
                                         <span style="font-size: 1.3rem;">${land.icon}</span>
                                         <div>
                                             <div style="font-size: 0.85rem; color: #8bc34a; font-weight: bold;">${escapeHtml(land.name)}</div>
-                                            <div style="font-size: 0.65rem; color: #666;">🏗️ ${buildingCount} budov</div>
+                                            <div style="font-size: 0.65rem; color: #666;">🏗️ ${buildingCount} budov • 📈 ~${formatNumber(landValue.total)} 💰</div>
                                         </div>
                                     </div>
                                     <div style="display: flex; gap: 0.3rem;">
-                                        ${hasOffer ? `<span style="color: #ffd700; font-size: 0.65rem; padding: 0.2rem 0.4rem; background: #2a2a0a; border-radius: 3px;">📢 Na prodej: ${formatNumber(land.offer.price)} 💰</span>` : ''}
+                                        ${hasOffer ? `<span style="color: #ffd700; font-size: 0.65rem; padding: 0.2rem 0.4rem; background: #2a2a0a; border-radius: 3px;">📢 ${formatNumber(land.offer.price)} 💰</span>` : ''}
                                         <button class="btn" onclick="showLandManageModal('${land.id}')" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #333;">⚙️</button>
                                         <button class="btn" onclick="showSellLandModal('${land.id}')" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #c62828;">💰</button>
                                     </div>
@@ -80818,23 +80912,30 @@ function openFullscreenMap() {
                 // HTML pro pozemky na prodej
                 let forSaleHtml = '';
                 if (forSale.length > 0) {
-                    forSaleHtml = forSale.map(land => `
+                    forSaleHtml = forSale.map(land => {
+                        const landValue = calculateLandValue(land.rawLand);
+                        const buildingCount = Object.keys(land.buildings).length;
+                        const isGoodDeal = land.price < landValue.total * 0.8; // Výhodná koupě pod 80% hodnoty
+                        return `
                         <div style="background: #1a1a0a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4a4a2a; margin-bottom: 0.4rem;">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div style="display: flex; align-items: center; gap: 0.5rem;">
                                     <span style="font-size: 1.3rem;">${land.icon}</span>
                                     <div>
                                         <div style="font-size: 0.85rem; color: #ffd700;">${escapeHtml(land.name)}</div>
-                                        <div style="font-size: 0.65rem; color: #888;">👑 ${escapeHtml(land.owner)}</div>
+                                        <div style="font-size: 0.6rem; color: #888;">👑 ${escapeHtml(land.owner)} • 🏗️ ${buildingCount} • 📈 ~${formatNumber(landValue.total)} 💰</div>
                                     </div>
                                 </div>
                                 <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                    <span style="color: #ffd700; font-weight: bold;">${formatNumber(land.price)} 💰</span>
+                                    <div style="text-align: right;">
+                                        <span style="color: #ffd700; font-weight: bold;">${formatNumber(land.price)} 💰</span>
+                                        ${isGoodDeal ? `<div style="font-size: 0.55rem; color: #4caf50;">🔥 Výhodná cena!</div>` : ''}
+                                    </div>
                                     <button class="btn" onclick="buyLandFromPlayer('${land.id}', ${land.price})" style="padding: 0.3rem 0.6rem; font-size: 0.7rem; background: #4caf50;">🛒 Koupit</button>
                                 </div>
                             </div>
                         </div>
-                    `).join('');
+                    `}).join('');
                 } else {
                     forSaleHtml = `<div style="text-align: center; padding: 0.8rem; color: #555; font-size: 0.75rem;">Žádné pozemky nejsou aktuálně na prodej.</div>`;
                 }
@@ -80843,13 +80944,19 @@ function openFullscreenMap() {
                 let otherLandsHtml = '';
                 const ownedNotForSale = otherLands.filter(l => !forSale.find(f => f.id === l.id));
                 if (ownedNotForSale.length > 0) {
-                    otherLandsHtml = ownedNotForSale.slice(0, 10).map(land => `
-                        <div style="display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0; border-bottom: 1px solid #1a1a1a;">
+                    otherLandsHtml = ownedNotForSale.slice(0, 10).map(land => {
+                        const landValue = calculateLandValue(land.rawLand);
+                        const buildingCount = Object.keys(land.buildings).length;
+                        return `
+                        <div style="display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0; border-bottom: 1px solid #1a1a1a;">
                             <span style="font-size: 0.9rem;">${land.icon}</span>
-                            <span style="flex: 1; font-size: 0.75rem; color: #888;">${escapeHtml(land.name)}</span>
+                            <div style="flex: 1;">
+                                <div style="font-size: 0.75rem; color: #888;">${escapeHtml(land.name)}</div>
+                                <div style="font-size: 0.6rem; color: #555;">🏗️ ${buildingCount} • 📈 ~${formatNumber(landValue.total)} 💰</div>
+                            </div>
                             <span style="font-size: 0.65rem; color: #666;">👑 ${escapeHtml(land.owner)}</span>
                         </div>
-                    `).join('');
+                    `}).join('');
                     if (ownedNotForSale.length > 10) {
                         otherLandsHtml += `<div style="text-align: center; color: #555; font-size: 0.65rem; padding: 0.3rem;">... a ${ownedNotForSale.length - 10} dalších</div>`;
                     }
@@ -80904,7 +81011,8 @@ function openFullscreenMap() {
                     
                     <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; border: 1px dashed #333; margin-top: 0.5rem;">
                         <div style="font-size: 0.65rem; color: #555; text-align: center;">
-                            💡 Pozemky můžeš koupit na mapě. Postav na nich budovy a nastav poplatky pro ostatní hráče!
+                            💡 Pozemky můžeš koupit na mapě. Postav na nich budovy a nastav poplatky pro ostatní hráče!<br>
+                            📈 <strong>Odhadovaná hodnota</strong> roste s počtem budov, návštěv a využitím služeb.
                         </div>
                     </div>
                     
@@ -80924,13 +81032,28 @@ function openFullscreenMap() {
             if (!land) return;
             
             const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
-            const basePrice = loc?.landPrice || 500;
-            const suggestedPrice = Math.floor(basePrice * 0.7); // 70% původní ceny jako výchozí
+            const landValue = calculateLandValue(land);
+            const suggestedPrice = Math.floor(landValue.total * 0.7); // 70% aktuální hodnoty
+            const systemPrice = Math.floor(landValue.total * 0.5); // 50% systému
             
             showModal('💰 Prodat pozemek', `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <span style="font-size: 2.5rem;">${loc?.icon || '🏗️'}</span>
                     <div style="font-size: 1rem; color: #ffd700; margin-top: 0.3rem;">${escapeHtml(land.customName || loc?.name || locationId)}</div>
+                </div>
+                
+                <!-- HODNOTA POZEMKU -->
+                <div style="background: #0d150d; padding: 0.6rem; border-radius: 8px; border: 1px solid #2a4a2a; margin-bottom: 0.8rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                        <span style="color: #8bc34a; font-size: 0.75rem; font-weight: bold;">📈 ODHADOVANÁ HODNOTA</span>
+                        <span style="color: #ffd700; font-size: 1.1rem; font-weight: bold;">${formatNumber(landValue.total)} 💰</span>
+                    </div>
+                    <div style="font-size: 0.6rem; color: #666; display: grid; grid-template-columns: 1fr 1fr; gap: 0.2rem;">
+                        <span>🏗️ Základ: ${formatNumber(landValue.base)}</span>
+                        <span>🏠 Budovy (${landValue.buildingCount}): +${formatNumber(landValue.buildingBonus)}</span>
+                        <span>👥 Návštěvy (${landValue.visitors}): +${formatNumber(landValue.visitBonus)}</span>
+                        <span>⚡ Služby (${landValue.serviceUses}): +${formatNumber(landValue.serviceBonus)}</span>
+                    </div>
                 </div>
                 
                 <div style="background: #0d0d0d; padding: 0.8rem; border-radius: 8px; border: 1px solid #333; margin-bottom: 1rem;">
@@ -80941,7 +81064,7 @@ function openFullscreenMap() {
                     </div>
                     <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.65rem; color: #555;">
                         <span>Doporučeno: ${formatNumber(suggestedPrice)}</span>
-                        <span>Původní: ${formatNumber(basePrice)}</span>
+                        <span>Hodnota: ${formatNumber(landValue.total)}</span>
                     </div>
                 </div>
                 
@@ -80950,14 +81073,16 @@ function openFullscreenMap() {
                         📢 Vystavit nabídku
                     </button>
                     <button class="btn" onclick="sellLandToSystem('${locationId}')" style="background: #ff9800; padding: 0.6rem;">
-                        🏦 Prodat systému<br><span style="font-size: 0.65rem;">(${formatNumber(Math.floor(basePrice * 0.5))} 💰)</span>
+                        🏦 Prodat systému<br><span style="font-size: 0.65rem;">(${formatNumber(systemPrice)} 💰)</span>
                     </button>
                 </div>
                 
-                <div style="font-size: 0.65rem; color: #666; text-align: center;">
+                <div style="font-size: 0.65rem; color: #666; text-align: center; margin-bottom: 0.8rem;">
                     📢 Nabídka = ostatní hráči uvidí tvou cenu na mapě i v přehledu<br>
-                    🏦 Systém = okamžitý prodej za 50% původní ceny
+                    🏦 Systém = okamžitý prodej za 50% hodnoty
                 </div>
+                
+                <button class="btn" onclick="closeModal();" style="width: 100%; background: #1a1a1a; border: 1px solid #333; padding: 0.5rem;">✕ Zavřít</button>
             `);
         }
         window.showSellLandModal = showSellLandModal;
@@ -80998,9 +81123,9 @@ function openFullscreenMap() {
         
         // Prodat pozemek zpět systému (okamžitě)
         async function sellLandToSystem(locationId) {
-            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
-            const basePrice = loc?.landPrice || 500;
-            const sellPrice = Math.floor(basePrice * 0.5);
+            const land = getLandData(locationId);
+            const landValue = calculateLandValue(land);
+            const sellPrice = Math.floor(landValue.total * 0.5);
             
             if (!confirm(`Opravdu prodat pozemek systému za ${formatNumber(sellPrice)} 💰? Tato akce je nevratná!`)) return;
             
@@ -81147,6 +81272,46 @@ function openFullscreenMap() {
         window.cancelLandOffer = cancelLandOffer;
         
         // Získej data pozemku
+        // Vypočítej hodnotu pozemku podle aktivity
+        function calculateLandValue(land) {
+            if (!land) return LAND_CONFIG.purchasePrice;
+            
+            const basePrice = LAND_CONFIG.purchasePrice;
+            const multipliers = LAND_CONFIG.valueMultipliers;
+            
+            // Počet budov
+            const buildingCount = land.buildings ? Object.keys(land.buildings).length : 0;
+            const buildingBonus = buildingCount * multipliers.perBuilding;
+            
+            // Návštěvnost
+            const visitors = land.visitors || 0;
+            const visitBonus = visitors * multipliers.perVisit;
+            
+            // Použití služeb
+            let serviceUses = 0;
+            if (land.buildingStats) {
+                Object.values(land.buildingStats).forEach(stat => {
+                    serviceUses += stat.uses || 0;
+                });
+            }
+            const serviceBonus = serviceUses * multipliers.perServiceUse;
+            
+            // Celková hodnota
+            const totalValue = basePrice + buildingBonus + visitBonus + serviceBonus;
+            
+            return {
+                total: totalValue,
+                base: basePrice,
+                buildingBonus,
+                visitBonus,
+                serviceBonus,
+                buildingCount,
+                visitors,
+                serviceUses
+            };
+        }
+        window.calculateLandValue = calculateLandValue;
+        
         function getLandData(locationId) {
             return window.landOwnershipCache?.[locationId] || null;
         }
@@ -81445,8 +81610,311 @@ function openFullscreenMap() {
                 useLandRestStop(locationId, isOwner, fee);
             } else if (buildingId === 'campfire') {
                 showLandCampfire(locationId, isOwner);
+            } else if (buildingId === 'tavern') {
+                useLandTavern(locationId, isOwner, fee);
+            } else if (buildingId === 'storage') {
+                if (isOwner) {
+                    showLandStorage(locationId);
+                } else {
+                    notifyWarning('Zamčeno', 'Toto je soukromý sklad majitele!');
+                }
+            } else if (buildingId === 'bulletin') {
+                showLandBulletin(locationId, isOwner);
             }
         }
+        
+        // Hospoda na pozemku
+        function useLandTavern(locationId, isOwner, fee) {
+            const effects = LAND_CONFIG.buildings.tavern.effects;
+            const moraleBoost = effects.morale || 15;
+            const energyBoost = effects.energy || 20;
+            
+            // Zvyš náladu a energii
+            state.energy = Math.min(state.maxEnergy || 100, (state.energy || 0) + energyBoost);
+            
+            // Zvyš happiness pokud máme osadníky mechaniku
+            if (state.char) {
+                state.char.morale = Math.min(100, (state.char.morale || 50) + moraleBoost);
+            }
+            
+            addLog(`🍺 Navštívil jsi hospodu! +${energyBoost} energie, +${moraleBoost} nálada${!isOwner ? ` (${fee} 💰)` : ''}`, '🍺');
+            notifySuccess('🍺 Hospoda', `Cítíš se lépe! +${energyBoost} ⚡ energie, +${moraleBoost} 😊 nálada`);
+            
+            showModal('🍺 Hospoda', `
+                <div style="text-align: center;">
+                    <div style="font-size: 4rem; margin-bottom: 0.5rem;">🍺</div>
+                    <h3 style="color: #ffd700; margin: 0;">Občerstvení!</h3>
+                    <p style="color: #aaa; margin: 0.5rem 0;">Sedl sis, dal si pivo a odpočinul.</p>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin: 1rem 0;">
+                        <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4caf50;">
+                            <div style="font-size: 1.5rem;">⚡</div>
+                            <div style="color: #4caf50; font-weight: bold;">+${energyBoost}</div>
+                            <div style="color: #888; font-size: 0.75rem;">Energie</div>
+                        </div>
+                        <div style="background: #2a2a1a; padding: 0.6rem; border-radius: 6px; border: 1px solid #ffd700;">
+                            <div style="font-size: 1.5rem;">😊</div>
+                            <div style="color: #ffd700; font-weight: bold;">+${moraleBoost}</div>
+                            <div style="color: #888; font-size: 0.75rem;">Nálada</div>
+                        </div>
+                    </div>
+                    
+                    ${!isOwner ? `<p style="color: #ff9800; font-size: 0.8rem;">Zaplatil jsi ${fee} 💰 majiteli.</p>` : `<p style="color: #4caf50; font-size: 0.8rem;">Tvá hospoda - zdarma!</p>`}
+                </div>
+                <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 1rem; background: #333;">✕ Zavřít</button>
+            `);
+            
+            renderGame();
+        }
+        window.useLandTavern = useLandTavern;
+        
+        // === SOUKROMÝ SKLAD ===
+        async function showLandStorage(locationId) {
+            const land = getLandData(locationId);
+            if (!land) return;
+            
+            // Načti sklad z Firebase
+            let storageItems = [];
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}/storage`).once('value');
+                storageItems = snap.val() || [];
+            } catch(e) {
+                console.error('Storage load error:', e);
+            }
+            
+            const maxSlots = LAND_CONFIG.storage.maxSlots;
+            const usedSlots = storageItems.length;
+            
+            // Inventář hráče pro vkládání
+            const playerItems = state.inv.filter(i => i.type !== 'quest');
+            
+            let storageHtml = '';
+            if (storageItems.length > 0) {
+                storageHtml = storageItems.map((item, idx) => `
+                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: #1a1a1a; border-radius: 4px; margin-bottom: 0.3rem; border: 1px solid #333;">
+                        <span style="font-size: 1.3rem;">${item.icon || '📦'}</span>
+                        <div style="flex: 1;">
+                            <div style="font-size: 0.8rem; color: #aaa;">${item.name}</div>
+                            <div style="font-size: 0.65rem; color: #666;">${item.count > 1 ? 'x' + item.count : ''}</div>
+                        </div>
+                        <button class="btn" onclick="takeFromLandStorage('${locationId}', ${idx})" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: #4caf50;">📤 Vzít</button>
+                    </div>
+                `).join('');
+            } else {
+                storageHtml = '<div style="text-align: center; color: #555; padding: 1rem;">Sklad je prázdný</div>';
+            }
+            
+            showModal('📦 Soukromý sklad', `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.8rem; padding: 0.5rem; background: #0d150d; border-radius: 6px; border: 1px solid #2a4a2a;">
+                    <span style="color: #8bc34a;">📦 Obsazeno:</span>
+                    <span style="color: #ffd700; font-weight: bold;">${usedSlots} / ${maxSlots}</span>
+                </div>
+                
+                <div style="margin-bottom: 1rem;">
+                    <div style="font-size: 0.75rem; color: #888; margin-bottom: 0.3rem;">VE SKLADU:</div>
+                    <div style="max-height: 150px; overflow-y: auto; background: #0a0a0a; padding: 0.5rem; border-radius: 6px; border: 1px solid #222;">
+                        ${storageHtml}
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 1rem;">
+                    <div style="font-size: 0.75rem; color: #888; margin-bottom: 0.3rem;">VLOŽIT Z INVENTÁŘE:</div>
+                    <div style="max-height: 120px; overflow-y: auto; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.3rem; background: #0a0a0a; padding: 0.5rem; border-radius: 6px; border: 1px solid #222;">
+                        ${playerItems.length > 0 ? playerItems.map((item, idx) => {
+                            const realIdx = state.inv.indexOf(item);
+                            return `
+                            <div onclick="putToLandStorage('${locationId}', ${realIdx})" style="cursor: pointer; text-align: center; padding: 0.3rem; background: #1a1a1a; border-radius: 4px; border: 1px solid #333;" title="${item.name}">
+                                <div style="font-size: 1.2rem;">${item.icon || '📦'}</div>
+                                ${item.count > 1 ? `<div style="font-size: 0.55rem; color: #888;">x${item.count}</div>` : ''}
+                            </div>
+                        `}).join('') : '<div style="grid-column: 1/-1; text-align: center; color: #555; padding: 0.5rem;">Inventář prázdný</div>'}
+                    </div>
+                </div>
+                
+                <div style="font-size: 0.65rem; color: #555; text-align: center; margin-bottom: 0.5rem;">
+                    💡 Věci ve skladu zůstanou i po smrti!
+                </div>
+                
+                <button class="btn" onclick="closeModal();" style="width: 100%; background: #333;">✕ Zavřít</button>
+            `);
+        }
+        window.showLandStorage = showLandStorage;
+        
+        // Vložit předmět do skladu
+        async function putToLandStorage(locationId, invIdx) {
+            const item = state.inv[invIdx];
+            if (!item) return;
+            
+            // Načti sklad
+            let storageItems = [];
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}/storage`).once('value');
+                storageItems = snap.val() || [];
+            } catch(e) { return; }
+            
+            if (storageItems.length >= LAND_CONFIG.storage.maxSlots) {
+                notifyWarning('Plný sklad', 'Sklad je plný!');
+                return;
+            }
+            
+            // Přidej do skladu
+            const storageItem = {
+                id: item.id,
+                name: item.name,
+                icon: item.icon || ITEMS.find(i => i.id === item.id)?.icon || '📦',
+                count: item.count || 1,
+                type: item.type,
+                rarity: item.rarity
+            };
+            storageItems.push(storageItem);
+            
+            // Ulož do Firebase
+            await firebaseDB.ref(`landOwnership/${locationId}/storage`).set(storageItems);
+            
+            // Odeber z inventáře
+            state.inv.splice(invIdx, 1);
+            saveGame();
+            
+            notifySuccess('📦 Uloženo', `${item.name} uložen do skladu`);
+            showLandStorage(locationId);
+        }
+        window.putToLandStorage = putToLandStorage;
+        
+        // Vzít předmět ze skladu
+        async function takeFromLandStorage(locationId, storageIdx) {
+            let storageItems = [];
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}/storage`).once('value');
+                storageItems = snap.val() || [];
+            } catch(e) { return; }
+            
+            const item = storageItems[storageIdx];
+            if (!item) return;
+            
+            // Kontrola váhy
+            const itemDef = ITEMS.find(i => i.id === item.id) || { weight: 1 };
+            const weight = (itemDef.weight || 1) * (item.count || 1);
+            if (state.carryWeight + weight > state.maxCarryWeight) {
+                notifyWarning('Přetížení', 'Nemáš místo v inventáři!');
+                return;
+            }
+            
+            // Přidej do inventáře
+            const invItem = { ...item };
+            addItemToInventory(invItem, item.count || 1);
+            
+            // Odeber ze skladu
+            storageItems.splice(storageIdx, 1);
+            await firebaseDB.ref(`landOwnership/${locationId}/storage`).set(storageItems);
+            
+            notifySuccess('📤 Vzato', `${item.name} přidán do inventáře`);
+            showLandStorage(locationId);
+        }
+        window.takeFromLandStorage = takeFromLandStorage;
+        
+        // === NÁSTĚNKA ===
+        async function showLandBulletin(locationId, isOwner) {
+            const land = getLandData(locationId);
+            if (!land) return;
+            
+            // Načti nástěnku z Firebase
+            let bulletin = { message: '', likes: 0, likedBy: [] };
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}/bulletin`).once('value');
+                bulletin = snap.val() || bulletin;
+            } catch(e) {}
+            
+            const myName = getPlayerName();
+            const hasLiked = bulletin.likedBy?.includes(myName);
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            
+            showModal('📝 Nástěnka', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <span style="font-size: 2rem;">${loc?.icon || '🏗️'}</span>
+                    <div style="color: #ffd700; font-weight: bold;">${escapeHtml(land.customName || loc?.name || 'Pozemek')}</div>
+                    <div style="color: #888; font-size: 0.75rem;">👑 ${escapeHtml(land.owner)}</div>
+                </div>
+                
+                <!-- VZKAZ -->
+                <div style="background: #1a1a0a; padding: 0.8rem; border-radius: 8px; border: 1px solid #4a4a2a; margin-bottom: 1rem; min-height: 80px;">
+                    ${bulletin.message 
+                        ? `<div style="color: #ddd; font-size: 0.9rem; white-space: pre-wrap;">${escapeHtml(bulletin.message)}</div>`
+                        : `<div style="color: #555; font-style: italic; text-align: center;">Majitel zatím nic nenapsal...</div>`
+                    }
+                </div>
+                
+                <!-- HODNOCENÍ -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding: 0.5rem; background: #0a0a0a; border-radius: 6px;">
+                    <div style="color: #888; font-size: 0.8rem;">
+                        👍 <span style="color: #ffd700;">${bulletin.likes || 0}</span> líbí se
+                    </div>
+                    ${!isOwner ? `
+                        <button class="btn" onclick="likeLandBulletin('${locationId}')" style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: ${hasLiked ? '#555' : '#4caf50'};" ${hasLiked ? 'disabled' : ''}>
+                            ${hasLiked ? '✓ Už se ti líbí' : '👍 Líbí se mi'}
+                        </button>
+                    ` : ''}
+                </div>
+                
+                ${isOwner ? `
+                    <!-- EDITACE PRO MAJITELE -->
+                    <div style="margin-bottom: 0.5rem;">
+                        <div style="font-size: 0.75rem; color: #888; margin-bottom: 0.3rem;">✏️ Uprav svůj vzkaz:</div>
+                        <textarea id="bulletinMessage" style="width: 100%; height: 80px; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #ddd; padding: 0.5rem; resize: none; font-size: 0.85rem;" placeholder="Napiš co nabízíš, hledáš, nebo cokoliv jiného...">${escapeHtml(bulletin.message || '')}</textarea>
+                    </div>
+                    <button class="btn" onclick="saveLandBulletin('${locationId}')" style="width: 100%; background: #4caf50; margin-bottom: 0.5rem;">💾 Uložit vzkaz</button>
+                ` : ''}
+                
+                <button class="btn" onclick="closeModal();" style="width: 100%; background: #333;">✕ Zavřít</button>
+            `);
+        }
+        window.showLandBulletin = showLandBulletin;
+        
+        // Uložit vzkaz na nástěnku
+        async function saveLandBulletin(locationId) {
+            const textarea = document.getElementById('bulletinMessage');
+            if (!textarea) return;
+            
+            const message = textarea.value.trim().substring(0, 500); // Max 500 znaků
+            
+            try {
+                await firebaseDB.ref(`landOwnership/${locationId}/bulletin/message`).set(message);
+                notifySuccess('💾 Uloženo', 'Vzkaz na nástěnce byl aktualizován!');
+                closeModal();
+            } catch(e) {
+                notifyError('Chyba', 'Nepodařilo se uložit vzkaz');
+            }
+        }
+        window.saveLandBulletin = saveLandBulletin;
+        
+        // Dát like nástěnce
+        async function likeLandBulletin(locationId) {
+            const myName = getPlayerName();
+            
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}/bulletin`).once('value');
+                const bulletin = snap.val() || { likes: 0, likedBy: [] };
+                
+                if (bulletin.likedBy?.includes(myName)) {
+                    notifyWarning('Už se ti líbí', 'Tomuto pozemku už ses líbil!');
+                    return;
+                }
+                
+                const likedBy = bulletin.likedBy || [];
+                likedBy.push(myName);
+                
+                await firebaseDB.ref(`landOwnership/${locationId}/bulletin`).update({
+                    likes: (bulletin.likes || 0) + 1,
+                    likedBy: likedBy
+                });
+                
+                notifySuccess('👍 Líbí se!', 'Tvůj hlas byl zaznamenán');
+                showLandBulletin(locationId, false);
+                
+            } catch(e) {
+                notifyError('Chyba', 'Nepodařilo se přidat like');
+            }
+        }
+        window.likeLandBulletin = likeLandBulletin;
         
         // === SLUŽBY NA POZEMKU ===
         
@@ -85845,7 +86313,8 @@ function openFullscreenMap() {
                                 </div>
                                 <p style="color: #888; font-size: 0.8rem; margin: 0.3rem 0;">Zvolený dne ${new Date(mayor.electedAt).toLocaleDateString('cs-CZ')}</p>
                             ` : `
-                                <p style="color: #888;">Žádný šéf - probíhají volby</p>
+                                <p style="color: #888;">${phase?.phase === 'governing' ? 'Pozice je prázdná - nikdo nebyl zvolen' : 'Žádný šéf - probíhají volby'}</p>
+                                ${phase?.phase === 'governing' ? '<p style="color: #555; font-size: 0.75rem;">Nové volby začnou za ' + (phase.daysLeft || '?') + ' dní</p>' : ''}
                             `}
                         </div>
                     </div>
@@ -86149,13 +86618,15 @@ function openFullscreenMap() {
                             ⚖️ Hlasovat o sesazení šéfa
                         </button>
                     ` : ''}
-                    ${isCurrentMayor ? `
+                    ${(isCurrentMayor || isStaff()) ? `
                         <button class="btn" onclick="showMayorPowersPanel()" style="width: 100%; margin-bottom: 0.5rem; background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
-                            ⚡ Pravomoci šéfa
+                            ⚡ Pravomoci šéfa ${!isCurrentMayor && isStaff() ? '(Admin)' : ''}
                         </button>
+                        ${isCurrentMayor ? `
                         <button class="btn" onclick="resignAsMayor()" style="width: 100%; margin-bottom: 0.5rem; background: #555; color: #f44336;">
                             🏳️ Odstoupit z funkce
                         </button>
+                        ` : ''}
                     ` : ''}
                     <button class="btn" onclick="closeModal()" style="width: 100%; background: #555;">← Zavřít</button>
                 `;
@@ -86422,8 +86893,8 @@ function openFullscreenMap() {
         // Hlasovat pro kandidáta
         // Šéf rozhoduje
         async function mayorDecide(decisionId, optionId) {
-            if (!isMayor()) {
-                notifyWarning('Nejsi šéf', 'Pouze šéf může rozhodovat');
+            if (!isMayor() && !isStaff()) {
+                notifyWarning('Nejsi šéf', 'Pouze šéf nebo admin může rozhodovat');
                 return;
             }
             
@@ -86817,23 +87288,26 @@ function openFullscreenMap() {
         
         // Použití pravomoci šéfa
         async function useMayorPower(powerId) {
-            if (!isMayor()) {
-                notifyWarning('Nejsi šéf', 'Tuto akci může provést pouze šéf');
+            if (!isMayor() && !isStaff()) {
+                notifyWarning('Nejsi šéf', 'Tuto akci může provést pouze šéf nebo admin');
                 return;
             }
             
             const power = MAYOR_SYSTEM.mayorPowers.find(p => p.id === powerId);
             if (!power) return;
             
-            // Kontrola cooldownu
-            if (cachedPoliticalEffects && cachedPoliticalEffects[powerId]) {
-                const cooldownUntil = cachedPoliticalEffects[powerId].cooldownUntil;
-                if (cooldownUntil && cooldownUntil > Date.now()) {
-                    const minsLeft = Math.ceil((cooldownUntil - Date.now()) / 60000);
-                    const hoursLeft = Math.floor(minsLeft / 60);
-                    const timeStr = hoursLeft > 0 ? `${hoursLeft}h ${minsLeft % 60}m` : `${minsLeft} min`;
-                    notifyWarning('Cooldown', `${power.name} bude dostupné za ${timeStr}`);
-                    return;
+            // Admin ignoruje cooldowny
+            if (!isStaff()) {
+                // Kontrola cooldownu
+                if (cachedPoliticalEffects && cachedPoliticalEffects[powerId]) {
+                    const cooldownUntil = cachedPoliticalEffects[powerId].cooldownUntil;
+                    if (cooldownUntil && cooldownUntil > Date.now()) {
+                        const minsLeft = Math.ceil((cooldownUntil - Date.now()) / 60000);
+                        const hoursLeft = Math.floor(minsLeft / 60);
+                        const timeStr = hoursLeft > 0 ? `${hoursLeft}h ${minsLeft % 60}m` : `${minsLeft} min`;
+                        notifyWarning('Cooldown', `${power.name} bude dostupné za ${timeStr}`);
+                        return;
+                    }
                 }
             }
             
@@ -86859,10 +87333,12 @@ function openFullscreenMap() {
         
         // Zobrazit panel pravomocí šéfa
         async function showMayorPowersPanel() {
-            if (!isMayor()) {
+            if (!isMayor() && !isStaff()) {
                 notifyWarning('Pouze pro šéfa', 'Tato sekce je pouze pro šéfa Pustiny');
                 return;
             }
+            
+            const isAdmin = isStaff() && !isMayor();
             
             let publicMoney = 0;
             try {
@@ -86874,10 +87350,10 @@ function openFullscreenMap() {
             let activeEvents = cachedPoliticalEffects || {};
             
             let html = `
-                <div style="background: linear-gradient(135deg, #1a1020 0%, #0d0510 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 2px solid #9c27b0;">
+                <div style="background: linear-gradient(135deg, #1a1020 0%, #0d0510 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 2px solid ${isAdmin ? '#f44336' : '#9c27b0'};">
                     <div style="text-align: center; margin-bottom: 1rem;">
                         <div style="font-size: 2.5rem;">⚡</div>
-                        <h2 style="color: #ce93d8; margin: 0.5rem 0;">Pravomoci Šéfa</h2>
+                        <h2 style="color: ${isAdmin ? '#f44336' : '#ce93d8'}; margin: 0.5rem 0;">Pravomoci Šéfa ${isAdmin ? '(Admin režim)' : ''}</h2>
                         <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 0.5rem;">
                             <div style="background: #1a1020; padding: 0.5rem 1rem; border-radius: 6px;">
                                 <div style="color: #ffd700; font-size: 1.2rem; font-weight: bold;">${formatNumber(publicMoney)} 💰</div>
@@ -87938,12 +88414,19 @@ function openFullscreenMap() {
                 // Zkontroluj jestli existují hlasy k vyhodnocení
                 const electionSnap = await firebaseDB.ref('politics/election').once('value');
                 const election = electionSnap.val();
-                if (!election) return;
+                if (!election) {
+                    console.log('🗳️ Auto-eval: No election data');
+                    return;
+                }
                 
                 const votes = election.votes;
                 const candidates = election.candidates;
-                if (!votes || Object.keys(votes).length === 0) return;
-                if (!candidates || Object.keys(candidates).length === 0) return;
+                
+                // Pokud nejsou hlasy ani kandidáti, označ jako vyhodnocené (prázdné volby)
+                if ((!votes || Object.keys(votes).length === 0) && (!candidates || Object.keys(candidates).length === 0)) {
+                    console.log('🗳️ Auto-eval: No votes or candidates - empty election');
+                    return;
+                }
                 
                 // Zjisti číslo aktuálního cyklu (půlnoční logika jako v getElectionPhase)
                 const cycleStart = election.cycleStart ? new Date(election.cycleStart) : null;
@@ -88169,9 +88652,12 @@ function openFullscreenMap() {
                             ${Object.entries(candidates).map(([name, data]) => {
                                 const voteNum = voteCounts[name] || 0;
                                 const supporters = countSupporters(data.supporters);
-                                return `<div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #222; border-radius: 4px; margin-bottom: 0.2rem;">
+                                return `<div onclick="adminSetMayorDirect('${escapeHtml(name)}')" style="display: flex; justify-content: space-between; padding: 0.4rem 0.5rem; background: #222; border-radius: 4px; margin-bottom: 0.2rem; cursor: pointer; border: 1px solid #333; transition: all 0.2s;" onmouseover="this.style.borderColor='#4caf50'; this.style.background='#2a3a2a';" onmouseout="this.style.borderColor='#333'; this.style.background='#222';">
                                     <span style="color: #fff;">${name} (Lvl ${data.level})</span>
-                                    <span style="color: #888;">${supporters}👥 | ${voteNum}🗳️</span>
+                                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                        <span style="color: #888;">${supporters}👥 | ${voteNum}🗳️</span>
+                                        <span style="color: #4caf50; font-size: 0.7rem;">👑 Zvolit</span>
+                                    </div>
                                 </div>`;
                             }).join('')}
                         </div>
@@ -88222,6 +88708,9 @@ function openFullscreenMap() {
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
                             <button class="btn" onclick="adminAddPublicMoney()" style="background: #2196f3; padding: 0.5rem; font-size: 0.8rem;">
                                 💰 Přidat do kasy
+                            </button>
+                            <button class="btn" onclick="adminSetMayor()" style="background: #4caf50; padding: 0.5rem; font-size: 0.8rem;">
+                                👑 Nastavit šéfa
                             </button>
                             <button class="btn" onclick="adminRemoveMayor()" style="background: #333; padding: 0.5rem; font-size: 0.8rem;">
                                 👑 Odvolat šéfa
@@ -88595,6 +89084,46 @@ function openFullscreenMap() {
             await firebaseDB.ref('politics/mayor').remove();
             notifySuccess('Šéf odvolán', 'Pozice je volná');
             showAdminPolitics();
+        }
+        
+        // Admin: Ručně nastavit šéfa (s promptem)
+        async function adminSetMayor() {
+            const name = prompt('Zadej jméno nového Šéfa Pustiny:');
+            if (!name || !name.trim()) return;
+            
+            const playerName = name.trim();
+            
+            if (!confirm(`Opravdu nastavit "${playerName}" jako Šéfa Pustiny?`)) return;
+            
+            await adminSetMayorDirect(playerName);
+        }
+        
+        // Admin: Nastavit šéfa kliknutím na kandidáta
+        async function adminSetMayorDirect(playerName) {
+            if (!playerName || !playerName.trim()) return;
+            
+            if (!confirm(`Nastavit 👑 ${playerName} jako Šéfa Pustiny?`)) return;
+            
+            try {
+                await firebaseDB.ref('politics/mayor').set({
+                    name: playerName,
+                    electedAt: firebase.database.ServerValue.TIMESTAMP,
+                    votes: 0,
+                    setByAdmin: true
+                });
+                
+                await firebaseDB.ref('chat/messages').push({
+                    author: '🏛️ POLITIKA',
+                    text: `👑 ${playerName} byl ustanoven novým Šéfem Pustiny!`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
+                });
+                
+                notifySuccess('Šéf nastaven!', playerName);
+                showAdminPolitics();
+            } catch (e) {
+                notifyError('Chyba', e.message);
+            }
         }
         
         // Admin: Zobrazit správu tomboly
@@ -91797,6 +92326,11 @@ function openFullscreenMap() {
             const prosperity = state.settlement?.prosperity || 0;
             happiness += Math.floor(prosperity / 10);
             
+            // Bonus z povzbuzení (postupně klesá)
+            if (settler.encouragementBonus && settler.encouragementBonus > 0) {
+                happiness += settler.encouragementBonus;
+            }
+            
             settler.happiness = Math.max(0, Math.min(100, happiness));
             return settler.happiness;
         }
@@ -91890,6 +92424,11 @@ function openFullscreenMap() {
                     (hasRelations ? needs.social + 8 : needs.social - 6) + (hasTavern ? 5 : 0) + (settlerCount > 3 ? 3 : -3)
                 ));
                 
+                // Postupný pokles bonusu z povzbuzení (−2 za "den")
+                if (settler.encouragementBonus && settler.encouragementBonus > 0) {
+                    settler.encouragementBonus = Math.max(0, settler.encouragementBonus - 2);
+                }
+                
                 // Stats
                 settler.stats.daysInSettlement++;
                 
@@ -91920,21 +92459,22 @@ function openFullscreenMap() {
             const now = Date.now();
             if (now > settler._talkResetTime) {
                 settler._talkCount = 0;
-                settler._talkResetTime = now + 1000 * 60 * 5; // 5 minut cooldown
+                settler._talkResetTime = now + 1000 * 60 * 60 * 6; // 6 hodin cooldown
             }
             
             settler._talkCount++;
             
             if (settler._talkCount > 3) {
                 const remainSec = Math.ceil((settler._talkResetTime - now) / 1000);
-                const remainMin = Math.floor(remainSec / 60);
-                const remainS = remainSec % 60;
+                const remainHours = Math.floor(remainSec / 3600);
+                const remainMin = Math.floor((remainSec % 3600) / 60);
+                const timeText = remainHours > 0 ? `${remainHours}h ${remainMin}min` : `${remainMin}min`;
                 showModal(`🗣️ ${settler.name}`, `
                     <div style="text-align: center; padding: 1.5rem;">
                         <div style="font-size: 3rem; margin-bottom: 0.5rem;">😶</div>
                         <div style="color: #888; font-size: 0.9rem; margin-bottom: 0.5rem;">${settler.name} už nechce mluvit.</div>
                         <div style="color: #555; font-size: 0.8rem; font-style: italic;">"Potřebuju chvíli klid..."</div>
-                        <div style="margin-top: 1rem; color: #ff9800; font-size: 0.75rem;">🕐 Další rozhovor za ${remainMin}:${remainS.toString().padStart(2, '0')}</div>
+                        <div style="margin-top: 1rem; color: #ff9800; font-size: 0.75rem;">🕐 Další rozhovor za ${timeText}</div>
                     </div>
                     <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.5rem; background: #1a1a1a; border: 1px solid #333;">✕ Zavřít</button>
                 `);
@@ -91956,6 +92496,15 @@ function openFullscreenMap() {
             
             // Kolik rozhovorů zbývá
             const talksLeft = 3 - settler._talkCount;
+            
+            // Cooldown povzbuzení
+            const lastEncourage = settler._lastEncourage || 0;
+            const encourageCooldown = 1000 * 60 * 60 * 6; // 6 hodin
+            const encourageRemaining = encourageCooldown - (Date.now() - lastEncourage);
+            const canEncourage = encourageRemaining <= 0;
+            const encourageHours = canEncourage ? 0 : Math.floor(encourageRemaining / 3600000);
+            const encourageMinsRest = canEncourage ? 0 : Math.ceil((encourageRemaining % 3600000) / 60000);
+            const encourageTimeText = encourageHours > 0 ? `${encourageHours}h` : `${encourageMinsRest}m`;
             
             // Barva podle nálady
             const happyColor = happiness >= 70 ? '#4caf50' : happiness >= 40 ? '#ff9800' : '#c62828';
@@ -92209,7 +92758,7 @@ function openFullscreenMap() {
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
                     <button class="btn" onclick="showSettlerTalk(${settlerIdx});" style="background: ${talksLeft > 0 ? '#2e7d32' : '#555'}; padding: 0.5rem; font-size: 0.75rem;">🗣️ Mluvit ${talksLeft > 0 ? `(${talksLeft})` : '🕐'}</button>
                     <button class="btn" onclick="closeModal(); showSettlerDetail(${settlerIdx});" style="background: #333; padding: 0.5rem; font-size: 0.75rem;">⚙️ Skill</button>
-                    <button class="btn" onclick="encourageSettler(${settlerIdx});" style="background: #1565c0; padding: 0.5rem; font-size: 0.75rem;">💪 Povzbudit</button>
+                    <button class="btn" onclick="encourageSettler(${settlerIdx});" style="background: ${canEncourage ? '#1565c0' : '#555'}; padding: 0.5rem; font-size: 0.75rem;">💪 ${canEncourage ? 'Povzbudit' : `${encourageTimeText} 🕐`}</button>
                 </div>
                 <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.5rem; background: #1a1a1a; border: 1px solid #333; padding: 0.5rem; font-size: 0.75rem;">✕ Zavřít</button>
             `);
@@ -92222,11 +92771,15 @@ function openFullscreenMap() {
             
             initSettlerExtended(settler);
             
-            // Cooldown — max 1x za den
+            // Cooldown — max 1x za 5 minut
             const lastEncourage = settler._lastEncourage || 0;
-            const dayMs = 1000 * 60 * 5; // 5 min herní "den"
-            if (Date.now() - lastEncourage < dayMs) {
-                showModal('⏳ Počkej', `${settler.name} už byl dnes povzbuzen. Zkus to zítra.`);
+            const cooldownMs = 1000 * 60 * 60 * 6; // 6 hodin
+            const remaining = cooldownMs - (Date.now() - lastEncourage);
+            if (remaining > 0) {
+                const hours = Math.floor(remaining / 3600000);
+                const mins = Math.ceil((remaining % 3600000) / 60000);
+                const timeText = hours > 0 ? `${hours}h ${mins}min` : `${mins} min`;
+                showModal('⏳ Počkej', `${settler.name} potřebuje chvíli klid. Zkus to za ${timeText}.`);
                 return;
             }
             
@@ -92234,30 +92787,35 @@ function openFullscreenMap() {
             
             // Efekt podle osobnosti
             const pers = settler.personality;
+            let bonusAmount = 10;
             let bonusText = '';
             
             settler.needs.social = Math.min(100, (settler.needs.social || 50) + 15);
-            settler.happiness = Math.min(100, (settler.happiness || 50) + 10);
             
             if (pers === 'pessimist') {
                 bonusText = '"Hm... díky. Asi." (+5 nálada)';
-                settler.happiness = Math.min(100, settler.happiness + 5);
+                bonusAmount = 5;
             } else if (pers === 'optimist') {
                 bonusText = '"To je přesně co jsem potřeboval slyšet!" (+15 nálada)';
-                settler.happiness = Math.min(100, settler.happiness + 15);
+                bonusAmount = 15;
             } else if (pers === 'rebel') {
                 bonusText = '"Nepotřebuju povzbuzení... ale díky." (+8 nálada)';
-                settler.happiness = Math.min(100, settler.happiness + 8);
+                bonusAmount = 8;
             } else if (pers === 'loner') {
                 bonusText = '"... *kývne* ..." (+5 nálada, +10 společnost)';
+                bonusAmount = 5;
                 settler.needs.social = Math.min(100, settler.needs.social + 10);
             } else if (pers === 'coward') {
                 bonusText = '"Myslíš to vážně? D-díky!" (+12 nálada, +15 bezpečí)';
-                settler.happiness = Math.min(100, settler.happiness + 12);
+                bonusAmount = 12;
                 settler.needs.safety = Math.min(100, (settler.needs.safety || 50) + 15);
             } else {
                 bonusText = `"Děkuju, ${state.char?.name || 'šéfe'}!" (+10 nálada)`;
+                bonusAmount = 10;
             }
+            
+            // Přidej bonus k náladu (kumulativní, max 30)
+            settler.encouragementBonus = Math.min(30, (settler.encouragementBonus || 0) + bonusAmount);
             
             addSettlerMemory(settler, 'Vůdce mě povzbudil.', '💪', 'good');
             
@@ -92267,7 +92825,7 @@ function openFullscreenMap() {
                     <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 10px; border-left: 3px solid #4caf50; margin: 0.5rem 0; font-style: italic; color: #c9c9c9;">
                         ${bonusText}
                     </div>
-                    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #8bc34a;">✅ +15 Společnost, +10 Nálada</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #8bc34a;">✅ +15 Společnost, +${bonusAmount} Nálada</div>
                 </div>
                 <button class="btn" onclick="showSettlerTalk(${settlerIdx});" style="width: 100%; margin-top: 0.5rem; background: #2e7d32;">↩️ Zpět na ${settler.name}</button>
             `);
@@ -92540,6 +93098,8 @@ function openFullscreenMap() {
         window.adminResetTreasury = adminResetTreasury;
         window.adminRemoveMayor = adminRemoveMayor;
         window.adminResetElection = adminResetElection;
+        window.adminSetMayor = adminSetMayor;
+        window.adminSetMayorDirect = adminSetMayorDirect;
         
         // Admin teleport
         window.adminTeleport = adminTeleport;
