@@ -6326,6 +6326,7 @@
             // === ORGANICKÉ SUROVINY (40-70%) ===
             { id: 'herbs', name: 'Bylinky', icon: '🌿', type: 'resource', weight: 0.2, price: 15, rarity: 'common', findChance: 0.6, terrain: [0, 1] }, // les, louka
             { id: 'berries', name: 'Borůvky', icon: '🫐', type: 'consumable', effect: 'hunger', value: 15, weight: 0.2, price: 8, rarity: 'common', findChance: 0.5 },
+            { id: 'chocolate', name: 'Čokoláda', icon: '🍫', type: 'consumable', effect: 'hunger', value: 20, weight: 0.3, price: 30, rarity: 'uncommon', findChance: 0.06, secondary: { energy: 15, mood: 20 }, desc: '+20 hlad, +15 energie, +20 nálada' },
             { id: 'leather', name: 'Kůže', icon: '🦎', type: 'resource', weight: 1, price: 20, rarity: 'common', findChance: 0.4 },
             { id: 'raw_meat', name: 'Syrové maso', icon: '🥩', type: 'resource', weight: 1, price: 12, rarity: 'common', findChance: 0.5 },
             { id: 'fish', name: 'Ryba', icon: '🐟', type: 'resource', weight: 0.5, price: 10, rarity: 'common', findChance: 0 }, // jen rybaření
@@ -12465,6 +12466,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             ]
         };
+        
+        // Helper: spočítej supporters (Firebase může uložit pole jako objekt)
+        function countSupporters(supporters) {
+            if (!supporters) return 0;
+            if (Array.isArray(supporters)) return supporters.length;
+            if (typeof supporters === 'object') return Object.keys(supporters).length;
+            return 0;
+        }
         
         // Helper funkce pro získání názvu a popisu lokace
         function getLocName(locId) {
@@ -28798,6 +28807,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                             if (i.secondary.hp) bonuses.push('+' + i.secondary.hp + ' HP');
                                             if (i.secondary.energy) bonuses.push('+' + i.secondary.energy + '% ⚡');
                                             if (i.secondary.thirst) bonuses.push('+' + i.secondary.thirst + '% 💧');
+                                            if (i.secondary.mood) bonuses.push('+' + i.secondary.mood + '% 🧠');
                                             if (bonuses.length > 0) {
                                                 effectText += ' | ' + bonuses.join(', ');
                                             }
@@ -41892,6 +41902,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (item.secondary.hp) secondaryDesc.push(`<span style="color: #f44336;">❤️ +${item.secondary.hp} HP</span>`);
                 if (item.secondary.energy) secondaryDesc.push(`<span style="color: #4caf50;">⚡ +${item.secondary.energy}% energie</span>`);
                 if (item.secondary.thirst) secondaryDesc.push(`<span style="color: #2196f3;">💧 +${item.secondary.thirst}% žízeň</span>`);
+                if (item.secondary.mood) secondaryDesc.push(`<span style="color: #cc66ff;">🧠 +${item.secondary.mood}% nálada</span>`);
                 if (secondaryDesc.length > 0) {
                     effectDesc += `<br><span style="color: #ffd700;">➕ Bonus:</span> ${secondaryDesc.join(', ')}`;
                 }
@@ -42516,6 +42527,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (secondary.hunger) {
                         state.status.hunger = Math.min(100, state.status.hunger + secondary.hunger);
                         secondaryText += `<br><span style="color: #8bc34a;">🍖 Hlad +${secondary.hunger}%</span>`;
+                    }
+                    if (secondary.mood) {
+                        state.status.mood = Math.min(100, state.status.mood + secondary.mood);
+                        secondaryText += `<br><span style="color: #cc66ff;">🧠 Nálada +${secondary.mood}%</span>`;
                     }
                 }
                 
@@ -62904,7 +62919,9 @@ function openFullscreenMap() {
                         'tech': ITEMS.filter(i => i.type === 'tool'),
                         'unique': ITEMS.filter(i => i.rarity === 'legendary'),
                         'stimpak': ITEMS.filter(i => i.id === 'stimpak' || i.id === 'medkit'),
-                        'stimpack': ITEMS.filter(i => i.id === 'stimpak' || i.id === 'medkit')
+                        'stimpack': ITEMS.filter(i => i.id === 'stimpak' || i.id === 'medkit'),
+                        'poison': ITEMS.filter(i => i.id === 'chemicals'),
+                        'acid': ITEMS.filter(i => i.id === 'chemicals')
                     };
                     
                     const categoryList = categoryItems[lootId];
@@ -68405,66 +68422,53 @@ function openFullscreenMap() {
             }
             
             // === BLIKÁNÍ TLAČÍTEK (každou sekundu) ===
+            // Používáme dynamický <style> element - renderGame ho nepřepíše!
+            if (!document.getElementById('blinkStyle')) {
+                const s = document.createElement('style');
+                s.id = 'blinkStyle';
+                document.head.appendChild(s);
+            }
             window._blinkTick = (window._blinkTick || 0) + 1;
             const blinkOn = window._blinkTick % 2 === 0;
             
-            // Debug log jednou za 10s
-            if (window._blinkTick % 10 === 1) {
-                console.log(`🔔 Blink: tombola=${!!window.currentTombola}(seen:${!!window._tombolaSeen}) | politics=${!!window.mayorElection}(seen:${!!window._politicsSeen}) | tBtn:${!!document.getElementById('tombolaBtn')} pBtn:${!!document.getElementById('politicsBtn')}`);
-            }
+            let blinkCSS = '';
             
             // TOMBOLA blikání
-            const _tb = document.getElementById('tombolaBtn');
-            if (_tb) {
-                const _tActive = (!!window.currentTombola && !window._tombolaSeen);
-                if (_tActive) {
-                    _tb.style.cssText = _tb.style.cssText.replace(/border-color:[^;]*;?/g, '').replace(/box-shadow:[^;]*;?/g, '').replace(/background:[^;]*;?/g, '');
-                    if (blinkOn) {
-                        _tb.style.borderColor = '#ffd700';
-                        _tb.style.boxShadow = '0 0 12px #ffd700, 0 0 24px #ffd70066';
-                        _tb.style.background = 'linear-gradient(180deg, #2a2a0a 0%, #1a1a04 100%)';
-                    } else {
-                        _tb.style.borderColor = '#8a7a00';
-                        _tb.style.boxShadow = '0 0 4px #ffd70033';
-                        _tb.style.background = 'linear-gradient(180deg, #1a1a05 0%, #0f0f02 100%)';
-                    }
-                    const _tSpans = _tb.querySelectorAll('span');
-                    if (_tSpans.length >= 2 && !_tSpans[1].textContent.includes('LOSOVÁNÍ')) {
-                        _tSpans[1].textContent = '🎰 TOMBOLA - LOSOVÁNÍ!';
-                        _tSpans[1].style.color = '#ffd700';
-                        _tSpans[1].style.fontSize = '0.7rem';
-                    }
+            if (!!window.currentTombola && !window._tombolaSeen) {
+                if (blinkOn) {
+                    blinkCSS += `
+                        #tombolaBtn { border-color: #ffd700 !important; box-shadow: 0 0 12px #ffd700, 0 0 24px #ffd70066 !important; background: linear-gradient(180deg, #2a2a0a 0%, #1a1a04 100%) !important; }
+                    `;
+                } else {
+                    blinkCSS += `
+                        #tombolaBtn { border-color: #8a7a00 !important; box-shadow: 0 0 4px #ffd70033 !important; background: linear-gradient(180deg, #1a1a05 0%, #0f0f02 100%) !important; }
+                    `;
                 }
             }
             
             // POLITICS blikání
-            const _pb = document.getElementById('politicsBtn');
-            if (_pb) {
-                let _elPhase = null;
-                try {
-                    if (typeof mayorElection !== 'undefined' && (mayorElection || window.mayorElection) && !window._politicsSeen) {
-                        const _p = typeof getElectionPhase === 'function' ? getElectionPhase() : null;
-                        if (_p && ['nomination','campaign','voting'].includes(_p.phase)) _elPhase = _p.phase;
-                    }
-                } catch(e) {}
-                
-                if (_elPhase) {
-                    if (blinkOn) {
-                        _pb.style.borderColor = '#ffd700';
-                        _pb.style.boxShadow = '0 0 10px #ffd700, 0 0 20px #ffd70055';
-                    } else {
-                        _pb.style.borderColor = '#6a6a00';
-                        _pb.style.boxShadow = '0 0 3px #ffd70022';
-                    }
-                    const _label = _elPhase === 'nomination' ? '📝 NOMINUJ SE!' : _elPhase === 'campaign' ? '📢 KAMPAŇ BĚŽÍ!' : '🗳️ DNES JSOU VOLBY!';
-                    const _pSpans = _pb.querySelectorAll('span');
-                    if (_pSpans.length >= 2 && !_pSpans[1].textContent.includes(_label)) {
-                        _pSpans[1].textContent = 'ŠÉF PUSTINY - ' + _label;
-                        _pSpans[1].style.color = '#ffd700';
-                        _pSpans[1].style.fontSize = '0.75rem';
-                    }
+            let _elPhase = null;
+            try {
+                if ((mayorElection || window.mayorElection) && !window._politicsSeen) {
+                    const _p = typeof getElectionPhase === 'function' ? getElectionPhase() : null;
+                    if (_p && ['nomination','campaign','voting'].includes(_p.phase)) _elPhase = _p.phase;
+                }
+            } catch(e) {}
+            
+            if (_elPhase) {
+                if (blinkOn) {
+                    blinkCSS += `
+                        #politicsBtn { border-color: #ffd700 !important; box-shadow: 0 0 10px #ffd700, 0 0 20px #ffd70055 !important; }
+                    `;
+                } else {
+                    blinkCSS += `
+                        #politicsBtn { border-color: #6a6a00 !important; box-shadow: 0 0 3px #ffd70022 !important; }
+                    `;
                 }
             }
+            
+            const blinkEl = document.getElementById('blinkStyle');
+            if (blinkEl) blinkEl.textContent = blinkCSS;
         }, 1000);
         
         // Auto-save every 1 second (silent) - ochrana proti refresh exploitu
@@ -73434,7 +73438,7 @@ function openFullscreenMap() {
                             try {
                                 const elPhase = typeof getElectionPhase === 'function' ? getElectionPhase() : null;
                                 const candidateData = mayorElection.candidates[player.name];
-                                const isQualified = (candidateData.supporters?.length || 0) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
+                                const isQualified = (countSupporters(candidateData.supporters)) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
                                 // V nominaci - všichni kandidáti, v kampani/volbách - jen kvalifikovaní
                                 if (elPhase?.phase === 'nomination' || ((elPhase?.phase === 'campaign' || elPhase?.phase === 'voting') && isQualified)) {
                                     lbPoliticsBadge = ' <span style="background: linear-gradient(135deg, #cd7f32, #a0522d); color: #fff; padding: 0 0.25rem; border-radius: 3px; font-size: 0.6rem;">🗳️ Kandidát</span>';
@@ -74065,7 +74069,7 @@ function openFullscreenMap() {
                         try {
                             const elPhase2 = typeof getElectionPhase === 'function' ? getElectionPhase() : null;
                             const candidateData2 = mayorElection.candidates[msg.author];
-                            const isQualified2 = (candidateData2.supporters?.length || 0) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
+                            const isQualified2 = (countSupporters(candidateData2.supporters)) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
                             if (elPhase2?.phase === 'nomination' || ((elPhase2?.phase === 'campaign' || elPhase2?.phase === 'voting') && isQualified2)) {
                                 politicsBadge = '<span style="background: linear-gradient(135deg, #cd7f32, #a0522d); color: #fff; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.6rem; margin-left: 0.3rem;">🗳️ Kandidát</span>';
                             }
@@ -77811,7 +77815,7 @@ function openFullscreenMap() {
                 <!-- ŠÉF PUSTINY -->
                 <button id="politicsBtn" class="btn" onclick="showPoliticsPanel()">
                     <span>👑</span>
-                    <span style="font-size: 0.75rem; color: #ffd700;">ŠÉF PUSTINY</span>
+                    <span style="font-size: 0.75rem; color: #ffd700;">${(() => { try { if (mayorElection?.cycleStart) { const p = getElectionPhase(); if (p && ['nomination','campaign','voting'].includes(p.phase) && !window._politicsSeen) return 'ŠÉF PUSTINY - ' + (p.phase === 'nomination' ? '📝 NOMINUJ SE!' : p.phase === 'campaign' ? '📢 KAMPAŇ BĚŽÍ!' : '🗳️ DNES JSOU VOLBY!'); if (p && ['nomination','campaign','voting'].includes(p.phase)) return 'ŠÉF PUSTINY [' + (p.phase === 'nomination' ? '📝' : p.phase === 'campaign' ? '📢' : '🗳️') + ']'; } } catch(e) {} return 'ŠÉF PUSTINY'; })()}</span>
                 </button>
                 
                 <!-- ÚČET - terminálový styl -->
@@ -81792,7 +81796,7 @@ function openFullscreenMap() {
                     </button>
                     <button id="tombolaBtn" class="btn" onclick="showTombola()">
                         <span>🎟️</span>
-                        <span style="font-size: 0.7rem; color: ${currentTombola ? '#ffd700' : '#9a5a6a'};">${currentTombola ? '🎰 TOMBOLA' : 'TOMBOLA'}</span>
+                        <span style="font-size: 0.7rem; color: ${currentTombola ? '#ffd700' : '#9a5a6a'};">${currentTombola && !window._tombolaSeen ? '🎰 TOMBOLA - LOSOVÁNÍ!' : currentTombola ? '🎰 TOMBOLA' : 'TOMBOLA'}</span>
                     </button>
                 </div>
                 
@@ -81835,7 +81839,7 @@ function openFullscreenMap() {
                                     try {
                                         const ep = typeof getElectionPhase === 'function' ? getElectionPhase() : null;
                                         const cd = mayorElection.candidates[msg.author];
-                                        const qual = (cd.supporters?.length || 0) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
+                                        const qual = (countSupporters(cd.supporters)) >= (MAYOR_SYSTEM?.requirements?.minSupporters || 3);
                                         isCandidate = ep?.phase === 'nomination' || ((ep?.phase === 'campaign' || ep?.phase === 'voting') && qual);
                                     } catch(e) {}
                                 }
@@ -84720,7 +84724,7 @@ function openFullscreenMap() {
                                             <div style="display: flex; justify-content: space-between; align-items: center;">
                                                 <span onclick="showCandidateProgram('${escapeHtml(name)}', '${escapeHtml(data.program || 'Bez programu')}')" style="color: #fff; cursor: pointer; text-decoration: underline;">${escapeHtml(name)} (Lvl ${data.level})</span>
                                                 <div>
-                                                    <span style="color: #888; margin-right: 0.5rem;">${data.supporters?.length || 0}/${MAYOR_SYSTEM.requirements.minSupporters} 👥</span>
+                                                    <span style="color: #888; margin-right: 0.5rem;">${countSupporters(data.supporters)}/${MAYOR_SYSTEM.requirements.minSupporters} 👥</span>
                                                     ${name !== playerName && !alreadySupporting ? `
                                                         <button class="btn" onclick="supportCandidate('${escapeHtml(name)}')" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #4caf50;">Podpořit</button>
                                                     ` : ''}
@@ -84748,7 +84752,7 @@ function openFullscreenMap() {
                     const votes = election.votes || {};
                     const hasVoted = votes[playerName];
                     const validCandidates = Object.entries(candidates)
-                        .filter(([name, data]) => (data.supporters?.length || 0) >= MAYOR_SYSTEM.requirements.minSupporters);
+                        .filter(([name, data]) => (countSupporters(data.supporters)) >= MAYOR_SYSTEM.requirements.minSupporters);
                     
                     html += `
                         <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
@@ -85382,7 +85386,7 @@ function openFullscreenMap() {
                 await firebaseDB.ref(`politics/election/candidates/${candidateName}/supporters`).set(supporters);
                 
                 // Pokud kandidát právě získal dostatek podporovatelů
-                if (supporters.length === MAYOR_SYSTEM.requirements.minSupporters) {
+                if (countSupporters(supporters) === MAYOR_SYSTEM.requirements.minSupporters) {
                     await firebaseDB.ref('chat/messages').push({
                         author: '🏛️ POLITIKA',
                         text: `✅ ${candidateName} získal dostatek podpory a je oficiálně kvalifikován pro volby!`,
@@ -86780,7 +86784,7 @@ function openFullscreenMap() {
                             <h4 style="color: #4caf50; margin: 0 0 0.5rem 0; font-size: 0.9rem;">📋 Kandidáti</h4>
                             ${Object.entries(candidates).map(([name, data]) => {
                                 const voteNum = voteCounts[name] || 0;
-                                const supporters = data.supporters?.length || 0;
+                                const supporters = countSupporters(data.supporters);
                                 return `<div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #222; border-radius: 4px; margin-bottom: 0.2rem;">
                                     <span style="color: #fff;">${name} (Lvl ${data.level})</span>
                                     <span style="color: #888;">${supporters}👥 | ${voteNum}🗳️</span>
