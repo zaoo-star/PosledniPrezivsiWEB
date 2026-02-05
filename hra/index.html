@@ -9077,7 +9077,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'steak', name: 'Steak', icon: '🥩', result: { type: 'consumable', effect: 'hunger', value: 60, weight: 0.4, secondary: { hp: 20 } }, requires: { raw_meat: 2, wood: 1 }, category: 'food', portable: true },
             { id: 'stew', name: 'Guláš', icon: '🍲', result: { type: 'consumable', effect: 'hunger', value: 100, weight: 0.5, secondary: { hp: 65, energy: 10 } }, requires: { raw_meat: 4, herbs: 2, wood: 2 }, category: 'food', portable: true },
             { id: 'energy_drink', name: 'Energetický nápoj', icon: '🔋', result: { type: 'consumable', effect: 'energy', value: 50, weight: 0.3 }, requires: { chemicals: 2, glass: 1 }, category: 'food', portable: false },
-            { id: 'coffee_brew', name: 'Silná káva', icon: '☕', result: { type: 'consumable', effect: 'energy', value: 40, weight: 0.2 }, requires: { herbs: 2, wood: 1 }, category: 'food', portable: true },
+            { id: 'coffee_brew', name: 'Silná káva', icon: '☕', result: { type: 'consumable', effect: 'energy', value: 65, weight: 0.2 }, requires: { herbs: 2, wood: 1 }, category: 'food', portable: true },
             { id: 'mutant_steak', name: 'Mutantí steak', icon: '🍖', result: { type: 'consumable', effect: 'hunger', value: 90, weight: 0.5, secondary: { hp: 25, energy: 20 } }, requires: { leather: 2, herbs: 3 }, category: 'food', portable: true, rarity: 'uncommon' },
             
             // === NÁSTROJE ===
@@ -34450,7 +34450,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Pokud event byl triggered ale ne resolved, znovu zobraz modal
                 if (event.triggered && !event.resolved) {
-                    console.log('Re-showing unresolved event:', event.type);
+                    // Anti-spam: max 1 re-show, s cooldownem 10s
+                    const reshowCooldown = 10000; // 10 sekund
+                    if (event._lastReshow && (Date.now() - event._lastReshow < reshowCooldown)) {
+                        continue; // Ještě nezobrazuj znovu
+                    }
+                    if (!event._reshowCount) event._reshowCount = 0;
+                    event._reshowCount++;
+                    if (event._reshowCount > 3) {
+                        // Po 3 pokusech označ jako resolved - hráč evidentně nechce řešit
+                        console.log('⚠️ Event ignorován hráčem po 3 pokusech, mažu:', event.type);
+                        event.resolved = true;
+                        continue;
+                    }
+                    event._lastReshow = Date.now();
+                    console.log('Re-showing unresolved event:', event.type, '(attempt', event._reshowCount, ')');
                     showUnresolvedEvent(event);
                     return; // Zobraz jen jeden najednou
                 }
@@ -55313,6 +55327,13 @@ function openFullscreenMap() {
                 if (event.condition === 'noMedic' && hasSettlers && state.settlement.settlers.some(s => s.type === 'medic_s')) continue;
                 if (event.condition === 'noGuard' && hasSettlers && state.settlement.settlers.some(s => s.type === 'guard')) continue;
                 
+                // Stray dog - nespouštět pokud hráč už má strážního psa osady nebo už na event reagoval
+                if (event.id === 'stray_dog') {
+                    const hasSettlementDog = state.settlement?.dog;
+                    const dogEventHandled = state.settlement?.dogEventHandled;
+                    if (hasSettlementDog || dogEventHandled) continue;
+                }
+                
                 // Některé eventy potřebují osadníky
                 const needsSettlers = ['birth', 'wedding', 'dispute', 'runaway', 'accident', 'fire', 'sickness', 'injury', 'celebration'];
                 if (needsSettlers.includes(event.id) && !hasSettlers) continue;
@@ -55349,6 +55370,17 @@ function openFullscreenMap() {
         }
         
         function triggerSettlementEvent(event) {
+            // Ochrana: stray_dog event se nespustí pokud hráč už má strážního psa nebo na event reagoval
+            if (event.id === 'stray_dog') {
+                const hasSettlementDog = state.settlement?.dog;
+                const dogEventHandled = state.settlement?.dogEventHandled;
+                if (hasSettlementDog || dogEventHandled) {
+                    console.log('🐕 Blokuji stray_dog event - hráč už má psa nebo event vyřešil');
+                    state.settlement.activeEvent = null;
+                    return;
+                }
+            }
+            
             state.settlement.activeEvent = event;
             
             // Proměnná pro detaily eventu (kdo umřel, co ukradli, atd.)
@@ -56086,6 +56118,7 @@ function openFullscreenMap() {
                         result = '🐕 Rex je teď strážní pes osady! (+5 obrana)';
                         resultType = 'success';
                         addLog('🐕 Rex se stal strážním psem osady! (+5 obrana)', '🏘️');
+                        state.settlement.dogEventHandled = true;
                         saveGame(true);
                     } else {
                         result = 'Už máš psa!';
@@ -56093,6 +56126,7 @@ function openFullscreenMap() {
                     break;
                 case 'dog_feed':
                     state.settlement.resources.food = Math.max(0, state.settlement.resources.food - 3);
+                    state.settlement.dogEventHandled = true;
                     if (Math.random() < 0.5) {
                         result = 'Pes odběhl... ale možná se vrátí!';
                         state.settlement.dogReturn = Date.now() + 3 * 24 * 60 * 60 * 1000;
@@ -56101,7 +56135,9 @@ function openFullscreenMap() {
                     }
                     break;
                 case 'dog_ignore':
+                case 'dog_chase':
                     state.settlement.morale = Math.max(0, state.settlement.morale - 5);
+                    state.settlement.dogEventHandled = true;
                     result = 'Osadníci jsou smutní že jsi psa vyhnal. (-5 morale)';
                     resultType = 'warning';
                     break;
@@ -70040,6 +70076,18 @@ function openFullscreenMap() {
                 
                 // 3. Obnov aktivní settlement event s rozhodnutím
                 if (state.settlement?.activeEvent?.choice) {
+                    // Pokud je to stray_dog a hráč už má psa, vymažeme event
+                    if (state.settlement.activeEvent.id === 'stray_dog') {
+                        const hasSettlementDog = state.settlement?.dog;
+                        const dogEventHandled = state.settlement?.dogEventHandled;
+                        if (hasSettlementDog || dogEventHandled) {
+                            console.log('🐕 Stray dog event smazán - hráč už má psa nebo event vyřešil');
+                            state.settlement.activeEvent = null;
+                            state.pendingModal = null;
+                            setTimeout(() => { render(); }, 100);
+                            return;
+                        }
+                    }
                     console.log('📜 Obnovuji aktivní událost osady...');
                     setTimeout(() => {
                         triggerSettlementEvent(state.settlement.activeEvent);
@@ -85255,11 +85303,18 @@ function openFullscreenMap() {
                 <option value="${r.id}" data-money="${r.money}" data-xp="${r.xp}">${r.name} - ${r.desc}</option>
             `).join('');
             
-            // Seznam předmětů pro výběr (rare+)
-            const rewardItems = ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic' || i.rarity === 'legendary' || i.price >= 100)
+            // Seznam předmětů pro výběr - consumables + rare+
+            const consumableItems = ITEMS.filter(i => i.type === 'consumable')
+                .sort((a, b) => (a.price || 0) - (b.price || 0));
+            const rareItems = ITEMS.filter(i => i.type !== 'consumable' && (i.rarity === 'rare' || i.rarity === 'epic' || i.rarity === 'legendary' || i.price >= 100))
                 .sort((a, b) => (b.price || 0) - (a.price || 0));
-            let itemsHtml = '<option value="">-- Žádný předmět --</option>' + 
-                rewardItems.map(i => `<option value="${i.id}">${i.icon} ${i.name} ${i.rarity ? '(' + i.rarity + ')' : ''}</option>`).join('');
+            let itemsHtml = '<option value="">-- Žádný předmět --</option>' +
+                '<optgroup label="🧪 Consumables (jídlo, pití, léky...)">' +
+                consumableItems.map(i => `<option value="${i.id}">${i.icon} ${i.name} ${i.rarity ? '(' + i.rarity + ')' : ''}</option>`).join('') +
+                '</optgroup>' +
+                '<optgroup label="⚔️ Rare+ předměty">' +
+                rareItems.map(i => `<option value="${i.id}">${i.icon} ${i.name} ${i.rarity ? '(' + i.rarity + ')' : ''}</option>`).join('') +
+                '</optgroup>';
             
             showModal('🎁 Odměny za vylepšení', `
                 <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4caf50;">
@@ -85460,11 +85515,18 @@ function openFullscreenMap() {
         function showQuickReward(playerName) {
             if (!isAdmin()) return;
             
-            // Seznam předmětů pro výběr
-            const rewardItems = ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic' || i.rarity === 'legendary' || i.price >= 100)
+            // Seznam předmětů pro výběr - consumables + rare+
+            const consumableItems = ITEMS.filter(i => i.type === 'consumable')
+                .sort((a, b) => (a.price || 0) - (b.price || 0));
+            const rareItems = ITEMS.filter(i => i.type !== 'consumable' && (i.rarity === 'rare' || i.rarity === 'epic' || i.rarity === 'legendary' || i.price >= 100))
                 .sort((a, b) => (b.price || 0) - (a.price || 0));
-            let itemsHtml = '<option value="">-- Žádný --</option>' + 
-                rewardItems.map(i => `<option value="${i.id}">${i.icon} ${i.name}</option>`).join('');
+            let itemsHtml = '<option value="">-- Žádný --</option>' +
+                '<optgroup label="🧪 Consumables">' +
+                consumableItems.map(i => `<option value="${i.id}">${i.icon} ${i.name}</option>`).join('') +
+                '</optgroup>' +
+                '<optgroup label="⚔️ Rare+">' +
+                rareItems.map(i => `<option value="${i.id}">${i.icon} ${i.name}</option>`).join('') +
+                '</optgroup>';
             
             showModal(`🎁 Odměna pro: ${escapeHtml(playerName)}`, `
                 <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4caf50;">
