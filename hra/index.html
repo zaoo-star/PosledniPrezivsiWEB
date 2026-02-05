@@ -11360,6 +11360,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function checkDailyQuests() {
+            if (!state.dailyQuests) return;
+            if (!state.dailyQuests.progress) state.dailyQuests.progress = {};
             if (!state.dailyQuests.quests || state.dailyQuests.quests.length === 0) return;
             
             state.dailyQuests.quests.forEach(quest => {
@@ -13228,6 +13230,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             lastSleepTime: 0, // Track when player last slept
             sleepEndTime: null, // When sleep will end
             isSleeping: false, // Player is currently sleeping
+            isResting: false, // Player is currently resting (camp rest)
+            restEndTime: null, // When rest will end
+            restStartTime: null, // When rest started
             currentAction: null, // Current timed action (hunt, mine, fish, explore)
             resources: { 
                 wood: 0,      // 🌲 Dřevo - základní
@@ -13282,7 +13287,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     explored: 0,
                     crafted: 0,
                     moneyEarned: 0,
-                    travelled: 0
+                    travelled: 0,
+                    cooked: 0,
+                    sold: 0,
+                    bought: 0,
+                    itemsFound: 0,
+                    fedCompanion: 0,
+                    healed: 0,
+                    pvpWins: 0,
+                    gambled: 0
                 }
             },
             diary: '',
@@ -28604,6 +28617,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     document.getElementById('modal').classList.add('show');
                 }
             }
+            
+            // Show rest overlay if resting
+            if (state.isResting && state.restEndTime) {
+                const now = Date.now();
+                const remaining = state.restEndTime - now;
+                
+                if (remaining > 0) {
+                    const mins = Math.ceil(remaining / (60 * 1000));
+                    const secs = Math.ceil(remaining / 1000) % 60;
+                    const totalDuration = state.restEndTime - (state.restStartTime || state.restEndTime - 20 * 60 * 1000);
+                    const progress = ((totalDuration - remaining) / totalDuration) * 100;
+                    const loc = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === state.world?.currentLocation) : null;
+                    const locIcon = loc?.icon || '⛺';
+                    
+                    document.getElementById('modalContent').innerHTML = `
+                        <div style="text-align: center;">
+                            <h2 style="font-size: 3rem; margin: 0;">${locIcon}</h2>
+                            <h2 style="margin: 0.5rem 0;">Odpočíváš...</h2>
+                            <p style="font-size: 1.2rem; color: #3949AB; margin: 1rem 0;">
+                                ⏱️ Zbývá: <strong>${mins > 0 ? mins + ' min' : secs + ' s'}</strong>
+                            </p>
+                            
+                            <div style="background: #1a1a1a; height: 30px; border-radius: 15px; overflow: hidden; margin: 1.5rem 0; border: 2px solid #3a3a3a;">
+                                <div style="background: linear-gradient(90deg, #42a5f5, #3949AB); height: 100%; width: ${progress}%; transition: width 1s;"></div>
+                            </div>
+                            
+                            <div style="background: #0a1a2a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; text-align: left; border: 1px solid #1a3a5a;">
+                                <div style="color: #42a5f5; font-size: 0.85rem; margin-bottom: 0.3rem;">Po odpočinku získáš:</div>
+                                <div style="color: #aaa; font-size: 0.8rem;">
+                                    ❤️ +20 HP &nbsp; ⚡ +30 Energie
+                                </div>
+                                <div style="color: #ff9800; font-size: 0.8rem; margin-top: 0.2rem;">
+                                    🍖 -10 Hlad &nbsp; 💧 -10 Žízeň
+                                </div>
+                            </div>
+                            
+                            <p style="color: #999; font-size: 0.9rem;">
+                                🔒 Hra je zablokovaná během odpočinku
+                            </p>
+                        </div>
+                    `;
+                    document.getElementById('modal').classList.add('show');
+                } else {
+                    // Odpočinek dokončen
+                    finishResting();
+                }
+            }
         }
         
         function renderCreation() {
@@ -30616,6 +30676,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.isSleeping && state.sleepEndTime && Date.now() < state.sleepEndTime) {
                 return; // Nelze zavřít během spánku
             }
+            if (state.isResting && state.restEndTime && Date.now() < state.restEndTime) {
+                return; // Nelze zavřít během odpočinku
+            }
             
             document.getElementById('modal').classList.remove('show');
             document.body.classList.remove('modal-open'); // Povol pull-to-refresh zpět
@@ -32014,7 +32077,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // === TÁBOŘIŠTĚ ===
             if (location.type === 'rest') {
-                html += renderActionButton('💤', 'Odpočinek', 'restAtCamp()', '#3949AB');
+                html += renderActionButton('💤', 'Odpočinek', 'showRestInfo()', '#3949AB');
                 html += renderActionButton('🔥', 'Táborák', 'makeCampfire()', '#E65100');
                 html += renderActionButton('🍳', 'Vaření', "showActionModal('cook')", '#E65100');
                 html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", 'var(--rust)');
@@ -32117,7 +32180,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Odpočinek pokud přátelští
                 if (repLevel.id === 'friendly' || repLevel.id === 'allied') {
-                    html += renderActionButton('💤', 'Odpočinek', 'restAtCamp()', '#3949AB');
+                    html += renderActionButton('💤', 'Odpočinek', 'showRestInfo()', '#3949AB');
                 }
             }
             
@@ -36294,25 +36357,49 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function showRestInfo() {
             const hpGain = 20;
             const energyGain = 30;
+            const loc = WORLD_LOCATIONS?.find(l => l.id === state.world?.currentLocation);
+            const locName = loc?.name || 'tábořiště';
+            const locIcon = loc?.icon || '⛺';
+            
+            // Cooldown check - nelze odpočívat během odpočinku
+            if (state.isResting) {
+                notifyWarning('💤 Odpočíváš!', 'Už odpočíváš.');
+                return;
+            }
+            if (state.isSleeping) {
+                notifyWarning('💤 Spíš!', 'Nemůžeš odpočívat během spánku.');
+                return;
+            }
             
             showModal('💤 Odpočinek', `
                 <div style="text-align: center; margin-bottom: 1rem;">
-                    <div style="font-size: 3rem;">⛺</div>
-                    <p style="color: #888;">Odpočiň si v bezpečí osady.</p>
+                    <div style="font-size: 3rem;">${locIcon}</div>
+                    <p style="color: #888;">Odpočiň si v ${locName}.</p>
+                </div>
+                
+                <div style="background: #0a1a2a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #1a3a5a;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #42a5f5;">⏱️ Odpočinek trvá 20 minut</h4>
+                    <p style="color: #888; font-size: 0.8rem; margin: 0;">Během odpočinku nelze dělat nic jiného.</p>
                 </div>
                 
                 <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
-                    <h4 style="margin: 0 0 0.5rem 0; color: #8bc34a;">Co získáš:</h4>
+                    <h4 style="margin: 0 0 0.5rem 0; color: #8bc34a;">Po odpočinku získáš:</h4>
                     <div style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem;">
                         <div>❤️ +${hpGain} HP</div>
                         <div>⚡ +${energyGain} Energie</div>
+                    </div>
+                </div>
+                
+                <div style="background: #2a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #ff9800;">Spotřebuješ:</h4>
+                    <div style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem;">
                         <div>🍖 -10 Hlad</div>
                         <div>💧 -10 Žízeň</div>
                     </div>
                 </div>
                 
-                <button class="btn" onclick="closeModal(); restAtCamp();" style="width: 100%; background: #3949AB;">
-                    💤 Odpočinout
+                <button class="btn" onclick="closeModal(); startResting();" style="width: 100%; background: #3949AB;">
+                    💤 Odpočinout (20 min)
                 </button>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">
                     ✗ Zrušit
@@ -36320,10 +36407,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             `);
         }
         
-        function restAtCamp() {
-            const energyCost = 0;
+        function startResting() {
+            closeModal();
+            
+            const now = Date.now();
+            state.isResting = true;
+            state.restStartTime = now;
+            state.restEndTime = now + (20 * 60 * 1000); // 20 minut
+            
+            addLog('Uléháš k odpočinku (20 minut)...', '💤');
+            saveGame(true);
+            renderFull();
+        }
+        
+        function finishResting() {
+            if (!state.isResting) return;
+            
             const hpGain = 20;
             const energyGain = 30;
+            
+            state.isResting = false;
+            state.restEndTime = null;
+            state.restStartTime = null;
             
             state.char.hp = Math.min(state.char.maxHp, state.char.hp + hpGain);
             state.status.energy = Math.min(100, state.status.energy + energyGain);
@@ -36334,7 +36439,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let healedInjuries = [];
             if (state.injuries && state.injuries.active && state.injuries.active.length > 0) {
                 state.injuries.active = state.injuries.active.filter(activeInjury => {
-                    const injury = INJURIES.find(i => i.id === activeInjury.id);
+                    const injury = typeof INJURIES !== 'undefined' ? INJURIES.find(i => i.id === activeInjury.id) : null;
                     if (injury && injury.cures && injury.cures.includes('rest')) {
                         healedInjuries.push(injury.name);
                         if (typeof addInjuryImmunity === 'function') {
@@ -36346,24 +36451,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 });
             }
             
+            // Daily quest progress - healing
+            if (state.dailyQuests?.progress) {
+                state.dailyQuests.progress.healed = (state.dailyQuests.progress.healed || 0) + hpGain;
+                checkDailyQuests();
+            }
+            
             let healedText = healedInjuries.length > 0 ? 
                 `<p style="color: #4caf50;">🩹 Vyléčeno: ${healedInjuries.join(', ')}</p>` : '';
             
-            showModal('💤 Odpočinek', 
+            showModal('💤 Odpočinek dokončen!', 
                 '<div style="text-align: center;">' +
-                '<div style="font-size: 3rem;">⛺</div>' +
-                '<h3>Odpočinul sis v táboře</h3>' +
+                '<div style="font-size: 3rem;">☀️</div>' +
+                '<h3>Cítíš se odpočatý!</h3>' +
                 '<p style="color: #8bc34a;">+' + hpGain + ' HP, +' + energyGain + ' energie</p>' +
                 '<p style="color: #ff9800;">-10 hlad, -10 žízeň</p>' +
                 healedText +
                 '</div>' +
                 '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>'
             );
-            addLog('Odpočinek v táboře', '⛺');
+            addLog('Odpočinek dokončen! +' + hpGain + ' HP, +' + energyGain + ' energie', '☀️');
             if (healedInjuries.length > 0) {
                 addLog(`🩹 Vyléčeno: ${healedInjuries.join(', ')}`, '🛏️');
             }
+            saveGame(true);
             renderFull();
+        }
+        
+        // Legacy funkce - pro zpětnou kompatibilitu (staré volání z visitSettlement apod.)
+        function restAtCamp() {
+            startResting();
         }
         
         // Táborák
@@ -36771,7 +36888,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 '<p style="color: #888;">Můžeš zde obchodovat a odpočívat.</p>' +
                 '</div>' +
                 '<button class="btn" onclick="openShop()" style="width: 100%; margin-top: 0.5rem; background: var(--rust-light);">🛒 Obchod</button>' +
-                '<button class="btn" onclick="restAtCamp()" style="width: 100%; margin-top: 0.5rem; background: #3949AB;">💤 Odpočinek</button>' +
+                '<button class="btn" onclick="closeModal(); showRestInfo();" style="width: 100%; margin-top: 0.5rem; background: #3949AB;">💤 Odpočinek</button>' +
                 '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">✗ Odejít</button>'
             );
         }
@@ -44201,6 +44318,12 @@ function openFullscreenMap() {
             // Blokace během spánku
             if (state.isSleeping) {
                 notifyWarning('💤 Spíš!', 'Nemůžeš vyrábět během spánku.');
+                return;
+            }
+            
+            // Blokace během odpočinku
+            if (state.isResting) {
+                notifyWarning('💤 Odpočíváš!', 'Nemůžeš vyrábět během odpočinku.');
                 return;
             }
             
@@ -62504,6 +62627,14 @@ function openFullscreenMap() {
                 notifyWarning('💤 Probudil ses!', 'Někdo tě napadl během spánku!');
             }
             
+            // Blokace během odpočinku
+            if (state.isResting) {
+                state.isResting = false; // Přeruš odpočinek při útoku!
+                state.restEndTime = null;
+                state.restStartTime = null;
+                notifyWarning('💤 Odpočinek přerušen!', 'Někdo tě napadl během odpočinku!');
+            }
+            
             // Společníci spotřebovávají munici přímo z inventáře hráče při každém útoku
             
             // Reset Phoenix efektu pro nový boj
@@ -66795,12 +66926,15 @@ function openFullscreenMap() {
                 state.dailyQuests = { lastReset: Date.now(), quests: [], completed: [], progress: {} };
             }
             if (!state.dailyQuests.progress) {
-                state.dailyQuests.progress = { kills: 0, explored: 0, crafted: 0, moneyEarned: 0, travelled: 0, cooked: 0, sold: 0, bought: 0 };
+                state.dailyQuests.progress = { kills: 0, explored: 0, crafted: 0, moneyEarned: 0, travelled: 0, cooked: 0, sold: 0, bought: 0, itemsFound: 0, fedCompanion: 0, healed: 0, pvpWins: 0, gambled: 0 };
             }
-            // Ensure cooked exists for old saves
-            if (state.dailyQuests.progress.cooked === undefined) {
-                state.dailyQuests.progress.cooked = 0;
-            }
+            // Ensure all progress keys exist for old saves
+            const requiredProgressKeys = ['kills', 'explored', 'crafted', 'moneyEarned', 'travelled', 'cooked', 'sold', 'bought', 'itemsFound', 'fedCompanion', 'healed', 'pvpWins', 'gambled'];
+            requiredProgressKeys.forEach(key => {
+                if (state.dailyQuests.progress[key] === undefined) {
+                    state.dailyQuests.progress[key] = 0;
+                }
+            });
             
             // Migration: Add world system if missing
             if (!state.world) {
@@ -69154,7 +69288,15 @@ function openFullscreenMap() {
                 `);
             }
             
-            if (state.confirmed && !state.sleepEndTime && !state.vacationMode) {
+            // Check if resting (camp rest - 20 min)
+            if (state.isResting && state.restEndTime && now >= state.restEndTime) {
+                // Odpočinek dokončen v game loop
+                if (typeof finishResting === 'function') {
+                    finishResting();
+                }
+            }
+            
+            if (state.confirmed && !state.sleepEndTime && !state.isResting && !state.vacationMode) {
                 // Passive consumption per real second
                 // Zvýšená spotřeba: +50% oproti základu
                 let hungerRate = (100 / 86400) * 1.5; // ~16 hours to deplete
@@ -69713,15 +69855,19 @@ function openFullscreenMap() {
                 state.diary = state.diary || '';
                 state.lastSleepTime = state.lastSleepTime || 0;
                 state.isSleeping = state.isSleeping || false;
+                state.isResting = state.isResting || false;
                 state.worldSeed = state.worldSeed || 123456; // Default seed for old saves
                 state.dailyQuests = state.dailyQuests || { lastReset: Date.now(), quests: [], completed: [], progress: {} };
                 if (!state.dailyQuests.progress) {
-                    state.dailyQuests.progress = { kills: 0, explored: 0, crafted: 0, moneyEarned: 0, travelled: 0, cooked: 0, sold: 0, bought: 0 };
+                    state.dailyQuests.progress = { kills: 0, explored: 0, crafted: 0, moneyEarned: 0, travelled: 0, cooked: 0, sold: 0, bought: 0, itemsFound: 0, fedCompanion: 0, healed: 0, pvpWins: 0, gambled: 0 };
                 }
-                // Ensure cooked exists for old saves
-                if (state.dailyQuests.progress.cooked === undefined) {
-                    state.dailyQuests.progress.cooked = 0;
-                }
+                // Ensure all progress keys exist for old saves
+                const requiredKeys2 = ['kills', 'explored', 'crafted', 'moneyEarned', 'travelled', 'cooked', 'sold', 'bought', 'itemsFound', 'fedCompanion', 'healed', 'pvpWins', 'gambled'];
+                requiredKeys2.forEach(key => {
+                    if (state.dailyQuests.progress[key] === undefined) {
+                        state.dailyQuests.progress[key] = 0;
+                    }
+                });
                 state.stats.totalMoneyEarned = state.stats.totalMoneyEarned || 0;
                 
                 // Migration: Add factions if missing
@@ -69765,6 +69911,25 @@ function openFullscreenMap() {
                     } else {
                         // Stále spí - zobrazí se modal při renderování
                         console.log('💤 Spánek pokračuje...', Math.ceil((state.sleepEndTime - now) / 60000), 'min zbývá');
+                    }
+                }
+                
+                // Restore rest if it was in progress
+                if (state.isResting && state.restEndTime) {
+                    const now = Date.now();
+                    if (now >= state.restEndTime) {
+                        // Odpočinek dokončen během offline
+                        state.isResting = false;
+                        state.restEndTime = null;
+                        state.restStartTime = null;
+                        state.char.hp = Math.min(state.char.maxHp, state.char.hp + 20);
+                        state.status.energy = Math.min(100, state.status.energy + 30);
+                        state.status.hunger = Math.max(0, state.status.hunger - 10);
+                        state.status.thirst = Math.max(0, state.status.thirst - 10);
+                        console.log('✓ Odpočinek dokončen během offline');
+                        addLog('Probudil ses odpočatý!', '☀️');
+                    } else {
+                        console.log('💤 Odpočinek pokračuje...', Math.ceil((state.restEndTime - now) / 60000), 'min zbývá');
                     }
                 }
                 
@@ -70022,6 +70187,9 @@ function openFullscreenMap() {
             
             // Neklikat během spánku!
             if (state.isSleeping && state.sleepEndTime && Date.now() < state.sleepEndTime) return;
+            
+            // Neklikat během odpočinku!
+            if (state.isResting && state.restEndTime && Date.now() < state.restEndTime) return;
             
             // Only on desktop - prevent issues with mobile keyboard
             if (window.innerWidth >= 768 && e.target.id === 'modal') {
@@ -94166,38 +94334,33 @@ function openFullscreenMap() {
             
             settler._talkCount++;
             
+            // Pokud je cooldown, NEZASTAVUJ – zobraz celý detail, ale nastav dialog na cooldown zprávu
+            let isTalkCooldown = false;
+            let cooldownTimeText = '';
             if (settler._talkCount > 3) {
+                isTalkCooldown = true;
+                settler._talkCount--; // Vrať zpět - neúčtuj pokus přes limit
                 const remainSec = Math.ceil((settler._talkResetTime - now) / 1000);
                 const remainHours = Math.floor(remainSec / 3600);
                 const remainMin = Math.floor((remainSec % 3600) / 60);
-                const timeText = remainHours > 0 ? `${remainHours}h ${remainMin}min` : `${remainMin}min`;
-                showModal(`🗣️ ${settler.name}`, `
-                    <div style="text-align: center; padding: 1.5rem;">
-                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">😶</div>
-                        <div style="color: #888; font-size: 0.9rem; margin-bottom: 0.5rem;">${settler.name} už nechce mluvit.</div>
-                        <div style="color: #555; font-size: 0.8rem; font-style: italic;">"Potřebuju chvíli klid..."</div>
-                        <div style="margin-top: 1rem; color: #ff9800; font-size: 0.75rem;">🕐 Další rozhovor za ${timeText}</div>
-                    </div>
-                    <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.5rem; background: #1a1a1a; border: 1px solid #333;">✕ Zavřít</button>
-                `);
-                return;
+                cooldownTimeText = remainHours > 0 ? `${remainHours}h ${remainMin}min` : `${remainMin}min`;
             }
             
             // Počítej jen první rozhovor za cooldown
-            if (settler._talkCount === 1) {
+            if (!isTalkCooldown && settler._talkCount === 1) {
                 settler.stats.conversations++;
             }
             
             const type = SETTLER_TYPES.find(t => t.id === settler.type);
             const pers = SETTLER_PERSONALITIES.find(p => p.id === settler.personality);
             const emotion = getSettlerEmotion(settler);
-            const dialog = getSettlerDialog(settler);
+            const dialog = isTalkCooldown ? `Potřebuju chvíli klid... (🕐 ${cooldownTimeText})` : getSettlerDialog(settler);
             const happiness = calculateSettlerHappiness(settler);
             const needs = settler.needs;
             const skillLevel = settler.skillLevel || settler.level || 1;
             
             // Kolik rozhovorů zbývá
-            const talksLeft = 3 - settler._talkCount;
+            const talksLeft = isTalkCooldown ? 0 : 3 - settler._talkCount;
             
             // Cooldown povzbuzení
             const lastEncourage = settler._lastEncourage || 0;
