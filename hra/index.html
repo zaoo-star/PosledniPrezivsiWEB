@@ -13130,6 +13130,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         let mayorElection = null;
         window.mayorElection = null; // Globální reference pro game loop
         let cachedPoliticalEffects = null;
+        let mayorPasswordUnlocked = false; // Šéf se odemkl heslem
         
         // Helper pro bezpečnou kontrolu šéfa (před inicializací systému)
         function isMayor() {
@@ -45767,13 +45768,6 @@ function openFullscreenMap() {
             const allFloorsCleared = state.dungeon.cleared[dungeonId].floors.length >= dungeonData.floors.length;
             if (allFloorsCleared && !state.dungeon.cleared[dungeonId].clearedAt) {
                 state.dungeon.cleared[dungeonId].clearedAt = Date.now();
-                
-                // === TRVALÝ POČÍTADLO VYČIŠTĚNÝCH DUNGEONŮ ===
-                if (!state.stats) state.stats = {};
-                if (!state.stats.dungeonsCleared) state.stats.dungeonsCleared = 0;
-                state.stats.dungeonsCleared++;
-                console.log('🏰 dungeonsCleared stat incremented to:', state.stats.dungeonsCleared);
-                
                 addLog(`🏰 ${dungeonData.name} kompletně vyčištěn! Reset za 24 hodin.`, '🏆');
             }
             
@@ -66179,32 +66173,6 @@ function openFullscreenMap() {
                 if (!state.dungeon.loot) state.dungeon.loot = [];
             }
             
-            // === Migrace dungeonsCleared do trvalé statistiky ===
-            // Pokud hráč nemá stats.dungeonsCleared ale má cleared dungeony, přepočítej
-            if (!state.stats) state.stats = {};
-            if (state.stats.dungeonsCleared === undefined || state.stats.dungeonsCleared === null) {
-                // Spočítej kompletně vyčištěné dungeony (ty co mají clearedAt)
-                let clearedCount = 0;
-                if (state.dungeon?.cleared) {
-                    for (const [dId, clearData] of Object.entries(state.dungeon.cleared)) {
-                        if (clearData?.clearedAt) {
-                            clearedCount++;
-                        } else if (clearData?.floors && DUNGEON_FLOORS?.[dId]) {
-                            // Dungeon s vyčištěnými patry ale bez clearedAt — zkontroluj jestli jsou všechna patra
-                            if (clearData.floors.length >= DUNGEON_FLOORS[dId].floors.length) {
-                                clearedCount++;
-                            }
-                        }
-                    }
-                }
-                // Použij větší číslo — buď spočítaný count, nebo počet klíčů (starý způsob)
-                const keyCount = state.dungeon?.cleared ? Object.keys(state.dungeon.cleared).length : 0;
-                state.stats.dungeonsCleared = Math.max(clearedCount, keyCount);
-                if (state.stats.dungeonsCleared > 0) {
-                    console.log('🔧 Migrace: dungeonsCleared nastaveno na', state.stats.dungeonsCleared);
-                }
-            }
-            
             // Oprava corrupted totalDailyQuestsCompleted (max realistická hodnota)
             // Hráč může splnit max 3 denní questy za den, takže limit je dny * 3
             const maxRealisticQuests = Math.max(20, (state.time?.days || 0) * 3);
@@ -74156,7 +74124,7 @@ function openFullscreenMap() {
                     // Doplňkové info
                     classId: state.char.classId || 'survivor',
                     settlers: state.settlement?.settlers?.length || 0,
-                    dungeonsCleared: state.stats?.dungeonsCleared || (state.dungeon?.cleared ? Object.keys(state.dungeon.cleared).length : 0),
+                    dungeonsCleared: state.dungeon?.cleared ? Object.keys(state.dungeon.cleared).length : 0,
                     uid: currentUser?.uid || null,
                     isRegistered: currentUser && !currentUser.isAnonymous,
                     timestamp: firebase.database.ServerValue.TIMESTAMP
@@ -86690,15 +86658,15 @@ function openFullscreenMap() {
                             ⚖️ Hlasovat o sesazení šéfa
                         </button>
                     ` : ''}
-                    ${(isCurrentMayor || isStaff()) ? `
+                    ${mayor ? `
                         <button class="btn" onclick="showMayorPowersPanel()" style="width: 100%; margin-bottom: 0.5rem; background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
-                            ⚡ Pravomoci šéfa ${!isCurrentMayor && isStaff() ? '(Admin)' : ''}
+                            🔐 Pravomoci šéfa ${mayorPasswordUnlocked ? '🔓' : '🔒'}
                         </button>
-                        ${isCurrentMayor ? `
+                    ` : ''}
+                    ${isCurrentMayor ? `
                         <button class="btn" onclick="resignAsMayor()" style="width: 100%; margin-bottom: 0.5rem; background: #555; color: #f44336;">
                             🏳️ Odstoupit z funkce
                         </button>
-                        ` : ''}
                     ` : ''}
                     <button class="btn" onclick="closeModal()" style="width: 100%; background: #555;">← Zavřít</button>
                 `;
@@ -86978,8 +86946,8 @@ function openFullscreenMap() {
         // Hlasovat pro kandidáta
         // Šéf rozhoduje
         async function mayorDecide(decisionId, optionId) {
-            if (!isMayor() && !isStaff()) {
-                notifyWarning('Nejsi šéf', 'Pouze šéf nebo admin může rozhodovat');
+            if (!mayorPasswordUnlocked && !isStaff()) {
+                notifyWarning('🔐 Zamčeno', 'Nejdřív odemkni pravomoci heslem');
                 return;
             }
             
@@ -87373,8 +87341,9 @@ function openFullscreenMap() {
         
         // Použití pravomoci šéfa
         async function useMayorPower(powerId) {
-            if (!isMayor() && !isStaff()) {
-                notifyWarning('Nejsi šéf', 'Tuto akci může provést pouze šéf nebo admin');
+            if (!mayorPasswordUnlocked && !isStaff()) {
+                notifyWarning('🔐 Zamčeno', 'Nejdřív odemkni pravomoci heslem');
+                showMayorPowersPanel();
                 return;
             }
             
@@ -87418,18 +87387,81 @@ function openFullscreenMap() {
         
         // Zobrazit panel pravomocí šéfa
         async function showMayorPowersPanel() {
-            console.log('🏛️ showMayorPowersPanel called');
-            console.log('🏛️ isMayor():', isMayor());
-            console.log('🏛️ isStaff():', isStaff());
-            console.log('🏛️ currentMayor:', currentMayor);
-            console.log('🏛️ getPlayerName():', getPlayerName());
-            
-            if (!isMayor() && !isStaff()) {
-                notifyWarning('Pouze pro šéfa', 'Tato sekce je pouze pro šéfa Pustiny');
+            // Staff (admin) má přístup vždy bez hesla
+            if (isStaff()) {
+                mayorPasswordUnlocked = true;
+                await _renderMayorPowersPanel(true);
                 return;
             }
             
-            const isAdmin = isStaff() && !isMayor();
+            // Pokud už je odemčeno v této session, pusť rovnou
+            if (mayorPasswordUnlocked) {
+                await _renderMayorPowersPanel(false);
+                return;
+            }
+            
+            // Zobraz dialog pro zadání hesla
+            showModal('🔐 Přístup k pravomocím', `
+                <div style="text-align: center; padding: 1rem;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">🔐</div>
+                    <h3 style="color: #ffd700; margin-bottom: 0.5rem;">Pravomoci Šéfa Pustiny</h3>
+                    <p style="color: #888; font-size: 0.85rem; margin-bottom: 1.5rem;">Zadej heslo pro přístup k pravomocím šéfa</p>
+                    <input type="password" id="mayorPasswordInput" placeholder="Heslo šéfa..."
+                        style="width: 100%; padding: 0.8rem; background: #1a1a1a; border: 2px solid #444; border-radius: 8px; color: #fff; font-size: 1rem; text-align: center; margin-bottom: 1rem;"
+                        onkeydown="if(event.key==='Enter') verifyMayorPassword();">
+                    <div id="mayorPasswordError" style="color: #f44336; font-size: 0.85rem; margin-bottom: 0.5rem; display: none;">❌ Špatné heslo</div>
+                    <button class="btn" onclick="verifyMayorPassword()" style="width: 100%; background: linear-gradient(135deg, #9c27b0, #7b1fa2); padding: 0.8rem; font-size: 1rem; margin-bottom: 0.5rem;">
+                        🔓 Odemknout
+                    </button>
+                    <button class="btn" onclick="showPoliticsPanel()" style="width: 100%; background: #333; padding: 0.6rem;">← Zpět</button>
+                </div>
+            `);
+            
+            // Autofocus na input
+            setTimeout(() => {
+                const inp = document.getElementById('mayorPasswordInput');
+                if (inp) inp.focus();
+            }, 100);
+        }
+        
+        // Ověření hesla šéfa
+        async function verifyMayorPassword() {
+            const input = document.getElementById('mayorPasswordInput');
+            const errorEl = document.getElementById('mayorPasswordError');
+            if (!input) return;
+            
+            const enteredPassword = input.value.trim();
+            if (!enteredPassword) {
+                if (errorEl) { errorEl.textContent = '❌ Zadej heslo'; errorEl.style.display = 'block'; }
+                return;
+            }
+            
+            try {
+                const snap = await firebaseDB.ref('politics/mayorPassword').once('value');
+                const storedPassword = snap.val();
+                
+                if (!storedPassword) {
+                    if (errorEl) { errorEl.textContent = '❌ Heslo ještě nebylo nastaveno adminem'; errorEl.style.display = 'block'; }
+                    return;
+                }
+                
+                if (enteredPassword === storedPassword) {
+                    mayorPasswordUnlocked = true;
+                    notifySuccess('🔓 Odemčeno!', 'Pravomoci šéfa jsou dostupné');
+                    await _renderMayorPowersPanel(false);
+                } else {
+                    if (errorEl) { errorEl.textContent = '❌ Špatné heslo'; errorEl.style.display = 'block'; }
+                    input.value = '';
+                    input.focus();
+                }
+            } catch (e) {
+                console.error('Mayor password check error:', e);
+                if (errorEl) { errorEl.textContent = '❌ Chyba při ověřování'; errorEl.style.display = 'block'; }
+            }
+        }
+        
+        // Skutečný panel pravomocí (po ověření)
+        async function _renderMayorPowersPanel(isAdmin) {
             
             let publicMoney = 0;
             try {
@@ -88199,12 +88231,20 @@ function openFullscreenMap() {
         
         // Vyzvednutí daňových příjmů šéfa
         async function collectMayorTaxIncome() {
-            if (!isMayor()) return;
+            if (!mayorPasswordUnlocked && !isStaff()) {
+                notifyWarning('🔐 Zamčeno', 'Odemkni pravomoci šéfa heslem');
+                return;
+            }
             
-            const playerName = getPlayerName();
+            if (!currentMayor || !currentMayor.name) {
+                notifyWarning('Žádný šéf', 'Není nastaven šéf pustiny');
+                return;
+            }
+            
+            const mayorName = currentMayor.name;
             
             try {
-                const incomeRef = firebaseDB.ref(`politics/mayorIncome/${playerName}`);
+                const incomeRef = firebaseDB.ref(`politics/mayorIncome/${mayorName}`);
                 const snap = await incomeRef.once('value');
                 const income = snap.val() || 0;
                 
@@ -88850,6 +88890,10 @@ function openFullscreenMap() {
                             🏆 Vyhlásit výsledky voleb
                         </button>
                         
+                        <button class="btn" onclick="adminSetMayorPassword()" style="background: linear-gradient(135deg, #9c27b0, #7b1fa2); padding: 0.6rem;">
+                            🔐 Nastavit heslo šéfa
+                        </button>
+                        
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
                             <button class="btn" onclick="adminTriggerDailyDecision()" style="background: #ff9800; color: #000; padding: 0.5rem; font-size: 0.8rem;">
                                 🎲 Denní rozhodnutí
@@ -89236,8 +89280,87 @@ function openFullscreenMap() {
             }
             
             await firebaseDB.ref('politics/mayor').remove();
+            // Zruš odemčení heslem při odvolání šéfa
+            mayorPasswordUnlocked = false;
             notifySuccess('Šéf odvolán', 'Pozice je volná');
             showAdminPolitics();
+        }
+        
+        // Admin: Nastavit/změnit heslo šéfa pustiny
+        async function adminSetMayorPassword() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            // Načti aktuální heslo
+            let currentPassword = '';
+            try {
+                const snap = await firebaseDB.ref('politics/mayorPassword').once('value');
+                currentPassword = snap.val() || '';
+            } catch (e) {}
+            
+            showModal('🔐 Heslo šéfa pustiny', `
+                <div style="background: #1a1a2a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <p style="color: #ce93d8; margin: 0 0 0.5rem 0; font-weight: bold;">🔐 Správa hesla</p>
+                    <p style="color: #888; font-size: 0.85rem; margin: 0;">Toto heslo sdílíš s hráčem, který bude šéfem. Kdo zná heslo, může používat pravomoci šéfa.</p>
+                </div>
+                
+                <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <div style="color: #888; font-size: 0.8rem; margin-bottom: 0.3rem;">Aktuální heslo:</div>
+                    <div style="color: ${currentPassword ? '#4caf50' : '#f44336'}; font-size: 1.1rem; font-weight: bold; word-break: break-all;">
+                        ${currentPassword ? escapeHtml(currentPassword) : '❌ Nenastaveno'}
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 1rem;">
+                    <label style="color: #888; font-size: 0.85rem;">Nové heslo:</label>
+                    <input type="text" id="newMayorPassword" placeholder="Zadej nové heslo..."
+                        style="width: 100%; padding: 0.8rem; background: #1a1a1a; border: 2px solid #444; border-radius: 8px; color: #fff; font-size: 1rem; margin-top: 0.3rem;"
+                        value="${escapeHtml(currentPassword)}">
+                </div>
+                
+                <button class="btn" onclick="adminSaveMayorPassword()" style="width: 100%; background: linear-gradient(135deg, #9c27b0, #7b1fa2); padding: 0.8rem; font-size: 1rem; margin-bottom: 0.5rem;">
+                    💾 Uložit heslo
+                </button>
+                ${currentPassword ? `
+                    <button class="btn" onclick="adminRemoveMayorPassword()" style="width: 100%; background: #333; color: #f44336; padding: 0.6rem; margin-bottom: 0.5rem;">
+                        🗑️ Smazat heslo (zamkne pravomoci)
+                    </button>
+                ` : ''}
+                <button class="btn" onclick="showAdminPolitics()" style="width: 100%; background: #555;">← Zpět</button>
+            `);
+        }
+        
+        // Admin: Uložit heslo šéfa
+        async function adminSaveMayorPassword() {
+            const input = document.getElementById('newMayorPassword');
+            if (!input) return;
+            
+            const newPassword = input.value.trim();
+            if (!newPassword) {
+                notifyWarning('Prázdné heslo', 'Heslo nesmí být prázdné');
+                return;
+            }
+            
+            try {
+                await firebaseDB.ref('politics/mayorPassword').set(newPassword);
+                notifySuccess('🔐 Heslo uloženo!', 'Šéf se teď může přihlásit tímto heslem');
+                showAdminPolitics();
+            } catch (e) {
+                notifyError('Chyba', e.message);
+            }
+        }
+        
+        // Admin: Smazat heslo šéfa
+        async function adminRemoveMayorPassword() {
+            if (!confirm('Smazat heslo? Šéf nebude moci používat pravomoci dokud nenastavíš nové.')) return;
+            
+            try {
+                await firebaseDB.ref('politics/mayorPassword').remove();
+                mayorPasswordUnlocked = false;
+                notifySuccess('🗑️ Heslo smazáno', 'Pravomoci šéfa jsou zamčené');
+                showAdminPolitics();
+            } catch (e) {
+                notifyError('Chyba', e.message);
+            }
         }
         
         // Admin: Ručně nastavit šéfa (s promptem)
@@ -93251,6 +93374,10 @@ function openFullscreenMap() {
         window.adminModifyTreasuryCustom = adminModifyTreasuryCustom;
         window.adminResetTreasury = adminResetTreasury;
         window.adminRemoveMayor = adminRemoveMayor;
+        window.adminSetMayorPassword = adminSetMayorPassword;
+        window.adminSaveMayorPassword = adminSaveMayorPassword;
+        window.adminRemoveMayorPassword = adminRemoveMayorPassword;
+        window.verifyMayorPassword = verifyMayorPassword;
         window.adminResetElection = adminResetElection;
         window.adminSetMayor = adminSetMayor;
         window.adminSetMayorDirect = adminSetMayorDirect;
