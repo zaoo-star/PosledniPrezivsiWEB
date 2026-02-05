@@ -32252,7 +32252,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         Object.entries(landData.buildings).forEach(([bId, b]) => {
                             const building = LAND_CONFIG.buildings[bId];
                             if (!building) return;
-                            const fee = isOwner ? 0 : (landData.fees?.[bId] || building.defaultFee);
+                            const fee = isOwner ? 0 : (landData.fees?.[bId] ?? building.defaultFee ?? 0);
                             const serviceHint = bId === 'repair_shop' ? 'Oprava' : bId === 'workshop' ? 'Crafting' : bId === 'rest_stop' ? '+50HP +Energie' : bId === 'campfire' ? 'Vaření' : '';
                             html += renderActionButton(building.icon, `${building.name}${isOwner ? '' : ' (' + fee + '💰)'}`, `useLandService('${location.id}', '${bId}')`, isOwner ? '#4CAF50' : '#ff9800');
                         });
@@ -45329,11 +45329,25 @@ function openFullscreenMap() {
             // Systémová notifikace
             sendSystemNotification('⚔️ NÁJEZD!', 'Tvá osada je napadena! Braň se!', '⚔️');
             
-            // Urči vlnu podle obtížnosti (prosperity, dny přežití)
-            let waveIndex = Math.min(4, Math.floor(state.time.days / 7));
-            waveIndex = Math.min(waveIndex, Math.floor((state.settlement.prosperity || 0) / 30));
+            // === ŠKÁLOVÁNÍ PODLE LEVELU OSADY ===
+            const settlementLevel = state.settlement?.level || 1;
+            
+            // Vlna se určuje podle levelu osady (+ malý bonus za prosperitu a dny)
+            // Level 1: vlna 0-1, Level 2: vlna 1-2, Level 3: vlna 2-3, Level 4: vlna 3-4, Level 5: vlna 4
+            let baseWave = Math.max(0, settlementLevel - 1);
+            const prosperityBonus = Math.floor((state.settlement.prosperity || 0) / 50);
+            const dayBonus = Math.floor(state.time.days / 14);
+            let waveIndex = Math.min(4, baseWave + Math.min(1, Math.max(prosperityBonus, dayBonus)));
             
             const wave = RAID_WAVES[waveIndex];
+            
+            // === SCALING NEPŘÁTEL PODLE LEVELU ===
+            // Level osady přidává +15% HP a +10% damage na každý level nad 1
+            const levelMultiplierHP = 1 + (settlementLevel - 1) * 0.15;
+            const levelMultiplierDMG = 1 + (settlementLevel - 1) * 0.10;
+            
+            // Level 3+ přidává extra nepřátele
+            const extraEnemies = settlementLevel >= 3 ? Math.floor((settlementLevel - 2) * 1.5) : 0;
             
             // Varování od zvěda
             const hasScout = state.settlement.settlers.some(s => s.type === 'scout');
@@ -45355,10 +45369,19 @@ function openFullscreenMap() {
                 ? '<span style="color: #4caf50;">✓ Jsi v osadě - žádná penalizace!</span>'
                 : `⚠️ -50% ⚡ -20% 🍖 -20% 💧<br>${raidTexts.fatiguePenalty}<br>${raidTexts.returnsToSettlement}`;
             
+            // Difficulty label pro UI
+            const diffLabels = ['⚪ Lehký', '🟢 Střední', '🟡 Těžký', '🟠 Velmi těžký', '🔴 Brutální'];
+            const diffLabel = diffLabels[waveIndex] || diffLabels[0];
+            const diffColor = ['#aaa', '#4caf50', '#ffd700', '#ff9800', '#f44336'][waveIndex] || '#aaa';
+            
+            // Zobraz celkový počet nepřátel včetně extra
+            const totalEnemyCount = wave.enemies.reduce((sum, e) => sum + e.count, 0) + extraEnemies;
+            
             showModal('⚔️ NÁJEZD NA OSADU!', `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <div style="font-size: 4rem; animation: pulse 1s infinite;">⚔️</div>
                     <h3 style="color: #ff4444; margin: 0.5rem 0;">${getRaidWaveName(waveIndex + 1)}!</h3>
+                    <p style="color: ${diffColor}; font-size: 0.85rem; margin: 0.2rem 0;">Obtížnost: ${diffLabel} (Osada LVL ${settlementLevel})</p>
                 </div>
                 
                 ${hasScout ? `<p style="color: #8bc34a; text-align: center;">👁️ ${raidTexts.scoutWarning}</p>` : ''}
@@ -45372,7 +45395,11 @@ function openFullscreenMap() {
                                 ${enemy?.icon || '👤'} ${enemy?.name || e.type} x${e.count}
                             </span>`;
                         }).join('')}
+                        ${extraEnemies > 0 ? `<span style="background: #2a1a0a; padding: 0.3rem 0.6rem; border-radius: 4px; color: #ff9800;">
+                            ➕ ${extraEnemies} posil
+                        </span>` : ''}
                     </div>
+                    ${settlementLevel > 1 ? `<p style="color: #ff9800; font-size: 0.7rem; margin-top: 0.5rem;">⚠️ Nepřátelé jsou silnější (LVL ${settlementLevel}: +${Math.round((levelMultiplierHP - 1) * 100)}% HP, +${Math.round((levelMultiplierDMG - 1) * 100)}% damage)</p>` : ''}
                 </div>
                 
                 <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 2px solid var(--toxic-dark);">
@@ -45411,6 +45438,12 @@ function openFullscreenMap() {
         function defendSettlement(waveIndex) {
             closeModal();
             const wave = RAID_WAVES[waveIndex];
+            const settlementLevel = state.settlement?.level || 1;
+            
+            // === LEVEL SCALING ===
+            const levelMultiplierHP = 1 + (settlementLevel - 1) * 0.15;
+            const levelMultiplierDMG = 1 + (settlementLevel - 1) * 0.10;
+            const extraEnemies = settlementLevel >= 3 ? Math.floor((settlementLevel - 2) * 1.5) : 0;
             
             // Zjisti jestli je hráč už v osadě
             const currentLoc = state.world?.currentLocation || '';
@@ -45452,8 +45485,9 @@ function openFullscreenMap() {
                     for (let i = 0; i < e.count; i++) {
                         enemyGroup.push({
                             ...enemyTemplate,
-                            hp: enemyTemplate.hp,
-                            maxHp: enemyTemplate.hp,
+                            hp: Math.floor(enemyTemplate.hp * levelMultiplierHP),
+                            maxHp: Math.floor(enemyTemplate.hp * levelMultiplierHP),
+                            damage: Math.floor(enemyTemplate.damage * levelMultiplierDMG),
                             alive: true,
                             stunned: false,
                             poisoned: 0,
@@ -45462,6 +45496,29 @@ function openFullscreenMap() {
                     }
                 }
             });
+            
+            // Přidej extra nepřátele pro vyšší levely osady
+            if (extraEnemies > 0) {
+                const reinforcementTypes = ['raider', 'bandit', 'raider_boss'];
+                const maxTypeIndex = Math.min(settlementLevel - 1, reinforcementTypes.length - 1);
+                for (let i = 0; i < extraEnemies; i++) {
+                    // Vyšší level = vyšší šance na silnější posily
+                    const typeIndex = Math.min(maxTypeIndex, Math.floor(Math.random() * (maxTypeIndex + 1)));
+                    const enemyTemplate = ENEMIES.find(en => en.id === reinforcementTypes[typeIndex]);
+                    if (enemyTemplate) {
+                        enemyGroup.push({
+                            ...enemyTemplate,
+                            hp: Math.floor(enemyTemplate.hp * levelMultiplierHP),
+                            maxHp: Math.floor(enemyTemplate.hp * levelMultiplierHP),
+                            damage: Math.floor(enemyTemplate.damage * levelMultiplierDMG),
+                            alive: true,
+                            stunned: false,
+                            poisoned: 0,
+                            bleeding: 0
+                        });
+                    }
+                }
+            }
             
             // Bonus od obrany osady - snížení HP nepřátel
             const defenseBonus = Math.min(0.5, calculateSettlementDefense() / 200);
@@ -45479,15 +45536,30 @@ function openFullscreenMap() {
         function autoDefendSettlement(waveIndex) {
             closeModal();
             const wave = RAID_WAVES[waveIndex];
+            const settlementLevel = state.settlement?.level || 1;
             
-            // Spočítej sílu nepřátel
+            // === LEVEL SCALING ===
+            const levelMultiplierHP = 1 + (settlementLevel - 1) * 0.15;
+            const levelMultiplierDMG = 1 + (settlementLevel - 1) * 0.10;
+            const extraEnemies = settlementLevel >= 3 ? Math.floor((settlementLevel - 2) * 1.5) : 0;
+            
+            // Spočítej sílu nepřátel (se scalingem)
             let enemyPower = 0;
             wave.enemies.forEach(e => {
                 const enemy = ENEMIES.find(en => en.id === e.type);
                 if (enemy) {
-                    enemyPower += (enemy.hp + enemy.damage * 5) * e.count;
+                    const scaledHP = enemy.hp * levelMultiplierHP;
+                    const scaledDMG = enemy.damage * levelMultiplierDMG;
+                    enemyPower += (scaledHP + scaledDMG * 5) * e.count;
                 }
             });
+            // Extra nepřátelé přidávají sílu
+            if (extraEnemies > 0) {
+                const avgEnemy = ENEMIES.find(en => en.id === 'raider');
+                if (avgEnemy) {
+                    enemyPower += (avgEnemy.hp * levelMultiplierHP + avgEnemy.damage * levelMultiplierDMG * 5) * extraEnemies;
+                }
+            }
             
             // Síla obrany
             const defensePower = calculateSettlementDefense() * 3;
@@ -45502,7 +45574,11 @@ function openFullscreenMap() {
             if (won) {
                 // Vítězství
                 state.settlement.raidsDefended = (state.settlement.raidsDefended || 0) + 1;
-                const reward = wave.reward;
+                
+                // Odměny škálují s levelem osady (+20% za level)
+                const rewardMultiplier = 1 + (settlementLevel - 1) * 0.2;
+                const scaledMoney = Math.floor((wave.reward.money || 0) * rewardMultiplier);
+                const scaledXP = Math.floor((wave.reward.xp || 0) * rewardMultiplier);
                 
                 // Add memories + stats to all settlers
                 state.settlement.settlers?.forEach(s => {
@@ -45512,8 +45588,8 @@ function openFullscreenMap() {
                     if (s.needs) s.needs.safety = Math.max(0, (s.needs.safety || 50) - 15);
                 });
                 
-                addMoney(reward.money || 0);
-                if (reward.xp > 0) addXP(reward.xp);
+                addMoney(scaledMoney);
+                if (scaledXP > 0) addXP(scaledXP);
                 
                 showModal('🎉 Obrana úspěšná!', `
                     <div style="text-align: center;">
@@ -45521,18 +45597,19 @@ function openFullscreenMap() {
                         <h3 style="color: #8bc34a;">Osada odrazila útok!</h3>
                         <p>Tvoji strážci a obranné stavby ochránili osadu.</p>
                         <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
-                            <p>💰 +${reward.money} peněz</p>
-                            <p>⭐ +${reward.xp} XP</p>
+                            <p>💰 +${scaledMoney} peněz</p>
+                            <p>⭐ +${scaledXP} XP</p>
                         </div>
                         <p style="color: #888; font-size: 0.85rem;">Odraženo nájezdů: ${state.settlement.raidsDefended}</p>
                     </div>
                     <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
                 `);
             } else {
-                // Prohra - ztráty
-                const foodLoss = Math.floor((state.settlement.resources.food || 0) * 0.3);
-                const waterLoss = Math.floor((state.settlement.resources.water || 0) * 0.2);
-                const moneyLoss = Math.floor(state.money * 0.2);
+                // Prohra - ztráty (škálují s levelem osady)
+                const lossMultiplier = 1 + (settlementLevel - 1) * 0.1; // +10% ztráty za level
+                const foodLoss = Math.floor((state.settlement.resources.food || 0) * 0.3 * lossMultiplier);
+                const waterLoss = Math.floor((state.settlement.resources.water || 0) * 0.2 * lossMultiplier);
+                const moneyLoss = Math.floor(state.money * 0.2 * lossMultiplier);
                 
                 state.settlement.resources.food = Math.max(0, (state.settlement.resources.food || 0) - foodLoss);
                 state.settlement.resources.water = Math.max(0, (state.settlement.resources.water || 0) - waterLoss);
@@ -45590,14 +45667,19 @@ function openFullscreenMap() {
         function handleRaidVictory() {
             const waveIndex = window.raidWaveIndex || 0;
             const wave = RAID_WAVES[waveIndex];
+            const settlementLevel = state.settlement?.level || 1;
             
             state.settlement.raidsDefended = (state.settlement.raidsDefended || 0) + 1;
             
-            const reward = wave.reward;
-            addMoney(reward.money || 0);
-            if (reward.xp > 0) addXP(reward.xp);
+            // Odměny škálují s levelem osady (+20% za level)
+            const rewardMultiplier = 1 + (settlementLevel - 1) * 0.2;
+            const scaledMoney = Math.floor((wave.reward.money || 0) * rewardMultiplier);
+            const scaledXP = Math.floor((wave.reward.xp || 0) * rewardMultiplier);
             
-            addLog(`Osobně jsi odrazil nájezd! +${reward.money} 💰, +${reward.xp} XP`, '⚔️');
+            addMoney(scaledMoney);
+            if (scaledXP > 0) addXP(scaledXP);
+            
+            addLog(`Osobně jsi odrazil nájezd! +${scaledMoney} 💰, +${scaledXP} XP`, '⚔️');
             
             window.isSettlementRaid = false;
             window.raidWaveIndex = null;
@@ -75469,6 +75551,7 @@ function openFullscreenMap() {
         }
         
         // Kontrola a stažení nabídek starších než 3 dny (vrácení do inventáře nebo na zem)
+        // + automatické mazání zkažených jídel (kohokoliv)
         async function checkExpiredOffers() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
@@ -75477,51 +75560,86 @@ function openFullscreenMap() {
             const maxAge = 3 * 24 * 60 * 60 * 1000; // 3 dny v ms
             
             for (const offer of marketplaceOffers) {
-                // Kontroluj jen vlastní AKTIVNÍ nabídky
-                if (offer.seller !== myName) continue;
                 if (offer.status !== 'active') continue;
+                
+                const itemData = offer.item;
+                if (!itemData) continue;
+                
+                // === AUTOMATICKÉ MAZÁNÍ ZKAŽENÝCH JÍDEL (jakýkoliv hráč) ===
+                if (typeof PERISHABLE_FOOD !== 'undefined' && PERISHABLE_FOOD[itemData.id]) {
+                    let isSpoiled = false;
+                    
+                    if (itemData.perishable && typeof itemData.daysLeft === 'number') {
+                        // Nový systém: daysLeft při vystavení + kolik dní uběhlo od vystavení
+                        const daysSinceListed = Math.floor((now - (offer.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        isSpoiled = (itemData.daysLeft - daysSinceListed) <= 0;
+                    } else if (itemData.cookedAt) {
+                        // Legacy: cookedAt timestamp
+                        isSpoiled = (now - itemData.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                    } else {
+                        // Fallback: odhadni z timestamp nabídky
+                        const daysSinceListed = Math.floor((now - (offer.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        const perishDays = PERISHABLE_FOOD[itemData.id].days;
+                        isSpoiled = daysSinceListed >= perishDays;
+                    }
+                    
+                    if (isSpoiled) {
+                        try {
+                            console.log('🤢 Automatické mazání zkažené nabídky:', itemData.name, 'od', offer.seller);
+                            await firebaseDB.ref('marketplace/offers/' + offer.id).remove();
+                            
+                            // Notifikace jen pokud je to moje nabídka
+                            if (offer.seller === myName) {
+                                notifyWarning('🤢 Zkažené jídlo smazáno', `${itemData.name} se na tržnici zkazilo a bylo odstraněno.`);
+                            }
+                        } catch (e) {
+                            console.error('Chyba při mazání zkažené nabídky:', e);
+                        }
+                        continue; // Přeskoč další kontroly pro tuto nabídku
+                    }
+                }
+                
+                // === EXPIRACE PO 3 DNECH (jen vlastní nabídky) ===
+                if (offer.seller !== myName) continue;
                 
                 const offerAge = now - (offer.timestamp || 0);
                 
                 if (offerAge > maxAge) {
-                    console.log('📦 Stahování expirované nabídky:', offer.item?.name);
+                    console.log('📦 Stahování expirované nabídky:', itemData.name);
                     
                     try {
-                        const itemData = offer.item;
-                        if (itemData) {
-                            // Rekonstruuj item pro inventář
-                            const returnedItem = {
-                                id: itemData.id,
-                                name: itemData.name,
-                                icon: itemData.icon,
-                                type: itemData.type
-                            };
-                            if (itemData.damage) returnedItem.damage = itemData.damage;
-                            if (itemData.defense) returnedItem.defense = itemData.defense;
-                            if (itemData.rarity) returnedItem.rarity = itemData.rarity;
-                            if (itemData.effect) returnedItem.effect = itemData.effect;
-                            if (itemData.value) returnedItem.value = itemData.value;
-                            if (itemData.weight) returnedItem.weight = itemData.weight;
-                            if (itemData.cookedAt) returnedItem.cookedAt = itemData.cookedAt;
-                            
-                            const fullItem = ITEMS.find(i => i.id === itemData.id) || returnedItem;
-                            const count = offer.count || 1;
-                            const itemToReturn = {...fullItem, ...returnedItem, count: count};
-                            
-                            // Zkus přidat do inventáře
-                            if (typeof canAddItem === 'function' && canAddItem(itemToReturn, count)) {
-                                addItemToInventory(itemToReturn, count, true);
-                                notifySuccess('📦 Nabídka stažena', `${itemData.name} (${count}x) vrácen do inventáře - uplynuly 3 dny`);
-                            } else {
-                                // Plný inventář → polož na zem v základně
-                                addToGroundLoot({...itemToReturn}, 'shelter');
-                                notifyWarning('📦 Nabídka stažena', `${itemData.name} (${count}x) položen na zem v základně - plný inventář!`);
-                            }
-                            
-                            // Smaž nabídku z Firebase
-                            await firebaseDB.ref('marketplace/offers/' + offer.id).remove();
-                            saveGame(true);
+                        // Rekonstruuj item pro inventář
+                        const returnedItem = {
+                            id: itemData.id,
+                            name: itemData.name,
+                            icon: itemData.icon,
+                            type: itemData.type
+                        };
+                        if (itemData.damage) returnedItem.damage = itemData.damage;
+                        if (itemData.defense) returnedItem.defense = itemData.defense;
+                        if (itemData.rarity) returnedItem.rarity = itemData.rarity;
+                        if (itemData.effect) returnedItem.effect = itemData.effect;
+                        if (itemData.value) returnedItem.value = itemData.value;
+                        if (itemData.weight) returnedItem.weight = itemData.weight;
+                        if (itemData.cookedAt) returnedItem.cookedAt = itemData.cookedAt;
+                        
+                        const fullItem = ITEMS.find(i => i.id === itemData.id) || returnedItem;
+                        const count = offer.count || 1;
+                        const itemToReturn = {...fullItem, ...returnedItem, count: count};
+                        
+                        // Zkus přidat do inventáře
+                        if (typeof canAddItem === 'function' && canAddItem(itemToReturn, count)) {
+                            addItemToInventory(itemToReturn, count, true);
+                            notifySuccess('📦 Nabídka stažena', `${itemData.name} (${count}x) vrácen do inventáře - uplynuly 3 dny`);
+                        } else {
+                            // Plný inventář → polož na zem v základně
+                            addToGroundLoot({...itemToReturn}, 'shelter');
+                            notifyWarning('📦 Nabídka stažena', `${itemData.name} (${count}x) položen na zem v základně - plný inventář!`);
                         }
+                        
+                        // Smaž nabídku z Firebase
+                        await firebaseDB.ref('marketplace/offers/' + offer.id).remove();
+                        saveGame(true);
                     } catch (e) {
                         console.error('Chyba při stahování nabídky:', e);
                     }
@@ -82044,7 +82162,8 @@ function openFullscreenMap() {
             const building = LAND_CONFIG.buildings[buildingId];
             if (!building) return;
             
-            fee = Math.max(building.minFee, Math.min(building.maxFee, parseInt(fee) || building.defaultFee));
+            const parsed = parseInt(fee);
+            fee = Math.max(building.minFee, Math.min(building.maxFee, isNaN(parsed) ? building.defaultFee : parsed));
             
             try {
                 await firebaseDB.ref('landOwnership/' + locationId + '/fees/' + buildingId).set(fee);
@@ -82064,7 +82183,7 @@ function openFullscreenMap() {
             
             const myName = getPlayerName();
             const isOwner = land.owner === myName;
-            const fee = isOwner ? 0 : (land.fees?.[buildingId] || LAND_CONFIG.buildings[buildingId]?.defaultFee || 10);
+            const fee = isOwner ? 0 : (land.fees?.[buildingId] ?? LAND_CONFIG.buildings[buildingId]?.defaultFee ?? 0);
             const building = LAND_CONFIG.buildings[buildingId];
             
             if (!isOwner && (state.money || 0) < fee) {
@@ -82076,14 +82195,7 @@ function openFullscreenMap() {
             if (!isOwner && fee > 0) {
                 state.money -= fee;
                 
-                // 🏦 Daň z poplatku za službu do veřejné kasy (10%)
-                const landServiceTax = Math.max(1, Math.floor(fee * 0.1));
-                const ownerReceives = fee - landServiceTax;
-                if (typeof addToPublicTreasury === 'function' && landServiceTax > 0) {
-                    addToPublicTreasury(landServiceTax, 'land_service_fee', `Poplatek za ${building.name} na pozemku ${land.customName || land.locationName || locationId}`);
-                }
-                
-                // Přidej příjem majiteli (po dani)
+                // Celý poplatek jde na konto majitele — daň se strhne až při výběru
                 try {
                     const landRef = firebaseDB.ref('landOwnership/' + locationId);
                     
@@ -82091,15 +82203,15 @@ function openFullscreenMap() {
                     const currentLand = snap.val();
                     if (currentLand) {
                         const updates = {
-                            totalEarnings: (currentLand.totalEarnings || 0) + ownerReceives,
-                            pendingEarnings: (currentLand.pendingEarnings || 0) + ownerReceives,
+                            totalEarnings: (currentLand.totalEarnings || 0) + fee,
+                            pendingEarnings: (currentLand.pendingEarnings || 0) + fee,
                             visitors: (currentLand.visitors || 0) + 1
                         };
                         // Per-building statistiky
                         const bStats = currentLand.buildingStats || {};
                         const bs = bStats[buildingId] || { uses: 0, earnings: 0 };
                         updates['buildingStats/' + buildingId + '/uses'] = (bs.uses || 0) + 1;
-                        updates['buildingStats/' + buildingId + '/earnings'] = (bs.earnings || 0) + ownerReceives;
+                        updates['buildingStats/' + buildingId + '/earnings'] = (bs.earnings || 0) + fee;
                         await landRef.update(updates);
                     }
                     
@@ -82668,7 +82780,7 @@ function openFullscreenMap() {
                 
                 Object.entries(LAND_CONFIG.buildings).forEach(([bId, b]) => {
                     const isBuilt = land.buildings?.[bId];
-                    const fee = land.fees?.[bId] || b.defaultFee;
+                    const fee = land.fees?.[bId] ?? b.defaultFee ?? 0;
                     
                     if (isBuilt) {
                         const serviceDesc = bId === 'repair_shop' ? 'Oprava vybavení' : bId === 'workshop' ? 'Crafting bez vlastní dílny' : bId === 'rest_stop' ? '+50 HP, energie na 100%' : bId === 'campfire' ? 'Vaření jídla' : '';
@@ -85421,19 +85533,74 @@ function openFullscreenMap() {
                     offers.push({ id: child.key, ...child.val() });
                 });
                 
-                let html = `<div style="max-height: 400px; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
+                const now = Date.now();
+                const maxAge = 3 * 24 * 60 * 60 * 1000; // 3 dny v ms
                 
                 const activeOffers = offers.filter(o => o.status === 'active');
+                const expiredOffers = activeOffers.filter(o => (now - (o.timestamp || 0)) > maxAge);
+                
+                // Detekce zkažených jídel
+                const spoiledOffers = activeOffers.filter(o => {
+                    const item = o.item;
+                    if (!item || typeof PERISHABLE_FOOD === 'undefined' || !PERISHABLE_FOOD[item.id]) return false;
+                    if (item.perishable && typeof item.daysLeft === 'number') {
+                        const daysSinceListed = Math.floor((now - (o.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        return (item.daysLeft - daysSinceListed) <= 0;
+                    } else if (item.cookedAt) {
+                        return (now - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                    } else {
+                        const daysSinceListed = Math.floor((now - (o.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        return daysSinceListed >= PERISHABLE_FOOD[item.id].days;
+                    }
+                });
+                
+                let html = '';
+                
+                // Info o zkažených jídlech
+                if (spoiledOffers.length > 0) {
+                    html += `<div style="background: #3a2a1a; border: 1px solid #8b6030; border-radius: 8px; padding: 0.6rem; margin-bottom: 0.75rem;">
+                        <div style="color: #ff9800; font-weight: bold; margin-bottom: 0.3rem;">🤢 ${spoiledOffers.length} zkažených jídel na tržnici</div>
+                        <div style="color: #cc9966; font-size: 0.75rem; margin-bottom: 0.5rem;">Zkažené jídlo se automaticky maže, ale tyto nabídky ještě zůstaly. Smazat bez vrácení.</div>
+                        <button class="btn" onclick="adminCleanSpoiledOffers()" style="background: #e65100; width: 100%; font-size: 0.85rem;">🤢 Smazat zkažené (${spoiledOffers.length})</button>
+                    </div>`;
+                }
+                
+                // Info o expirovaných
+                if (expiredOffers.length > 0) {
+                    html += `<div style="background: #4a1a1a; border: 1px solid #8b3030; border-radius: 8px; padding: 0.6rem; margin-bottom: 0.75rem;">
+                        <div style="color: #ff6b6b; font-weight: bold; margin-bottom: 0.3rem;">⏰ ${expiredOffers.length} expirovaných nabídek (3+ dny)</div>
+                        <div style="color: #cc9999; font-size: 0.75rem; margin-bottom: 0.5rem;">Tyto nabídky překročily 3denní limit. Předměty budou vráceny prodejcům do inventáře, nebo položeny na zem v základně pokud mají plno.</div>
+                        <button class="btn" onclick="adminCleanExpiredOffers()" style="background: #c62828; width: 100%; font-size: 0.85rem;">🧹 Odstranit expirované (${expiredOffers.length})</button>
+                    </div>`;
+                }
+                
+                html += `<div style="max-height: 400px; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
+                
                 if (activeOffers.length === 0) {
                     html += '<p style="color: #666; text-align: center; padding: 2rem;">Žádné aktivní nabídky</p>';
                 } else {
+                    // Seřadit - expirované nahoře
+                    activeOffers.sort((a, b) => {
+                        const ageA = now - (a.timestamp || 0);
+                        const ageB = now - (b.timestamp || 0);
+                        return ageB - ageA; // nejstarší nahoře
+                    });
+                    
                     activeOffers.forEach(offer => {
+                        const age = now - (offer.timestamp || 0);
+                        const ageDays = Math.floor(age / (24 * 60 * 60 * 1000));
+                        const ageHours = Math.floor((age % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                        const isExpired = age > maxAge;
+                        const ageText = ageDays > 0 ? `${ageDays}d ${ageHours}h` : `${ageHours}h`;
+                        const ageColor = isExpired ? '#ff4444' : ageDays >= 2 ? '#ff9800' : '#888';
+                        const borderColor = isExpired ? '#8b3030' : '#333';
+                        
                         html += `
-                            <div style="display: flex; align-items: center; gap: 0.5rem; background: #1a1a1a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.3rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem; background: ${isExpired ? '#2a1515' : '#1a1a1a'}; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.3rem; border: 1px solid ${borderColor};">
                                 <span style="font-size: 1.3rem;">${offer.item?.icon || '📦'}</span>
                                 <div style="flex: 1;">
-                                    <div style="color: #fff;">${escapeHtml(offer.item?.name || '?')} <span style="color: #ffd700;">${offer.price} 💰</span></div>
-                                    <div style="color: #888; font-size: 0.75rem;">Prodává: ${escapeHtml(offer.seller || '?')}</div>
+                                    <div style="color: #fff;">${escapeHtml(offer.item?.name || '?')} ${offer.count && offer.count > 1 ? `(${offer.count}x)` : ''} <span style="color: #ffd700;">${offer.price} 💰</span></div>
+                                    <div style="color: #888; font-size: 0.75rem;">Prodává: ${escapeHtml(offer.seller || '?')} · <span style="color: ${ageColor};">${isExpired ? '⏰ ' : ''}${ageText}</span></div>
                                 </div>
                                 <button onclick="adminDeleteOffer('${offer.id}')" style="background: #c62828; border: none; color: #fff; padding: 0.3rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🗑️</button>
                             </div>
@@ -85465,6 +85632,56 @@ function openFullscreenMap() {
             }
         }
         
+        // Admin: Smazat všechny expirované nabídky (3+ dny) a notifikovat prodejce
+        async function adminCleanExpiredOffers() {
+            if (!hasPermission('marketplace')) return;
+            if (!confirm('Odstranit všechny nabídky starší než 3 dny?\n\nProdejci dostanou notifikaci o vrácení předmětu.')) return;
+            
+            try {
+                const snap = await firebaseDB.ref('marketplace/offers').once('value');
+                const now = Date.now();
+                const maxAge = 3 * 24 * 60 * 60 * 1000;
+                let removed = 0;
+                
+                const promises = [];
+                snap.forEach(child => {
+                    const offer = child.val();
+                    if (offer.status !== 'active') return;
+                    
+                    const age = now - (offer.timestamp || 0);
+                    if (age > maxAge) {
+                        const offerId = child.key;
+                        const sellerName = offer.seller || '';
+                        const itemData = offer.item || {};
+                        const count = offer.count || 1;
+                        
+                        // Smaž nabídku
+                        promises.push(firebaseDB.ref('marketplace/offers/' + offerId).remove());
+                        
+                        // Pošli notifikaci prodejci (předmět si vyzvedne při otevření tržnice)
+                        if (sellerName) {
+                            const sellerKey = sellerName.replace(/[.#$\[\]]/g, '_');
+                            promises.push(firebaseDB.ref('marketplace/notifications/' + sellerKey).push({
+                                type: 'expired_return',
+                                item: itemData,
+                                count: count,
+                                message: `⏰ Nabídka "${itemData.name || '?'}" (${count}x) expirovala po 3 dnech. Předmět ti bude vrácen.`,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            }));
+                        }
+                        
+                        removed++;
+                    }
+                });
+                
+                await Promise.all(promises);
+                notifySuccess('🧹 Vyčištěno', `Odstraněno ${removed} expirovaných nabídek. Prodejci byli notifikováni.`);
+                adminManageMarketplace();
+            } catch (e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
         async function adminClearAllOffers() {
             if (!isAdmin()) return; // Smazat VŠE může jen admin
             if (!confirm('Opravdu smazat VŠECHNY nabídky na tržišti?')) return;
@@ -85472,6 +85689,49 @@ function openFullscreenMap() {
             try {
                 await firebaseDB.ref('marketplace/offers').remove();
                 notifySuccess('Tržiště smazáno', 'Všechny nabídky byly odstraněny');
+                adminManageMarketplace();
+            } catch (e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
+        // Admin: Smazat všechna zkažená jídla z tržnice (bez vrácení - je zkažené)
+        async function adminCleanSpoiledOffers() {
+            if (!hasPermission('marketplace')) return;
+            if (!confirm('Smazat všechna zkažená jídla z tržnice?\n\nZkažené jídlo se NEVRACÍ - je zničené.')) return;
+            
+            try {
+                const snap = await firebaseDB.ref('marketplace/offers').once('value');
+                const now = Date.now();
+                let removed = 0;
+                
+                const promises = [];
+                snap.forEach(child => {
+                    const offer = child.val();
+                    if (offer.status !== 'active') return;
+                    
+                    const item = offer.item;
+                    if (!item || typeof PERISHABLE_FOOD === 'undefined' || !PERISHABLE_FOOD[item.id]) return;
+                    
+                    let isSpoiled = false;
+                    if (item.perishable && typeof item.daysLeft === 'number') {
+                        const daysSinceListed = Math.floor((now - (offer.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        isSpoiled = (item.daysLeft - daysSinceListed) <= 0;
+                    } else if (item.cookedAt) {
+                        isSpoiled = (now - item.cookedAt) > PERISHABLE_FOOD_EXPIRY_MS;
+                    } else {
+                        const daysSinceListed = Math.floor((now - (offer.timestamp || 0)) / (1000 * 60 * 60 * 24));
+                        isSpoiled = daysSinceListed >= PERISHABLE_FOOD[item.id].days;
+                    }
+                    
+                    if (isSpoiled) {
+                        promises.push(firebaseDB.ref('marketplace/offers/' + child.key).remove());
+                        removed++;
+                    }
+                });
+                
+                await Promise.all(promises);
+                notifySuccess('🤢 Vyčištěno', `Smazáno ${removed} zkažených nabídek jídla.`);
                 adminManageMarketplace();
             } catch (e) {
                 notifyWarning('Chyba', e.message);
