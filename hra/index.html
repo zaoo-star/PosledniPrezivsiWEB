@@ -13131,6 +13131,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.mayorElection = null; // Globální reference pro game loop
         let cachedPoliticalEffects = null;
         let mayorPasswordUnlocked = false; // Šéf se odemkl heslem
+        let _pendingMayorAction = null; // Čekající akce po odemčení heslem
+        
+        // Helper: Ověří heslo a pak provede akci. Pokud už je odemčeno, provede hned.
+        function requireMayorPassword(callback) {
+            if (mayorPasswordUnlocked || isStaff()) {
+                callback();
+                return;
+            }
+            // Ulož akci a zobraz dialog na heslo
+            _pendingMayorAction = callback;
+            showModal('🔐 Přístup k pravomocím', `
+                <div style="text-align: center; padding: 1rem;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">🔐</div>
+                    <h3 style="color: #ffd700; margin-bottom: 0.5rem;">Pravomoci Šéfa Pustiny</h3>
+                    <p style="color: #888; font-size: 0.85rem; margin-bottom: 1.5rem;">Zadej heslo pro přístup k pravomocím šéfa</p>
+                    <input type="password" id="mayorPasswordInput" placeholder="Heslo šéfa..."
+                        style="width: 100%; padding: 0.8rem; background: #1a1a1a; border: 2px solid #444; border-radius: 8px; color: #fff; font-size: 1rem; text-align: center; margin-bottom: 1rem;"
+                        onkeydown="if(event.key==='Enter') verifyMayorPassword();">
+                    <div id="mayorPasswordError" style="color: #f44336; font-size: 0.85rem; margin-bottom: 0.5rem; display: none;">❌ Špatné heslo</div>
+                    <button class="btn" onclick="verifyMayorPassword()" style="width: 100%; background: linear-gradient(135deg, #9c27b0, #7b1fa2); padding: 0.8rem; font-size: 1rem; margin-bottom: 0.5rem;">
+                        🔓 Odemknout
+                    </button>
+                    <button class="btn" onclick="_pendingMayorAction=null; showPoliticsPanel()" style="width: 100%; background: #333; padding: 0.6rem;">← Zpět</button>
+                </div>
+            `);
+            setTimeout(() => {
+                const inp = document.getElementById('mayorPasswordInput');
+                if (inp) inp.focus();
+            }, 100);
+        }
+        window.requireMayorPassword = requireMayorPassword;
         
         // Helper pro bezpečnou kontrolu šéfa (před inicializací systému)
         function isMayor() {
@@ -86947,7 +86978,7 @@ function openFullscreenMap() {
         // Šéf rozhoduje
         async function mayorDecide(decisionId, optionId) {
             if (!mayorPasswordUnlocked && !isStaff()) {
-                notifyWarning('🔐 Zamčeno', 'Nejdřív odemkni pravomoci heslem');
+                requireMayorPassword(() => mayorDecide(decisionId, optionId));
                 return;
             }
             
@@ -87342,8 +87373,7 @@ function openFullscreenMap() {
         // Použití pravomoci šéfa
         async function useMayorPower(powerId) {
             if (!mayorPasswordUnlocked && !isStaff()) {
-                notifyWarning('🔐 Zamčeno', 'Nejdřív odemkni pravomoci heslem');
-                showMayorPowersPanel();
+                requireMayorPassword(() => useMayorPower(powerId));
                 return;
             }
             
@@ -87400,28 +87430,10 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Zobraz dialog pro zadání hesla
-            showModal('🔐 Přístup k pravomocím', `
-                <div style="text-align: center; padding: 1rem;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem;">🔐</div>
-                    <h3 style="color: #ffd700; margin-bottom: 0.5rem;">Pravomoci Šéfa Pustiny</h3>
-                    <p style="color: #888; font-size: 0.85rem; margin-bottom: 1.5rem;">Zadej heslo pro přístup k pravomocím šéfa</p>
-                    <input type="password" id="mayorPasswordInput" placeholder="Heslo šéfa..."
-                        style="width: 100%; padding: 0.8rem; background: #1a1a1a; border: 2px solid #444; border-radius: 8px; color: #fff; font-size: 1rem; text-align: center; margin-bottom: 1rem;"
-                        onkeydown="if(event.key==='Enter') verifyMayorPassword();">
-                    <div id="mayorPasswordError" style="color: #f44336; font-size: 0.85rem; margin-bottom: 0.5rem; display: none;">❌ Špatné heslo</div>
-                    <button class="btn" onclick="verifyMayorPassword()" style="width: 100%; background: linear-gradient(135deg, #9c27b0, #7b1fa2); padding: 0.8rem; font-size: 1rem; margin-bottom: 0.5rem;">
-                        🔓 Odemknout
-                    </button>
-                    <button class="btn" onclick="showPoliticsPanel()" style="width: 100%; background: #333; padding: 0.6rem;">← Zpět</button>
-                </div>
-            `);
-            
-            // Autofocus na input
-            setTimeout(() => {
-                const inp = document.getElementById('mayorPasswordInput');
-                if (inp) inp.focus();
-            }, 100);
+            // Vyžádej heslo a po odemčení renderuj panel
+            requireMayorPassword(async () => {
+                await _renderMayorPowersPanel(false);
+            });
         }
         
         // Ověření hesla šéfa
@@ -87448,6 +87460,13 @@ function openFullscreenMap() {
                 if (enteredPassword === storedPassword) {
                     mayorPasswordUnlocked = true;
                     notifySuccess('🔓 Odemčeno!', 'Pravomoci šéfa jsou dostupné');
+                    // Pokud čeká akce (např. rozhodnutí), proveď ji místo renderování panelu
+                    if (_pendingMayorAction) {
+                        const action = _pendingMayorAction;
+                        _pendingMayorAction = null;
+                        action();
+                        return;
+                    }
                     await _renderMayorPowersPanel(false);
                 } else {
                     if (errorEl) { errorEl.textContent = '❌ Špatné heslo'; errorEl.style.display = 'block'; }
@@ -88232,7 +88251,7 @@ function openFullscreenMap() {
         // Vyzvednutí daňových příjmů šéfa
         async function collectMayorTaxIncome() {
             if (!mayorPasswordUnlocked && !isStaff()) {
-                notifyWarning('🔐 Zamčeno', 'Odemkni pravomoci šéfa heslem');
+                requireMayorPassword(() => collectMayorTaxIncome());
                 return;
             }
             
