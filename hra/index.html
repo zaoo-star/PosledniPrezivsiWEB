@@ -7213,8 +7213,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
               traits: { moraleBonus: -2, workBonus: 0.1, conflictChance: 0.15 },
               desc: 'Neposlouchá rozkazy, ale odvede víc práce' },
             { id: 'coward', name: 'Zbabělec', icon: '😰', color: '#ffcc02',
-              traits: { defenseBonus: -5, fleeChance: 0.1 },
-              desc: 'Při nájezdu se schovává' },
+              traits: { defenseBonus: -2, fleeChance: 0.1, workBonus: 0.08, alertBonus: 0.15 },
+              desc: 'Při nájezdu se schovává, ale opatrnost mu pomáhá v práci' },
             { id: 'hero', name: 'Hrdina', icon: '💪', color: '#ffd700',
               traits: { defenseBonus: 10, moraleBonus: 3 },
               desc: 'Vždy první v boji, inspiruje ostatní' },
@@ -68929,6 +68929,13 @@ function openFullscreenMap() {
                 checkSettlementEvents();
             }
             
+            // === 🔄 ZMĚNA OSOBNOSTÍ OSADNÍKŮ KAŽDÝCH 6 HODIN ===
+            if (state.confirmed && state.settlement?.settlers?.length > 0) {
+                if (typeof checkSettlerPersonalityShift === 'function') {
+                    checkSettlerPersonalityShift();
+                }
+            }
+            
             // === DENNÍ KASINO BONUS (každých 24 hodin reálného času) ===
             if (state.confirmed) {
                 if (!state._lastCasinoCheck) state._lastCasinoCheck = 0;
@@ -89359,23 +89366,56 @@ function openFullscreenMap() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
             const decisions = MAYOR_SYSTEM.dailyDecisions;
-            const randomDecision = decisions[Math.floor(Math.random() * decisions.length)];
+            
+            // Zobraz výběr rozhodnutí
+            let optionsHtml = decisions.map(d => `
+                <button class="btn" onclick="adminSendDailyDecision('${d.id}')" style="width: 100%; margin-bottom: 0.5rem; background: #2a3a2a; border: 1px solid #4a5a4a; text-align: left; padding: 0.8rem;">
+                    <div style="font-size: 1.1rem;">${d.icon} <strong>${d.name}</strong></div>
+                    <div style="color: #888; font-size: 0.8rem; margin-top: 0.3rem;">${d.desc}</div>
+                    <div style="color: #6a8a6a; font-size: 0.75rem; margin-top: 0.3rem;">Volby: ${d.options.map(o => o.icon + ' ' + o.name).join(' | ')}</div>
+                </button>
+            `).join('');
+            
+            // Přidej i možnost náhodného
+            optionsHtml += `
+                <button class="btn" onclick="adminSendDailyDecision('random')" style="width: 100%; margin-top: 0.5rem; background: #3a3a1a; border: 1px solid #5a5a3a; padding: 0.8rem;">
+                    🎲 <strong>Náhodné rozhodnutí</strong>
+                </button>
+            `;
+            
+            showModal('🎯 Vyber denní rozhodnutí', `
+                <div style="max-height: 60vh; overflow-y: auto;">
+                    ${optionsHtml}
+                </div>
+                <button class="btn" onclick="showAdminPolitics()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
+            `);
+        }
+        
+        async function adminSendDailyDecision(decisionId) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            const decisions = MAYOR_SYSTEM.dailyDecisions;
+            const decision = decisionId === 'random' 
+                ? decisions[Math.floor(Math.random() * decisions.length)]
+                : decisions.find(d => d.id === decisionId);
+            
+            if (!decision) { notifyWarning('Chyba', 'Rozhodnutí nenalezeno'); return; }
             
             await firebaseDB.ref('politics/decisions/active').set({
-                id: randomDecision.id,
+                id: decision.id,
                 triggeredAt: firebase.database.ServerValue.TIMESTAMP,
                 decided: false
             });
             
-            // Notifikace do chatu
             await firebaseDB.ref('chat/messages').push({
                 author: '🏛️ POLITIKA',
-                text: `📢 DENNÍ ROZHODNUTÍ 📢\n\n${randomDecision.icon} ${randomDecision.name}\n\n${randomDecision.desc}\n\n👑 Šéf Pustiny musí rozhodnout! Jeho volba ovlivní všechny přeživší.\n\n🗳️ Sledujte sekci Politika pro výsledek!`,
+                text: `📢 DENNÍ ROZHODNUTÍ 📢\n\n${decision.icon} ${decision.name}\n\n${decision.desc}\n\n👑 Šéf Pustiny musí rozhodnout! Jeho volba ovlivní všechny přeživší.\n\n🗳️ Sledujte sekci Politika pro výsledek!`,
                 timestamp: firebase.database.ServerValue.TIMESTAMP,
                 system: true
             });
             
-            notifySuccess('Rozhodnutí spuštěno', randomDecision.name);
+            notifySuccess('Rozhodnutí spuštěno', decision.name);
+            showAdminPolitics();
         }
         
         // Admin: Vyhlásit výsledky voleb
@@ -89908,10 +89948,42 @@ function openFullscreenMap() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
             const decisions = MAYOR_SYSTEM.crisisDecisions;
-            const randomDecision = decisions[Math.floor(Math.random() * decisions.length)];
+            
+            // Zobraz výběr krize
+            let optionsHtml = decisions.map(d => `
+                <button class="btn" onclick="adminSendCrisis('${d.id}')" style="width: 100%; margin-bottom: 0.5rem; background: #3a1a1a; border: 1px solid #5a3a3a; text-align: left; padding: 0.8rem;">
+                    <div style="font-size: 1.1rem;">${d.icon} <strong>${d.name}</strong> ${d.urgent ? '<span style="color: #f44336; font-size: 0.75rem;">⚠️ URGENTNÍ</span>' : ''}</div>
+                    <div style="color: #888; font-size: 0.8rem; margin-top: 0.3rem;">${d.desc}</div>
+                    <div style="color: #8a6a6a; font-size: 0.75rem; margin-top: 0.3rem;">Volby: ${d.options.map(o => o.icon + ' ' + o.name).join(' | ')}</div>
+                </button>
+            `).join('');
+            
+            optionsHtml += `
+                <button class="btn" onclick="adminSendCrisis('random')" style="width: 100%; margin-top: 0.5rem; background: #3a2a1a; border: 1px solid #5a4a3a; padding: 0.8rem;">
+                    🎲 <strong>Náhodná krize</strong>
+                </button>
+            `;
+            
+            showModal('🚨 Vyber krizovou situaci', `
+                <div style="max-height: 60vh; overflow-y: auto;">
+                    ${optionsHtml}
+                </div>
+                <button class="btn" onclick="showAdminPolitics()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
+            `);
+        }
+        
+        async function adminSendCrisis(decisionId) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            const decisions = MAYOR_SYSTEM.crisisDecisions;
+            const decision = decisionId === 'random'
+                ? decisions[Math.floor(Math.random() * decisions.length)]
+                : decisions.find(d => d.id === decisionId);
+            
+            if (!decision) { notifyWarning('Chyba', 'Krize nenalezena'); return; }
             
             await firebaseDB.ref('politics/decisions/active').set({
-                id: randomDecision.id,
+                id: decision.id,
                 triggeredAt: firebase.database.ServerValue.TIMESTAMP,
                 decided: false,
                 crisis: true
@@ -89919,12 +89991,12 @@ function openFullscreenMap() {
             
             await firebaseDB.ref('chat/messages').push({
                 author: '🏛️ POLITIKA',
-                text: `🚨 KRIZOVÁ SITUACE! 🚨\n\n${randomDecision.icon} ${randomDecision.name}\n\n${randomDecision.desc}\n\n⚠️ URGENTNÍ: Šéf Pustiny musí OKAMŽITĚ reagovat!\n\nTato krize ovlivní celou Pustinu. Každá volba má své důsledky.\n\n👑 Čekáme na rozhodnutí šéfa...`,
+                text: `🚨 KRIZOVÁ SITUACE! 🚨\n\n${decision.icon} ${decision.name}\n\n${decision.desc}\n\n⚠️ URGENTNÍ: Šéf Pustiny musí OKAMŽITĚ reagovat!\n\nTato krize ovlivní celou Pustinu. Každá volba má své důsledky.\n\n👑 Čekáme na rozhodnutí šéfa...`,
                 timestamp: firebase.database.ServerValue.TIMESTAMP,
                 system: true
             });
             
-            notifySuccess('Krize spuštěna!', randomDecision.name);
+            notifySuccess('Krize spuštěna!', decision.name);
             showAdminPolitics();
         }
         
@@ -93249,6 +93321,64 @@ function openFullscreenMap() {
             });
         }
         
+        // === ZMĚNA OSOBNOSTÍ KAŽDÝCH 6 HODIN ===
+        // Každých 6 hodin reálného času se některým osadníkům změní osobnost
+        const PERSONALITY_SHIFT_INTERVAL = 6 * 60 * 60 * 1000; // 6 hodin v ms
+        
+        function checkSettlerPersonalityShift() {
+            if (!state.settlement?.settlers || state.settlement.settlers.length === 0) return;
+            
+            const now = Date.now();
+            if (!state.settlement.lastPersonalityShift) state.settlement.lastPersonalityShift = now;
+            
+            if (now - state.settlement.lastPersonalityShift < PERSONALITY_SHIFT_INTERVAL) return;
+            
+            state.settlement.lastPersonalityShift = now;
+            
+            const settlers = state.settlement.settlers;
+            let changed = [];
+            
+            settlers.forEach(settler => {
+                // 30% šance na změnu osobnosti pro každého osadníka
+                if (Math.random() > 0.30) return;
+                
+                const oldPers = SETTLER_PERSONALITIES.find(p => p.id === settler.personality);
+                
+                // Vyber novou osobnost (jinou než současnou)
+                const available = SETTLER_PERSONALITIES.filter(p => p.id !== settler.personality);
+                if (available.length === 0) return;
+                
+                const newPers = available[Math.floor(Math.random() * available.length)];
+                settler.personality = newPers.id;
+                
+                changed.push({
+                    name: settler.name,
+                    oldIcon: oldPers?.icon || '❓',
+                    oldName: oldPers?.name || 'Neznámá',
+                    newIcon: newPers.icon,
+                    newName: newPers.name
+                });
+            });
+            
+            // Notifikace o změnách
+            if (changed.length > 0) {
+                const messages = changed.map(c => 
+                    `${c.name}: ${c.oldIcon} ${c.oldName} → ${c.newIcon} ${c.newName}`
+                ).join('\n');
+                
+                if (typeof addLog === 'function') {
+                    addLog(`🔄 Osobnosti osadníků se změnily! (${changed.length}x)`, '🏘️');
+                    changed.forEach(c => {
+                        addLog(`  ${c.name}: ${c.oldIcon} → ${c.newIcon} ${c.newName}`, '🔄');
+                    });
+                }
+                
+                if (typeof notifyInfo === 'function') {
+                    notifyInfo('🔄 Změna osobností', `${changed.length} osadník${changed.length === 1 ? '' : changed.length < 5 ? 'i' : 'ů'} změnil${changed.length === 1 ? '' : 'i'} povahu!`);
+                }
+            }
+        }
+        
         // Generování vztahů mezi osadníky (volá se denně)
         function updateSettlerRelationships() {
             if (!state.settlement?.settlers || state.settlement.settlers.length < 2) return;
@@ -94154,6 +94284,7 @@ function openFullscreenMap() {
         window.getSettlerDialog = getSettlerDialog;
         window.assignSettlerPersonality = assignSettlerPersonality;
         window.migrateSettlerPersonalities = migrateSettlerPersonalities;
+        window.checkSettlerPersonalityShift = checkSettlerPersonalityShift;
         window.encourageSettler = encourageSettler;
         window.initSettlerExtended = initSettlerExtended;
         window.updateSettlerNeeds = updateSettlerNeeds;
@@ -94232,7 +94363,9 @@ function openFullscreenMap() {
         window.adminClearManualPhase = adminClearManualPhase;
         window.adminDeclareElectionResults = adminDeclareElectionResults;
         window.adminTriggerDailyDecision = adminTriggerDailyDecision;
+        window.adminSendDailyDecision = adminSendDailyDecision;
         window.adminTriggerCrisis = adminTriggerCrisis;
+        window.adminSendCrisis = adminSendCrisis;
         window.adminAddPublicMoney = adminAddPublicMoney;
         window.adminSetTreasuryDirect = adminSetTreasuryDirect;
         window.adminModifyTreasury = adminModifyTreasury;
