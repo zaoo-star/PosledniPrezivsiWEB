@@ -12653,7 +12653,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     icon: '⭐',
                     desc: 'Aktivuj dvojnásobné XP na 12 hodin',
                     cooldown: 86400000, // 24 hodin
-                    cost: 500,
+                    cost: 1000,
                     duration: 43200000, // 12 hodin
                     effect: { xpMultiplier: 2 }
                 },
@@ -12663,7 +12663,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     icon: '🎁',
                     desc: 'Aktivuj +50% loot na 12 hodin',
                     cooldown: 86400000,
-                    cost: 500,
+                    cost: 1000,
                     duration: 43200000, // 12 hodin
                     effect: { lootMultiplier: 1.5 }
                 },
@@ -12673,7 +12673,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     icon: '💊',
                     desc: 'Léčení zdarma pro všechny na 12 hodin',
                     cooldown: 43200000, // 12 hodin
-                    cost: 200,
+                    cost: 400,
                     duration: 43200000, // 12 hodin
                     effect: { freeHealing: true }
                 },
@@ -12683,7 +12683,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     icon: '🏷️',
                     desc: '-20% ceny v obchodech na 12 hodin',
                     cooldown: 43200000,
-                    cost: 300,
+                    cost: 600,
                     duration: 43200000, // 12 hodin
                     effect: { shopDiscount: 0.20 }
                 },
@@ -12693,7 +12693,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     icon: '🎯',
                     desc: '+50% XP a loot za zabití konkrétního typu nepřítele',
                     cooldown: 21600000, // 6 hodin
-                    cost: 100,
+                    cost: 200,
                     duration: 43200000, // 12 hodin
                     hasTarget: true
                 },
@@ -13133,9 +13133,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Helper pro bezpečnou kontrolu šéfa (před inicializací systému)
         function isMayor() {
-            if (!currentMayor) return false;
+            if (!currentMayor || !currentMayor.name) return false;
             const playerName = typeof getPlayerName === 'function' ? getPlayerName() : (state?.char?.name || '');
-            return currentMayor.name === playerName;
+            if (!playerName) return false;
+            // Porovnej case-insensitive a s trimem
+            return currentMayor.name.trim().toLowerCase() === playerName.trim().toLowerCase();
         }
         
         // === XP KONSTANTA ===
@@ -86014,6 +86016,13 @@ function openFullscreenMap() {
             // Listener na aktuálního starostu
             firebaseDB.ref('politics/mayor').on('value', (snapshot) => {
                 currentMayor = snapshot.val();
+                console.log('🏛️ Mayor loaded:', currentMayor);
+                if (currentMayor && currentMayor.name) {
+                    console.log('🏛️ Current mayor is:', currentMayor.name);
+                    const myName = typeof getPlayerName === 'function' ? getPlayerName() : (state?.char?.name || '');
+                    console.log('🏛️ My name is:', myName);
+                    console.log('🏛️ Am I mayor?', currentMayor.name === myName);
+                }
                 updateMayorUI();
             });
             
@@ -86052,7 +86061,35 @@ function openFullscreenMap() {
             
             // Listener na rozhodnutí
             firebaseDB.ref('politics/decisions').on('value', (snapshot) => {
-                mayorDecisions = snapshot.val();
+                const newDecisions = snapshot.val();
+                const oldActive = mayorDecisions?.active;
+                const newActive = newDecisions?.active;
+                
+                // Pokud je nové rozhodnutí a hráč je šéf nebo admin
+                if (newActive && !newActive.decided && (!oldActive || oldActive.id !== newActive.id)) {
+                    if (isMayor() || isStaff()) {
+                        const decision = [...MAYOR_SYSTEM.dailyDecisions, ...MAYOR_SYSTEM.crisisDecisions]
+                            .find(d => d.id === newActive.id);
+                        if (decision) {
+                            notifySuccess(`${decision.icon} Nové rozhodnutí!`, `${decision.name} - klikni na Politiku`);
+                            // Přidej banner
+                            try {
+                                const bd = document.getElementById('eventBanners');
+                                if (bd) {
+                                    bd.querySelectorAll('div').forEach(d => { if(d.innerHTML.includes('Rozhodnutí čeká')) d.remove(); });
+                                    bd.insertAdjacentHTML('beforeend', `
+                                        <div onclick="switchTab('multiplayer'); setTimeout(showPoliticsPanel, 300);" style="cursor: pointer; background: linear-gradient(90deg, #2a1a0a, #3a2a1a, #2a1a0a); border: 1px solid #ff9800; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between;">
+                                            <span style="color: #ff9800; font-size: 0.75rem; font-weight: bold;">${decision.icon} Rozhodnutí čeká!</span>
+                                            <span style="color: #888; font-size: 0.65rem;">Klikni → Politika</span>
+                                        </div>
+                                    `);
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                }
+                
+                mayorDecisions = newDecisions;
                 applyMayorDecisions();
             });
             
@@ -86298,7 +86335,9 @@ function openFullscreenMap() {
                 
                 const phase = getElectionPhase();
                 const playerName = getPlayerName();
-                const isCurrentMayor = mayor?.name === playerName;
+                const isCurrentMayor = mayor?.name && playerName && mayor.name.trim().toLowerCase() === playerName.trim().toLowerCase();
+                
+                console.log('🏛️ showPoliticsPanel - mayor:', mayor?.name, 'playerName:', playerName, 'isCurrentMayor:', isCurrentMayor);
                 
                 let html = `
                     <div style="background: linear-gradient(135deg, #1a1a2a 0%, #2a1a1a 100%); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 2px solid #ffd700;">
@@ -87333,6 +87372,12 @@ function openFullscreenMap() {
         
         // Zobrazit panel pravomocí šéfa
         async function showMayorPowersPanel() {
+            console.log('🏛️ showMayorPowersPanel called');
+            console.log('🏛️ isMayor():', isMayor());
+            console.log('🏛️ isStaff():', isStaff());
+            console.log('🏛️ currentMayor:', currentMayor);
+            console.log('🏛️ getPlayerName():', getPlayerName());
+            
             if (!isMayor() && !isStaff()) {
                 notifyWarning('Pouze pro šéfa', 'Tato sekce je pouze pro šéfa Pustiny');
                 return;
@@ -87366,11 +87411,41 @@ function openFullscreenMap() {
                 <div style="display: grid; gap: 0.5rem; max-height: 50vh; overflow-y: auto;">
             `;
             
+            // Zjisti jestli běží nějaký event
+            const now = Date.now();
+            let anyActiveEvent = false;
+            let activeEventName = '';
+            for (const [eventId, eventData] of Object.entries(activeEvents)) {
+                if (eventData.until && eventData.until > now && !eventId.startsWith('decision_')) {
+                    anyActiveEvent = true;
+                    const ep = MAYOR_SYSTEM.mayorPowers.find(p => p.id === eventId);
+                    activeEventName = ep?.name || eventId;
+                    break;
+                }
+            }
+            
+            if (anyActiveEvent && !isAdmin) {
+                html += `
+                    <div style="background: #0d1a0d; border: 2px solid #4caf50; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem;">
+                        <div style="color: #4caf50; font-weight: bold; text-align: center;">
+                            ⚡ Právě běží: ${activeEventName}
+                        </div>
+                        <div style="color: #888; font-size: 0.8rem; text-align: center; margin-top: 0.3rem;">
+                            Další event můžeš spustit až tento skončí
+                        </div>
+                    </div>
+                `;
+            }
+            
             MAYOR_SYSTEM.mayorPowers.forEach(power => {
                 const canAfford = power.cost === 0 || publicMoney >= power.cost;
                 const activeEvent = activeEvents[power.id];
                 const isOnCooldown = activeEvent && activeEvent.cooldownUntil && activeEvent.cooldownUntil > Date.now();
                 const isActive = activeEvent && activeEvent.until && activeEvent.until > Date.now();
+                
+                // Blokuj ostatní eventy když běží jiný (kromě decree, set_tax_rate, grant_money, bounty)
+                const isEventType = !['decree', 'set_tax_rate', 'grant_money', 'bounty'].includes(power.id);
+                const blockedByOtherEvent = anyActiveEvent && !isActive && isEventType && !isAdmin;
                 
                 let statusText = '';
                 let statusColor = '#4caf50';
@@ -87384,9 +87459,12 @@ function openFullscreenMap() {
                     const hoursLeft = Math.floor(minsLeft / 60);
                     statusText = hoursLeft > 0 ? `🔒 Cooldown: ${hoursLeft}h ${minsLeft % 60}m` : `🔒 Cooldown: ${minsLeft}m`;
                     statusColor = '#f44336';
+                } else if (blockedByOtherEvent) {
+                    statusText = `⏳ Čeká na konec aktivního eventu`;
+                    statusColor = '#ff9800';
                 }
                 
-                const isDisabled = !canAfford || isOnCooldown;
+                const isDisabled = !canAfford || isOnCooldown || blockedByOtherEvent;
                 
                 html += `
                     <div style="background: ${isActive ? '#0d1a0d' : isDisabled ? '#1a0d0d' : '#1a1a1a'}; border: 1px solid ${isActive ? '#4caf50' : isDisabled ? '#4a2a2a' : '#333'}; border-radius: 8px; padding: 0.75rem; ${!isDisabled ? 'cursor: pointer;' : 'opacity: 0.7;'}" ${!isDisabled ? `onclick="useMayorPower('${power.id}')"` : ''}>
@@ -87429,6 +87507,29 @@ function openFullscreenMap() {
             if (power.cost > publicMoney) {
                 notifyWarning('Nedostatek peněz', `Potřebuješ ${power.cost} 💰 ve veřejné kase (máš ${publicMoney})`);
                 return;
+            }
+            
+            // Kontrola jestli už běží nějaký event (admin může obejít)
+            if (!isStaff()) {
+                const now = Date.now();
+                let hasActiveEvent = false;
+                let activeEventName = '';
+                
+                if (cachedPoliticalEffects) {
+                    for (const [eventId, eventData] of Object.entries(cachedPoliticalEffects)) {
+                        if (eventData.until && eventData.until > now && eventId !== 'decision_shopDiscount' && eventId !== 'decision_xpBonus' && eventId !== 'decision_lootBonus') {
+                            hasActiveEvent = true;
+                            const eventPower = MAYOR_SYSTEM.mayorPowers.find(p => p.id === eventId);
+                            activeEventName = eventPower?.name || eventId;
+                            break;
+                        }
+                    }
+                }
+                
+                if (hasActiveEvent) {
+                    notifyWarning('Již běží event', `Počkej až skončí "${activeEventName}" než aktivuješ další event.`);
+                    return;
+                }
             }
             
             if (!confirm(`Aktivovat "${power.name}" za ${power.cost} 💰 z veřejné kasy?`)) return;
