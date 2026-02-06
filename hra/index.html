@@ -1860,9 +1860,6 @@
             <div id="statusBars"></div>
         </header>
         
-        <!-- Persistentní event bannery (mimo main, nepřepisuje se renderem) -->
-        <div id="persistentBanners" style="padding: 0 0.3rem;"></div>
-        
         <main id="main"></main>
     </div>
     
@@ -29232,20 +29229,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             });
             
             document.getElementById('main').innerHTML = `
-                <div id="eventBanners">
-                ${(currentTombola || window.currentTombola) && (currentTombola || window.currentTombola).status === 'active' ? `
-                <div data-tombola-banner="true" onclick="switchTab('multiplayer'); setTimeout(showTombola, 300);" style="cursor:pointer;background:linear-gradient(135deg,#2a2a05 0%,#1a1a02 100%);border:2px solid #ffd700;border-radius:8px;padding:0.7rem 1rem;margin-bottom:0.5rem;display:flex;align-items:center;justify-content:space-between;animation:tombola-pulse 1.5s ease-in-out infinite;">
-                    <div style="display:flex;align-items:center;gap:0.6rem;">
-                        <span style="font-size:1.5rem;">🎰</span>
-                        <div>
-                            <div style="color:#ffd700;font-weight:bold;font-size:0.95rem;">TOMBOLA BĚŽÍ!</div>
-                            <div style="color:#aa8800;font-size:0.75rem;">${((currentTombola || window.currentTombola)?.name || 'Tombola')} · 🎟️ ${((currentTombola || window.currentTombola)?.totalTickets || 0)} lístků</div>
-                        </div>
-                    </div>
-                    <span style="color:#ffd700;font-size:1.5rem;">🎟️</span>
-                </div>
-                ` : ''}
-                </div>
+                <div id="eventBanners"></div>
                 <div class="tab ${state.activeTab === 'map' ? 'active' : ''}" id="tabMap">
                     <!-- NOVÝ MAPOVÝ SYSTÉM -->
                     ${renderWorldMap()}
@@ -30348,12 +30332,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     setTimeout(updateTombolaBtn, 500);
                     setTimeout(updateTombolaBtn, 2000);
                     setTimeout(updateTombolaBtn, 5000);
-                }
-                // Po renderu aktualizuj persistent tombola banner
-                if (typeof refreshPersistentBanners === 'function') {
-                    setTimeout(refreshPersistentBanners, 100);
-                    setTimeout(refreshPersistentBanners, 2000);
-                    setTimeout(refreshPersistentBanners, 5000);
                 }
                 // Po renderu aktualizuj politics tlačítko (bliká při volbách)
                 if (typeof updatePoliticsBtn === 'function') {
@@ -91624,74 +91602,56 @@ function openFullscreenMap() {
                 currentTombola = newTombola;
                 window.currentTombola = newTombola;
                 
-                // Refresh event banner v persistentním kontejneru (viditelný na všech tabech, nepřepisuje se)
-                try {
-                    const bd = document.getElementById('persistentBanners');
-                    console.log('🎰 Tombola listener:', { hasBd: !!bd, newTombola: !!newTombola, status: newTombola?.status });
-                    if (bd && newTombola && newTombola.status === 'active') {
-                        // Odstraň staré tombola bannery
-                        bd.querySelectorAll('[data-tombola-banner]').forEach(d => d.remove());
-                        // Přidej nový
-                        const bannerEl = document.createElement('div');
-                        bannerEl.setAttribute('data-tombola-banner', 'true');
-                        bannerEl.onclick = () => { switchTab('multiplayer'); setTimeout(showTombola, 300); };
-                        bannerEl.style.cssText = 'cursor:pointer;background:linear-gradient(135deg,#2a2a05 0%,#1a1a02 100%);border:2px solid #ffd700;border-radius:8px;padding:0.7rem 1rem;margin:0.4rem 0;display:flex;align-items:center;justify-content:space-between;animation:tombola-pulse 1.5s ease-in-out infinite;';
-                        const endTimeMs = newTombola.endsAt || newTombola.endTime;
-                        const endTimeStr = endTimeMs ? new Date(endTimeMs).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'}) : '';
-                        bannerEl.innerHTML = `
-                            <div style="display:flex;align-items:center;gap:0.6rem;">
-                                <span style="font-size:1.5rem;">🎰</span>
-                                <div>
-                                    <div style="color:#ffd700;font-weight:bold;font-size:0.95rem;">TOMBOLA BĚŽÍ!</div>
-                                    <div style="color:#aa8800;font-size:0.75rem;">${newTombola.name || 'Tombola'}${endTimeStr ? ' · do ' + endTimeStr : ''} · 🎟️ ${newTombola.totalTickets || 0} lístků</div>
-                                </div>
-                            </div>
-                            <span style="color:#ffd700;font-size:1.5rem;">🎟️</span>`;
-                        bd.appendChild(bannerEl);
-                        console.log('🎰 Banner added to persistentBanners');
-                    } else if (bd) {
-                        bd.querySelectorAll('[data-tombola-banner]').forEach(d => d.remove());
-                    }
-                } catch(e) { console.error('Tombola banner error:', e); }
-                
                 // Aktualizuj tlačítko v Online tabu
                 updateTombolaBtn();
+                
+                // Časované chat notifikace pro tombolu
+                if (newTombola && newTombola.status === 'active') {
+                    scheduleTombolaChatReminders(newTombola);
+                }
             });
         }
         
-        // Refresh persistent bannerů (tombola, volby) - volá se po renderFull
-        function refreshPersistentBanners() {
-            const bd = document.getElementById('persistentBanners');
-            if (!bd) return;
+        // Naplánuj chat připomínky tomboly (25%, 50%, 10 min před koncem)
+        let _tombolaRemindersScheduled = {};
+        function scheduleTombolaChatReminders(tombola) {
+            if (!tombola?.endsAt || !tombola?.createdAt) return;
+            const id = tombola.name || 'tombola';
+            if (_tombolaRemindersScheduled[id]) return; // Už naplánováno
+            _tombolaRemindersScheduled[id] = true;
             
-            // TOMBOLA banner
-            const hasTombolaBanner = bd.querySelector('[data-tombola-banner]');
-            const tombolaData = currentTombola || window.currentTombola;
+            const now = Date.now();
+            const duration = tombola.endsAt - tombola.createdAt;
+            const time25 = tombola.createdAt + duration * 0.25;
+            const time50 = tombola.createdAt + duration * 0.50;
+            const time10min = tombola.endsAt - 10 * 60 * 1000;
             
-            if (tombolaData && tombolaData.status === 'active') {
-                if (!hasTombolaBanner) {
-                    const bannerEl = document.createElement('div');
-                    bannerEl.setAttribute('data-tombola-banner', 'true');
-                    bannerEl.onclick = () => { switchTab('multiplayer'); setTimeout(showTombola, 300); };
-                    bannerEl.style.cssText = 'cursor:pointer;background:linear-gradient(135deg,#2a2a05 0%,#1a1a02 100%);border:2px solid #ffd700;border-radius:8px;padding:0.7rem 1rem;margin:0.4rem 0;display:flex;align-items:center;justify-content:space-between;animation:tombola-pulse 1.5s ease-in-out infinite;';
-                    const endTimeMs = tombolaData.endsAt || tombolaData.endTime;
-                    const endTimeStr = endTimeMs ? new Date(endTimeMs).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'}) : '';
-                    bannerEl.innerHTML = `
-                        <div style="display:flex;align-items:center;gap:0.6rem;">
-                            <span style="font-size:1.5rem;">🎰</span>
-                            <div>
-                                <div style="color:#ffd700;font-weight:bold;font-size:0.95rem;">TOMBOLA BĚŽÍ!</div>
-                                <div style="color:#aa8800;font-size:0.75rem;">${tombolaData.name || 'Tombola'}${endTimeStr ? ' · do ' + endTimeStr : ''} · 🎟️ ${tombolaData.totalTickets || 0} lístků</div>
-                            </div>
-                        </div>
-                        <span style="color:#ffd700;font-size:1.5rem;">🎟️</span>`;
-                    bd.appendChild(bannerEl);
-                }
-            } else if (hasTombolaBanner) {
-                bd.querySelectorAll('[data-tombola-banner]').forEach(d => d.remove());
+            const sendReminder = async (msg) => {
+                try {
+                    // Kontrola jestli tombola stále běží
+                    const snap = await firebaseDB.ref('tombola/active/status').once('value');
+                    if (snap.val() !== 'active') return;
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🎟️ TOMBOLA',
+                        text: msg,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    });
+                } catch(e) {}
+            };
+            
+            const name = tombola.name || 'Tombola';
+            
+            if (time25 > now) {
+                setTimeout(() => sendReminder(`🎰 Tombola "${name}" je v plném proudu! Už čtvrtina času pryč — kupte si lístky! 🎟️`), time25 - now);
+            }
+            if (time50 > now) {
+                setTimeout(() => sendReminder(`⏰ Tombola "${name}" — POLOVINA ČASU! Zbývá už jen ${Math.round((tombola.endsAt - time50) / 60000)} minut. Poslední šance na lístky! 🎟️`), time50 - now);
+            }
+            if (time10min > now) {
+                setTimeout(() => sendReminder(`🚨 TOMBOLA "${name}" KONČÍ ZA 10 MINUT! Poslední šance koupit lístek! 🎟️🔥`), time10min - now);
             }
         }
-        window.refreshPersistentBanners = refreshPersistentBanners;
         
         // Aktualizuj vizuál tombola tlačítka - volat po renderFull i z listeneru
         function updateTombolaBtn() {
@@ -93105,17 +93065,6 @@ function openFullscreenMap() {
                     
                     notifySuccess('🎟️ Lístek koupen!', `Máš ${finalCount} lístků`);
                     addLog(`Koupen lístek do tomboly "${escapeHtml(tombola.name)}" za ${totalCost} 💰`, '🎟️');
-                    
-                    // Oznámení do chatu jen při milnících (ne každý nákup)
-                    const milestones = [1, 5, 10, 20, 50];
-                    if (milestones.includes(finalCount)) {
-                        await firebaseDB.ref('chat/messages').push({
-                            author: '🎟️ TOMBOLA',
-                            text: `🎟️ Tombola "${tombola.name}" už má ${finalCount} prodaných lístků! Kupte si lístky dokud je čas!`,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP,
-                            system: true
-                        });
-                    }
                     
                     // Refresh zobrazení
                     showTombola();
