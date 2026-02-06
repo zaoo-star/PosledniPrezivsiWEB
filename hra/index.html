@@ -84896,6 +84896,13 @@ function openFullscreenMap() {
         initFirebase = function() {
             const result = originalInitFirebase();
             
+            // Okamžitě načti veřejnou kasu (pro HUD - nečekat na setTimeout)
+            if (firebaseDB) {
+                firebaseDB.ref('politics/publicMoney').once('value').then(snap => {
+                    _cachedPublicMoney = snap.val() || 0;
+                }).catch(() => {});
+            }
+            
             // Po úspěšném připojení inicializuj nové systémy
             setTimeout(() => {
                 if (multiplayerEnabled) {
@@ -91594,49 +91601,57 @@ function openFullscreenMap() {
                 }
                 currentTombola = newTombola;
                 window.currentTombola = newTombola;
-                // Refresh event banner
+                
+                // Refresh event banner v hlavním layoutu (viditelný na všech tabech)
                 try {
                     const bd = document.getElementById('eventBanners');
-                    if (bd && newTombola) {
-                        if (!bd.innerHTML.includes('Tombola')) {
-                            bd.insertAdjacentHTML('afterbegin', '<div onclick="switchTab(\'multiplayer\'); setTimeout(showTombola, 300);" style="cursor: pointer; background: linear-gradient(90deg, #1a1a05, #2a2a0a, #1a1a05); border: 1px solid #ffd700; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between;"><span style="color: #ffd700; font-size: 0.75rem; font-weight: bold;">🎰 Tombola běží!</span><span style="color: #888; font-size: 0.65rem;">Klikni → Online</span></div>');
-                        }
+                    if (bd && newTombola && newTombola.status === 'active') {
+                        // Odstraň staré tombola bannery
+                        bd.querySelectorAll('[data-tombola-banner]').forEach(d => d.remove());
+                        // Přidej nový
+                        const bannerEl = document.createElement('div');
+                        bannerEl.setAttribute('data-tombola-banner', 'true');
+                        bannerEl.onclick = () => { switchTab('multiplayer'); setTimeout(showTombola, 300); };
+                        bannerEl.style.cssText = 'cursor:pointer;background:linear-gradient(90deg,#1a1a05,#2a2a0a,#1a1a05);border:2px solid #ffd700;border-radius:6px;padding:0.5rem 0.8rem;margin-bottom:0.4rem;display:flex;align-items:center;justify-content:space-between;animation:tombola-pulse 1.5s ease-in-out infinite;';
+                        const endTime = newTombola.endTime ? new Date(newTombola.endTime).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'}) : '';
+                        bannerEl.innerHTML = `<div style="display:flex;align-items:center;gap:0.5rem;"><span style="font-size:1.3rem;">🎰</span><div><div style="color:#ffd700;font-weight:bold;font-size:0.85rem;">TOMBOLA BĚŽÍ!</div><div style="color:#aa8800;font-size:0.65rem;">${newTombola.name || 'Tombola'}${endTime ? ' · do ' + endTime : ''} · 🎟️ ${newTombola.totalTickets || 0} lístků</div></div></div><span style="color:#ffd700;font-size:1.2rem;">→</span>`;
+                        bd.insertBefore(bannerEl, bd.firstChild);
                     } else if (bd && !newTombola) {
-                        bd.querySelectorAll('div').forEach(d => { if(d.innerHTML.includes('Tombola')) d.remove(); });
+                        bd.querySelectorAll('[data-tombola-banner]').forEach(d => d.remove());
                     }
-                } catch(e) {}
+                } catch(e) { console.error('Tombola banner error:', e); }
+                
+                // Aktualizuj tlačítko v Online tabu
+                updateTombolaBtn();
             });
         }
         
         // Aktualizuj vizuál tombola tlačítka - volat po renderFull i z listeneru
         function updateTombolaBtn() {
-            // Aktualizuj tombola banner a tlačítko
-            const banner = document.getElementById('tombolaBanner');
             const btn = document.getElementById('tombolaBtn');
+            if (!btn) return;
             
-            if (currentTombola) {
-                // Pokud banner neexistuje ale tombola je aktivní, re-renderuj tab
-                if (!banner) {
-                    const activeTab = document.querySelector('.tab-btn.active');
-                    if (activeTab && activeTab.textContent.includes('Online')) {
-                        renderFull();
-                    }
-                }
-                // Aktualizuj tlačítko v sekci
-                if (btn) {
-                    btn.style.borderColor = '#ffd700';
-                    const span = btn.querySelector('span:last-child');
-                    if (span) span.innerHTML = '<span style="color: #ffd700;">🎰 TOMBOLA — BĚŽÍ!</span>';
-                }
+            const isActive = !!(currentTombola && currentTombola.status === 'active');
+            
+            btn.setAttribute('data-active', isActive ? 'true' : 'false');
+            
+            if (isActive) {
+                btn.style.borderColor = '#ffd700';
+                btn.style.background = 'linear-gradient(180deg, #2a2a0a 0%, #1a1a04 100%)';
+                btn.style.animation = 'tombola-pulse 1.5s ease-in-out infinite';
+                const span = btn.querySelector('span:last-child');
+                if (span) span.innerHTML = '<span style="color: #ffd700;">🎰 TOMBOLA — BĚŽÍ!</span>';
             } else {
-                // Tombola skončila - odstraň banner
-                if (banner) banner.remove();
-                if (btn) {
-                    btn.style.borderColor = '#222';
-                    const span = btn.querySelector('span:last-child');
-                    if (span) span.innerHTML = '<span style="color: #666;">TOMBOLA</span>';
-                }
+                btn.style.borderColor = '#222';
+                btn.style.background = '#0a0a0a';
+                btn.style.animation = 'none';
+                const span = btn.querySelector('span:last-child');
+                if (span) span.innerHTML = '<span style="color: #666;">TOMBOLA</span>';
             }
+            
+            // Aktualizuj i banner v Online tabu
+            const banner = document.getElementById('tombolaBanner');
+            if (banner && !isActive) banner.remove();
         }
         
         // Aktualizuj vizuál politics tlačítka - bliká když jsou volby
@@ -93024,13 +93039,16 @@ function openFullscreenMap() {
                     notifySuccess('🎟️ Lístek koupen!', `Máš ${finalCount} lístků`);
                     addLog(`Koupen lístek do tomboly "${escapeHtml(tombola.name)}" za ${totalCost} 💰`, '🎟️');
                     
-                    // Oznámení do chatu
-                    await firebaseDB.ref('chat/messages').push({
-                        author: '🎟️ TOMBOLA',
-                        text: `${myName} koupil${count > 1 ? ' ' + count + ' lístků' : ' lístek'} do tomboly "${tombola.name}"! (celkem ${finalCount} 🎟️)`,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP,
-                        system: true
-                    });
+                    // Oznámení do chatu jen při milnících (ne každý nákup)
+                    const milestones = [1, 5, 10, 20, 50];
+                    if (milestones.includes(finalCount)) {
+                        await firebaseDB.ref('chat/messages').push({
+                            author: '🎟️ TOMBOLA',
+                            text: `🎟️ Tombola "${tombola.name}" už má ${finalCount} prodaných lístků! Kupte si lístky dokud je čas!`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            system: true
+                        });
+                    }
                     
                     // Refresh zobrazení
                     showTombola();
