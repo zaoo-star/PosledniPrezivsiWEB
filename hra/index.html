@@ -12583,12 +12583,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 },
                 {
                     id: 'grant_money',
-                    name: 'Rozdat granty',
+                    name: 'Poslat grant',
                     icon: '💰',
-                    desc: 'Rozdej peníze z veřejné kasy aktivním hráčům',
+                    desc: 'Pošli peníze z veřejné kasy konkrétnímu hráči',
                     cooldown: 86400000,
                     cost: 0, // Speciální - bere přímo z kasy
-                    minCost: 100
+                    minCost: 50
                 },
                 {
                     id: 'set_tax_rate',
@@ -89515,40 +89515,102 @@ function openFullscreenMap() {
                 publicMoney = snap.val() || 0;
             } catch(e) {}
             
+            // Načti hráče ze žebříčku
+            let players = [];
+            try {
+                const lbSnap = await firebaseDB.ref('leaderboard').once('value');
+                const lbData = lbSnap.val() || {};
+                const myName = getPlayerName();
+                players = Object.entries(lbData)
+                    .map(([name, data]) => ({ name, level: data.level || 1, score: data.score || 0 }))
+                    .filter(p => p.name !== myName) // Bez šéfa
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, 30); // Max 30 hráčů
+            } catch(e) {}
+            
+            const playerOptions = players.length > 0 
+                ? players.map((p, i) => `
+                    <div onclick="selectGrantTarget('${escapeHtml(p.name).replace(/'/g, "\\'")}')" 
+                         id="grant-player-${i}"
+                         class="grant-player-row"
+                         style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; padding: 0.5rem 0.7rem; border-radius: 6px; margin-bottom: 0.25rem; border: 2px solid transparent; transition: all 0.15s;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span style="color: #666; font-size: 0.75rem; width: 1.5rem;">${i + 1}.</span>
+                            <span style="color: #ddd; font-weight: bold;">${escapeHtml(p.name)}</span>
+                        </div>
+                        <span style="color: #888; font-size: 0.8rem;">Lvl ${p.level}</span>
+                    </div>
+                `).join('')
+                : '<div style="color: #666; text-align: center; padding: 1rem;">Žádní hráči v žebříčku</div>';
+            
             const html = `
                 <div style="padding: 1rem;">
                     <div style="text-align: center; margin-bottom: 1rem;">
                         <div style="font-size: 2.5rem;">💰</div>
-                        <h3 style="color: #4caf50; margin: 0.5rem 0;">Rozdat granty</h3>
-                        <p style="color: #888; font-size: 0.85rem;">Rozdej peníze z veřejné kasy aktivním hráčům</p>
+                        <h3 style="color: #4caf50; margin: 0.5rem 0;">Poslat grant</h3>
+                        <p style="color: #888; font-size: 0.85rem;">Pošli peníze z veřejné kasy konkrétnímu hráči</p>
                     </div>
                     
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 0.75rem;">
-                            <span style="color: #888;">Dostupné:</span>
+                            <span style="color: #888;">Ve veřejné kase:</span>
                             <span style="color: #ffd700; font-weight: bold;">${formatNumber(publicMoney)} 💰</span>
                         </div>
                         
-                        <label style="color: #888; font-size: 0.85rem;">Celková částka k rozdělení:</label>
-                        <input type="number" id="grant-amount" min="100" max="${publicMoney}" value="${Math.min(1000, publicMoney)}" style="width: 100%; background: #0d0d0d; border: 1px solid #333; border-radius: 4px; padding: 0.5rem; color: #fff; margin-top: 0.3rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Částka:</label>
+                        <input type="number" id="grant-amount" min="50" max="${publicMoney}" value="${Math.min(500, publicMoney)}" style="width: 100%; background: #0d0d0d; border: 1px solid #333; border-radius: 4px; padding: 0.5rem; color: #fff; margin-top: 0.3rem;">
                     </div>
                     
-                    <div style="background: #0d1a0d; padding: 0.75rem; border-radius: 6px; margin-bottom: 1rem;">
-                        <p style="color: #888; font-size: 0.8rem; margin: 0;">💡 Peníze budou rovnoměrně rozděleny mezi všechny online hráče.</p>
+                    <div style="margin-bottom: 0.5rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Vyber hráče:</label>
+                        <div id="grant-selected" style="color: #4caf50; font-size: 0.85rem; margin-top: 0.2rem; min-height: 1.2rem;"></div>
+                    </div>
+                    <div style="max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #0a0a0a; border-radius: 8px; padding: 0.5rem; margin-bottom: 1rem;">
+                        ${playerOptions}
                     </div>
                     
                     <div style="display: flex; gap: 0.5rem;">
                         <button class="btn" onclick="showPoliticsPanel('powers')" style="flex: 1; background: #333;">Zrušit</button>
-                        <button class="btn" onclick="distributeGrants()" style="flex: 1; background: #4caf50;">💰 Rozdat</button>
+                        <button class="btn" id="grant-send-btn" onclick="distributeGrants()" style="flex: 1; background: #555;" disabled>💰 Poslat grant</button>
                     </div>
                 </div>
             `;
-            showModal('💰 GRANTY', html);
+            showModal('💰 GRANT', html);
         }
         
-        // Rozdání grantů
+        // Globální proměnná pro vybraného hráče
+        window._selectedGrantTarget = null;
+        
+        function selectGrantTarget(playerName) {
+            window._selectedGrantTarget = playerName;
+            // Vizuální feedback
+            document.querySelectorAll('.grant-player-row').forEach(el => {
+                el.style.borderColor = 'transparent';
+                el.style.background = '#1a1a1a';
+            });
+            // Najdi a zvýrazni vybraného
+            document.querySelectorAll('.grant-player-row').forEach(el => {
+                if (el.textContent.includes(playerName)) {
+                    el.style.borderColor = '#4caf50';
+                    el.style.background = '#1a2a1a';
+                }
+            });
+            // Update UI
+            const selectedEl = document.getElementById('grant-selected');
+            if (selectedEl) selectedEl.innerHTML = `✅ Vybraný hráč: <strong>${escapeHtml(playerName)}</strong>`;
+            const btn = document.getElementById('grant-send-btn');
+            if (btn) { btn.disabled = false; btn.style.background = '#4caf50'; }
+        }
+        
+        // Poslání grantu konkrétnímu hráči
         async function distributeGrants() {
             const amount = parseInt(document.getElementById('grant-amount')?.value) || 0;
+            const targetPlayer = window._selectedGrantTarget;
+            
+            if (!targetPlayer) {
+                notifyWarning('Vyber hráče', 'Musíš vybrat komu grant pošleš');
+                return;
+            }
             
             // Načti aktuální stav kasy z Firebase
             let publicMoney = 0;
@@ -89557,8 +89619,8 @@ function openFullscreenMap() {
                 publicMoney = snap.val() || 0;
             } catch(e) {}
             
-            if (amount < 100) {
-                notifyWarning('Málo', 'Minimum je 100 💰');
+            if (amount < 50) {
+                notifyWarning('Málo', 'Minimum je 50 💰');
                 return;
             }
             
@@ -89568,49 +89630,36 @@ function openFullscreenMap() {
             }
             
             try {
-                // Získej online hráče (bez šéfa - nemůže dávat grant sám sobě)
-                const myName = getPlayerName().replace(/[\\/\\.#$\[\]]/g, '_');
-                const onlineSnap = await firebaseDB.ref('online').once('value');
-                const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
-                const onlinePlayers = allOnline.filter(p => p !== myName);
-                
-                if (onlinePlayers.length === 0) {
-                    notifyWarning('Nikdo online', 'Nejsou žádní jiní online hráči');
-                    return;
-                }
-                
-                const perPlayer = Math.floor(amount / onlinePlayers.length);
-                
                 // Odečti z kasy
                 await firebaseDB.ref('politics/publicMoney').set(publicMoney - amount);
-                await logTreasuryTransaction(-amount, 'grant', `Granty pro ${onlinePlayers.length} hráčů`);
+                await logTreasuryTransaction(-amount, 'grant', `Grant pro ${targetPlayer}: ${amount} 💰`);
                 
-                // Pošli notifikace
-                for (const player of onlinePlayers) {
-                    await firebaseDB.ref(`notifications/${player}`).push({
-                        type: 'grant',
-                        from: getPlayerName(),
-                        amount: perPlayer,
-                        message: `Šéf ti poslal grant ${perPlayer} 💰!`,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP,
-                        read: false
-                    });
-                }
+                // Pošli notifikaci hráči
+                const targetKey = targetPlayer.replace(/[\\/\\.#$\[\]]/g, '_');
+                await firebaseDB.ref(`notifications/${targetKey}`).push({
+                    type: 'grant',
+                    from: getPlayerName(),
+                    amount: amount,
+                    message: `👑 Šéf Pustiny ti poslal grant ${formatNumber(amount)} 💰!`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    read: false
+                });
                 
                 // Oznámení do chatu
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `💰 Šéf ${getPlayerName()} rozdal ${formatNumber(amount)} 💰 mezi ${onlinePlayers.length} hráčů! (${perPlayer} 💰 každému)`,
+                    text: `💰 Šéf ${getPlayerName()} poslal grant ${formatNumber(amount)} 💰 hráči ${targetPlayer}!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
                 
-                notifySuccess('Granty rozdány!', `${perPlayer} 💰 pro ${onlinePlayers.length} hráčů`);
+                notifySuccess('Grant odeslán!', `${formatNumber(amount)} 💰 → ${targetPlayer}`);
+                window._selectedGrantTarget = null;
                 showPoliticsPanel('powers');
                 
             } catch (e) {
                 console.error('Grant error:', e);
-                notifyWarning('Chyba', 'Nepodařilo se rozdat granty');
+                notifyWarning('Chyba', 'Nepodařilo se poslat grant');
             }
         }
         
