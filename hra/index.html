@@ -58349,7 +58349,7 @@ function openFullscreenMap() {
             }
         }
         
-        // Šéf dostává 1% z veřejné kasy denně (volá se jednou denně serverově nebo při resetu dne)
+        // Šéf dostává 1% z veřejné kasy denně - automaticky se mu připíše
         async function processMayorDailyIncome() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
@@ -58377,23 +58377,33 @@ function openFullscreenMap() {
                 // Odeber z veřejné kasy
                 await firebaseDB.ref('politics/publicMoney').set(publicMoney - mayorIncome);
                 
-                // Přidej k šéfově příjmu (čeká na vyzvednutí)
-                const mayorIncomeRef = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
-                const incomeSnap = await mayorIncomeRef.once('value');
-                const currentIncome = incomeSnap.val() || 0;
-                await mayorIncomeRef.set(currentIncome + mayorIncome);
-                
                 // Označ že dnes už dostal
                 await firebaseDB.ref('politics/mayorLastPayout').set(today);
                 
-                // Pokud jsem šéf, dostanu notifikaci
+                // Pokud jsem šéf, přidej rovnou do peněženky
                 if (mayor.name === getPlayerName()) {
-                    addLog(`👑 Denní příjem šéfa: +${mayorIncome} 💰 (1% z kasy)`, '🏛️');
-                    notifySuccess('💰 Denní příjem', `+${mayorIncome} 💰 z veřejné kasy`);
+                    addMoney(mayorIncome);
+                    saveGame(true);
+                    addLog(`👑 Denní plat šéfa: +${mayorIncome} 💰 (1% z kasy)`, '🏛️');
+                    notifySuccess('💰 Denní plat', `+${mayorIncome} 💰 z veřejné kasy`);
+                } else {
+                    // Šéf není online — uložit k vyzvednutí
+                    const mayorIncomeRef = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
+                    const incomeSnap = await mayorIncomeRef.once('value');
+                    const currentIncome = incomeSnap.val() || 0;
+                    await mayorIncomeRef.set(currentIncome + mayorIncome);
                 }
                 
                 // Log do treasury
-                await logTreasuryTransaction(-mayorIncome, 'mayor_salary', `Denní příjem šéfa ${mayor.name}`);
+                await logTreasuryTransaction(-mayorIncome, 'mayor_salary', `Denní plat šéfa ${mayor.name}`);
+                
+                // Chat oznámení
+                await firebaseDB.ref('chat/messages').push({
+                    author: '🏛️ POLITIKA',
+                    text: `💰 Šéf ${mayor.name} obdržel denní plat: ${mayorIncome} 💰 (1% z veřejné kasy)`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
+                });
                 
                 console.log(`👑 Šéf ${mayor.name} dostal ${mayorIncome} 💰 (1% z ${publicMoney})`);
                 
@@ -87379,11 +87389,33 @@ function openFullscreenMap() {
                 checkAutoElectionEvaluation();
             });
             
-            // Periodická kontrola vyhodnocení voleb (každých 2 minuty)
+            // Periodická kontrola vyhodnocení voleb + plat šéfa (každých 2 minuty)
             setInterval(() => {
                 checkAutoElectionEvaluation();
+                if (typeof processMayorDailyIncome === 'function') processMayorDailyIncome();
                 if (typeof updatePoliticsBtn === 'function') updatePoliticsBtn();
             }, 2 * 60 * 1000);
+            
+            // Okamžitá kontrola platu šéfa při startu
+            setTimeout(async () => {
+                if (typeof processMayorDailyIncome === 'function') processMayorDailyIncome();
+                // Auto-vyzvednutí nahromaděného platu pokud jsem šéf
+                try {
+                    if (isMayor()) {
+                        const playerName = getPlayerName();
+                        const incomeRef = firebaseDB.ref(`politics/mayorIncome/${playerName}`);
+                        const incomeSnap = await incomeRef.once('value');
+                        const pendingIncome = incomeSnap.val() || 0;
+                        if (pendingIncome > 0) {
+                            addMoney(pendingIncome);
+                            await incomeRef.set(0);
+                            saveGame(true);
+                            addLog(`👑 Denní plat šéfa vyplacen: +${pendingIncome} 💰`, '🏛️');
+                            notifySuccess('💰 Plat vyplacen', `+${pendingIncome} 💰 (1% z veřejné kasy)`);
+                        }
+                    }
+                } catch(e) { console.error('Auto-collect mayor income error:', e); }
+            }, 5000);
             
             // Listener na rozhodnutí
             firebaseDB.ref('politics/decisions').on('value', (snapshot) => {
