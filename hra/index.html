@@ -75066,6 +75066,7 @@ function openFullscreenMap() {
                 name: playerName,  // Skutečné jméno (může obsahovat speciální znaky)
                 level: state.char.level,
                 location: state.world?.currentLocation || 'shelter',
+                elo: state.pvp?.elo || 1000,
                 lastSeen: firebase.database.ServerValue.TIMESTAMP
             });
             
@@ -75081,6 +75082,7 @@ function openFullscreenMap() {
                     playerRef.update({
                         level: state.char.level,
                         location: state.world?.currentLocation || 'shelter',
+                        elo: state.pvp?.elo || 1000,
                         lastSeen: firebase.database.ServerValue.TIMESTAMP
                     });
                 }
@@ -75116,6 +75118,23 @@ function openFullscreenMap() {
                     pvpWins: state.pvp?.wins || 0,
                     pvpLosses: state.pvp?.losses || 0,
                     pvpWinStreak: state.pvp?.maxWinStreak || 0,
+                    // Combat stats pro offline PvP
+                    combatStats: {
+                        hp: state.maxHp || state.char?.maxHp || 100,
+                        damage: typeof calculateDamage === 'function' ? calculateDamage() : 10,
+                        defense: typeof calculateDefense === 'function' ? calculateDefense() : 0,
+                        critChance: typeof calculateCritChance === 'function' ? Math.round(calculateCritChance() * 100) : 5,
+                        dodgeChance: typeof calculateDodgeChance === 'function' ? Math.round(calculateDodgeChance() * 100) : 0,
+                        blockChance: Math.round((getSkillTreeBonus('blockChance') || 0) * 100 + (state.equipped?.gloves?.special === 'block_bonus' ? 10 : state.equipped?.gloves?.special === 'block' ? 15 : 0)),
+                        lifesteal: state.mutations?.includes('vampiric_touch') ? 10 : 0,
+                        regenPerRound: state.equipped?.armor?.special === 'nano' ? 2 : 0,
+                        hasPhoenix: state.equipped?.armor?.special === 'phoenix' || false,
+                        hasTitanArmor: state.equipped?.armor?.special === 'titan' || false,
+                        hasPoisonPunch: state.equipped?.gloves?.special === 'bleed_punch' || false,
+                        hasBerserkerBlood: state.mutations?.includes('berserker_blood') || false,
+                        tactic: state.pvp?.tactic || 'balanced',
+                        abilities: state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun']
+                    },
                     // Doplňkové info
                     classId: state.char.classId || 'survivor',
                     settlers: state.settlement?.settlers?.length || 0,
@@ -77696,22 +77715,22 @@ function openFullscreenMap() {
         // 🎯 PvP SPECIÁLNÍ SCHOPNOSTI
         const PVP_ABILITIES = {
             // Útočné
-            powerStrike: { name: 'Drtivý úder', icon: '💥', cooldown: 3, damage: 1.0, desc: '140% damage', type: 'attack' },
-            doubleSlash: { name: 'Dvojitý sek', icon: '⚔️⚔️', cooldown: 2, hits: 2, damage: 1.49, desc: '2x 50% damage', type: 'attack' },
-            criticalAim: { name: 'Kritický cíl', icon: '🎯', cooldown: 4, critBonus: 100, damage: 1.0, desc: '+100% crit šance', type: 'attack' },
-            venomStrike: { name: 'Jedovatý úder', icon: '🐍', cooldown: 3, damage: 1.56, poison: 3, desc: 'Jed 3 kola', type: 'attack' },
-            berserkerRage: { name: 'Zuřivost', icon: '😤', cooldown: 5, damage: 1.35, selfDamage: 0.1, desc: '175% DMG, -10% HP', type: 'attack' },
+            powerStrike: { name: 'Drtivý úder', icon: '💥', cooldown: 3, damage: 1.4, desc: '140% damage', type: 'attack' },
+            doubleSlash: { name: 'Dvojitý sek', icon: '⚔️⚔️', cooldown: 2, hits: 2, damage: 0.65, desc: '2x 65% damage', type: 'attack' },
+            criticalAim: { name: 'Kritický cíl', icon: '🎯', cooldown: 4, critBonus: 100, damage: 1.2, desc: '120% DMG + téměř jistý krit', type: 'attack' },
+            venomStrike: { name: 'Jedovatý úder', icon: '🐍', cooldown: 3, damage: 1.0, poison: 3, desc: '100% DMG + jed 3 kola', type: 'attack' },
+            berserkerRage: { name: 'Zuřivost', icon: '😤', cooldown: 5, damage: 1.75, selfDamage: 0.1, desc: '175% DMG, -10% HP', type: 'attack' },
             
             // Obranné
             ironSkin: { name: 'Železná kůže', icon: '🛡️', cooldown: 4, defenseBoost: 3.0, duration: 2, desc: '3x obrana 2 kola', type: 'defense' },
             dodge: { name: 'Úhyb', icon: '💨', cooldown: 2, dodgeChance: 100, desc: '100% úhyb', type: 'defense' },
-            counter: { name: 'Protiútok', icon: '↩️', cooldown: 3, counterDamage: 1.5, desc: 'Odrazí 100% DMG', type: 'defense' },
+            counter: { name: 'Protiútok', icon: '↩️', cooldown: 3, counterDamage: 1.5, desc: '150% protiútok', type: 'defense' },
             heal: { name: 'Léčení', icon: '💚', cooldown: 4, healPercent: 25, desc: 'Vyléčí 25% HP', type: 'defense' },
             
             // Speciální
-            stun: { name: 'Omráčení', icon: '💫', cooldown: 5, stunDuration: 1, damage: 1.35, desc: 'Stun 1 kolo', type: 'special' },
-            lifeSteal: { name: 'Vysátí života', icon: '🧛', cooldown: 4, damage: 1.0, steal: 0.5, desc: 'Kradne 35% DMG', type: 'special' },
-            execute: { name: 'Poprava', icon: '⚰️', cooldown: 6, executeThreshold: 0.25, damage: 2.0, desc: '2x DMG pod 25% HP', type: 'special' },
+            stun: { name: 'Omráčení', icon: '💫', cooldown: 5, stunDuration: 1, damage: 1.35, desc: '135% DMG + stun 1 kolo', type: 'special' },
+            lifeSteal: { name: 'Vysátí života', icon: '🧛', cooldown: 4, damage: 1.0, steal: 0.5, desc: '100% DMG, kradne 50%', type: 'special' },
+            execute: { name: 'Poprava', icon: '⚰️', cooldown: 6, executeThreshold: 0.25, damage: 2.0, desc: '200% DMG (AI preferuje pod 25% HP)', type: 'special' },
             lastStand: { name: 'Poslední vzdor', icon: '🔥', cooldown: 0, passive: true, desc: '+25% DMG pod 20% HP', type: 'passive' }
         };
         
@@ -77748,9 +77767,31 @@ function openFullscreenMap() {
                     tournamentsPlayed: 0,
                     titles: [],
                     selectedAbilities: ['powerStrike', 'dodge', 'heal', 'stun'],
+                    tactic: 'balanced',
+                    lastFightTime: 0,
+                    lastDailyBonus: null,
+                    history: [],
                     lastBattleLog: []
                 };
             }
+            // Doplň chybějící pole pro starší save
+            if (!state.pvp.tactic) state.pvp.tactic = 'balanced';
+            if (!state.pvp.lastFightTime) state.pvp.lastFightTime = 0;
+            if (!state.pvp.history) state.pvp.history = [];
+            if (!state.pvp.selectedAbilities) state.pvp.selectedAbilities = ['powerStrike', 'dodge', 'heal', 'stun'];
+            if (state.pvp.elo === undefined) state.pvp.elo = 1000;
+            if (state.pvp.wins === undefined) state.pvp.wins = 0;
+            if (state.pvp.losses === undefined) state.pvp.losses = 0;
+            if (state.pvp.winStreak === undefined) state.pvp.winStreak = 0;
+            if (state.pvp.maxWinStreak === undefined) state.pvp.maxWinStreak = 0;
+            if (state.pvp.totalDamageDealt === undefined) state.pvp.totalDamageDealt = 0;
+            if (state.pvp.totalDamageReceived === undefined) state.pvp.totalDamageReceived = 0;
+            if (state.pvp.comebacks === undefined) state.pvp.comebacks = 0;
+            if (state.pvp.flawless === undefined) state.pvp.flawless = 0;
+            if (state.pvp.maxBetWon === undefined) state.pvp.maxBetWon = 0;
+            if (state.pvp.tournamentsWon === undefined) state.pvp.tournamentsWon = 0;
+            if (!state.pvp.titles) state.pvp.titles = [];
+            if (state.pvp.lastDailyBonus === undefined) state.pvp.lastDailyBonus = null;
         }
         
         // Získej PvP rank podle ELO
@@ -77776,19 +77817,21 @@ function openFullscreenMap() {
             return isNaN(change) ? (won ? 16 : -16) : change;
         }
         
+        // Zkontroluj offline PvP výsledky při přihlášení
         function listenToPvP() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
             initPvPStats();
             const myName = getPlayerName();
+            const _processingIds = new Set(); // Guard against re-processing
             
             firebaseDB.ref('pvp/challenges').on('value', (snapshot) => {
                 const data = snapshot.val() || {};
                 pvpChallenges = Object.entries(data).map(([key, val]) => ({...val, id: key}));
                 
-                // Zkontroluj jestli mám novou výzvu (max 5 minut starou)
+                // Zkontroluj jestli mám nové výzvy (max 24 hodin staré)
                 const now = Date.now();
-                const PVP_CHALLENGE_TIMEOUT = 5 * 60 * 1000; // 5 minut
+                const PVP_CHALLENGE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hodin
                 const myChallenge = pvpChallenges.find(c => 
                     c.target === myName && 
                     c.status === 'pending' &&
@@ -77799,36 +77842,55 @@ function openFullscreenMap() {
                     showFullscreenPvPChallenge(myChallenge);
                 }
                 
-                // Auto-expire staré pending výzvy (pro challengera)
+                // Auto-expire staré výzvy starší než 24h (pro challengera - vrať peníze)
                 const myOldPendingChallenge = pvpChallenges.find(c =>
                     c.challenger === myName &&
-                    c.status === 'pending' &&
+                    (c.status === 'pending' || c.status === 'accepted') &&
                     c.createdAt &&
-                    (now - c.createdAt) > PVP_CHALLENGE_TIMEOUT
+                    (now - c.createdAt) > PVP_CHALLENGE_TIMEOUT &&
+                    !_processingIds.has('expire_' + c.id)
                 );
                 if (myOldPendingChallenge) {
-                    // Automaticky zruš starou výzvu
-                    firebaseDB.ref('pvp/challenges/' + myOldPendingChallenge.id).update({ status: 'expired' });
-                    notifyWarning('⏰ Výzva vypršela', `${myOldPendingChallenge.target} nereagoval/a včas.`);
+                    _processingIds.add('expire_' + myOldPendingChallenge.id);
+                    firebaseDB.ref('pvp/challenges/' + myOldPendingChallenge.id).update({ status: 'expired' }).then(() => {
+                        // Vrať sázku pouze po úspěšném update
+                        if (myOldPendingChallenge.bet > 0) {
+                            state.money = (state.money || 0) + myOldPendingChallenge.bet;
+                            saveGame();
+                        }
+                        notifyWarning('⏰ Výzva vypršela', `${myOldPendingChallenge.target} nereagoval/a do 24 hodin.${myOldPendingChallenge.bet > 0 ? ` Sázka ${myOldPendingChallenge.bet} 💰 vrácena.` : ''}`);
+                    }).catch(e => { _processingIds.delete('expire_' + myOldPendingChallenge.id); console.error('Expire error:', e); });
                 }
                 
-                // Zkontroluj real-time battle
-                const activeBattle = pvpChallenges.find(c => 
-                    (c.challenger === myName || c.target === myName) && 
-                    c.status === 'in_progress'
-                );
-                if (activeBattle && !activePvPBattle) {
-                    startRealTimePvPBattle(activeBattle);
-                }
-                
-                // Zkontroluj dokončené bitvy
+                // Zkontroluj dokončené bitvy - POUZE pro challengera
+                // Target už viděl výsledek přes showPvPResultDirect v acceptPvPChallenge
                 const myCompletedChallenge = pvpChallenges.find(c => 
-                    (c.challenger === myName || c.target === myName) && 
+                    c.challenger === myName && 
                     c.status === 'completed' && 
-                    !c.notified
+                    !c.notified &&
+                    !_processingIds.has('result_' + c.id)
                 );
                 if (myCompletedChallenge) {
+                    _processingIds.add('result_' + myCompletedChallenge.id);
                     showPvPResult(myCompletedChallenge);
+                }
+                
+                // Zkontroluj odmítnuté výzvy - vrať sázku challengerovi
+                const myDeclinedChallenge = pvpChallenges.find(c =>
+                    c.challenger === myName &&
+                    c.status === 'declined' &&
+                    !c.refunded &&
+                    !_processingIds.has('refund_' + c.id)
+                );
+                if (myDeclinedChallenge) {
+                    _processingIds.add('refund_' + myDeclinedChallenge.id);
+                    firebaseDB.ref('pvp/challenges/' + myDeclinedChallenge.id).update({ refunded: true }).then(() => {
+                        if (myDeclinedChallenge.bet > 0) {
+                            state.money = (state.money || 0) + myDeclinedChallenge.bet;
+                            saveGame();
+                        }
+                        notifyWarning('❌ Výzva odmítnuta', `${myDeclinedChallenge.target} odmítl souboj.${myDeclinedChallenge.bet > 0 ? ` Sázka ${myDeclinedChallenge.bet} 💰 vrácena.` : ''}`);
+                    }).catch(e => { _processingIds.delete('refund_' + myDeclinedChallenge.id); console.error('Decline refund error:', e); });
                 }
             });
             
@@ -77873,9 +77935,25 @@ function openFullscreenMap() {
                                     <div><span style="font-size: 0.85rem;">❤️</span><br>${challenge.challengerStats?.hp || '?'}</div>
                                     <div><span style="font-size: 0.85rem;">⚔️</span><br>${challenge.challengerStats?.damage || '?'}</div>
                                     <div><span style="font-size: 0.85rem;">🛡️</span><br>${challenge.challengerStats?.defense || '?'}</div>
-                                    <div><span style="font-size: 0.85rem;">💨</span><br>${challenge.challengerStats?.agility || '?'}</div>
+                                    <div><span style="font-size: 0.85rem;">💥</span><br>${challenge.challengerStats?.critChance || '?'}%</div>
                                 </div>
                             </div>
+                            
+                            <!-- MOJE STATY pro porovnání -->
+                            ${(() => {
+                                try {
+                                    const ms = getPlayerCombatStats();
+                                    const mr = getPvPRank(state.pvp?.elo || 1000);
+                                    return '<div style="background:#0a1a0a;padding:0.5rem;border-radius:8px;margin:0.4rem 0;border:1px solid #4caf5033;">' +
+                                        '<div style="color:#4caf50;font-size:0.7rem;font-weight:bold;margin-bottom:0.3rem;">👤 TVOJE STATY</div>' +
+                                        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.3rem;font-size:0.8rem;">' +
+                                        '<div><span style="font-size:0.85rem;">❤️</span><br>' + ms.maxHp + '</div>' +
+                                        '<div><span style="font-size:0.85rem;">⚔️</span><br>' + ms.damage + '</div>' +
+                                        '<div><span style="font-size:0.85rem;">🛡️</span><br>' + ms.defense + '</div>' +
+                                        '<div><span style="font-size:0.85rem;">💥</span><br>' + ms.critChance + '%</div>' +
+                                        '</div></div>';
+                                } catch(e) { return ''; }
+                            })()}
                             
                             <div style="background: linear-gradient(135deg, #3a3a0a 0%, #2a2a00 100%); padding: 0.8rem; border-radius: 12px; margin: 0.8rem 0; border: 2px solid #ffd700; animation: goldPulse 2s infinite;">
                                 <div style="color: #888; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;">Sázka</div>
@@ -77930,25 +78008,66 @@ function openFullscreenMap() {
         }
         
         // 🎬 ZOBRAZENÍ VÝSLEDKU PvP s animacemi
-        function showPvPResult(challenge) {
+        async function showPvPResult(challenge) {
             // Tato funkce se volá pro CHALLENGERA (ten kdo poslal výzvu) když se boj dokončí
             // Pro toho kdo PŘIJAL výzvu se volá showPvPResultDirect
             
             // Pokud už je overlay zobrazen, neděláme nic
             if (document.getElementById('pvpResultOverlay')) return;
             
+            // Okamžitě nastav notified PŘED zpracováním výsledku
+            // Tím zabráníme double-processing pokud listener spustí znovu
+            if (firebaseDB) {
+                firebaseDB.ref('pvp/challenges/' + challenge.id).update({ notified: true });
+            }
+            
             initPvPStats();
             const myName = getPlayerName();
+            // Sanitize bet from Firebase
+            challenge.bet = Math.max(0, Math.floor(parseInt(challenge.bet) || 0));
             const iWon = challenge.winner === myName;
             const opponent = challenge.challenger === myName ? challenge.target : challenge.challenger;
             const eloChange = challenge.eloChange || 0;
             
             // Pro challengera - aktualizuj jeho stats když se dozví výsledek
             if (challenge.challenger === myName) {
-                if (iWon) {
+                const isDraw = challenge.winner === 'draw';
+                if (isDraw) {
+                    // REMÍZA - vrať escrow
+                    if (challenge.bet > 0) addMoney(challenge.bet);
+                    notifySuccess('⚖️ REMÍZA!', `${opponent} - sázka vrácena.`);
+                } else if (iWon) {
                     state.pvp.wins++;
                     state.pvp.winStreak++;
-                    if (challenge.bet > 0) addMoney(challenge.bet);
+                    state.pvp.maxWinStreak = Math.max(state.pvp.maxWinStreak || 0, state.pvp.winStreak);
+                    // Sázka byla odečtena při odeslání výzvy (escrow)
+                    // Při výhře dostanu zpět svou sázku + soupeřovu sázku = 2x bet
+                    if (challenge.bet > 0) addMoney(challenge.bet * 2);
+                    state.pvp.maxBetWon = Math.max(state.pvp.maxBetWon || 0, challenge.bet || 0);
+                    
+                    // Comeback & flawless tracking
+                    if (challenge.battleStats?.winnerHp && challenge.winner === myName) {
+                        const myMaxHp = state.maxHp || state.char?.maxHp || 100;
+                        if (challenge.battleStats.winnerHp < myMaxHp * 0.1) state.pvp.comebacks = (state.pvp.comebacks || 0) + 1;
+                        if (challenge.battleStats.winnerHp >= myMaxHp) state.pvp.flawless = (state.pvp.flawless || 0) + 1;
+                    }
+                    
+                    // Denní bonus
+                    const today = new Date().toDateString();
+                    if (state.pvp.lastDailyBonus !== today) {
+                        state.pvp.lastDailyBonus = today;
+                        if (typeof addXP === 'function') addXP(50);
+                        addMoney(25);
+                        notifySuccess('🎁 Denní PvP bonus!', '+50 XP, +25 💰');
+                    }
+                    
+                    // Win streak bonus
+                    if (state.pvp.winStreak >= 3) {
+                        const streakBonus = Math.min(100, state.pvp.winStreak * 10);
+                        if (typeof addXP === 'function') addXP(streakBonus);
+                        notifySuccess(`🔥 Win streak x${state.pvp.winStreak}!`, `+${streakBonus} XP`);
+                    }
+                    
                     notifySuccess('⚔️ VÍTĚZSTVÍ!', `${opponent} poražen!${challenge.bet > 0 ? ` +${challenge.bet} 💰` : ''}`);
                     
                     // Daily quest progress
@@ -77959,43 +78078,78 @@ function openFullscreenMap() {
                 } else {
                     state.pvp.losses++;
                     state.pvp.winStreak = 0;
-                    if (challenge.bet > 0) removeMoney(challenge.bet);
+                    // Sázka už byla odečtena jako escrow - neodečítej znovu
                     notifyWarning('⚔️ Prohra', `${opponent} vyhrál!${challenge.bet > 0 ? ` -${challenge.bet} 💰` : ''}`);
                 }
-                state.pvp.elo = Math.max(0, state.pvp.elo + (iWon ? eloChange : -eloChange));
+                state.pvp.elo = Math.max(0, state.pvp.elo + (isDraw ? 0 : (iWon ? eloChange : -eloChange)));
+                
+                // Damage tracking & cooldown (battleStats is from target's perspective)
+                // myDamage = target's damage dealt = challenger's damage received
+                // damageTaken = target's damage received = challenger's damage dealt
+                state.pvp.totalDamageDealt = (state.pvp.totalDamageDealt || 0) + (challenge.battleStats?.damageTaken || 0);
+                state.pvp.totalDamageReceived = (state.pvp.totalDamageReceived || 0) + (challenge.battleStats?.myDamage || 0);
+                state.pvp.lastFightTime = Date.now();
+                
+                // XP za boj
+                const pvpXp = isDraw ? 15 + ((state.char?.level || 1) * 3) : (iWon ? 30 + ((state.char?.level || 1) * 5) : 10 + ((state.char?.level || 1) * 2));
+                if (typeof addXP === 'function') addXP(pvpXp);
+                
+                // HP reduction on loss
+                if (!iWon && !isDraw && state.char.hp <= state.char.maxHp * 0.1) {
+                    state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.1), 1);
+                }
+                
+                // Přidej do historie
+                if (!state.pvp.history) state.pvp.history = [];
+                state.pvp.history.push({
+                    opponent: opponent, won: isDraw ? 'draw' : iWon, eloChange: isDraw ? 0 : (iWon ? eloChange : -eloChange),
+                    bet: challenge.bet || 0, rounds: challenge.battleStats?.rounds || 0, timestamp: Date.now()
+                });
+                if (state.pvp.history.length > 30) state.pvp.history = state.pvp.history.slice(-30);
+                
+                // Leaderboard
+                try {
+                    const lbKey = currentUser && !currentUser.isAnonymous ? 'user_' + currentUser.uid : myName;
+                    await firebaseDB.ref('leaderboard/' + lbKey).update({
+                        pvpElo: state.pvp.elo, pvpWins: state.pvp.wins, pvpLosses: state.pvp.losses
+                    });
+                } catch(e) {}
+                
                 saveGame();
             }
             
             const myNewElo = state.pvp.elo;
             const newRank = getPvPRank(myNewElo);
             
-            // Aktualizuj notifikaci
-            if (firebaseDB) {
-                firebaseDB.ref('pvp/challenges/' + challenge.id).update({ notified: true });
-            }
-            
             // Nové tituly?
             const newTitles = checkPvPTitles();
             
+            const isDraw = challenge.winner === 'draw';
+            const resultColor = isDraw ? '#ff9800' : (iWon ? '#4CAF50' : '#f44336');
+            const resultBg = isDraw ? '#2a2a0a' : (iWon ? '#1a3a1a' : '#3a1a1a');
+            const resultIcon = isDraw ? '⚖️' : (iWon ? '🏆' : '💀');
+            const resultText = isDraw ? 'REMÍZA!' : (iWon ? 'VÍTĚZSTVÍ!' : 'PROHRA!');
+            const moneyText = isDraw ? `${challenge.bet} 💰 vráceno` : `${iWon ? '+' : '-'}${challenge.bet} 💰`;
+            
             const html = `
-                <div id="pvpResultOverlayAuto" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.98); z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 1rem; animation: pvpFadeIn 0.3s;">
-                    <div style="background: linear-gradient(135deg, ${iWon ? '#1a3a1a' : '#3a1a1a'} 0%, #0a0a0a 100%); border: 2px solid ${iWon ? '#4CAF50' : '#f44336'}; border-radius: 16px; padding: 1.2rem; max-width: 340px; width: 100%; text-align: center; animation: resultBounce 0.6s;">
+                <div id="pvpResultOverlay" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.98); z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 1rem; animation: pvpFadeIn 0.3s;">
+                    <div style="background: linear-gradient(135deg, ${resultBg} 0%, #0a0a0a 100%); border: 2px solid ${resultColor}; border-radius: 16px; padding: 1.2rem; max-width: 340px; width: 100%; text-align: center; animation: resultBounce 0.6s;">
                         
                         <!-- Victory/Defeat animation -->
                         <div style="font-size: 3rem; margin-bottom: 0.5rem; animation: ${iWon ? 'victoryAnim' : 'defeatAnim'} 1s;">
-                            ${iWon ? '🏆' : '💀'}
+                            ${resultIcon}
                         </div>
                         
-                        <h2 style="color: ${iWon ? '#4CAF50' : '#f44336'}; margin: 0 0 0.3rem 0; font-size: 1.4rem; text-shadow: 0 0 20px ${iWon ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)'}; letter-spacing: 2px;">
-                            ${iWon ? 'VÍTĚZSTVÍ!' : 'PROHRA!'}
+                        <h2 style="color: ${resultColor}; margin: 0 0 0.3rem 0; font-size: 1.4rem; text-shadow: 0 0 20px ${resultColor}80; letter-spacing: 2px;">
+                            ${resultText}
                         </h2>
                         
                         <p style="color: #888; margin: 0.3rem 0; font-size: 0.85rem;">vs <strong style="color: #fff;">${opponent}</strong></p>
                         
                         <!-- Peníze -->
-                        <div style="background: ${iWon ? 'linear-gradient(135deg, #1a3a1a 0%, #0a2a0a 100%)' : 'linear-gradient(135deg, #3a1a1a 0%, #2a0a0a 100%)'}; padding: 0.7rem; border-radius: 10px; margin: 0.7rem 0; border: 2px solid ${iWon ? '#4CAF50' : '#f44336'};">
-                            <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-size: 1.8rem; font-weight: bold; animation: moneyPop 0.5s;">
-                                ${iWon ? '+' : '-'}${challenge.bet} 💰
+                        <div style="background: linear-gradient(135deg, ${resultBg} 0%, #0a0a0a 100%); padding: 0.7rem; border-radius: 10px; margin: 0.7rem 0; border: 2px solid ${resultColor};">
+                            <div style="color: ${isDraw ? '#ff9800' : (iWon ? '#8bc34a' : '#ff6b6b')}; font-size: 1.8rem; font-weight: bold; animation: moneyPop 0.5s;">
+                                ${moneyText}
                             </div>
                         </div>
                         
@@ -78004,8 +78158,8 @@ function openFullscreenMap() {
                             <div style="display: flex; justify-content: center; align-items: center; gap: 0.8rem;">
                                 <div style="text-align: center;">
                                     <div style="color: #888; font-size: 0.7rem;">ELO</div>
-                                    <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-size: 1.2rem; font-weight: bold;">
-                                        ${iWon ? '+' : ''}${eloChange}
+                                    <div style="color: ${isDraw ? '#ff9800' : (iWon ? '#8bc34a' : '#ff6b6b')}; font-size: 1.2rem; font-weight: bold;">
+                                        ${isDraw ? '±0' : (iWon ? '+' + eloChange : '-' + eloChange)}
                                     </div>
                                 </div>
                                 <div style="color: #555; font-size: 1.3rem;">→</div>
@@ -78022,8 +78176,8 @@ function openFullscreenMap() {
                             <div style="background: #1a1a1a; padding: 0.5rem; border-radius: 8px; margin: 0.7rem 0;">
                                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.3rem; font-size: 0.75rem;">
                                     <div><span style="color: #888;">Kola</span><br><span style="color: #fff;">${challenge.battleStats.rounds}</span></div>
-                                    <div><span style="color: #888;">DMG</span><br><span style="color: #ff9800;">${challenge.battleStats.myDamage}</span></div>
-                                    <div><span style="color: #888;">Přijato</span><br><span style="color: #f44336;">${challenge.battleStats.damageTaken}</span></div>
+                                    <div><span style="color: #888;">DMG</span><br><span style="color: #ff9800;">${challenge.challenger === myName ? (challenge.battleStats.damageTaken || 0) : (challenge.battleStats.myDamage || 0)}</span></div>
+                                    <div><span style="color: #888;">Přijato</span><br><span style="color: #f44336;">${challenge.challenger === myName ? (challenge.battleStats.myDamage || 0) : (challenge.battleStats.damageTaken || 0)}</span></div>
                                 </div>
                             </div>
                         ` : ''}
@@ -78091,20 +78245,15 @@ function openFullscreenMap() {
             
             challenge.log.forEach((entry, i) => {
                 const isMe = entry.actor === myName;
-                const isSystem = entry.actor === 'System';
+                const isSystem = ['📊','☠️','🩸','💚','💫','🔥','🏆','💀','⚖️','💥','💨','🧛'].includes(entry.actor);
                 
                 logHtml += `
-                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; margin-bottom: 3px; background: ${isSystem ? '#2a1a2a' : (isMe ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)')}; border-radius: 6px; border-left: 3px solid ${isSystem ? '#9c27b0' : (isMe ? '#4CAF50' : '#f44336')};">
-                        <div style="min-width: 24px; text-align: center;">
-                            ${isSystem ? '⚡' : (isMe ? '🟢' : '🔴')}
+                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; margin-bottom: 2px; background: ${isSystem ? 'rgba(40,20,60,0.3)' : (isMe ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)')}; border-radius: 6px; border-left: 3px solid ${isSystem ? '#9c27b0' : (isMe ? '#4CAF50' : '#f44336')};">
+                        <div style="min-width: 20px; text-align: center; font-size: 0.8rem;">
+                            ${entry.round ? `<span style="color:#555;">${entry.round}</span>` : ''}
                         </div>
-                        <div style="flex: 1;">
-                            <span style="color: ${isSystem ? '#9c27b0' : (isMe ? '#8bc34a' : '#ff6b6b')}; font-weight: bold;">${entry.actor}</span>
-                            ${entry.ability ? `<span style="color: #ffd700; margin-left: 0.3rem;">${entry.ability}</span>` : ''}
-                        </div>
-                        <div style="text-align: right;">
-                            ${entry.damage ? `<span style="color: #ff9800; font-weight: bold;">${entry.damage} DMG</span>` : ''}
-                            ${entry.effect ? `<div style="color: #9c27b0; font-size: 0.75rem;">${entry.effect}</div>` : ''}
+                        <div style="flex: 1; font-size: 0.8rem; color: ${isSystem ? '#ce93d8' : (isMe ? '#8bc34a' : '#ff6b6b')};">
+                            ${entry.text || ''}
                         </div>
                     </div>
                 `;
@@ -78114,10 +78263,14 @@ function openFullscreenMap() {
             
             // Statistiky boje
             if (challenge.battleStats) {
+                // battleStats are from target's perspective - swap for challenger
+                const isChallenger = challenge.challenger === myName;
+                const myDmg = isChallenger ? (challenge.battleStats.damageTaken || 0) : (challenge.battleStats.myDamage || 0);
+                const theirDmg = isChallenger ? (challenge.battleStats.myDamage || 0) : (challenge.battleStats.damageTaken || 0);
                 logHtml += `
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-top: 1rem; padding: 0.8rem; background: #1a1a1a; border-radius: 8px;">
                         <div style="text-align: center;">
-                            <div style="color: #ff9800; font-size: 1.2rem; font-weight: bold;">${challenge.battleStats.myDamage || 0}</div>
+                            <div style="color: #ff9800; font-size: 1.2rem; font-weight: bold;">${myDmg}</div>
                             <div style="color: #888; font-size: 0.7rem;">Tvůj DMG</div>
                         </div>
                         <div style="text-align: center;">
@@ -78125,7 +78278,7 @@ function openFullscreenMap() {
                             <div style="color: #888; font-size: 0.7rem;">Kol</div>
                         </div>
                         <div style="text-align: center;">
-                            <div style="color: #f44336; font-size: 1.2rem; font-weight: bold;">${challenge.battleStats.damageTaken || 0}</div>
+                            <div style="color: #f44336; font-size: 1.2rem; font-weight: bold;">${theirDmg}</div>
                             <div style="color: #888; font-size: 0.7rem;">Přijatý DMG</div>
                         </div>
                     </div>
@@ -78143,7 +78296,7 @@ function openFullscreenMap() {
             const newTitles = [];
             const stats = {
                 pvpWins: state.pvp.wins,
-                pvpWinStreak: state.pvp.winStreak,
+                pvpWinStreak: state.pvp.maxWinStreak || state.pvp.winStreak,
                 pvpComeback: state.pvp.comebacks,
                 pvpFlawless: state.pvp.flawless,
                 pvpMaxBetWon: state.pvp.maxBetWon,
@@ -78251,21 +78404,11 @@ function openFullscreenMap() {
             // Poison bonus z gloves
             const hasPoisonPunch = gloves?.special === 'bleed_punch';
             
-            // Extra damage z gloves
-            let gloveDamage = 0;
-            if (gloves?.special === 'power_punch') gloveDamage = 10;
-            if (gloves?.special === 'grip') gloveDamage = 2;
-            if (gloves?.special === 'bleed_punch') gloveDamage = 3;
-            
-            // Extra damage z boots
-            let bootDamage = 0;
-            if (boots?.special === 'stomp') bootDamage = 8;
-            
             return {
                 name: getPlayerName(),
                 hp: maxHp,
                 maxHp: maxHp,
-                damage: damage + gloveDamage + bootDamage,
+                damage: damage, // calculateDamage() už zahrnuje glove/boot damage přes armorEffects
                 defense: defense,
                 critChance: critChance,
                 dodgeChance: dodgeChance,
@@ -78319,10 +78462,31 @@ function openFullscreenMap() {
                 return;
             }
             
+            // Sanitize bet - MUST be non-negative integer
+            bet = Math.max(0, Math.floor(parseInt(bet) || 0));
+            
             initPvPStats();
             const myName = getPlayerName();
             
             console.log('⚔️ createPvPChallenge called:', { targetName, bet, mode, myName });
+            
+            // Cooldown check - první
+            const lastFight = state.pvp?.lastFightTime || 0;
+            if (Date.now() - lastFight < 180000) {
+                const secs = Math.ceil((lastFight + 180000 - Date.now()) / 1000);
+                notifyWarning('⏳ Cooldown', `Počkej ještě ${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}`);
+                return;
+            }
+            
+            // Kontrola - nemůžu vyzvat sám sebe
+            if (!targetName || targetName.trim() === '') {
+                notifyWarning('⚔️ Chyba', 'Nevybral jsi soupeře!');
+                return;
+            }
+            if (targetName === myName) {
+                notifyWarning('⚔️ Chyba', 'Nemůžeš vyzvat sám sebe!');
+                return;
+            }
             
             // Kontrola - už mám pending výzvu? (pvpChallenges může být undefined)
             const challenges = pvpChallenges || [];
@@ -78337,25 +78501,44 @@ function openFullscreenMap() {
             const myStats = getPlayerCombatStats();
             console.log('⚔️ myStats:', myStats);
             
-            // Ošetření dat pro Firebase - odstraň undefined hodnoty a funkce
+            // Ošetření dat pro Firebase - kompletní bojové stats
+            const tactic = state.pvp?.tactic || 'balanced';
+            const tacticMods = { aggressive: { dmgMod: 1.20, defMod: 0.85 }, balanced: { dmgMod: 1.0, defMod: 1.0 }, defensive: { dmgMod: 0.85, defMod: 1.20 } };
+            const tm = tacticMods[tactic] || tacticMods.balanced;
+            
             const cleanStats = {
                 name: myStats.name || myName,
                 level: myStats.level || 1,
-                class: myStats.class || 'survivor',
+                classId: myStats.classId || 'survivor',
+                className: myStats.className || 'Přeživší',
                 hp: myStats.hp || 100,
                 maxHp: myStats.maxHp || 100,
-                damage: myStats.damage || 10,
-                defense: myStats.defense || 0,
+                damage: Math.round((myStats.damage || 10) * tm.dmgMod),
+                defense: Math.round((myStats.defense || 0) * tm.defMod),
                 critChance: myStats.critChance || 5,
                 dodgeChance: myStats.dodgeChance || 0,
                 blockChance: myStats.blockChance || 0,
-                elo: myStats.elo || 1000
+                lifesteal: myStats.lifesteal || 0,
+                regenPerRound: myStats.regenPerRound || 0,
+                hasPhoenix: myStats.hasPhoenix || false,
+                hasTitanArmor: myStats.hasTitanArmor || false,
+                hasPoisonPunch: myStats.hasPoisonPunch || false,
+                hasBerserkerBlood: myStats.hasBerserkerBlood || false,
+                elo: myStats.elo || 1000,
+                tactic: tactic,
+                abilities: state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'],
+                weapon: myStats.weapon || 'Pěsti',
+                armor: myStats.armor || 'Žádná'
             };
             
             const challenge = {
                 challenger: myName,
                 target: targetName,
                 challengerStats: cleanStats,
+                challengerLevel: cleanStats.level,
+                challengerElo: cleanStats.elo,
+                challengerTactic: tactic,
+                challengerAbilities: cleanStats.abilities,
                 bet: bet || 0,
                 mode: mode || 'standard',
                 status: 'pending',
@@ -78365,17 +78548,41 @@ function openFullscreenMap() {
             console.log('⚔️ Sending challenge:', challenge);
             
             try {
-                await firebaseDB.ref('pvp/challenges').push(challenge);
-                notifySuccess('⚔️ Výzva odeslána!', `Čekám na odpověď od ${targetName}`);
+                // Sázka - odeber peníze hned (escrow)
+                if (bet > 0) {
+                    if ((state.money || 0) < bet) {
+                        notifyWarning('Nedostatek peněz', `Máš jen ${state.money || 0} 💰`);
+                        return;
+                    }
+                    state.money -= bet;
+                }
+                
+                // Ulož výzvu do Firebase - soupeř ji uvidí když bude online
+                const ref = await firebaseDB.ref('pvp/challenges').push(challenge);
+                
+                // Zjisti jestli je soupeř online
+                const onlineSnap = await firebaseDB.ref('online').once('value');
+                const onlineData = onlineSnap.val() || {};
+                const targetOnline = Object.values(onlineData).some(p => p.name === targetName);
+                
+                if (targetOnline) {
+                    notifySuccess('⚔️ Výzva odeslána!', `${targetName} je online — čekám na odpověď...`);
+                } else {
+                    notifySuccess('⚔️ Výzva odeslána!', `${targetName} je offline — uvidí výzvu až se přihlásí.`);
+                }
                 addLog(`Vyzval jsi ${targetName} k PvP souboji!`, '⚔️');
-                console.log('✅ Challenge sent successfully');
+                saveGame();
+                console.log('✅ Challenge sent');
             } catch (err) {
                 console.error('❌ createPvPChallenge error:', err);
+                // Vrať peníze pokud challenge selhal
+                if (bet > 0) state.money = (state.money || 0) + bet;
+                saveGame();
                 notifyWarning('Chyba', 'Nepodařilo se odeslat výzvu: ' + (err.message || 'Neznámá chyba'));
             }
         }
         
-        // ⚔️ PvP BOJ - POUŽÍVÁ SKUTEČNÉ BONUSY Z POSTAVY
+        // ⚔️ PvP BOJ - POUŽÍVÁ SKUTEČNÉ BONUSY + ABILITIES + TAKTIKU
         async function runPvPBattle(myStats, enemyStats, challenge) {
             return new Promise((resolve) => {
                 let myHp = myStats.hp;
@@ -78385,159 +78592,195 @@ function openFullscreenMap() {
                 let myDamageDealt = 0;
                 let damageTaken = 0;
                 
-                // Efekty během boje
-                let myEffects = { poison: 0, bleed: 0 };
-                let enemyEffects = { poison: 0, bleed: 0 };
-                
-                // Phoenix efekt (1x přežití)
+                let myEffects = { poison: 0, bleed: 0, stun: 0, defBoost: 0, dodgeNext: false };
+                let enemyEffects = { poison: 0, bleed: 0, stun: 0, defBoost: 0, dodgeNext: false };
                 let myPhoenixUsed = false;
                 let enemyPhoenixUsed = false;
                 
+                const myAbs = (myStats.abilities || ['powerStrike','dodge','heal','stun']).map(id => ({id, cd: 0}));
+                const enemyAbs = (enemyStats.abilities || ['powerStrike','dodge','heal','stun']).map(id => ({id, cd: 0}));
                 const maxRounds = 30;
+                
+                function pickAbility(abs, hp, maxHp, oppHp, oppMaxHp, tactic) {
+                    abs.forEach(a => { if(a.cd > 0) a.cd--; });
+                    const avail = abs.filter(a => a.cd <= 0 && PVP_ABILITIES[a.id] && !PVP_ABILITIES[a.id].passive);
+                    if (!avail.length) return null;
+                    const hpPct = hp/maxHp, oppPct = oppHp/oppMaxHp;
+                    
+                    for (const ab of avail) {
+                        const d = PVP_ABILITIES[ab.id];
+                        if (d.healPercent && hpPct < 0.4) { ab.cd = d.cooldown; return d; }
+                        if (d.executeThreshold && oppPct < d.executeThreshold) { ab.cd = d.cooldown; return d; }
+                    }
+                    if (tactic === 'aggressive') {
+                        const atks = avail.filter(a => PVP_ABILITIES[a.id].type === 'attack');
+                        if (atks.length && Math.random() < 0.5) { const p = atks[Math.floor(Math.random()*atks.length)]; p.cd = PVP_ABILITIES[p.id].cooldown; return PVP_ABILITIES[p.id]; }
+                    }
+                    if (tactic === 'defensive' && hpPct < 0.7) {
+                        const defs = avail.filter(a => PVP_ABILITIES[a.id].type === 'defense');
+                        if (defs.length && Math.random() < 0.5) { const p = defs[Math.floor(Math.random()*defs.length)]; p.cd = PVP_ABILITIES[p.id].cooldown; return PVP_ABILITIES[p.id]; }
+                    }
+                    if (Math.random() < 0.35) { const p = avail[Math.floor(Math.random()*avail.length)]; p.cd = PVP_ABILITIES[p.id].cooldown; return PVP_ABILITIES[p.id]; }
+                    return null;
+                }
+                
+                function useAbility(ab, atk, def, atkHp, atkMax, defHp, defEffects, lg, r) {
+                    if (!ab) return {dmg:0, heal:0, selfDefBoost:0, dodged:false};
+                    let res = {dmg:0, heal:0, selfDefBoost:0, dodged:false};
+                    const base = atk.damage || 10;
+                    if (ab.type === 'attack') {
+                        // CritBonus — criticalAim
+                        let critMul = 1.0;
+                        let isCrit = false;
+                        if (ab.critBonus && Math.random() * 100 < (ab.critBonus + (atk.critChance || 5))) {
+                            critMul = 1.5;
+                            isCrit = true;
+                        }
+                        let defRed = Math.floor((def.defense||0) * 0.4);
+                        if (defEffects.defBoost > 0) { defRed *= 3; defEffects.defBoost--; }
+                        
+                        if (ab.hits && ab.hits > 1) {
+                            // Multi-hit: každý zásah zvlášť
+                            let totalDmg = 0;
+                            for (let h = 0; h < ab.hits; h++) {
+                                let hitDmg = Math.floor(base * (ab.damage || 1.0) * critMul * (0.85 + Math.random()*0.3));
+                                hitDmg = Math.max(1, hitDmg - defRed);
+                                totalDmg += hitDmg;
+                            }
+                            res.dmg = totalDmg;
+                        } else {
+                            let dmg = Math.floor(base * (ab.damage || 1.0) * critMul * (0.85 + Math.random()*0.3));
+                            dmg = Math.max(1, dmg - defRed);
+                            res.dmg = dmg;
+                        }
+                        if (isCrit) lg.push({round:r, actor:'💥', text:'KRITICKÝ ZÁSAH!'});
+                        lg.push({round:r, actor:atk.name, text:`${ab.icon} ${ab.name}: ${res.dmg} DMG`});
+                        if (ab.poison) { defEffects.poison = ab.poison; lg.push({round:r,actor:'☠️',text:`${def.name} otrávený!`}); }
+                        if (ab.stunDuration) { defEffects.stun = ab.stunDuration; lg.push({round:r,actor:'💫',text:`${def.name} omráčený!`}); }
+                        if (ab.steal) { res.heal = Math.floor(res.dmg * ab.steal); lg.push({round:r,actor:'🧛',text:`Vysátí: +${res.heal} HP`}); }
+                        if (ab.selfDamage) { res.heal -= Math.floor(atkMax * ab.selfDamage); }
+                    } else if (ab.type === 'defense') {
+                        if (ab.dodgeChance) { 
+                            res.dodged = true; // signál battle loopu: přeskoč soupeřův útok
+                            lg.push({round:r,actor:atk.name,text:`${ab.icon} Dokonalý úhyb!`}); 
+                        }
+                        if (ab.defenseBoost) { res.selfDefBoost = ab.duration||2; lg.push({round:r,actor:atk.name,text:`${ab.icon} Zesílená obrana!`}); }
+                        if (ab.healPercent) { res.heal = Math.floor(atkMax * ab.healPercent / 100); lg.push({round:r,actor:atk.name,text:`${ab.icon} +${res.heal} HP`}); }
+                        if (ab.counterDamage) { res.dmg = Math.floor(base * ab.counterDamage); lg.push({round:r,actor:atk.name,text:`${ab.icon} Protiútok: ${res.dmg} DMG!`}); }
+                    } else if (ab.type === 'special') {
+                        let dmg = Math.floor(base * (ab.damage || 1.0) * (0.85 + Math.random()*0.3));
+                        let defRed = Math.floor((def.defense||0) * 0.4);
+                        if (defEffects.defBoost > 0) { defRed *= 3; defEffects.defBoost--; }
+                        dmg = Math.max(1, dmg - defRed);
+                        res.dmg = dmg;
+                        lg.push({round:r, actor:atk.name, text:`${ab.icon} ${ab.name}: ${dmg} DMG`});
+                        if (ab.stunDuration) { defEffects.stun = ab.stunDuration; lg.push({round:r,actor:'💫',text:`${def.name} omráčený!`}); }
+                        if (ab.steal) { res.heal = Math.floor(dmg * ab.steal); }
+                    }
+                    return res;
+                }
+                
+                // LastStand passive
+                const myHasLastStand = myAbs.some(a => a.id === 'lastStand');
+                const enemyHasLastStand = enemyAbs.some(a => a.id === 'lastStand');
                 
                 while (myHp > 0 && enemyHp > 0 && round < maxRounds) {
                     round++;
                     
-                    // === ZAČÁTEK KOLA - DOT EFEKTY ===
-                    // Jed/Krvácení na mě
-                    if (myEffects.poison > 0) {
-                        const poisonDmg = Math.floor(myStats.maxHp * 0.03);
-                        myHp -= poisonDmg;
-                        damageTaken += poisonDmg;
-                        myEffects.poison--;
-                        log.push({ round, actor: '☠️', text: `Jed: -${poisonDmg} HP (${myStats.name})` });
-                    }
-                    if (myEffects.bleed > 0) {
-                        const bleedDmg = Math.floor(myStats.maxHp * 0.02);
-                        myHp -= bleedDmg;
-                        damageTaken += bleedDmg;
-                        myEffects.bleed--;
-                        log.push({ round, actor: '🩸', text: `Krvácení: -${bleedDmg} HP (${myStats.name})` });
-                    }
+                    // DOT
+                    if (myEffects.poison > 0) { const d=Math.floor(myStats.maxHp*0.03); myHp-=d; damageTaken+=d; myEffects.poison--; log.push({round,actor:'☠️',text:`Jed: -${d} HP (${myStats.name})`}); }
+                    if (myEffects.bleed > 0) { const d=Math.floor(myStats.maxHp*0.02); myHp-=d; damageTaken+=d; myEffects.bleed--; log.push({round,actor:'🩸',text:`Krvácení: -${d} HP (${myStats.name})`}); }
+                    if (enemyEffects.poison > 0) { const d=Math.floor(enemyStats.maxHp*0.03); enemyHp-=d; myDamageDealt+=d; enemyEffects.poison--; log.push({round,actor:'☠️',text:`Jed: -${d} HP (${enemyStats.name})`}); }
+                    if (enemyEffects.bleed > 0) { const d=Math.floor(enemyStats.maxHp*0.02); enemyHp-=d; myDamageDealt+=d; enemyEffects.bleed--; log.push({round,actor:'🩸',text:`Krvácení: -${d} HP (${enemyStats.name})`}); }
                     
-                    // Jed/Krvácení na soupeře
-                    if (enemyEffects.poison > 0) {
-                        const poisonDmg = Math.floor(enemyStats.maxHp * 0.03);
-                        enemyHp -= poisonDmg;
-                        myDamageDealt += poisonDmg;
-                        enemyEffects.poison--;
-                        log.push({ round, actor: '☠️', text: `Jed: -${poisonDmg} HP (${enemyStats.name})` });
-                    }
-                    if (enemyEffects.bleed > 0) {
-                        const bleedDmg = Math.floor(enemyStats.maxHp * 0.02);
-                        enemyHp -= bleedDmg;
-                        myDamageDealt += bleedDmg;
-                        enemyEffects.bleed--;
-                        log.push({ round, actor: '🩸', text: `Krvácení: -${bleedDmg} HP (${enemyStats.name})` });
-                    }
+                    if (myStats.regenPerRound > 0 && myHp < myStats.maxHp) { const r=Math.min(myStats.regenPerRound,myStats.maxHp-myHp); myHp+=r; log.push({round,actor:'💚',text:`Regen: +${r} HP (${myStats.name})`}); }
+                    if (enemyStats.regenPerRound > 0 && enemyHp < enemyStats.maxHp) { const r=Math.min(enemyStats.regenPerRound,enemyStats.maxHp-enemyHp); enemyHp+=r; log.push({round,actor:'💚',text:`Regen: +${r} HP (${enemyStats.name})`}); }
                     
-                    // Regenerace (nano armor)
-                    if (myStats.regenPerRound > 0 && myHp < myStats.maxHp) {
-                        const regen = Math.min(myStats.regenPerRound, myStats.maxHp - myHp);
-                        myHp += regen;
-                        log.push({ round, actor: '💚', text: `Nano regenerace: +${regen} HP (${myStats.name})` });
-                    }
-                    if (enemyStats.regenPerRound > 0 && enemyHp < enemyStats.maxHp) {
-                        const regen = Math.min(enemyStats.regenPerRound, enemyStats.maxHp - enemyHp);
-                        enemyHp += regen;
-                        log.push({ round, actor: '💚', text: `Nano regenerace: +${regen} HP (${enemyStats.name})` });
-                    }
+                    // Phoenix check po DOT
+                    if (myHp <= 0 && myStats.hasPhoenix && !myPhoenixUsed) { myPhoenixUsed=true; myHp=1; log.push({round,actor:'🔥',text:`FÉNIX! ${myStats.name} přežil DOT!`}); }
+                    if (enemyHp <= 0 && enemyStats.hasPhoenix && !enemyPhoenixUsed) { enemyPhoenixUsed=true; enemyHp=1; log.push({round,actor:'🔥',text:`FÉNIX! ${enemyStats.name} přežil DOT!`}); }
                     
                     if (myHp <= 0 || enemyHp <= 0) break;
                     
-                    // === MŮJ TAH ===
-                    const myAttackResult = executePvPAttack(myStats, enemyStats, enemyHp, myHp, enemyEffects);
-                    
-                    if (myAttackResult.dodged) {
-                        log.push({ round, actor: enemyStats.name, text: `💨 Vyhnul se útoku!` });
-                    } else if (myAttackResult.blocked) {
-                        log.push({ round, actor: enemyStats.name, text: `🛡️ Zablokoval útok!` });
-                    } else {
-                        enemyHp -= myAttackResult.damage;
-                        myDamageDealt += myAttackResult.damage;
+                    // MŮJ TAH
+                    if (enemyEffects.dodgeNext) { enemyEffects.dodgeNext = false; log.push({round,actor:'💨',text:`${myStats.name} mine! ${enemyStats.name} uhýbá!`}); }
+                    else if (myEffects.stun > 0) { myEffects.stun--; log.push({round,actor:'💫',text:`${myStats.name} omráčený!`}); }
+                    else {
+                        // LastStand bonus
+                        let myDmgBonus = 1.0;
+                        if (myHasLastStand && myHp < myStats.maxHp * 0.2) myDmgBonus = 1.25;
                         
-                        let logText = `⚔️ ${myStats.name} útočí: ${myAttackResult.damage} DMG`;
-                        if (myAttackResult.crit) logText += ' 💥CRIT!';
-                        if (myAttackResult.berserker) logText += ' 😤';
-                        log.push({ round, actor: myStats.name, text: logText });
-                        
-                        // Lifesteal
-                        if (myStats.lifesteal > 0) {
-                            const stolen = Math.floor(myAttackResult.damage * myStats.lifesteal / 100);
-                            myHp = Math.min(myStats.maxHp, myHp + stolen);
-                            log.push({ round, actor: '🧛', text: `Vysátí: +${stolen} HP` });
-                        }
-                        
-                        // Aplikuj efekty (bleed z gloves)
-                        if (myAttackResult.applyBleed) {
-                            enemyEffects.bleed = 3;
-                            log.push({ round, actor: '🩸', text: `${enemyStats.name} krvácí!` });
+                        const ab = pickAbility(myAbs, myHp, myStats.maxHp, enemyHp, enemyStats.maxHp, myStats.tactic||'balanced');
+                        if (ab) {
+                            const r = useAbility(ab, {...myStats, damage:Math.floor(myStats.damage*myDmgBonus)}, enemyStats, myHp, myStats.maxHp, enemyHp, enemyEffects, log, round);
+                            if (r.dmg > 0) { enemyHp -= r.dmg; myDamageDealt += r.dmg; }
+                            if (r.heal) myHp = Math.min(myStats.maxHp, Math.max(1, myHp + r.heal));
+                            if (r.selfDefBoost > 0) myEffects.defBoost = r.selfDefBoost;
+                            if (r.dodged) myEffects.dodgeNext = true; // přeskoč soupeřův útok
+                        } else {
+                            const atk = executePvPAttack({...myStats, damage:Math.floor(myStats.damage*myDmgBonus)}, enemyStats, enemyHp, myHp, enemyEffects);
+                            if (atk.dodged) { log.push({round,actor:enemyStats.name,text:'💨 Úhyb!'}); }
+                            else if (atk.blocked) { log.push({round,actor:enemyStats.name,text:'🛡️ Blok!'}); }
+                            else {
+                                enemyHp -= atk.damage; myDamageDealt += atk.damage;
+                                let t = `⚔️ ${myStats.name}: ${atk.damage} DMG`;
+                                if (atk.crit) t += ' 💥CRIT!';
+                                if (atk.berserker) t += ' 😤';
+                                log.push({round,actor:myStats.name,text:t});
+                                if (myStats.lifesteal > 0) { myHp = Math.min(myStats.maxHp, myHp + Math.floor(atk.damage * myStats.lifesteal / 100)); }
+                                if (atk.applyBleed) { enemyEffects.bleed = 3; log.push({round,actor:'🩸',text:`${enemyStats.name} krvácí!`}); }
+                            }
                         }
                     }
                     
-                    // Phoenix efekt pro soupeře
-                    if (enemyHp <= 0 && enemyStats.hasPhoenix && !enemyPhoenixUsed) {
-                        enemyPhoenixUsed = true;
-                        enemyHp = 1;
-                        log.push({ round, actor: '🔥', text: `FÉNIX! ${enemyStats.name} přežil smrtelný zásah!` });
-                    }
-                    
+                    if (enemyHp <= 0 && enemyStats.hasPhoenix && !enemyPhoenixUsed) { enemyPhoenixUsed=true; enemyHp=1; log.push({round,actor:'🔥',text:`FÉNIX! ${enemyStats.name} přežil!`}); }
                     if (enemyHp <= 0) break;
                     
-                    // === SOUPEŘŮV TAH ===
-                    const enemyAttackResult = executePvPAttack(enemyStats, myStats, myHp, enemyHp, myEffects);
-                    
-                    if (enemyAttackResult.dodged) {
-                        log.push({ round, actor: myStats.name, text: `💨 Vyhnul se útoku!` });
-                    } else if (enemyAttackResult.blocked) {
-                        log.push({ round, actor: myStats.name, text: `🛡️ Zablokoval útok!` });
-                    } else {
-                        // Titan armor - imunita na crit
-                        let finalDmg = enemyAttackResult.damage;
-                        if (myStats.hasTitanArmor && enemyAttackResult.crit) {
-                            finalDmg = Math.floor(finalDmg / 1.5); // Zruší crit bonus
-                            log.push({ round, actor: '🛡️', text: `Titán: Kritický zásah zablokován!` });
-                        }
+                    // SOUPEŘŮV TAH
+                    if (myEffects.dodgeNext) { myEffects.dodgeNext = false; log.push({round,actor:'💨',text:`${enemyStats.name} mine! ${myStats.name} uhýbá!`}); }
+                    else if (enemyEffects.stun > 0) { enemyEffects.stun--; log.push({round,actor:'💫',text:`${enemyStats.name} omráčený!`}); }
+                    else {
+                        let eDmgBonus = 1.0;
+                        if (enemyHasLastStand && enemyHp < enemyStats.maxHp * 0.2) eDmgBonus = 1.25;
                         
-                        myHp -= finalDmg;
-                        damageTaken += finalDmg;
-                        
-                        let logText = `⚔️ ${enemyStats.name} útočí: ${finalDmg} DMG`;
-                        if (enemyAttackResult.crit && !myStats.hasTitanArmor) logText += ' 💥CRIT!';
-                        log.push({ round, actor: enemyStats.name, text: logText });
-                        
-                        // Lifesteal pro soupeře
-                        if (enemyStats.lifesteal > 0) {
-                            const stolen = Math.floor(finalDmg * enemyStats.lifesteal / 100);
-                            enemyHp = Math.min(enemyStats.maxHp, enemyHp + stolen);
-                        }
-                        
-                        // Aplikuj efekty
-                        if (enemyAttackResult.applyBleed) {
-                            myEffects.bleed = 3;
-                            log.push({ round, actor: '🩸', text: `${myStats.name} krvácí!` });
+                        const ab = pickAbility(enemyAbs, enemyHp, enemyStats.maxHp, myHp, myStats.maxHp, enemyStats.tactic||'balanced');
+                        if (ab) {
+                            const r = useAbility(ab, {...enemyStats, damage:Math.floor(enemyStats.damage*eDmgBonus)}, myStats, enemyHp, enemyStats.maxHp, myHp, myEffects, log, round);
+                            if (r.dmg > 0) { myHp -= r.dmg; damageTaken += r.dmg; }
+                            if (r.heal) enemyHp = Math.min(enemyStats.maxHp, Math.max(1, enemyHp + r.heal));
+                            if (r.selfDefBoost > 0) enemyEffects.defBoost = r.selfDefBoost;
+                            if (r.dodged) enemyEffects.dodgeNext = true; // přeskoč můj útok
+                        } else {
+                            const atk = executePvPAttack({...enemyStats, damage:Math.floor(enemyStats.damage*eDmgBonus)}, myStats, myHp, enemyHp, myEffects);
+                            if (atk.dodged) { log.push({round,actor:myStats.name,text:'💨 Úhyb!'}); }
+                            else if (atk.blocked) { log.push({round,actor:myStats.name,text:'🛡️ Blok!'}); }
+                            else {
+                                myHp -= atk.damage; damageTaken += atk.damage;
+                                let t = `⚔️ ${enemyStats.name}: ${atk.damage} DMG`;
+                                if (atk.crit) t += ' 💥CRIT!';
+                                if (atk.berserker) t += ' 😤';
+                                log.push({round,actor:enemyStats.name,text:t});
+                                if (enemyStats.lifesteal > 0) { enemyHp = Math.min(enemyStats.maxHp, enemyHp + Math.floor(atk.damage * enemyStats.lifesteal / 100)); }
+                                if (atk.applyBleed) { myEffects.bleed = 3; log.push({round,actor:'🩸',text:`${myStats.name} krvácí!`}); }
+                            }
                         }
                     }
                     
-                    // Phoenix efekt pro mě
-                    if (myHp <= 0 && myStats.hasPhoenix && !myPhoenixUsed) {
-                        myPhoenixUsed = true;
-                        myHp = 1;
-                        log.push({ round, actor: '🔥', text: `FÉNIX! ${myStats.name} přežil smrtelný zásah!` });
-                    }
+                    if (myHp <= 0 && myStats.hasPhoenix && !myPhoenixUsed) { myPhoenixUsed=true; myHp=1; log.push({round,actor:'🔥',text:`FÉNIX! ${myStats.name} přežil!`}); }
+                    
+                    log.push({round,actor:'📊',text:`${myStats.name}: ${Math.max(0,myHp)} HP | ${enemyStats.name}: ${Math.max(0,enemyHp)} HP`});
                 }
                 
-                const iWon = enemyHp <= 0 || (myHp > 0 && myHp > enemyHp);
+                // Vyhodnocení: vyšší HP vyhrává, při remíze vyhrává obránce (target/přijímající)
+                const iWon = myHp > enemyHp || (myHp === enemyHp && myHp > 0);
+                const isDraw = myHp <= 0 && enemyHp <= 0;
+                if (isDraw) {
+                    log.push({round:round+1, actor:'⚖️', text:`REMÍZA! Oba padli po ${round} kolech!`});
+                } else {
+                    log.push({round:round+1, actor:iWon?'🏆':'💀', text:iWon?`${myStats.name} VYHRÁVÁ po ${round} kolech!`:`${enemyStats.name} VYHRÁVÁ po ${round} kolech!`});
+                }
                 
-                resolve({
-                    iWon,
-                    myFinalHp: Math.max(0, myHp),
-                    enemyFinalHp: Math.max(0, enemyHp),
-                    rounds: round,
-                    log,
-                    myDamageDealt,
-                    damageTaken
-                });
+                resolve({ iWon: isDraw ? true : iWon, isDraw, rounds: round, log, myDamageDealt, damageTaken, myFinalHp: Math.max(0,myHp), enemyFinalHp: Math.max(0,enemyHp) });
             });
         }
         
@@ -78553,8 +78796,8 @@ function openFullscreenMap() {
                 return { blocked: true, damage: 1 };
             }
             
-            // Základní damage
-            let damage = attacker.damage || 10;
+            // Základní damage + variace ±15%
+            let damage = Math.floor((attacker.damage || 10) * (0.85 + Math.random() * 0.30));
             let isCrit = false;
             let isBerserker = false;
             let applyBleed = false;
@@ -78567,12 +78810,22 @@ function openFullscreenMap() {
             
             // Crit šance
             if (Math.random() * 100 < (attacker.critChance || 5)) {
-                damage = Math.floor(damage * 1.5);
-                isCrit = true;
+                // Titan armor - imunita na crit
+                if (defender.hasTitanArmor) {
+                    // Crit zablokován titanem
+                } else {
+                    damage = Math.floor(damage * 1.5);
+                    isCrit = true;
+                }
             }
             
             // Aplikuj obranu soupeře
-            const defReduction = Math.floor((defender.defense || 0) * 0.5);
+            let defReduction = Math.floor((defender.defense || 0) * 0.5);
+            // DefBoost z abilities (ironSkin)
+            if (defenderEffects && defenderEffects.defBoost > 0) {
+                defReduction *= 3;
+                defenderEffects.defBoost--;
+            }
             damage = Math.max(1, damage - defReduction);
             
             // Bleed z gloves
@@ -78591,7 +78844,12 @@ function openFullscreenMap() {
         }
         
         // ⚔️ PŘIJETÍ VÝZVY
+        let _pvpAccepting = false; // Guard against double-click
         async function acceptPvPChallenge(challengeId) {
+            if (_pvpAccepting) return; // Prevent double-click
+            _pvpAccepting = true;
+            
+            try {
             if (!multiplayerEnabled || !firebaseDB) {
                 notifyWarning('Chyba', 'Multiplayer není aktivní');
                 return;
@@ -78604,8 +78862,49 @@ function openFullscreenMap() {
                 return;
             }
             
-            if (challenge.bet > state.money) {
-                notifyWarning(t('notifications', 'notEnoughMoney'), `Potřebuješ ${challenge.bet} 💰`);
+            if (challenge.status !== 'pending') {
+                notifyWarning('Chyba', 'Tato výzva už není aktivní');
+                return;
+            }
+            
+            // Ověř že já jsem skutečně target této výzvy
+            const myName = getPlayerName();
+            if (challenge.target !== myName) {
+                notifyWarning('Chyba', 'Tato výzva není pro tebe!');
+                return;
+            }
+            
+            // Sanitize bet from Firebase (could be manipulated)
+            challenge.bet = Math.max(0, Math.floor(parseInt(challenge.bet) || 0));
+            
+            if (challenge.bet > 0 && challenge.bet > (state.money || 0)) {
+                notifyWarning('Nedostatek peněz', `Potřebuješ ${challenge.bet} 💰 na sázku. Máš ${state.money || 0} 💰.`);
+                return;
+            }
+            
+            // Odečti sázku jako escrow
+            if (challenge.bet > 0) {
+                state.money = (state.money || 0) - challenge.bet;
+            }
+            
+            // Zamkni výzvu - nikdo jiný ji nemůže přijmout/zrušit
+            try {
+                // Použij transakci - atomicky zkontroluj a zamkni
+                const txResult = await firebaseDB.ref('pvp/challenges/' + challengeId + '/status').transaction((currentStatus) => {
+                    if (currentStatus === 'pending') return 'accepted';
+                    return; // Abort transaction if not pending
+                });
+                
+                if (!txResult.committed || txResult.snapshot.val() !== 'accepted') {
+                    // Výzva byla mezitím změněna (expired/declined/accepted)
+                    if (challenge.bet > 0) state.money = (state.money || 0) + challenge.bet;
+                    notifyWarning('Chyba', 'Výzva již není aktivní (byla zrušena nebo přijata jiným hráčem).');
+                    return;
+                }
+            } catch(e) {
+                // Vrať escrow pokud se nepodařilo zamknout
+                if (challenge.bet > 0) state.money = (state.money || 0) + challenge.bet;
+                notifyWarning('Chyba', 'Nepodařilo se přijmout výzvu');
                 return;
             }
             
@@ -78625,18 +78924,52 @@ function openFullscreenMap() {
                 const myStats = getPlayerCombatStats();
                 const enemyStats = challenge.challengerStats;
                 
+                // Validace soupeřových stats z Firebase
+                if (!enemyStats || !enemyStats.hp || !enemyStats.damage) {
+                    if (challenge.bet > 0) {
+                        state.money = (state.money || 0) + challenge.bet;
+                        saveGame();
+                    }
+                    closeModal();
+                    notifyWarning('Chyba', 'Soupeřovy data jsou poškozená. Výzva zrušena.');
+                    return;
+                }
+                
+                // Sanitize enemy stats - cap reasonable values
+                enemyStats.hp = Math.min(Math.max(1, parseInt(enemyStats.hp) || 100), 9999);
+                enemyStats.maxHp = enemyStats.hp;
+                enemyStats.damage = Math.min(Math.max(1, parseInt(enemyStats.damage) || 10), 999);
+                enemyStats.defense = Math.min(Math.max(0, parseInt(enemyStats.defense) || 0), 500);
+                enemyStats.critChance = Math.min(Math.max(0, parseInt(enemyStats.critChance) || 5), 100);
+                enemyStats.dodgeChance = Math.min(Math.max(0, parseInt(enemyStats.dodgeChance) || 0), 80);
+                enemyStats.blockChance = Math.min(Math.max(0, parseInt(enemyStats.blockChance) || 0), 80);
+                
+                // Aplikuj taktiku na moje stats
+                const myTactic = state.pvp?.tactic || 'balanced';
+                const tacticMods = { aggressive: { dmgMod: 1.20, defMod: 0.85 }, balanced: { dmgMod: 1.0, defMod: 1.0 }, defensive: { dmgMod: 0.85, defMod: 1.20 } };
+                const tm = tacticMods[myTactic] || tacticMods.balanced;
+                myStats.damage = Math.round(myStats.damage * tm.dmgMod);
+                myStats.defense = Math.round(myStats.defense * tm.defMod);
+                myStats.tactic = myTactic;
+                myStats.abilities = state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'];
+                
                 // Spusť boj
                 const battleResult = await runPvPBattle(myStats, enemyStats, challenge);
                 
-                // Výpočet ELO
-                const eloChange = calculateEloChange(myStats.elo, enemyStats.elo, battleResult.iWon);
+                // Výpočet ELO (0 pro remízu)
+                const eloChange = battleResult.isDraw ? 0 : calculateEloChange(myStats.elo, enemyStats.elo, battleResult.iWon);
                 
                 // Aktualizuj lokální stats
-                if (battleResult.iWon) {
+                if (battleResult.isDraw) {
+                    // REMÍZA - vrať escrow
+                    if (challenge.bet > 0) addMoney(challenge.bet);
+                    notifySuccess('⚖️ REMÍZA!', `Sázka ${challenge.bet} 💰 vrácena. ELO beze změny.`);
+                } else if (battleResult.iWon) {
                     state.pvp.wins++;
                     state.pvp.winStreak++;
                     state.pvp.maxWinStreak = Math.max(state.pvp.maxWinStreak, state.pvp.winStreak);
-                    addMoney(challenge.bet);
+                    // Sázka odečtena jako escrow → výhra = zpět moje + soupeřova = 2x bet
+                    if (challenge.bet > 0) addMoney(challenge.bet * 2);
                     state.pvp.maxBetWon = Math.max(state.pvp.maxBetWon, challenge.bet);
                     
                     if (battleResult.myFinalHp < myStats.maxHp * 0.1) state.pvp.comebacks++;
@@ -78662,7 +78995,7 @@ function openFullscreenMap() {
                 } else {
                     state.pvp.losses++;
                     state.pvp.winStreak = 0;
-                    removeMoney(challenge.bet);
+                    // Sázka už odečtena jako escrow - nic dalšího
                     
                     notifyWarning('⚔️ Prohra', `-${challenge.bet} 💰 | ELO ${eloChange}`);
                 }
@@ -78670,6 +79003,34 @@ function openFullscreenMap() {
                 state.pvp.elo = Math.max(0, state.pvp.elo + eloChange);
                 state.pvp.totalDamageDealt += battleResult.myDamageDealt;
                 state.pvp.totalDamageReceived += battleResult.damageTaken;
+                state.pvp.lastFightTime = Date.now();
+                
+                // Přidej do historie
+                if (!state.pvp.history) state.pvp.history = [];
+                state.pvp.history.push({
+                    opponent: challenge.challenger,
+                    won: battleResult.isDraw ? 'draw' : battleResult.iWon,
+                    eloChange: battleResult.isDraw ? 0 : eloChange,
+                    bet: challenge.bet || 0,
+                    rounds: battleResult.rounds,
+                    timestamp: Date.now()
+                });
+                // Max 30 záznamů
+                if (state.pvp.history.length > 30) state.pvp.history = state.pvp.history.slice(-30);
+                
+                // Aktualizuj leaderboard s PvP stats
+                try {
+                    const lbKey = currentUser && !currentUser.isAnonymous ? 'user_' + currentUser.uid : getPlayerName();
+                    await firebaseDB.ref('leaderboard/' + lbKey).update({
+                        pvpElo: state.pvp.elo,
+                        pvpWins: state.pvp.wins,
+                        pvpLosses: state.pvp.losses
+                    });
+                } catch(e) {}
+                
+                // XP za boj (i za prohru)
+                const pvpXp = battleResult.isDraw ? 15 + (state.char.level * 3) : (battleResult.iWon ? 30 + (state.char.level * 5) : 10 + (state.char.level * 2));
+                if (typeof addXP === 'function') addXP(pvpXp);
                 
                 // Po PvP souboji - hráč NEZEMŘE, jen má méně HP
                 // Pokud prohrál, má minimálně 10% HP
@@ -78681,8 +79042,8 @@ function openFullscreenMap() {
                 await firebaseDB.ref('pvp/challenges/' + challengeId).update({
                     status: 'completed',
                     targetStats: myStats,
-                    winner: battleResult.iWon ? getPlayerName() : challenge.challenger,
-                    loser: battleResult.iWon ? challenge.challenger : getPlayerName(),
+                    winner: battleResult.isDraw ? 'draw' : (battleResult.iWon ? getPlayerName() : challenge.challenger),
+                    loser: battleResult.isDraw ? 'draw' : (battleResult.iWon ? challenge.challenger : getPlayerName()),
                     log: battleResult.log,
                     battleStats: {
                         rounds: battleResult.rounds,
@@ -78712,41 +79073,53 @@ function openFullscreenMap() {
                 };
                 
                 setTimeout(() => {
-                    showPvPResultDirect(resultChallenge, battleResult.iWon, eloChange);
+                    showPvPResultDirect(resultChallenge, battleResult.iWon, eloChange, battleResult.isDraw);
                 }, 300);
                 
             } catch (error) {
                 console.error('PvP Error:', error);
+                // Vrať escrow sázku targeta při chybě
+                if (challenge.bet > 0) {
+                    state.money = (state.money || 0) + challenge.bet;
+                    saveGame();
+                }
                 closeModal();
                 notifyWarning('Chyba', 'Něco se pokazilo: ' + error.message);
             }
+            } finally { _pvpAccepting = false; }
         }
         
         // Přímé zobrazení výsledku (ne přes listener)
-        function showPvPResultDirect(challenge, iWon, eloChange) {
+        function showPvPResultDirect(challenge, iWon, eloChange, isDraw = false) {
             const myName = getPlayerName();
             const opponent = challenge.challenger === myName ? challenge.target : challenge.challenger;
             const myNewElo = state.pvp.elo;
             const newRank = getPvPRank(myNewElo);
             const newTitles = checkPvPTitles();
             
+            const resultColor = isDraw ? '#ff9800' : (iWon ? '#4CAF50' : '#f44336');
+            const resultBg = isDraw ? '#2a2a0a' : (iWon ? '#1a3a1a' : '#3a1a1a');
+            const resultIcon = isDraw ? '⚖️' : (iWon ? '🏆' : '💀');
+            const resultText = isDraw ? 'REMÍZA!' : (iWon ? 'VÍTĚZSTVÍ!' : 'PROHRA!');
+            const moneyText = isDraw ? `${challenge.bet} 💰 vráceno` : `${iWon ? '+' : '-'}${challenge.bet} 💰`;
+            
             const html = `
                 <div id="pvpResultOverlay" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.98); z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 1rem; animation: pvpFadeIn 0.3s;">
-                    <div style="background: linear-gradient(135deg, ${iWon ? '#1a3a1a' : '#3a1a1a'} 0%, #0a0a0a 100%); border: 2px solid ${iWon ? '#4CAF50' : '#f44336'}; border-radius: 16px; padding: 1.2rem; max-width: 340px; width: 100%; text-align: center; animation: resultBounce 0.6s;">
+                    <div style="background: linear-gradient(135deg, ${resultBg} 0%, #0a0a0a 100%); border: 2px solid ${resultColor}; border-radius: 16px; padding: 1.2rem; max-width: 340px; width: 100%; text-align: center; animation: resultBounce 0.6s;">
                         
                         <div style="font-size: 3rem; margin-bottom: 0.5rem; animation: ${iWon ? 'victoryAnim' : 'defeatAnim'} 1s;">
-                            ${iWon ? '🏆' : '💀'}
+                            ${resultIcon}
                         </div>
                         
-                        <h2 style="color: ${iWon ? '#4CAF50' : '#f44336'}; margin: 0 0 0.3rem 0; font-size: 1.4rem; text-shadow: 0 0 20px ${iWon ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)'};">
-                            ${iWon ? 'VÍTĚZSTVÍ!' : 'PROHRA!'}
+                        <h2 style="color: ${resultColor}; margin: 0 0 0.3rem 0; font-size: 1.4rem; text-shadow: 0 0 20px ${resultColor}80;">
+                            ${resultText}
                         </h2>
                         
                         <p style="color: #888; margin: 0.3rem 0; font-size: 0.85rem;">vs <strong style="color: #fff;">${opponent}</strong></p>
                         
-                        <div style="background: ${iWon ? 'linear-gradient(135deg, #1a3a1a 0%, #0a2a0a 100%)' : 'linear-gradient(135deg, #3a1a1a 0%, #2a0a0a 100%)'}; padding: 0.7rem; border-radius: 10px; margin: 0.7rem 0; border: 2px solid ${iWon ? '#4CAF50' : '#f44336'};">
-                            <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-size: 1.8rem; font-weight: bold;">
-                                ${iWon ? '+' : '-'}${challenge.bet} 💰
+                        <div style="background: linear-gradient(135deg, ${resultBg} 0%, #0a0a0a 100%); padding: 0.7rem; border-radius: 10px; margin: 0.7rem 0; border: 2px solid ${resultColor};">
+                            <div style="color: ${isDraw ? '#ff9800' : (iWon ? '#8bc34a' : '#ff6b6b')}; font-size: 1.8rem; font-weight: bold;">
+                                ${moneyText}
                             </div>
                         </div>
                         
@@ -78754,8 +79127,8 @@ function openFullscreenMap() {
                             <div style="display: flex; justify-content: center; align-items: center; gap: 0.8rem;">
                                 <div style="text-align: center;">
                                     <div style="color: #888; font-size: 0.7rem;">ELO</div>
-                                    <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-size: 1.2rem; font-weight: bold;">
-                                        ${iWon ? '+' : ''}${eloChange}
+                                    <div style="color: ${isDraw ? '#ff9800' : (iWon ? '#8bc34a' : '#ff6b6b')}; font-size: 1.2rem; font-weight: bold;">
+                                        ${isDraw ? '±0' : (iWon ? '+' + eloChange : '-' + eloChange)}
                                     </div>
                                 </div>
                                 <div style="color: #555; font-size: 1.3rem;">→</div>
@@ -78818,37 +79191,48 @@ function openFullscreenMap() {
         async function declinePvPChallenge(challengeId) {
             if (!multiplayerEnabled || !firebaseDB) return;
             
-            await firebaseDB.ref('pvp/challenges/' + challengeId).update({
-                status: 'declined'
-            });
+            // Ověř, že já jsem target
+            const challenge = pvpChallenges.find(c => c.id === challengeId);
+            if (challenge && challenge.target !== getPlayerName()) {
+                notifyWarning('Chyba', 'Tato výzva není pro tebe!');
+                return;
+            }
             
-            notifySuccess('Výzva odmítnuta', '');
+            try {
+                await firebaseDB.ref('pvp/challenges/' + challengeId).update({
+                    status: 'declined'
+                });
+                notifySuccess('Výzva odmítnuta', '');
+            } catch(e) {
+                console.error('Decline error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odmítnout výzvu');
+            }
             showPvPArena();
         }
         
         function showPvPArena() {
-            // PvP je dočasně zamčeno
-            showModal('⚔️ PvP ARÉNA', `
-                <div style="text-align: center; padding: 2rem;">
-                    <div style="font-size: 4rem; margin-bottom: 1rem;">🔒</div>
-                    <h3 style="color: #ff9800;">PvP je dočasně zamčeno</h3>
-                    <p style="color: #888; margin-top: 0.5rem;">PvP souboje budou brzy k dispozici.</p>
-                    <p style="color: #666; font-size: 0.85rem; margin-top: 1rem;">Mezitím prozkoumej jiné části hry!</p>
-                </div>
-                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zavřít</button>
-            `);
-            return;
-            
             initPvPStats();
             
             if (!multiplayerEnabled) {
                 showModal('⚔️ PvP ARÉNA', `
                     <div style="text-align: center; padding: 2rem;">
-                        <div style="font-size: 4rem; margin-bottom: 1rem;">🏟️</div>
+                        <div style="font-size: 4rem;">🏟️</div>
                         <h3 style="color: #ff9800;">Multiplayer není aktivní</h3>
-                        <p style="color: #888; margin-top: 0.5rem;">Zapni multiplayer pro přístup do arény.</p>
+                        <p style="color: #888;">Zapni multiplayer pro přístup do arény.</p>
                     </div>
-                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                    <button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>
+                `);
+                return;
+            }
+            
+            if ((state.char?.level || 1) < 5) {
+                showModal('⚔️ PvP ARÉNA', `
+                    <div style="text-align: center; padding: 2rem;">
+                        <div style="font-size: 4rem;">⚔️</div>
+                        <h3 style="color: #ff9800;">Vyžadován level 5</h3>
+                        <p style="color: #888;">Tvůj level: ${state.char?.level || 1}. Ještě trochu potrénuj!</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>
                 `);
                 return;
             }
@@ -78859,759 +79243,545 @@ function openFullscreenMap() {
             const totalGames = (state.pvp?.wins || 0) + (state.pvp?.losses || 0);
             const winRate = totalGames > 0 ? Math.round((state.pvp.wins / totalGames) * 100) : 0;
             
-            // Moje výzvy
-            const pendingForMe = pvpChallenges.filter(c => c.target === myName && c.status === 'pending');
-            const myPending = pvpChallenges.filter(c => c.challenger === myName && c.status === 'pending');
+            // Cooldown check
+            const lastFight = state.pvp?.lastFightTime || 0;
+            const cooldownLeft = Math.max(0, Math.ceil((lastFight + 180000 - Date.now()) / 1000));
+            const onCooldown = cooldownLeft > 0;
             
-            // Denní bonus - lze získat 1x denně za první boj
-            const today = new Date().toDateString();
-            const hadDailyBonus = state.pvp?.lastDailyBonus === today;
+            // Aktivní výzvy
+            const pendingForMe = (pvpChallenges || []).filter(c => c.target === myName && c.status === 'pending');
+            const myPending = (pvpChallenges || []).filter(c => c.challenger === myName && c.status === 'pending');
+            
+            // Taktiky
+            const tactics = [
+                { id: 'aggressive', name: 'Agresivní', icon: '🔥', desc: '+20% DMG, -15% DEF', color: '#f44336' },
+                { id: 'balanced', name: 'Vyvážená', icon: '⚖️', desc: 'Bez bonusů/postihů', color: '#ff9800' },
+                { id: 'defensive', name: 'Defenzivní', icon: '🛡️', desc: '-15% DMG, +20% DEF', color: '#2196f3' }
+            ];
+            const currentTactic = state.pvp?.tactic || 'balanced';
+            
+            // Vybrané abilities
+            const selectedAbs = state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'];
             
             let html = `
-                <!-- 🎖️ PLAYER CARD -->
-                <div style="background: linear-gradient(135deg, #1a1a2a 0%, #2a1a3a 100%); padding: 1.2rem; border-radius: 15px; margin-bottom: 1rem; border: 2px solid ${myRank.color}; position: relative; overflow: hidden;">
-                    <div style="position: absolute; top: -20px; right: -20px; width: 120px; height: 120px; background: radial-gradient(circle, ${myRank.color}33 0%, transparent 70%);"></div>
-                    
-                    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; position: relative; z-index: 1;">
-                        <div style="font-size: 2.5rem; filter: drop-shadow(0 0 10px ${myRank.color});">${myRank.icon}</div>
+                <!-- PLAYER CARD -->
+                <div style="background: linear-gradient(135deg, #1a1a2a 0%, #2a1a3a 100%); padding: 1rem; border-radius: 12px; margin-bottom: 0.8rem; border: 2px solid ${myRank.color}; position: relative; overflow: hidden;">
+                    <div style="position: absolute; top: -20px; right: -20px; width: 100px; height: 100px; background: radial-gradient(circle, ${myRank.color}33 0%, transparent 70%);"></div>
+                    <div style="display: flex; align-items: center; gap: 0.8rem; position: relative; z-index: 1;">
+                        <div style="font-size: 2.2rem; filter: drop-shadow(0 0 8px ${myRank.color});">${myRank.icon}</div>
                         <div style="flex: 1;">
-                            <div style="color: ${myRank.color}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px;">${myRank.name}</div>
-                            <div style="color: #fff; font-size: 1.2rem; font-weight: bold;">${myName}</div>
+                            <div style="color: ${myRank.color}; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 2px;">${myRank.name}</div>
+                            <div style="color: #fff; font-size: 1.1rem; font-weight: bold;">${myName}</div>
+                            <div style="color: #888; font-size: 0.75rem;">ELO: ${state.pvp?.elo || 1000} · ${state.pvp?.wins || 0}W/${state.pvp?.losses || 0}L · ${winRate}% WR</div>
                         </div>
                         <div style="text-align: right;">
-                            <div style="color: ${myRank.color}; font-size: 2rem; font-weight: bold; text-shadow: 0 0 10px ${myRank.color};">${state.pvp?.elo || 1000}</div>
-                            <div style="color: #888; font-size: 0.7rem;">ELO RATING</div>
+                            <div style="color: #4caf50; font-size: 0.8rem;">⚔️ ${myStats.damage} DMG</div>
+                            <div style="color: #2196f3; font-size: 0.8rem;">🛡️ ${myStats.defense} DEF</div>
+                            <div style="color: #f44336; font-size: 0.8rem;">❤️ ${myStats.maxHp} HP</div>
                         </div>
-                    </div>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.6rem; border-radius: 8px;">
-                        <div style="text-align: center;"><div style="color: #8bc34a; font-weight: bold;">${state.pvp?.wins || 0}</div><div style="color: #666; font-size: 0.65rem;">WINS</div></div>
-                        <div style="text-align: center;"><div style="color: #f44336; font-weight: bold;">${state.pvp?.losses || 0}</div><div style="color: #666; font-size: 0.65rem;">LOSSES</div></div>
-                        <div style="text-align: center;"><div style="color: #ffd700; font-weight: bold;">${winRate}%</div><div style="color: #666; font-size: 0.65rem;">WINRATE</div></div>
-                        <div style="text-align: center;"><div style="color: #ff9800; font-weight: bold;">🔥${state.pvp?.winStreak || 0}</div><div style="color: #666; font-size: 0.65rem;">STREAK</div></div>
-                    </div>
-                    
-                    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.3rem; margin-top: 0.6rem; text-align: center; font-size: 0.8rem;">
-                        <div><span style="color: #ff6b6b;">❤️</span>${myStats.hp}</div>
-                        <div><span style="color: #ff9800;">⚔️</span>${myStats.damage}</div>
-                        <div><span style="color: #2196f3;">🛡️</span>${myStats.defense}</div>
-                        <div><span style="color: #e91e63;">💥</span>${myStats.critChance}%</div>
-                        <div><span style="color: #8bc34a;">💨</span>${myStats.dodgeChance}%</div>
                     </div>
                 </div>
-                
-                <!-- 🎁 DENNÍ BONUS -->
-                ${!hadDailyBonus ? `
-                <div style="background: linear-gradient(135deg, #3a3a0a 0%, #2a2a00 100%); padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem; border: 2px solid #ffd700; animation: goldPulse 2s infinite;">
-                    <div style="display: flex; align-items: center; justify-content: space-between;">
-                        <div>
-                            <div style="color: #ffd700; font-weight: bold;">🎁 Denní PvP bonus!</div>
-                            <div style="color: #888; font-size: 0.8rem;">Zahraj si dnes a získej +50 XP a +25 💰</div>
-                        </div>
-                        <div style="color: #ffd700; font-size: 1.5rem;">🎯</div>
-                    </div>
+
+                ${onCooldown ? `<div style="text-align:center;padding:0.5rem;background:#2a1a1a;border:1px solid #f44336;border-radius:8px;margin-bottom:0.8rem;color:#f44336;font-size:0.85rem;">⏳ Cooldown: ${Math.floor(cooldownLeft/60)}:${String(cooldownLeft%60).padStart(2,'0')}</div>` : ''}
+
+                <!-- PŘÍCHOZÍ VÝZVY -->
+                ${pendingForMe.length > 0 ? `
+                <div style="background: #2a1a0a; border: 2px solid #ff9800; border-radius: 10px; padding: 0.8rem; margin-bottom: 0.8rem; animation: tombola-pulse 1.5s ease-in-out infinite;">
+                    <div style="color: #ff9800; font-weight: bold; margin-bottom: 0.5rem;">⚔️ VÝZVY PRO TEBE (${pendingForMe.length})</div>
+                    ${pendingForMe.map(c => {
+                        const cAge = Math.floor((Date.now() - (c.createdAt || Date.now())) / 60000);
+                        const cAgeStr = cAge < 60 ? `${cAge}min` : cAge < 1440 ? `${Math.floor(cAge/60)}h` : `${Math.floor(cAge/1440)}d`;
+                        return `
+                        <div style="background:#1a1a1a;padding:0.6rem;border-radius:6px;margin-bottom:0.4rem;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                                <div>
+                                    <span style="color:#fff;font-weight:bold;">${escapeHtml(c.challenger)}</span>
+                                    <span style="color:#888;font-size:0.7rem;"> · Lv.${c.challengerLevel || '?'} · ELO ${c.challengerElo || '?'}</span>
+                                    ${c.bet > 0 ? `<span style="color:#ffd700;font-size:0.7rem;"> · 💰${c.bet}</span>` : ''}
+                                </div>
+                                <span style="color:#555;font-size:0.65rem;">📩 ${cAgeStr}</span>
+                            </div>
+                            ${c.challengerStats ? `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.2rem;font-size:0.7rem;background:#0a0a0a;padding:0.3rem;border-radius:4px;margin-bottom:0.3rem;text-align:center;">
+                                <div style="color:#f44336;">❤️${c.challengerStats.hp||'?'}</div>
+                                <div style="color:#ff9800;">⚔️${c.challengerStats.damage||'?'}</div>
+                                <div style="color:#2196f3;">🛡️${c.challengerStats.defense||'?'}</div>
+                                <div style="color:#ffd700;">💥${c.challengerStats.critChance||'?'}%</div>
+                            </div>` : ''}
+                            <div style="display:flex;gap:0.3rem;">
+                                <button class="btn" onclick="showPvPAcceptScreen('${c.id}')" style="flex:1;background:#4caf50;padding:0.4rem 0.8rem;font-size:0.8rem;">⚔️ Přijmout</button>
+                                <button class="btn" onclick="declinePvPChallenge('${c.id}')" style="background:#555;padding:0.4rem 0.6rem;font-size:0.8rem;">✕</button>
+                            </div>
+                        </div>`;
+                    }).join('')}
                 </div>
                 ` : ''}
+
+                <!-- MÉ ODESLANÉ VÝZVY -->
+                ${myPending.length > 0 ? `
+                <div style="background: #1a1a2a; border: 1px solid #555; border-radius: 10px; padding: 0.8rem; margin-bottom: 0.8rem;">
+                    <div style="color: #9e9e9e; font-weight: bold; margin-bottom: 0.5rem; font-size: 0.8rem;">📤 TVÉ ODESLANÉ VÝZVY (${myPending.length})</div>
+                    ${myPending.map(c => {
+                        const cAge = Math.floor((Date.now() - (c.createdAt || Date.now())) / 60000);
+                        const cAgeStr = cAge < 60 ? `${cAge}min` : cAge < 1440 ? `${Math.floor(cAge/60)}h` : `${Math.floor(cAge/1440)}d`;
+                        return `
+                        <div style="background:#0a0a0a;padding:0.5rem;border-radius:6px;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <span style="color:#aaa;">→ </span><span style="color:#fff;">${escapeHtml(c.target)}</span>
+                                ${c.bet > 0 ? `<span style="color:#ffd700;font-size:0.7rem;"> 💰${c.bet}</span>` : ''}
+                            </div>
+                            <span style="color:#555;font-size:0.65rem;">⏳ ${cAgeStr} — čeká</span>
+                        </div>`;
+                    }).join('')}
+                </div>
+                ` : ''}
+
+                <!-- TAKTIKA -->
+                <div style="background:#1a1a2a;border:1px solid #333;border-radius:10px;padding:0.8rem;margin-bottom:0.8rem;">
+                    <div style="color:#ce93d8;font-weight:bold;margin-bottom:0.5rem;font-size:0.85rem;">🧠 BOJOVÁ TAKTIKA</div>
+                    <div style="display:flex;gap:0.4rem;">
+                        ${tactics.map(t => `
+                            <button class="btn" onclick="setPvPTactic('${t.id}')" style="flex:1;padding:0.5rem;background:${currentTactic === t.id ? t.color + '33' : '#0a0a0a'};border:2px solid ${currentTactic === t.id ? t.color : '#333'};border-radius:8px;text-align:center;">
+                                <div style="font-size:1.2rem;">${t.icon}</div>
+                                <div style="color:${currentTactic === t.id ? t.color : '#888'};font-size:0.7rem;font-weight:bold;">${t.name}</div>
+                                <div style="color:#666;font-size:0.6rem;">${t.desc}</div>
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <!-- ABILITIES -->
+                <div style="background:#1a2a1a;border:1px solid #333;border-radius:10px;padding:0.8rem;margin-bottom:0.8rem;">
+                    <div style="color:#8bc34a;font-weight:bold;margin-bottom:0.5rem;font-size:0.85rem;">⚡ SCHOPNOSTI (${selectedAbs.length}/4)</div>
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.3rem;margin-bottom:0.5rem;">
+                        ${selectedAbs.map(abId => {
+                            const ab = PVP_ABILITIES[abId];
+                            if (!ab) return '';
+                            return `<div style="background:#0a150a;border:1px solid #4caf50;border-radius:6px;padding:0.4rem;text-align:center;">
+                                <div style="font-size:1.1rem;">${ab.icon}</div>
+                                <div style="color:#4caf50;font-size:0.6rem;">${ab.name}</div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                    <button class="btn" onclick="showPvPAbilityPicker()" style="width:100%;background:#333;padding:0.4rem;font-size:0.8rem;">🔄 Změnit schopnosti</button>
+                </div>
+
+                <!-- AKCE -->
+                <div style="display:flex;flex-direction:column;gap:0.4rem;">
+                    <button class="btn" onclick="showPvPChallengePicker()" style="width:100%;background:linear-gradient(135deg,#e91e63,#c2185b);padding:0.9rem;font-size:1rem;${onCooldown ? 'opacity:0.5;pointer-events:none;' : ''}" ${onCooldown ? 'disabled' : ''}>
+                        ⚔️ VYZVAT HRÁČE K SOUBOJI
+                    </button>
+                    <button class="btn" onclick="showPvPFindOpponent()" style="width:100%;background:linear-gradient(135deg,#ff9800,#e65100);padding:0.8rem;font-size:0.95rem;${onCooldown ? 'opacity:0.5;pointer-events:none;' : ''}" ${onCooldown ? 'disabled' : ''}>
+                        🎲 NAJÍT SOUPEŘE (Random)
+                    </button>
+                    <div style="display:flex;gap:0.4rem;">
+                        <button class="btn" onclick="showPvPLeaderboard()" style="flex:1;background:#333;padding:0.6rem;font-size:0.85rem;">🏆 Žebříček</button>
+                        <button class="btn" onclick="showPvPHistory()" style="flex:1;background:#333;padding:0.6rem;font-size:0.85rem;">📜 Historie</button>
+                    </div>
+                </div>
             `;
             
-            // Výzvy pro mě
-            if (pendingForMe.length > 0) {
-                html += `
-                    <div style="background: linear-gradient(135deg, #3a2a1a 0%, #2a1a0a 100%); padding: 1rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid #ff9800; animation: challengePulse 2s infinite;">
-                        <h4 style="color: #ff9800; margin: 0 0 0.8rem 0;">⚔️ Výzvy k boji (${pendingForMe.length})</h4>
-                `;
-                pendingForMe.forEach(challenge => {
-                    const challengerRank = getPvPRank(challenge.challengerStats?.elo || 1000);
-                    html += `
-                        <div style="background: #1a1a1a; padding: 1rem; border-radius: 10px; margin-bottom: 0.5rem; border-left: 4px solid ${challengerRank.color};">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                    <span style="font-size: 1.3rem;">${challengerRank.icon}</span>
-                                    <div>
-                                        <div style="color: #fff; font-weight: bold;">${escapeHtml(challenge.challenger)}</div>
-                                        <div style="font-size: 0.75rem; color: ${challengerRank.color};">${challengerRank.name} • ELO ${challenge.challengerStats?.elo || 1000}</div>
-                                    </div>
-                                </div>
-                                <div style="text-align: right;">
-                                    <div style="color: #ffd700; font-weight: bold; font-size: 1.2rem;">${challenge.bet} 💰</div>
-                                </div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.3rem; font-size: 0.75rem; margin-bottom: 0.5rem; background: #0a0a0a; padding: 0.4rem; border-radius: 6px;">
-                                <div>❤️${challenge.challengerStats?.hp || '?'}</div>
-                                <div>⚔️${challenge.challengerStats?.damage || '?'}</div>
-                                <div>🛡️${challenge.challengerStats?.defense || '?'}</div>
-                                <div>Lvl ${challenge.challengerStats?.level || '?'}</div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                                <button class="btn" onclick="acceptPvPChallenge('${challenge.id}')" style="background: linear-gradient(135deg, #4CAF50 0%, #2e7d32 100%); padding: 0.7rem;">⚔️ BOJOVAT!</button>
-                                <button class="btn" onclick="declinePvPChallenge('${challenge.id}')" style="background: #444;">❌ Odmítnout</button>
-                            </div>
-                        </div>
-                    `;
-                });
-                html += `</div>
-                <style>
-                    @keyframes challengePulse { 0%, 100% { box-shadow: 0 0 5px rgba(255,152,0,0.3); } 50% { box-shadow: 0 0 20px rgba(255,152,0,0.6); } }
-                </style>`;
-            }
-            
-            // Moje odeslané výzvy
-            if (myPending.length > 0) {
-                html += `<div style="background: #1a1a2a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
-                    <h4 style="color: #888; margin: 0 0 0.5rem 0;">⏳ Čekající výzvy</h4>`;
-                myPending.forEach(challenge => {
-                    if (!challenge.target) return;
-                    html += `
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem; background: #0a0a0a; border-radius: 6px; margin-bottom: 0.3rem;">
-                            <span style="color: #888;">→ ${escapeHtml(challenge.target) || '???'}</span>
-                            <span style="color: #ffd700;">${challenge.bet || 0} 💰</span>
-                        </div>
-                    `;
-                });
-                html += `</div>`;
-            }
-            
-            // HLAVNÍ MENU TLAČÍTKA
-            html += `
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
-                    <button class="btn" onclick="showChallengePlayer()" style="background: linear-gradient(135deg, #f44336 0%, #c62828 100%); padding: 1rem; border-radius: 12px;">
-                        <div style="font-size: 1.5rem;">⚔️</div>
-                        <div style="font-size: 0.85rem; font-weight: bold;">Vyzvat hráče</div>
-                    </button>
-                    <button class="btn" onclick="showQuickMatchmaking()" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); padding: 1rem; border-radius: 12px;">
-                        <div style="font-size: 1.5rem;">🎲</div>
-                        <div style="font-size: 0.85rem; font-weight: bold;">Rychlý souboj</div>
-                    </button>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
-                    <button class="btn" onclick="showPvPLeaderboard()" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); color: #000; padding: 0.8rem; border-radius: 10px;">
-                        <div style="font-size: 1.2rem;">🏆</div>
-                        <div style="font-size: 0.75rem;">Žebříček</div>
-                    </button>
-                    <button class="btn" onclick="showPvPTitles()" style="background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%); padding: 0.8rem; border-radius: 10px;">
-                        <div style="font-size: 1.2rem;">🏅</div>
-                        <div style="font-size: 0.75rem;">Tituly</div>
-                    </button>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem;">
-                    <button class="btn" onclick="showPvPMyBuild()" style="background: linear-gradient(135deg, #e91e63 0%, #c2185b 100%); padding: 0.8rem; border-radius: 10px;">
-                        <div style="font-size: 1.2rem;">👤</div>
-                        <div style="font-size: 0.75rem;">Moje postava</div>
-                    </button>
-                    <button class="btn" onclick="showPvPHistory()" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%); padding: 0.8rem; border-radius: 10px;">
-                        <div style="font-size: 1.2rem;">📜</div>
-                        <div style="font-size: 0.75rem;">Historie</div>
-                    </button>
-                </div>
-                
-                <button class="btn" onclick="closeModal()" style="width: 100%; background: #333;">← Zavřít</button>
-            `;
-            
-            showModal('⚔️ PvP ARÉNA', html);
+            showModal('⚔️ PvP ARÉNA', html + `<button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#555;">← Zavřít</button>`);
         }
+            
         
         // 🎲 RYCHLÝ MATCHMAKING - najde náhodného soupeře podobného ELO
-        async function showQuickMatchmaking() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            
+        // === NOVÉ PVP PODPŮRNÉ FUNKCE ===
+        
+        function setPvPTactic(tacticId) {
             initPvPStats();
-            const myName = getPlayerName();
-            const myElo = state.pvp?.elo || 1000;
-            
-            showModal('🎲 Hledám soupeře...', `
-                <div style="text-align: center; padding: 2rem;">
-                    <div style="font-size: 3rem; animation: spin 1s linear infinite;">🎲</div>
-                    <p style="color: #9c27b0; margin-top: 1rem;">Hledám soupeře s podobným ELO...</p>
-                    <p style="color: #666; font-size: 0.85rem;">Tvé ELO: ${myElo}</p>
-                    <div class="loading-spinner" style="margin: 1rem auto;"></div>
-                </div>
-                <style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>
-            `);
-            
-            try {
-                // Načti online hráče - použij klíč jako fallback pro jméno
-                const snapshot = await firebaseDB.ref('online').once('value');
-                const onlineData = snapshot.val() || {};
-                const onlinePlayers = Object.entries(onlineData)
-                    .map(([key, val]) => ({
-                        name: val?.name || key,
-                        level: val?.level || 1
-                    }))
-                    .filter(p => p.name && p.name !== myName && p.name !== 'undefined');
-                
-                if (onlinePlayers.length === 0) {
-                    showModal('🎲 Rychlý souboj', `
-                        <div style="text-align: center; padding: 2rem;">
-                            <div style="font-size: 3rem; margin-bottom: 1rem;">😔</div>
-                            <p style="color: #888;">Žádní online hráči...</p>
-                            <p style="color: #666; font-size: 0.85rem;">Zkus to později nebo vyzvi přítele!</p>
-                        </div>
-                        <button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem;">← Zpět</button>
-                    `);
-                    return;
-                }
-                
-                // Načti ELO všech hráčů
-                const leaderboardSnap = await firebaseDB.ref('leaderboard').once('value');
-                const leaderboardData = leaderboardSnap.val() || {};
-                
-                // Přiřaď ELO k online hráčům a seřaď podle vzdálenosti od mého ELO
-                const playersWithElo = onlinePlayers.map(p => {
-                    const playerData = leaderboardData[p.name] || {};
-                    return {
-                        ...p,
-                        elo: playerData.pvpElo || 1000,
-                        level: playerData.level || p.level || 1
-                    };
-                }).sort((a, b) => Math.abs(a.elo - myElo) - Math.abs(b.elo - myElo));
-                
-                // Vyber náhodně z top 3 nejbližších (nebo méně pokud jich je méně)
-                const candidates = playersWithElo.slice(0, Math.min(3, playersWithElo.length));
-                const opponent = candidates[Math.floor(Math.random() * candidates.length)];
-                const opponentRank = getPvPRank(opponent.elo);
-                
-                // Doporučená sázka podle ELO
-                const suggestedBet = Math.min(500, Math.floor(myElo / 10));
-                
-                setTimeout(() => {
-                    showModal('🎲 Soupeř nalezen!', `
-                        <div style="text-align: center; margin-bottom: 1rem;">
-                            <div style="font-size: 2rem; animation: foundAnim 0.5s;">🎯</div>
-                        </div>
-                        
-                        <div style="background: linear-gradient(135deg, #2a1a3a 0%, #1a0a2a 100%); padding: 1.2rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid ${opponentRank.color};">
-                            <div style="text-align: center; margin-bottom: 0.8rem;">
-                                <div style="font-size: 2rem;">${opponentRank.icon}</div>
-                                <div style="color: ${opponentRank.color}; font-size: 0.8rem;">${opponentRank.name}</div>
-                            </div>
-                            <div style="text-align: center;">
-                                <div style="color: #fff; font-size: 1.3rem; font-weight: bold;">${escapeHtml(opponent.name)}</div>
-                                <div style="color: #888; font-size: 0.85rem;">Level ${opponent.level} • ELO: <span style="color: ${opponentRank.color};">${opponent.elo}</span></div>
-                            </div>
-                            <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 0.8rem; color: #888; font-size: 0.85rem;">
-                                <span>ELO rozdíl: <span style="color: ${Math.abs(opponent.elo - myElo) < 100 ? '#4CAF50' : '#ff9800'};">${opponent.elo > myElo ? '+' : ''}${opponent.elo - myElo}</span></span>
-                            </div>
-                        </div>
-                        
-                        <div style="background: #1a1a1a; padding: 1rem; border-radius: 10px; margin-bottom: 1rem;">
-                            <label style="color: #888; font-size: 0.85rem;">Sázka (0 = přátelský zápas):</label>
-                            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
-                                <input type="number" id="quickMatchBet" value="${suggestedBet}" min="0" max="${getMoney()}" 
-                                    style="flex: 1; padding: 0.6rem; background: #0a0a0a; border: 1px solid #444; border-radius: 8px; color: #ffd700; font-size: 1.1rem; text-align: center;">
-                                <button onclick="document.getElementById('quickMatchBet').value='0'" style="background: #333; border: none; padding: 0.6rem 1rem; border-radius: 8px; color: #888; cursor: pointer;">0</button>
-                                <button onclick="document.getElementById('quickMatchBet').value='${Math.floor(getMoney()/2)}'" style="background: #333; border: none; padding: 0.6rem 1rem; border-radius: 8px; color: #888; cursor: pointer;">50%</button>
-                            </div>
-                            <p style="color: #666; font-size: 0.75rem; margin-top: 0.5rem; text-align: center;">Tvé peníze: ${getMoney()} 💰</p>
-                        </div>
-                        
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                            <button class="btn" onclick="showQuickMatchmaking()" style="background: #555;">🔄 Jiný</button>
-                            <button class="btn" disabled style="background: #333; opacity: 0.5; cursor: not-allowed;">🔒 PvP zamčeno</button>
-                        </div>
-                        
-                        <button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 0.5rem; background: #333;">← Zpět</button>
-                        
-                        <style>@keyframes foundAnim { 0% { transform: scale(0) rotate(-180deg); } 100% { transform: scale(1) rotate(0); } }</style>
-                    `);
-                }, 1500);
-                
-            } catch (e) {
-                console.error('Matchmaking error:', e);
-                showPvPArena();
-            }
+            state.pvp.tactic = tacticId;
+            saveGame();
+            showPvPArena();
         }
         
-        function sendQuickChallenge(targetName) {
-            const bet = parseInt(document.getElementById('quickMatchBet')?.value) || 0;
-            if (bet > getMoney()) {
-                notifyWarning('Nedostatek peněz', `Máš jen ${getMoney()} 💰`);
-                return;
-            }
-            createPvPChallenge(targetName, bet);
-            closeModal();
-        }
-        
-        // 👤 ZOBRAZENÍ BUILDU POSTAVY PRO PvP
-        function showPvPMyBuild() {
-            const stats = getPlayerCombatStats();
-            const rank = getPvPRank(stats.elo);
-            
-            let html = `
-                <div style="background: linear-gradient(135deg, #1a1a2a 0%, #2a1a3a 100%); padding: 1rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid ${rank.color};">
-                    <div style="text-align: center; margin-bottom: 1rem;">
-                        <div style="font-size: 2rem;">${rank.icon}</div>
-                        <div style="color: ${rank.color}; font-weight: bold;">${stats.className}</div>
-                        <div style="color: #fff; font-size: 1.2rem;">Level ${stats.level}</div>
-                    </div>
-                </div>
-                
-                <h4 style="color: #ff9800; margin: 0 0 0.5rem 0;">⚔️ Bojové statistiky</h4>
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">❤️ HP</span>
-                            <span style="color: #ff6b6b; font-weight: bold;">${stats.maxHp}</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">⚔️ Útok</span>
-                            <span style="color: #ff9800; font-weight: bold;">${stats.damage}</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">🛡️ Obrana</span>
-                            <span style="color: #2196f3; font-weight: bold;">${stats.defense}</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">💥 Crit</span>
-                            <span style="color: #e91e63; font-weight: bold;">${stats.critChance}%</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">💨 Úhyb</span>
-                            <span style="color: #8bc34a; font-weight: bold;">${stats.dodgeChance}%</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem; background: #0a0a0a; border-radius: 6px;">
-                            <span style="color: #888;">🛡️ Blok</span>
-                            <span style="color: #9c27b0; font-weight: bold;">${stats.blockChance}%</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <h4 style="color: #4CAF50; margin: 0 0 0.5rem 0;">🎒 Vybavení</h4>
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">
-            `;
-            
-            const equipSlots = [
-                { key: 'weapon', icon: '⚔️', name: 'Zbraň' },
-                { key: 'armor', icon: '🛡️', name: 'Brnění' },
-                { key: 'helmet', icon: '🪖', name: 'Helma' },
-                { key: 'gloves', icon: '🧤', name: 'Rukavice' },
-                { key: 'boots', icon: '👢', name: 'Boty' }
-            ];
-            
-            equipSlots.forEach(slot => {
-                const item = stats.equipped?.[slot.key];
-                const special = item?.special ? SPECIAL_EFFECT_DETAILS[item.special] : null;
-                html += `
-                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: #0a0a0a; border-radius: 6px; margin-bottom: 0.3rem;">
-                        <span style="font-size: 1.2rem;">${slot.icon}</span>
-                        <div style="flex: 1;">
-                            <div style="color: ${item ? '#fff' : '#555'};">${item?.name || 'Žádné'}</div>
-                            ${special ? `<div style="color: ${special.color}; font-size: 0.7rem;">✨ ${special.name}</div>` : ''}
-                        </div>
-                        ${item?.damage ? `<span style="color: #ff9800; font-size: 0.8rem;">+${item.damage} ⚔️</span>` : ''}
-                        ${item?.defense ? `<span style="color: #2196f3; font-size: 0.8rem;">+${item.defense} 🛡️</span>` : ''}
-                    </div>
-                `;
-            });
-            
-            html += `</div>`;
-            
-            // Speciální bonusy
-            const bonuses = [];
-            if (stats.hasPhoenix) bonuses.push({ icon: '🔥', name: 'Fénix', desc: 'Přežiješ 1x smrtelný zásah' });
-            if (stats.hasTitanArmor) bonuses.push({ icon: '🗿', name: 'Titán', desc: 'Imunita na kritické zásahy' });
-            if (stats.lifesteal > 0) bonuses.push({ icon: '🧛', name: 'Vysátí života', desc: `+${stats.lifesteal}% HP z damage` });
-            if (stats.regenPerRound > 0) bonuses.push({ icon: '💚', name: 'Nano regenerace', desc: `+${stats.regenPerRound} HP/kolo` });
-            if (stats.hasBerserkerBlood) bonuses.push({ icon: '😤', name: 'Krev berserkera', desc: '+18% DMG pod 50% HP' });
-            if (stats.hasPoisonPunch) bonuses.push({ icon: '🩸', name: 'Krvavý úder', desc: 'Způsobuje krvácení' });
-            
-            if (bonuses.length > 0) {
-                html += `<h4 style="color: #e91e63; margin: 0 0 0.5rem 0;">✨ Speciální bonusy v PvP</h4>
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">`;
-                bonuses.forEach(b => {
-                    html += `
-                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: #1a2a1a; border-radius: 6px; margin-bottom: 0.3rem; border-left: 3px solid #4CAF50;">
-                            <span style="font-size: 1.2rem;">${b.icon}</span>
-                            <div>
-                                <div style="color: #8bc34a; font-weight: bold;">${b.name}</div>
-                                <div style="color: #888; font-size: 0.75rem;">${b.desc}</div>
-                            </div>
-                        </div>
-                    `;
-                });
-                html += `</div>`;
-            }
-            
-            // Mutace
-            if (stats.mutations && stats.mutations.length > 0) {
-                html += `<h4 style="color: #8bc34a; margin: 0 0 0.5rem 0;">🧬 Aktivní mutace</h4>
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">
-                    <div style="display: flex; flex-wrap: wrap; gap: 0.3rem;">`;
-                stats.mutations.forEach(m => {
-                    html += `<span style="background: #1a3a1a; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.8rem; color: #8bc34a;">🧬 ${m}</span>`;
-                });
-                html += `</div></div>`;
-            }
-            
-            html += `
-                <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">
-                    <p style="color: #888; font-size: 0.85rem; margin: 0; text-align: center;">
-                        💡 <strong>Tip:</strong> Vylepši své vybavení, zvedni atributy a získej mutace pro silnější PvP postavu!
-                    </p>
-                </div>
-                
-                <button class="btn" onclick="showPvPArena()" style="width: 100%; background: #333;">← Zpět do arény</button>
-            `;
-            
-            showModal('👤 Moje PvP postava', html);
-        }
-        
-        // 📜 HISTORIE PvP ZÁPASŮ
-        async function showPvPHistory() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            
-            showModal('📜 Historie PvP', '<div style="text-align: center; padding: 2rem;"><div class="loading-spinner"></div></div>');
-            
-            try {
-                const myName = getPlayerName();
-                const snap = await firebaseDB.ref('pvp/challenges')
-                    .orderByChild('completedAt')
-                    .limitToLast(20)
-                    .once('value');
-                
-                const allChallenges = [];
-                snap.forEach(child => {
-                    const c = child.val();
-                    if (c.status === 'completed' && (c.challenger === myName || c.target === myName)) {
-                        allChallenges.push({ ...c, id: child.key });
-                    }
-                });
-                
-                // Seřaď od nejnovějších
-                allChallenges.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-                
-                if (allChallenges.length === 0) {
-                    showModal('📜 Historie PvP', `
-                        <div style="text-align: center; padding: 2rem;">
-                            <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;">📜</div>
-                            <p style="color: #888;">Zatím žádné zápasy...</p>
-                            <p style="color: #666; font-size: 0.85rem;">Vyzvi někoho k souboji!</p>
-                        </div>
-                        <button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem;">← Zpět</button>
-                    `);
-                    return;
-                }
-                
-                let html = `<div style="max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
-                
-                allChallenges.slice(0, 15).forEach(c => {
-                    const iWon = c.winner === myName;
-                    const opponent = c.challenger === myName ? c.target : c.challenger;
-                    const date = c.completedAt ? new Date(c.completedAt).toLocaleDateString('cs-CZ') : '?';
-                    
-                    html += `
-                        <div style="display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem; background: ${iWon ? '#1a2a1a' : '#2a1a1a'}; border-radius: 10px; margin-bottom: 0.5rem; border-left: 4px solid ${iWon ? '#4CAF50' : '#f44336'};">
-                            <div style="font-size: 1.5rem;">${iWon ? '🏆' : '💀'}</div>
-                            <div style="flex: 1;">
-                                <div style="color: #fff; font-weight: bold;">${iWon ? 'Výhra' : 'Prohra'} vs ${escapeHtml(opponent)}</div>
-                                <div style="color: #888; font-size: 0.75rem;">${date} • ${c.battleStats?.rounds || '?'} kol</div>
-                            </div>
-                            <div style="text-align: right;">
-                                <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-weight: bold;">${iWon ? '+' : '-'}${c.bet || 0} 💰</div>
-                                <div style="color: ${iWon ? '#8bc34a' : '#ff6b6b'}; font-size: 0.8rem;">${iWon ? '+' : '-'}${c.eloChange || 0} ELO</div>
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                html += `</div>`;
-                
-                // Statistiky
-                const wins = allChallenges.filter(c => c.winner === myName).length;
-                const losses = allChallenges.length - wins;
-                const totalEarned = allChallenges.filter(c => c.winner === myName).reduce((sum, c) => sum + (c.bet || 0), 0);
-                const totalLost = allChallenges.filter(c => c.winner !== myName).reduce((sum, c) => sum + (c.bet || 0), 0);
-                
-                html += `
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.3rem; margin-top: 1rem; background: #1a1a1a; padding: 0.8rem; border-radius: 10px; text-align: center; font-size: 0.8rem;">
-                        <div><span style="color: #8bc34a; font-weight: bold;">${wins}</span><br><span style="color: #666;">Výher</span></div>
-                        <div><span style="color: #f44336; font-weight: bold;">${losses}</span><br><span style="color: #666;">Proher</span></div>
-                        <div><span style="color: #8bc34a; font-weight: bold;">+${totalEarned}</span><br><span style="color: #666;">Získáno</span></div>
-                        <div><span style="color: #f44336; font-weight: bold;">-${totalLost}</span><br><span style="color: #666;">Ztraceno</span></div>
-                    </div>
-                `;
-                
-                html += `<button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem; background: #333;">← Zpět</button>`;
-                
-                showModal('📜 Historie PvP', html);
-                
-            } catch (e) {
-                console.error('History error:', e);
-                showPvPArena();
-            }
-        }
-        
-        async function showChallengePlayer() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            
-            // Načti online hráče
-            const snapshot = await firebaseDB.ref('online').once('value');
-            const onlineData = snapshot.val() || {};
-            const myName = getPlayerName();
-            
-            // Převeď na pole s klíčem jako fallback pro jméno
-            const onlinePlayers = Object.entries(onlineData)
-                .map(([key, val]) => ({
-                    name: val?.name || key,  // Použij name nebo klíč jako fallback
-                    level: val?.level || 1,
-                    location: val?.location || 'unknown'
-                }))
-                .filter(p => p.name && p.name !== myName && p.name !== 'undefined');
-            
-            if (onlinePlayers.length === 0) {
-                showModal('🎯 Vyzvat hráče', `
-                    <div style="text-align: center; padding: 2rem; color: #888;">
-                        Žádní online hráči k výzvě...
-                    </div>
-                    <button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem;">Zpět</button>
-                `);
-                return;
-            }
-            
-            let html = `
-                <p style="color: #888; margin-bottom: 1rem;">Vyber hráče a nastav sázku:</p>
-                <div style="max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch; margin-bottom: 1rem;">
-            `;
-            
-            onlinePlayers.forEach(player => {
-                const safeName = escapeHtml(player.name);
-                html += `
-                    <div onclick="selectPvPTarget('${safeName}')" id="pvp-${safeName}" style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem; background: #2a2a2a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.3rem; border: 2px solid transparent;">
-                        <span style="color: #8bc34a;">🟢</span>
-                        <div style="flex: 1;">
-                            <div style="color: #fff;">${safeName}</div>
-                            <div style="font-size: 0.75rem; color: #888;">Lvl ${player.level}</div>
-                        </div>
-                    </div>
-                `;
-            });
-            
-            html += `</div>
-                <div style="margin-bottom: 1rem; text-align: center;">
-                    <div style="color: #4CAF50; font-size: 1rem; padding: 0.5rem; background: #1a2a1a; border-radius: 8px;">
-                        ⚔️ PvP souboj je ZDARMA!
-                    </div>
-                </div>
-                
-                <button class="btn" onclick="confirmPvPChallenge()" id="pvpChallengeBtn" style="width: 100%; background: #555;" disabled>
-                    🎯 VYBER HRÁČE
-                </button>
-                <button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 0.5rem; background: #333;">Zpět</button>
-            `;
-            
-            showModal('🎯 Vyzvat k souboji', html);
-        }
-        
-        let selectedPvPTarget = null;
-        
-        function selectPvPTarget(name) {
-            selectedPvPTarget = name;
-            
-            // Vizuální feedback
-            document.querySelectorAll('[id^="pvp-"]').forEach(el => {
-                el.style.borderColor = 'transparent';
-                el.style.background = '#2a2a2a';
-            });
-            
-            const selected = document.getElementById('pvp-' + name);
-            if (selected) {
-                selected.style.borderColor = '#ff5722';
-                selected.style.background = '#3a2a1a';
-            }
-            
-            const btn = document.getElementById('pvpChallengeBtn');
-            if (btn) {
-                btn.disabled = false;
-                btn.style.background = '#ff5722';
-                btn.textContent = `⚔️ Vyzvat ${name}`;
-            }
-        }
-        
-        function confirmPvPChallenge() {
-            if (!selectedPvPTarget) return;
-            
-            // PvP je zdarma - bez sázky
-            createPvPChallenge(selectedPvPTarget, 0);
-            closeModal();
-        }
-        
-        // 🏆 PvP LEADERBOARD
-        async function showPvPLeaderboard() {
-            if (!multiplayerEnabled || !firebaseDB) {
-                showModal('🏆 PvP Žebříček', '<p style="color: #888; text-align: center;">' + ('Multiplayer není aktivní') + '</p><button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem;">' + ('Zpět') + '</button>');
-                return;
-            }
-            
-            try {
-                const snapshot = await firebaseDB.ref('leaderboard').orderByChild('pvpElo').limitToLast(20).once('value');
-                const players = [];
-                snapshot.forEach(child => {
-                    const data = child.val();
-                    if (data.pvpElo) players.push(data);
-                });
-                players.sort((a, b) => (b.pvpElo || 0) - (a.pvpElo || 0));
-                
-                let html = `
-                    <div style="max-height: 400px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                        ${players.length === 0 ? '<p style="color: #888; text-align: center;">Zatím žádní hráči</p>' : ''}
-                        ${players.map((p, i) => {
-                            const rank = getPvPRank(p.pvpElo || 1000);
-                            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-                            const isMe = p.name === getPlayerName();
-                            return `
-                                <div style="display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem; background: ${isMe ? 'linear-gradient(135deg, #1a3a1a 0%, #0a2a0a 100%)' : '#1a1a1a'}; border-radius: 10px; margin-bottom: 0.5rem; border: ${isMe ? '2px solid #4CAF50' : '1px solid #333'};">
-                                    <div style="font-size: 1.3rem; min-width: 35px; text-align: center;">${medal}</div>
-                                    <div style="font-size: 1.5rem;">${rank.icon}</div>
-                                    <div style="flex: 1;">
-                                        <div style="color: #fff; font-weight: bold;">${escapeHtml(p.name)}${isMe ? ' (Ty)' : ''}</div>
-                                        <div style="color: ${rank.color}; font-size: 0.8rem;">${rank.name}</div>
-                                    </div>
-                                    <div style="text-align: right;">
-                                        <div style="color: ${rank.color}; font-size: 1.3rem; font-weight: bold;">${p.pvpElo || 1000}</div>
-                                        <div style="color: #888; font-size: 0.7rem;">ELO</div>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('')}
-                    </div>
-                `;
-                
-                html += `<button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem; background: #333;">← Zpět do arény</button>`;
-                showModal('🏆 PvP Žebříček', html);
-            } catch (err) {
-                console.error(err);
-                showModal('🏆 PvP Žebříček', '<p style="color: #f44336;">' + ('Chyba načítání') + '</p><button class="btn" onclick="showPvPArena()" style="width: 100%;">' + ('Zpět') + '</button>');
-            }
-        }
-        
-        // ✨ PvP ABILITIES MENU
-        function showPvPAbilities() {
+        function showPvPAbilityPicker() {
             initPvPStats();
-            const selectedAbilities = state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'];
+            const selected = state.pvp?.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'];
             
             const categories = {
-                attack: { name: '⚔️ Útočné', abilities: [] },
-                defense: { name: '🛡️ Obranné', abilities: [] },
-                special: { name: '✨ Speciální', abilities: [] }
+                'Útočné': Object.entries(PVP_ABILITIES).filter(([,a]) => a.type === 'attack'),
+                'Obranné': Object.entries(PVP_ABILITIES).filter(([,a]) => a.type === 'defense'),
+                'Speciální': Object.entries(PVP_ABILITIES).filter(([,a]) => a.type === 'special' || a.type === 'passive')
             };
             
-            Object.entries(PVP_ABILITIES).forEach(([id, ability]) => {
-                if (ability.type && categories[ability.type]) {
-                    categories[ability.type].abilities.push({ id, ...ability });
+            let html = `<p style="color:#888;font-size:0.8rem;margin-bottom:0.8rem;">Vyber 4 schopnosti pro boj. Klikni pro přidání/odebrání.</p>`;
+            html += `<div style="margin-bottom:0.8rem;padding:0.5rem;background:#0a150a;border:1px solid #4caf50;border-radius:8px;">
+                <div style="color:#4caf50;font-size:0.75rem;margin-bottom:0.3rem;">Vybrané (${selected.length}/4):</div>
+                <div style="display:flex;gap:0.3rem;flex-wrap:wrap;">${selected.map(id => {
+                    const ab = PVP_ABILITIES[id];
+                    return ab ? `<span style="background:#1a3a1a;padding:0.2rem 0.5rem;border-radius:4px;font-size:0.75rem;color:#4caf50;">${ab.icon} ${ab.name}</span>` : '';
+                }).join('')}</div>
+            </div>`;
+            
+            for (const [catName, abilities] of Object.entries(categories)) {
+                html += `<div style="color:#ce93d8;font-size:0.8rem;font-weight:bold;margin:0.5rem 0 0.3rem;">${catName}</div>`;
+                html += `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.3rem;">`;
+                for (const [abId, ab] of abilities) {
+                    const isSelected = selected.includes(abId);
+                    html += `<button class="btn" onclick="togglePvPAbility('${abId}')" style="padding:0.5rem;background:${isSelected ? '#1a3a1a' : '#1a1a1a'};border:1px solid ${isSelected ? '#4caf50' : '#333'};text-align:left;border-radius:6px;">
+                        <div style="font-size:0.85rem;">${ab.icon} <strong style="color:${isSelected ? '#4caf50' : '#ccc'};">${ab.name}</strong></div>
+                        <div style="color:#888;font-size:0.65rem;">CD: ${ab.cooldown} kol · ${ab.desc}</div>
+                    </button>`;
                 }
-            });
-            
-            let html = `
-                <p style="color: #888; margin-bottom: 1rem; font-size: 0.9rem;">Vyber 4 schopnosti pro PvP boj:</p>
-                
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 10px; margin-bottom: 1rem;">
-                    <div style="color: #ffd700; font-size: 0.8rem; margin-bottom: 0.5rem;">VYBRANÉ SCHOPNOSTI:</div>
-                    <div id="selectedAbilitiesDisplay" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        ${selectedAbilities.map(id => {
-                            const ab = PVP_ABILITIES[id];
-                            return ab ? `<div style="background: #2a2a2a; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.85rem;">${ab.icon} ${ab.name}</div>` : '';
-                        }).join('')}
-                    </div>
-                </div>
-            `;
-            
-            Object.entries(categories).forEach(([catId, cat]) => {
-                if (cat.abilities.length === 0) return;
-                html += `<h4 style="color: #888; margin: 1rem 0 0.5rem 0; font-size: 0.9rem;">${cat.name}</h4>`;
-                html += `<div style="display: grid; gap: 0.4rem;">`;
-                cat.abilities.forEach(ab => {
-                    const isSelected = selectedAbilities.includes(ab.id);
-                    html += `
-                        <div onclick="togglePvPAbility('${ab.id}')" style="cursor: pointer; display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem; background: ${isSelected ? '#1a3a1a' : '#1a1a1a'}; border-radius: 8px; border: 2px solid ${isSelected ? '#4CAF50' : 'transparent'};">
-                            <div style="font-size: 1.5rem;">${ab.icon}</div>
-                            <div style="flex: 1;">
-                                <div style="color: #fff; font-size: 0.9rem;">${ab.name}</div>
-                                <div style="color: #888; font-size: 0.75rem;">${ab.desc} • CD: ${ab.cooldown || 0}</div>
-                            </div>
-                            <div style="color: ${isSelected ? '#4CAF50' : '#555'}; font-size: 1.2rem;">${isSelected ? '✓' : '○'}</div>
-                        </div>
-                    `;
-                });
                 html += `</div>`;
-            });
+            }
             
-            html += `<button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem; background: #333;">← ${'Zpět'}</button>`;
-            showModal('✨ PvP Schopnosti', html);
+            showModal('⚡ Výběr schopností', html + `<button class="btn" onclick="showPvPArena()" style="width:100%;margin-top:0.5rem;background:#555;">← Zpět do arény</button>`);
         }
         
         function togglePvPAbility(abilityId) {
             initPvPStats();
-            const selected = state.pvp.selectedAbilities || [];
-            const index = selected.indexOf(abilityId);
-            
-            if (index > -1) {
-                selected.splice(index, 1);
+            let selected = state.pvp.selectedAbilities || ['powerStrike', 'dodge', 'heal', 'stun'];
+            if (selected.includes(abilityId)) {
+                selected = selected.filter(id => id !== abilityId);
             } else if (selected.length < 4) {
                 selected.push(abilityId);
             } else {
-                notifyWarning('Maximum 4 schopnosti', 'Odeber nějakou schopnost');
+                notifyWarning('Maximum 4', 'Nejdřív odeber jednu schopnost');
+                return;
+            }
+            state.pvp.selectedAbilities = selected;
+            saveGame();
+            showPvPAbilityPicker();
+        }
+        
+        async function showPvPChallengePicker() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            const myName = getPlayerName();
+            showModal('⚔️ Vyber soupeře', `<div style="text-align:center;padding:1rem;"><div class="loading-spinner"></div><p style="color:#888;margin-top:0.5rem;">Načítám hráče...</p></div>`);
+            
+            try {
+                // Načti online hráče
+                const onlineSnap = await firebaseDB.ref('online').once('value');
+                const online = onlineSnap.val() || {};
+                const onlinePlayers = Object.entries(online)
+                    .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
+                    .map(([key, p]) => ({ key, ...p, isOnline: true }));
+                
+                // Načti offline hráče z leaderboardu (mají combat stats)
+                const lbSnap = await firebaseDB.ref('leaderboard').orderByChild('level').limitToLast(30).once('value');
+                const lbData = lbSnap.val() || {};
+                const onlineNames = onlinePlayers.map(p => p.name);
+                const offlinePlayers = Object.values(lbData)
+                    .filter(p => p.name && p.name !== myName && (p.level || 1) >= 5 && !onlineNames.includes(p.name))
+                    .map(p => ({ name: p.name, level: p.level, elo: p.pvpElo || 1000, isOnline: false }))
+                    .sort((a, b) => (b.level || 1) - (a.level || 1))
+                    .slice(0, 15);
+                
+                const allPlayers = [...onlinePlayers, ...offlinePlayers];
+                
+                if (allPlayers.length === 0) {
+                    showModal('⚔️ Vyber soupeře', `
+                        <div style="text-align:center;padding:2rem;">
+                            <div style="font-size:3rem;">😔</div>
+                            <p style="color:#888;">Žádní hráči level 5+</p>
+                        </div>
+                        <button class="btn" onclick="showPvPArena()" style="width:100%;background:#555;">← Zpět</button>
+                    `);
+                    return;
+                }
+                
+                let html = `
+                    <div style="margin-bottom:0.8rem;">
+                        <label style="color:#888;font-size:0.8rem;">💰 Sázka (volitelné):</label>
+                        <input type="number" id="pvpBetInput" value="0" min="0" max="${state.money || 0}" style="width:100%;padding:0.5rem;background:#1a1a1a;border:1px solid #555;border-radius:6px;color:#ffd700;font-size:1rem;">
+                    </div>
+                    <div style="max-height:50vh;overflow-y:auto;">
+                `;
+                
+                // Online sekce
+                if (onlinePlayers.length > 0) {
+                    html += `<div style="color:#4caf50;font-size:0.75rem;font-weight:bold;margin:0.3rem 0;">🟢 ONLINE (${onlinePlayers.length})</div>`;
+                    for (const p of onlinePlayers) {
+                        const pElo = p.elo || 1000;
+                        const pRank = getPvPRank(pElo);
+                        html += `
+                            <div style="background:#0a1a0a;border:1px solid #4caf50;border-radius:8px;padding:0.6rem;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">
+                                <div>
+                                    <span style="color:${pRank.color};font-size:0.85rem;">${pRank.icon}</span>
+                                    <strong style="color:#fff;">${p.name}</strong>
+                                    <span style="color:#888;font-size:0.75rem;"> Lv.${p.level || '?'}</span>
+                                    <span style="color:${pRank.color};font-size:0.7rem;"> ${pElo} ELO</span>
+                                </div>
+                                <button class="btn" onclick="sendPvPChallengeWithBet('${p.name.replace(/'/g, "\\'")}')" style="background:#e91e63;padding:0.4rem 0.8rem;font-size:0.8rem;">⚔️</button>
+                            </div>
+                        `;
+                    }
+                }
+                
+                // Offline sekce
+                if (offlinePlayers.length > 0) {
+                    html += `<div style="color:#888;font-size:0.75rem;font-weight:bold;margin:0.5rem 0 0.3rem;">⚫ OFFLINE (${offlinePlayers.length}) — výzva čeká na přijetí</div>`;
+                    for (const p of offlinePlayers) {
+                        const pRank = getPvPRank(p.elo || 1000);
+                        html += `
+                            <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:0.6rem;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">
+                                <div>
+                                    <span style="color:${pRank.color};font-size:0.85rem;">${pRank.icon}</span>
+                                    <strong style="color:#999;">${p.name}</strong>
+                                    <span style="color:#666;font-size:0.75rem;"> Lv.${p.level || '?'}</span>
+                                    <span style="color:${pRank.color};font-size:0.7rem;"> ${p.elo} ELO</span>
+                                </div>
+                                <button class="btn" onclick="sendPvPChallengeWithBet('${p.name.replace(/'/g, "\\'")}')" style="background:#555;padding:0.4rem 0.8rem;font-size:0.8rem;">📩</button>
+                            </div>
+                        `;
+                    }
+                }
+                
+                html += `</div>`;
+                showModal('⚔️ Vyber soupeře', html + `<button class="btn" onclick="showPvPArena()" style="width:100%;margin-top:0.5rem;background:#555;">← Zpět</button>`);
+            } catch(e) {
+                console.error('PvP challenge picker error:', e);
+                showPvPArena();
+            }
+        }
+        
+        function sendPvPChallengeWithBet(targetName) {
+            const bet = parseInt(document.getElementById('pvpBetInput')?.value) || 0;
+            if (bet > (state.money || 0)) {
+                notifyWarning('Nedostatek peněz', `Máš jen ${state.money || 0} 💰`);
+                return;
+            }
+            createPvPChallenge(targetName, bet);
+            closeModal();
+            notifySuccess('⚔️ Výzva odeslána!', `Čekám na odpověď od ${targetName}`);
+        }
+        
+        async function showPvPFindOpponent() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            const myName = getPlayerName();
+            const myElo = state.pvp?.elo || 1000;
+            
+            showModal('🎲 Hledám soupeře...', `
+                <div style="text-align:center;padding:2rem;">
+                    <div style="font-size:3rem;animation:spin 1s linear infinite;">🎲</div>
+                    <p style="color:#9c27b0;margin-top:1rem;">Hledám soupeře s ELO ${myElo - 200} - ${myElo + 200}...</p>
+                    <div class="loading-spinner" style="margin:1rem auto;"></div>
+                </div>
+                <style>@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }</style>
+            `);
+            
+            try {
+                const snap = await firebaseDB.ref('online').once('value');
+                const online = snap.val() || {};
+                const candidates = Object.entries(online)
+                    .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
+                    .filter(([key, p]) => Math.abs((p.elo || 1000) - myElo) <= 300)
+                    .map(([key, p]) => ({ key, ...p }));
+                
+                if (candidates.length === 0) {
+                    // Rozšíř hledání
+                    const allPlayers = Object.entries(online)
+                        .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
+                        .map(([key, p]) => ({ key, ...p }));
+                    
+                    if (allPlayers.length === 0) {
+                        showModal('🎲 Žádný soupeř', `
+                            <div style="text-align:center;padding:2rem;">
+                                <div style="font-size:3rem;">😔</div>
+                                <p style="color:#888;">Nikdo vhodný není online</p>
+                            </div>
+                            <button class="btn" onclick="showPvPArena()" style="width:100%;background:#555;">← Zpět</button>
+                        `);
+                        return;
+                    }
+                    candidates.push(...allPlayers);
+                }
+                
+                // Vyber náhodného
+                const opponent = candidates[Math.floor(Math.random() * candidates.length)];
+                const oppRank = getPvPRank(opponent.elo || 1000);
+                
+                showModal('🎲 Soupeř nalezen!', `
+                    <div style="text-align:center;padding:1rem;">
+                        <div style="font-size:3rem;filter:drop-shadow(0 0 10px ${oppRank.color});">${oppRank.icon}</div>
+                        <div style="color:#fff;font-size:1.2rem;font-weight:bold;margin:0.5rem 0;">${opponent.name}</div>
+                        <div style="color:${oppRank.color};font-size:0.85rem;">${oppRank.name} · ELO ${opponent.elo || 1000} · Lv.${opponent.level || '?'}</div>
+                        <div style="margin:1rem 0;">
+                            <label style="color:#888;font-size:0.8rem;">💰 Sázka:</label>
+                            <input type="number" id="pvpRandomBet" value="0" min="0" max="${state.money || 0}" style="width:60%;padding:0.5rem;background:#1a1a1a;border:1px solid #555;border-radius:6px;color:#ffd700;font-size:1rem;text-align:center;">
+                        </div>
+                    </div>
+                    <button class="btn" onclick="sendPvPRandomChallenge('${opponent.name.replace(/'/g, "\\'")}')" style="width:100%;background:linear-gradient(135deg,#e91e63,#c2185b);padding:0.8rem;font-size:1rem;">⚔️ VYZVAT ${opponent.name.toUpperCase()}</button>
+                    <button class="btn" onclick="showPvPFindOpponent()" style="width:100%;margin-top:0.3rem;background:#333;">🔄 Jiný soupeř</button>
+                    <button class="btn" onclick="showPvPArena()" style="width:100%;margin-top:0.3rem;background:#555;">← Zpět</button>
+                `);
+            } catch(e) {
+                console.error('Find opponent error:', e);
+                showPvPArena();
+            }
+        }
+        
+        function sendPvPRandomChallenge(targetName) {
+            const bet = parseInt(document.getElementById('pvpRandomBet')?.value) || 0;
+            if (bet > (state.money || 0)) {
+                notifyWarning('Nedostatek peněz', `Máš jen ${state.money || 0} 💰`);
+                return;
+            }
+            createPvPChallenge(targetName, bet);
+            closeModal();
+            notifySuccess('⚔️ Výzva odeslána!', `Čekám na odpověď od ${targetName}`);
+        }
+        
+        function showPvPAcceptScreen(challengeId) {
+            const challenge = (pvpChallenges || []).find(c => c.id === challengeId);
+            if (!challenge) return;
+            
+            const oppRank = getPvPRank(challenge.challengerElo || 1000);
+            const myRank = getPvPRank(state.pvp?.elo || 1000);
+            const myStats = getPlayerCombatStats();
+            const oppStats = challenge.challengerStats || {};
+            
+            // Čas od odeslání
+            const ageMs = Date.now() - (challenge.createdAt || Date.now());
+            const ageMin = Math.floor(ageMs / 60000);
+            const ageStr = ageMin < 60 ? `${ageMin} min` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ${ageMin%60}min` : `${Math.floor(ageMin/1440)} dní`;
+            
+            showModal('⚔️ VÝZVA K SOUBOJI!', `
+                <div style="text-align:center;padding:0.5rem;">
+                    <div style="color:#888;font-size:0.7rem;margin-bottom:0.5rem;">📩 Odesláno před ${ageStr}</div>
+                    
+                    <!-- VS Header -->
+                    <div style="display:flex;justify-content:center;align-items:center;gap:0.8rem;margin:0.5rem 0;">
+                        <div style="text-align:center;flex:1;">
+                            <div style="font-size:1.8rem;">${myRank.icon}</div>
+                            <div style="color:#8bc34a;font-weight:bold;font-size:0.9rem;">${getPlayerName()}</div>
+                            <div style="color:${myRank.color};font-size:0.7rem;">${myRank.name} · ${state.pvp?.elo || 1000}</div>
+                        </div>
+                        <div style="font-size:1.8rem;color:#f44336;">⚔️</div>
+                        <div style="text-align:center;flex:1;">
+                            <div style="font-size:1.8rem;">${oppRank.icon}</div>
+                            <div style="color:#ff6b6b;font-weight:bold;font-size:0.9rem;">${escapeHtml(challenge.challenger)}</div>
+                            <div style="color:${oppRank.color};font-size:0.7rem;">${oppRank.name} · ${challenge.challengerElo || 1000}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Stats Comparison -->
+                    <div style="background:#0a0a0a;border-radius:8px;padding:0.6rem;margin:0.6rem 0;border:1px solid #333;">
+                        <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:0.2rem;font-size:0.8rem;">
+                            <div style="color:#8bc34a;text-align:right;font-weight:bold;">${myStats.maxHp}</div>
+                            <div style="color:#888;text-align:center;">❤️ HP</div>
+                            <div style="color:#ff6b6b;text-align:left;font-weight:bold;">${oppStats.hp || '?'}</div>
+                            
+                            <div style="color:#8bc34a;text-align:right;font-weight:bold;">${myStats.damage}</div>
+                            <div style="color:#888;text-align:center;">⚔️ DMG</div>
+                            <div style="color:#ff6b6b;text-align:left;font-weight:bold;">${oppStats.damage || '?'}</div>
+                            
+                            <div style="color:#8bc34a;text-align:right;font-weight:bold;">${myStats.defense}</div>
+                            <div style="color:#888;text-align:center;">🛡️ DEF</div>
+                            <div style="color:#ff6b6b;text-align:left;font-weight:bold;">${oppStats.defense || '?'}</div>
+                            
+                            <div style="color:#8bc34a;text-align:right;font-weight:bold;">${myStats.critChance}%</div>
+                            <div style="color:#888;text-align:center;">💥 KRIT</div>
+                            <div style="color:#ff6b6b;text-align:left;font-weight:bold;">${oppStats.critChance || '?'}%</div>
+                        </div>
+                    </div>
+                    
+                    ${challenge.bet > 0 ? `<div style="background:#2a2a0a;padding:0.5rem;border-radius:6px;border:1px solid #ffd700;margin:0.5rem 0;"><span style="color:#ffd700;font-size:1.1rem;font-weight:bold;">💰 Sázka: ${challenge.bet} 💰</span><br><span style="color:#ff9800;font-size:0.75rem;">⚠️ Prohra = -${challenge.bet} 💰</span></div>` : '<div style="color:#4caf50;font-size:0.8rem;margin:0.3rem 0;">🆓 Bez sázky — nic neztratíš!</div>'}
+                    <p style="color:#888;font-size:0.75rem;margin:0.5rem 0;">💡 Připrav si taktiku a schopnosti v aréně před bojem!</p>
+                </div>
+                <button class="btn" onclick="acceptPvPChallenge('${challengeId}')" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.8rem;font-size:1rem;">⚔️ PŘIJMOUT SOUBOJ!</button>
+                <button class="btn" onclick="declinePvPChallenge('${challengeId}')" style="width:100%;margin-top:0.3rem;background:#555;">✕ Odmítnout</button>
+            `);
+        }
+        
+        async function showPvPLeaderboard() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            
+            showModal('🏆 PvP Žebříček', `<div style="text-align:center;padding:1rem;"><div class="loading-spinner"></div></div>`);
+            
+            try {
+                const snap = await firebaseDB.ref('leaderboard').orderByChild('pvpElo').limitToLast(20).once('value');
+                const data = snap.val() || {};
+                const players = Object.values(data)
+                    .filter(p => p.pvpElo && p.pvpElo > 0 && (p.pvpWins || 0) + (p.pvpLosses || 0) > 0)
+                    .sort((a, b) => (b.pvpElo || 0) - (a.pvpElo || 0))
+                    .slice(0, 15);
+                
+                if (players.length === 0) {
+                    // Fallback - zobraz online hráče
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const online = onlineSnap.val() || {};
+                    Object.values(online).forEach(p => {
+                        if (p.name) players.push({ name: p.name, pvpElo: p.elo || 1000, pvpWins: 0, pvpLosses: 0, level: p.level || 1 });
+                    });
+                    players.sort((a, b) => (b.pvpElo || 1000) - (a.pvpElo || 1000));
+                }
+                
+                let html = `<div style="max-height:60vh;overflow-y:auto;">`;
+                players.forEach((p, i) => {
+                    const rank = getPvPRank(p.pvpElo || 1000);
+                    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`;
+                    const isMe = p.name === getPlayerName();
+                    html += `
+                        <div style="background:${isMe ? '#1a2a1a' : '#1a1a1a'};border:1px solid ${isMe ? '#4caf50' : '#333'};border-radius:8px;padding:0.6rem;margin-bottom:0.3rem;display:flex;align-items:center;gap:0.5rem;">
+                            <span style="color:#ffd700;font-weight:bold;min-width:2rem;text-align:center;">${medal}</span>
+                            <span style="font-size:1.1rem;">${rank.icon}</span>
+                            <div style="flex:1;">
+                                <span style="color:${isMe ? '#4caf50' : '#fff'};font-weight:bold;">${p.name}</span>
+                                <span style="color:#888;font-size:0.7rem;"> Lv.${p.level || '?'}</span>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="color:${rank.color};font-weight:bold;">${p.pvpElo || 1000}</div>
+                                <div style="color:#888;font-size:0.65rem;">${p.pvpWins || 0}W/${p.pvpLosses || 0}L</div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += `</div>`;
+                
+                showModal('🏆 PvP Žebříček', html + `<button class="btn" onclick="showPvPArena()" style="width:100%;margin-top:0.5rem;background:#555;">← Zpět</button>`);
+            } catch(e) {
+                console.error('PvP leaderboard error:', e);
+                showPvPArena();
+            }
+        }
+        
+        function showPvPHistory() {
+            initPvPStats();
+            const history = state.pvp?.history || [];
+            
+            if (history.length === 0) {
+                showModal('📜 Historie soubojů', `
+                    <div style="text-align:center;padding:2rem;">
+                        <div style="font-size:3rem;">📜</div>
+                        <p style="color:#888;">Zatím žádné souboje</p>
+                    </div>
+                    <button class="btn" onclick="showPvPArena()" style="width:100%;background:#555;">← Zpět</button>
+                `);
                 return;
             }
             
-            state.pvp.selectedAbilities = selected;
-            saveGame();
-            showPvPAbilities();
-        }
-        
-        // 🏅 PvP TITLES
-        function showPvPTitles() {
-            initPvPStats();
-            const earnedTitles = state.pvp?.titles || [];
-            
-            let html = `
-                <p style="color: #888; margin-bottom: 1rem; font-size: 0.9rem;">Získej tituly za PvP úspěchy:</p>
-                
-                <div style="display: grid; gap: 0.5rem;">
-            `;
-            
-            PVP_TITLES.forEach(title => {
-                const isEarned = earnedTitles.includes(title.id);
+            let html = `<div style="max-height:60vh;overflow-y:auto;">`;
+            history.slice(-15).reverse().forEach(h => {
+                const won = h.won;
+                const isDraw = won === 'draw';
+                const isWin = won === true;
+                const resultColor = isDraw ? '#ff9800' : (isWin ? '#4caf50' : '#f44336');
+                const resultText = isDraw ? '⚖️ Remíza' : (isWin ? '✅ Výhra' : '❌ Prohra');
+                const timeAgo = Math.round((Date.now() - (h.timestamp || 0)) / 60000);
+                const timeStr = timeAgo < 60 ? `${timeAgo} min` : timeAgo < 1440 ? `${Math.round(timeAgo/60)}h` : `${Math.round(timeAgo/1440)}d`;
                 html += `
-                    <div style="display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem; background: ${isEarned ? 'linear-gradient(135deg, #3a3a0a 0%, #2a2a00 100%)' : '#1a1a1a'}; border-radius: 10px; border: 2px solid ${isEarned ? '#ffd700' : 'transparent'}; ${!isEarned ? 'opacity: 0.6;' : ''}">
-                        <div style="font-size: 2rem; ${!isEarned ? 'filter: grayscale(100%);' : ''}">${title.icon}</div>
-                        <div style="flex: 1;">
-                            <div style="color: ${isEarned ? '#ffd700' : '#888'}; font-weight: bold;">${title.name}</div>
-                            <div style="color: #666; font-size: 0.8rem;">${title.req}</div>
+                    <div style="background:${isDraw ? '#1a1a0a' : (isWin ? '#0a1a0a' : '#1a0a0a')};border:1px solid ${resultColor};border-radius:6px;padding:0.5rem;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span style="color:${resultColor};font-weight:bold;">${resultText}</span>
+                            <span style="color:#fff;"> vs ${h.opponent}</span>
                         </div>
-                        <div style="color: ${isEarned ? '#4CAF50' : '#555'}; font-size: 1.3rem;">${isEarned ? '✓' : '🔒'}</div>
+                        <div style="text-align:right;">
+                            <span style="color:${h.eloChange >= 0 ? '#4caf50' : '#f44336'};font-size:0.8rem;">${h.eloChange >= 0 ? '+' : ''}${h.eloChange} ELO</span>
+                            ${h.bet > 0 ? `<span style="color:#ffd700;font-size:0.75rem;"> ${isDraw ? '±' : (isWin ? '+' : '-')}${h.bet}💰</span>` : ''}
+                            <span style="color:#666;font-size:0.65rem;display:block;">${timeStr} zpátky</span>
+                        </div>
                     </div>
                 `;
             });
-            
             html += `</div>`;
-            html += `
-                <div style="margin-top: 1rem; padding: 0.8rem; background: #1a1a1a; border-radius: 8px; text-align: center;">
-                    <span style="color: #ffd700;">🏅 ${earnedTitles.length}</span>
-                    <span style="color: #888;"> / ${PVP_TITLES.length} titulů získáno</span>
-                </div>
-            `;
-            html += `<button class="btn" onclick="showPvPArena()" style="width: 100%; margin-top: 1rem; background: #333;">← ${'Zpět'}</button>`;
             
-            showModal('🏅 PvP Tituly', html);
+            showModal('📜 Historie soubojů', html + `<button class="btn" onclick="showPvPArena()" style="width:100%;background:#555;">← Zpět</button>`);
         }
-        
-        // Aktualizace leaderboardu s PvP ELO
-        async function submitPvPScore() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            initPvPStats();
-            
-            const playerName = getPlayerName();
-            try {
-                await firebaseDB.ref('leaderboard/' + playerName).update({
-                    pvpElo: state.pvp.elo,
-                    pvpWins: state.pvp.wins,
-                    pvpLosses: state.pvp.losses
-                });
-            } catch (err) {
-                console.error('PvP score update error:', err);
-            }
-        }
+
         
         // === MULTIPLAYER TLAČÍTKO V MENU ===
         // === MULTIPLAYER TAB RENDERER ===
@@ -79710,6 +79880,20 @@ function openFullscreenMap() {
                         ${recentMessages > 0 ? `<span style="position: absolute; top: 3px; right: 3px; background: #b71c1c; color: #fff; border-radius: 8px; padding: 0 4px; font-size: 0.6rem; font-weight: bold;">${recentMessages}</span>` : ''}
                     </button>
                 </div>
+                
+                <!-- ⚔️ PVP ARÉNA - prominent button -->
+                ${(() => {
+                    const pendingPvP = (pvpChallenges || []).filter(c => c.target === myName && c.status === 'pending').length;
+                    return `
+                    <button class="btn" onclick="showPvPArena()" style="width: 100%; background: linear-gradient(180deg, #1a0a0a 0%, #0d0505 100%); border: 1px solid ${pendingPvP > 0 ? '#f44336' : '#3a1a1a'}; padding: 0.7rem 0.5rem; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Courier New', monospace; margin-bottom: 4px; position: relative; ${pendingPvP > 0 ? 'animation: tombola-pulse 1.5s ease-in-out infinite;' : ''}">
+                        <span style="font-size: 1.3rem;">⚔️</span>
+                        <div style="text-align: left;">
+                            <div style="font-size: 0.85rem; color: #f44336; font-weight: bold;">PvP ARÉNA</div>
+                            <div style="font-size: 0.7rem; color: #555;">${pendingPvP > 0 ? `${pendingPvP} výzev čeká!` : `ELO: ${state.pvp?.elo || 1000} · ${state.pvp?.wins || 0}W/${state.pvp?.losses || 0}L`}</div>
+                        </div>
+                        ${pendingPvP > 0 ? `<span style="position: absolute; top: 3px; right: 3px; background: #f44336; color: #fff; border-radius: 8px; padding: 0 6px; font-size: 0.7rem; font-weight: bold; animation: tombola-pulse 1s ease-in-out infinite;">${pendingPvP} ⚔️</span>` : ''}
+                    </button>`;
+                })()}
                 
                 <!-- OBNOVIT HRU -->
                 <button class="btn" onclick="location.reload()" style="width: 100%; background: #0a0a0a; border: 1px solid #1a1a1a; padding: 0.5rem; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Courier New', monospace; margin-bottom: 0.4rem;">
