@@ -54237,14 +54237,20 @@ function openFullscreenMap() {
                             <p>V osadě může být pouze <strong>jeden ${type.name.toLowerCase()}</strong>.</p>
                             <p style="color: #888; font-size: 0.85rem; margin-top: 0.5rem;">💡 Tip: Můžeš ho vylepšit v seznamu osadníků.</p>
                         </div>
-                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
+                        <button class="btn" onclick="showSettlersModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
                     `);
                     return;
                 }
             }
             
             if (getMoney() < type.cost) {
-                showModal(t('notifications', 'notEnoughMoney'), `Potřebuješ ${type.cost} peněz!`);
+                showModal('💰 Nedostatek peněz', `
+                    <div style="text-align: center;">
+                        <p>Potřebuješ <strong>${type.cost} 💰</strong> pro najímání.</p>
+                        <p style="color: #888;">Máš: ${getMoney()} 💰</p>
+                    </div>
+                    <button class="btn" onclick="showSettlersModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
+                `);
                 return;
             }
             
@@ -54265,7 +54271,7 @@ function openFullscreenMap() {
                     </div>
                     <p style="color: #888; font-size: 0.9rem;">💡 Tip: Postav studnu (+6 vody) nebo najmi nosiče vody (+2 vody, spotřeba 0)</p>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
-                        <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
+                        <button class="btn" onclick="showSettlersModal()" style="background: #555;">← Zpět</button>
                         <button class="btn" onclick="closeModal(); forceHireSettler('${typeId}')" style="background: #c62828;">⚠️ Najmout přesto</button>
                     </div>
                 `);
@@ -54310,6 +54316,10 @@ function openFullscreenMap() {
                 `<h3>${randomName}</h3>` +
                 `<p>${type.name} byl přidán do tvé osady!</p>` +
                 `<p style="color: #8bc34a;">+5 prosperity</p>` +
+                `</div>` +
+                `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">` +
+                `<button class="btn" onclick="showSettlersModal()" style="background: #2a3a2a;">👥 Najmout další</button>` +
+                `<button class="btn" onclick="closeModal()" style="background: #555;">✓ OK</button>` +
                 `</div>`
             );
             addLog(`Najal jsi ${type.name}: ${randomName}`, '👥');
@@ -54327,8 +54337,8 @@ function openFullscreenMap() {
                 `<p>Opravdu chceš propustit ${settler.name} (${type.name})?</p>` +
                 `<p style="color: #ff9800;">Nedostaneš žádné peníze zpět.</p>` +
                 `<div style="display: flex; gap: 1rem; margin-top: 1rem;">` +
-                `<button class="btn" onclick="confirmFireSettler(${index}); closeModal();" style="flex: 1; background: #c62828;">✓ Propustit</button>` +
-                `<button class="btn" onclick="closeModal()" style="flex: 1; background: #555;">✗ Zrušit</button>` +
+                `<button class="btn" onclick="confirmFireSettler(${index}); showSettlersModal();" style="flex: 1; background: #c62828;">✓ Propustit</button>` +
+                `<button class="btn" onclick="showSettlersModal()" style="flex: 1; background: #555;">✗ Zrušit</button>` +
                 `</div>`
             );
         }
@@ -55405,21 +55415,24 @@ function openFullscreenMap() {
                 SoundSystem.play('warning');
             }
             
-            // Check for settler death from low HP
+            // Check for settler death from low HP (max 1 za den)
             const deadSettlers = [];
+            let generalDeathRemoved = false;
             state.settlement.settlers = state.settlement.settlers.filter(settler => {
-                if ((settler.hp || 100) <= 0) {
+                if ((settler.hp || 100) <= 0 && !generalDeathRemoved) {
                     const type = SETTLER_TYPES.find(t => t.id === settler.type);
                     addLog(`💀 ${settler.name} (${type?.name || settler.type}) zemřel na zranění!`, '🏘️');
                     notifyWarning('💀 Osadník zemřel!', `${settler.name} (${type?.name}) zemřel na zranění!`);
-                    // Zápis do eventLog osady
                     if (!state.settlement.eventLog) state.settlement.eventLog = [];
                     state.settlement.eventLog.unshift({ id: 'settler_death', name: 'Smrt osadníka', icon: '💀', desc: `${settler.name} (${type?.name || settler.type}) zemřel na zranění`, details: `HP kleslo na 0`, day: state.time.days, timestamp: Date.now() });
                     if (state.settlement.eventLog.length > 20) state.settlement.eventLog.pop();
                     deadSettlers.push(settler.name);
-                    return false; // Remove from array
+                    generalDeathRemoved = true;
+                    return false;
                 }
-                return true; // Keep in array
+                // Ostatní s HP <= 0 dostanou 1 HP
+                if ((settler.hp || 100) <= 0) settler.hp = 1;
+                return true;
             });
             
             if (deadSettlers.length > 0) {
@@ -55431,18 +55444,20 @@ function openFullscreenMap() {
             if (state.settlement.resources.food < 0) {
                 const deficit = Math.abs(state.settlement.resources.food);
                 if (state.settlement.settlers.length > 0) {
-                    // Hlad poškozuje VŠECHNY osadníky — ztráta 20-30 HP
+                    // Hlad poškozuje osadníky — pozvolně, aby neumřeli všichni najednou
                     let starveDead = [];
                     state.settlement.settlers.forEach(settler => {
                         settler.hp = settler.hp ?? 100;
-                        const hpLoss = Math.min(20 + Math.floor(deficit * 2), 40);
+                        // Pozvolnější ztráta HP: 5-15 za den (bylo 20-40)
+                        const hpLoss = Math.min(5 + Math.floor(deficit), 15);
                         settler.hp -= hpLoss;
                         settler._starving = (settler._starving || 0) + 1;
                     });
                     
-                    // Odstraň osadníky kteří zemřeli hladem (HP <= 0)
+                    // Odstraň MAX 1 osadníka za den který zemřel hladem (HP <= 0)
+                    let oneDeadRemoved = false;
                     state.settlement.settlers = state.settlement.settlers.filter(settler => {
-                        if (settler.hp <= 0) {
+                        if (settler.hp <= 0 && !oneDeadRemoved) {
                             const settlerType = SETTLER_TYPES.find(t => t.id === settler.type);
                             const typeName = settlerType?.name || settler.type;
                             addLog(`💀 ${settler.name} (${typeName}) zemřel hladem! Osada nemá jídlo.`, '💀');
@@ -55451,8 +55466,11 @@ function openFullscreenMap() {
                             state.settlement.eventLog.unshift({ id: 'settler_starved', name: 'Smrt hladem', icon: '💀', desc: `${settler.name} (${typeName}) zemřel hladem`, details: 'Osada neměla dost jídla', day: state.time.days, timestamp: Date.now() });
                             if (state.settlement.eventLog.length > 20) state.settlement.eventLog.pop();
                             starveDead.push(settler.name);
+                            oneDeadRemoved = true;
                             return false;
                         }
+                        // Ostatní s HP <= 0 dostanou 1 HP — nezabíjej více než jednoho za den
+                        if (settler.hp <= 0) settler.hp = 1;
                         return true;
                     });
                     
@@ -55479,12 +55497,15 @@ function openFullscreenMap() {
                     let thirstDead = [];
                     state.settlement.settlers.forEach(settler => {
                         settler.hp = settler.hp ?? 100;
-                        const hpLoss = Math.min(25 + Math.floor(deficit * 2), 50);
+                        // Pozvolnější: 8-18 HP/den (bylo 25-50)
+                        const hpLoss = Math.min(8 + Math.floor(deficit), 18);
                         settler.hp -= hpLoss;
                     });
                     
+                    // MAX 1 smrt za den
+                    let oneDeadRemoved = false;
                     state.settlement.settlers = state.settlement.settlers.filter(settler => {
-                        if (settler.hp <= 0) {
+                        if (settler.hp <= 0 && !oneDeadRemoved) {
                             const settlerType = SETTLER_TYPES.find(t => t.id === settler.type);
                             const typeName = settlerType?.name || settler.type;
                             addLog(`💀 ${settler.name} (${typeName}) zemřel žízní! Osada nemá vodu.`, '💀');
@@ -55493,8 +55514,10 @@ function openFullscreenMap() {
                             state.settlement.eventLog.unshift({ id: 'settler_dehydrated', name: 'Smrt žízní', icon: '💀', desc: `${settler.name} (${typeName}) zemřel žízní`, details: 'Osada neměla dost vody', day: state.time.days, timestamp: Date.now() });
                             if (state.settlement.eventLog.length > 20) state.settlement.eventLog.pop();
                             thirstDead.push(settler.name);
+                            oneDeadRemoved = true;
                             return false;
                         }
+                        if (settler.hp <= 0) settler.hp = 1;
                         return true;
                     });
                     
@@ -55515,6 +55538,25 @@ function openFullscreenMap() {
             if (state.settlement.buildings.includes('tavern') && state.time.days % 7 === 0) {
                 state.settlement.morale = Math.min(100, state.settlement.morale + 20);
                 addLog('🍺 Hospoda zvýšila morálku osady!', '🍺');
+            }
+            
+            // Regenerace HP osadníků pokud je dost jídla a vody
+            const balanceForRegen = calculateSettlementBalance();
+            if (balanceForRegen.food >= 0 && balanceForRegen.water >= 0) {
+                let baseRegen = 15; // +15 HP/den
+                // Ošetřovna +10 HP/den
+                if (state.settlement.buildings?.includes('infirmary')) baseRegen += 10;
+                // Léčitelské středisko (medical spec) +20 HP/den
+                if (state.settlement.specialization === 'medical') baseRegen += 20;
+                // Medik +5 HP/den
+                if (state.settlement.settlers.some(s => s.type === 'medic_s')) baseRegen += 5;
+                
+                state.settlement.settlers.forEach(settler => {
+                    settler.hp = settler.hp ?? 100;
+                    if (settler.hp < 100) {
+                        settler.hp = Math.min(100, settler.hp + baseRegen);
+                    }
+                });
             }
             
             // Personality morale bonuses (daily)
@@ -55882,12 +55924,26 @@ function openFullscreenMap() {
                 // Morálka ovlivňuje šanci na konflikty a oslavy
                 const currentMorale = state.settlement.morale || 50;
                 if (event.effect === 'conflict' || event.id === 'dispute') {
-                    if (currentMorale >= 70) eventChance *= 0.3; // -70% šance na hádky při vysoké morálce
-                    else if (currentMorale < 30) eventChance *= 2.0; // 2x víc hádek při nízké morálce
+                    if (currentMorale >= 70) eventChance *= 0.3;
+                    else if (currentMorale < 30) eventChance *= 2.0;
                 }
                 if (event.effect === 'party' || event.id === 'celebration') {
-                    if (currentMorale >= 70) eventChance *= 1.5; // +50% šance na oslavy při vysoké morálce
-                    else if (currentMorale < 30) eventChance *= 0.2; // skoro žádné oslavy při nízké morálce
+                    if (currentMorale >= 70) eventChance *= 1.5;
+                    else if (currentMorale < 30) eventChance *= 0.2;
+                }
+                
+                // Léčitelské středisko (medical specialization) snižuje šanci na nemoci
+                if ((event.effect === 'plague' || event.effect === 'sickness') && state.settlement.specialization === 'medical') {
+                    const medSpec = SETTLEMENT_SPECIALIZATIONS?.find(s => s.id === 'medical');
+                    const diseaseResist = medSpec?.bonus?.diseaseResist || 0;
+                    if (diseaseResist > 0) {
+                        eventChance *= (1 - diseaseResist); // -80% šance na nemoci
+                    }
+                }
+                
+                // Ošetřovna snižuje šanci na nemoci o 30%
+                if ((event.effect === 'plague' || event.effect === 'sickness') && state.settlement.buildings?.includes('infirmary')) {
+                    eventChance *= 0.7;
                 }
                 
                 if (Math.random() > eventChance) continue;
@@ -56061,15 +56117,17 @@ function openFullscreenMap() {
                     const sickCount = Math.min(state.settlement.settlers.length, Math.floor(Math.random() * 3) + 1);
                     message += `<p style="color: #ff9800;">${sickCount} obyvatel onemocnělo.</p>`;
                     if (!state.settlement.settlers.some(s => s.type === 'medic_s')) {
-                        message += '<p style="color: #c62828;">Bez medika může nemoc zabít!</p>';
-                        if (Math.random() < 0.3 && state.settlement.settlers.length > 0) {
-                            const idx = Math.floor(Math.random() * state.settlement.settlers.length);
-                            const dead = state.settlement.settlers.splice(idx, 1)[0];
-                            const deadType = SETTLER_TYPES.find(t => t.id === dead.type);
-                            message += `<p style="color: #c62828;">💀 ${dead.name} zemřel na nemoc!</p>`;
-                            addLog(`💀 ${dead.name} (${deadType?.name || dead.type}) zemřel na nemoc! Chybí medik.`, '🏘️');
-                            notifyWarning('💀 Osadník zemřel!', `${dead.name} (${deadType?.name}) zemřel na nemoc - postav medika!`);
+                        message += '<p style="color: #c62828;">Bez medika nemoc oslabí osadníky!</p>';
+                        // Poškodí HP náhodným osadníkům místo instant killu
+                        const shuffled = [...state.settlement.settlers].sort(() => Math.random() - 0.5);
+                        for (let si = 0; si < Math.min(sickCount, shuffled.length); si++) {
+                            const sick = shuffled[si];
+                            sick.hp = sick.hp ?? 100;
+                            const hpLoss = 15 + Math.floor(Math.random() * 20); // -15 až -35 HP
+                            sick.hp = Math.max(1, sick.hp - hpLoss);
+                            message += `<p style="color: #ff9800;">🤒 ${sick.name} ztratil ${hpLoss} HP (zbývá ${sick.hp})</p>`;
                         }
+                        message += '<p style="color: #888; font-size: 0.85rem;">💡 Najmi medika pro léčení nemocí!</p>';
                     } else {
                         message += '<p style="color: var(--toxic-green);">Medik se o ně postará.</p>';
                     }
@@ -56147,23 +56205,47 @@ function openFullscreenMap() {
                     break;
                     
                 case 'plague':
-                    const plagueDeaths = Math.min(state.settlement.settlers.length, Math.floor(Math.random() * 3) + 1);
+                    // Mor poškodí HP VŠEM osadníkům, ale zabije max 1
+                    const plagueVictims = [];
+                    let plagueKilled = false;
+                    state.settlement.settlers.forEach(settler => {
+                        settler.hp = settler.hp ?? 100;
+                        const hpLoss = 30 + Math.floor(Math.random() * 30); // -30 až -60 HP
+                        settler.hp -= hpLoss;
+                        plagueVictims.push({ name: settler.name, hp: settler.hp, loss: hpLoss });
+                    });
+                    
+                    // Max 1 smrt (ten s nejnižším HP)
                     const deadNames = [];
-                    for (let i = 0; i < plagueDeaths; i++) {
-                        if (state.settlement.settlers.length > 0) {
-                            const idx = Math.floor(Math.random() * state.settlement.settlers.length);
-                            const dead = state.settlement.settlers.splice(idx, 1)[0];
-                            const deadType = SETTLER_TYPES.find(t => t.id === dead.type);
-                            deadNames.push(dead.name);
-                            message += `<p style="color: #c62828;">💀 ${dead.name} zemřel!</p>`;
-                            addLog(`☠️ ${dead.name} (${deadType?.name || dead.type}) zemřel na mor!`, '💀');
+                    state.settlement.settlers.sort((a, b) => (a.hp || 100) - (b.hp || 100));
+                    state.settlement.settlers = state.settlement.settlers.filter(settler => {
+                        if (settler.hp <= 0 && !plagueKilled) {
+                            const deadType = SETTLER_TYPES.find(t => t.id === settler.type);
+                            deadNames.push(settler.name);
+                            message += `<p style="color: #c62828;">💀 ${settler.name} zemřel na mor!</p>`;
+                            addLog(`☠️ ${settler.name} (${deadType?.name || settler.type}) zemřel na mor!`, '💀');
+                            plagueKilled = true;
+                            return false;
                         }
+                        // Ostatní s HP <= 0 přežijí s 1 HP
+                        if (settler.hp <= 0) settler.hp = 1;
+                        return true;
+                    });
+                    
+                    // Informuj o poškození ostatních
+                    const survivorsHurt = state.settlement.settlers.filter(s => (s.hp || 100) < 70).length;
+                    if (survivorsHurt > 0) {
+                        message += `<p style="color: #ff9800;">🦠 ${survivorsHurt} osadníků je vážně nemocných (nízké HP).</p>`;
                     }
+                    message += `<p style="color: #888; font-size: 0.85rem;">💡 Najmi medika pro prevenci moru! Doplň jídlo a vodu pro regeneraci HP.</p>`;
+                    
                     if (deadNames.length > 0) {
-                        notifyWarning('☠️ Mor v osadě!', `Zemřeli: ${deadNames.join(', ')}`);
+                        notifyWarning('☠️ Mor v osadě!', `${deadNames[0]} zemřel. ${survivorsHurt} dalších je nemocných.`);
+                    } else {
+                        notifyWarning('🦠 Mor v osadě!', `Nikdo nezemřel, ale ${survivorsHurt} osadníků je nemocných.`);
                     }
                     state.settlement.prosperity = Math.max(0, state.settlement.prosperity - 30);
-                    eventDetails = deadNames.length > 0 ? `Zemřeli: ${deadNames.join(', ')}` : '';
+                    eventDetails = deadNames.length > 0 ? `Zemřeli: ${deadNames.join(', ')}` : `${survivorsHurt} nemocných`;
                     break;
                     
                 case 'treasure':
@@ -57802,7 +57884,7 @@ function openFullscreenMap() {
                 if (isUniqueAndOwned) {
                     html += '<div style="color: #4caf50; font-size: 0.8rem; padding: 0.4rem;">✓ Máš</div>';
                 } else {
-                    html += '<button class="btn" onclick="hireSettler(\'' + type.id + '\'); showSettlersModal();" ' + (btnDisabled ? 'disabled' : '') + ' style="width: 100%; font-size: 0.8rem; ' + (btnDisabled ? 'opacity: 0.5;' : '') + '">💰 ' + type.cost + '</button>';
+                    html += '<button class="btn" onclick="hireSettler(\'' + type.id + '\')" ' + (btnDisabled ? 'disabled' : '') + ' style="width: 100%; font-size: 0.8rem; ' + (btnDisabled ? 'opacity: 0.5;' : '') + '">💰 ' + type.cost + '</button>';
                 }
                 html += '</div>';
             });
@@ -57818,7 +57900,7 @@ function openFullscreenMap() {
                     html += '<div style="font-size: 2rem;">' + (type?.icon || '👤') + '</div>';
                     html += '<div style="font-weight: bold;">' + settler.name + '</div>';
                     html += '<div style="font-size: 0.8rem; color: #888;">' + getSettlerName(settler.type) + '</div>';
-                    html += '<button class="btn" onclick="fireSettler(' + idx + '); showSettlersModal();" style="width: 100%; margin-top: 0.5rem; background: #c62828; font-size: 0.75rem;">❌ ' + settlerTexts.dismiss + '</button>';
+                    html += '<button class="btn" onclick="fireSettler(' + idx + ')" style="width: 100%; margin-top: 0.5rem; background: #c62828; font-size: 0.75rem;">❌ ' + settlerTexts.dismiss + '</button>';
                     html += '</div>';
                 });
                 html += '</div>';
@@ -91909,6 +91991,69 @@ function openFullscreenMap() {
             
             try {
                 const phase = getElectionPhase();
+                if (!phase || phase.phase === 'waiting' || phase.phase === 'paused') return;
+                
+                // === OZNÁMENÍ ZMĚNY FÁZE DO CHATU ===
+                // Zjisti číslo aktuálního cyklu a fázi
+                const elSnap = await firebaseDB.ref('politics/election').once('value');
+                const elData = elSnap.val();
+                
+                // Oznámení fáze do chatu (pokud máme cycleStart)
+                if (elData?.cycleStart) {
+                    const startMidnight = new Date(elData.cycleStart);
+                    startMidnight.setHours(0, 0, 0, 0);
+                    const todayMidnight = new Date();
+                    todayMidnight.setHours(0, 0, 0, 0);
+                    const daysSinceStart = Math.round((todayMidnight - startMidnight) / (24 * 60 * 60 * 1000));
+                    const currentCycle = Math.floor(daysSinceStart / 7);
+                    const cycleDay = daysSinceStart % 7;
+                    
+                    // Klíč pro poslední ohlášenou fázi: "cycle_day" (např. "5_0" = cyklus 5, den 0)
+                    const phaseKey = `${currentCycle}_${cycleDay}`;
+                    const lastAnnouncedSnap = await firebaseDB.ref('politics/lastAnnouncedPhase').once('value');
+                    const lastAnnounced = lastAnnouncedSnap.val();
+                    
+                    if (lastAnnounced !== phaseKey) {
+                        // Nová fáze — ohlásit do chatu (jen jednou)
+                        await firebaseDB.ref('politics/lastAnnouncedPhase').set(phaseKey);
+                        
+                        const mayorName = currentMayor?.name || 'Nikdo';
+                        
+                        if (phase.phase === 'nomination') {
+                            await firebaseDB.ref('chat/messages').push({
+                                author: '🏛️ VOLBY',
+                                text: `📋 NOVÝ VOLEBNÍ CYKLUS ZAČÍNÁ!\n\n📝 Dnes jsou NOMINACE — přihlas se jako kandidát nebo podpoř někoho!\n\n👑 Aktuální šéf: ${mayorName}\n🗓️ Zítra: Kampaň | Pozítří: Hlasování\n\n💡 Klikni na Online → Politika pro nominaci.`,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                system: true
+                            });
+                        } else if (phase.phase === 'campaign') {
+                            const candidates = elData.candidates ? Object.keys(elData.candidates) : [];
+                            const candText = candidates.length > 0 
+                                ? `Kandidáti: ${candidates.join(', ')}` 
+                                : 'Zatím žádní kandidáti!';
+                            await firebaseDB.ref('chat/messages').push({
+                                author: '🏛️ VOLBY',
+                                text: `📢 KAMPAŇ ZAČÍNÁ!\n\n${candText}\n\n🗳️ Zítra budou VOLBY — připrav se hlasovat!\n💡 Podpoř svého kandidáta v sekci Politika.`,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                system: true
+                            });
+                        } else if (phase.phase === 'voting') {
+                            const candidates = elData.candidates ? Object.keys(elData.candidates) : [];
+                            const candText = candidates.length > 0 
+                                ? `🗳️ Kandidáti: ${candidates.join(', ')}` 
+                                : '⚠️ Nikdo nekandiduje!';
+                            await firebaseDB.ref('chat/messages').push({
+                                author: '🏛️ VOLBY',
+                                text: `🗳️ DNES JSOU VOLBY!\n\n${candText}\n\n🏛️ Klikni na Online → Politika a HLASUJ!\nKaždý hlas rozhoduje o budoucnosti Pustiny!`,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                system: true
+                            });
+                        }
+                        // governing announcement se řeší níže (vyhodnocení voleb)
+                    }
+                }
+                
+                // === VYHODNOCENÍ VOLEB (pouze ve fázi governing) ===
                 // Volby se vyhodnocují když přejdeme do fáze governing (den 3+)
                 // a ještě nebyly vyhodnoceny v tomto cyklu
                 if (phase.phase !== 'governing') return;
