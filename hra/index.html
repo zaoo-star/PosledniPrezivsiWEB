@@ -46149,7 +46149,7 @@ function openFullscreenMap() {
                 <!-- Nasbíraný loot - vyhodnotí se při odchodu -->
                 ${state.dungeon.loot.length > 0 ? `
                     <div style="background: #2a2a1a; padding: 0.5rem; border-radius: 8px; margin-bottom: 1rem;">
-                        <span style="color: #ffd700; font-size: 0.85rem;">🎒 Nasbíráno lootu z ${state.dungeon.newlyCleared || 0} pater — vyhodnotí se při odchodu</span>
+                        <span style="color: #ffd700; font-size: 0.85rem;">🎒 Nasbíráno ${state.dungeon.loot.length} kusů lootu z ${state.dungeon.floor} pater — vyhodnotí se při odchodu</span>
                     </div>
                 ` : ''}
                 
@@ -46349,13 +46349,13 @@ function openFullscreenMap() {
             
             // Akumuluj loot do dungeon.loot - vše se vyhodnotí až při odchodu z dungeonu (exitDungeon)
             currentFloor.loot.forEach(lootType => {
-                let dropChance = 0.90;
+                let dropChance = 0.95;
                 if (lootType === 'legendary' || lootType === 'legendary_weapon' || lootType === 'legendary_armor' || lootType === 'legendary_item') {
-                    dropChance = 0.08;
+                    dropChance = 0.15 + state.dungeon.floor * 0.05; // 20% floor1, 25% floor2, ..., 40% floor5
                 } else if (lootType === 'unique' || lootType === 'unique_artifact') {
-                    dropChance = 0.05;
-                } else if (lootType === 'rare_weapon' || lootType === 'rare_armor') {
-                    dropChance = 0.30;
+                    dropChance = 0.10 + state.dungeon.floor * 0.04; // 14% floor1, ..., 30% floor5
+                } else if (lootType === 'rare_weapon' || lootType === 'rare_armor' || lootType === 'rare' || lootType === 'rare_item') {
+                    dropChance = 0.45 + state.dungeon.floor * 0.05; // 50% floor1, ..., 70% floor5
                 }
                 if (Math.random() < dropChance) {
                     state.dungeon.loot.push(lootType);
@@ -46444,8 +46444,9 @@ function openFullscreenMap() {
             const newlyClearedCount = state.dungeon.newlyCleared || 0;
             
             // === PENĚŽNÍ BONUS ZA CELÝ DUNGEON (jen za nová patra) ===
+            let moneyBonus = 0;
             if (newlyClearedCount > 0) {
-                const moneyBonus = Math.min(500, Math.floor(newlyClearedCount * 50 + (allCleared ? 150 : 0) + Math.random() * 60));
+                moneyBonus = Math.min(500, Math.floor(newlyClearedCount * 50 + (allCleared ? 150 : 0) + Math.random() * 60));
                 if (moneyBonus > 0) {
                     addMoney(moneyBonus);
                     addLog(`💰 +${moneyBonus} 💰 z dungeonu ${dungeonData?.name || ''}${allCleared ? ' (kompletní!)' : ''}`, '🏰');
@@ -46458,9 +46459,30 @@ function openFullscreenMap() {
             let totalXP = 0;
             let totalMoney = 0;
             const resourceTotals = {}; // Agregace surovin
+            const lootedItems = []; // Sledování přidaných předmětů pro summary
             
             if (state.dungeon.loot && state.dungeon.loot.length > 0) {
-                const resourceTypes = ['wood', 'metal', 'stone', 'cloth', 'leather', 'herbs', 'chemicals', 'electronics', 'glass', 'copper', 'scrap', 'fuel', 'rope', 'gunpowder', 'crystal', 'radaway', 'radx', 'ammo', 'medkit', 'plutonium_core', 'fusion_cell', 'ai_chip'];
+                const resourceTypes = ['wood', 'metal', 'stone', 'cloth', 'leather', 'herbs', 'chemicals', 'electronics', 'glass', 'copper', 'scrap', 'fuel', 'rope', 'gunpowder', 'crystal', 'radaway', 'radx', 'ammo', 'medkit', 'plutonium_core', 'fusion_cell', 'ai_chip', 'gold', 'silver', 'acid', 'food', 'fur', 'raw_meat', 'fish', 'mutant_blood'];
+                
+                // Helper pro trackování přidaných itemů
+                function trackItem(item, count = 1) {
+                    lootedItems.push({ name: item.name, icon: item.icon || '📦', rarity: item.rarity || 'common', count: count });
+                }
+                // Wrap addItemToInventory pro automatické trackování
+                const _origAddItem = addItemToInventory;
+                const _trackingAddItem = function(item, count, silent) {
+                    trackItem(item, count || 1);
+                    return _origAddItem(item, count, silent);
+                };
+                // Wrap addToGroundLoot pro trackování i itemů na zemi
+                const _origGroundLoot = typeof addToGroundLoot === 'function' ? addToGroundLoot : null;
+                const _trackingGroundLoot = function(item) {
+                    trackItem(item, 1);
+                    if (_origGroundLoot) return _origGroundLoot(item);
+                };
+                // Dočasně přepiš pro tuto sekci
+                addItemToInventory = _trackingAddItem;
+                if (_origGroundLoot) addToGroundLoot = _trackingGroundLoot;
                 
                 state.dungeon.loot.forEach(lootEntry => {
                     // Nový formát: objekt s typem
@@ -46482,25 +46504,51 @@ function openFullscreenMap() {
                     
                     // Starý formát: string loot type
                     const lootType = lootEntry;
+                    
+                    // Suroviny
                     if (resourceTypes.includes(lootType)) {
                         const amount = 4 + Math.floor(Math.random() * 5);
                         resourceTotals[lootType] = (resourceTotals[lootType] || 0) + amount;
-                    } else if (lootType === 'legendary' || lootType === 'legendary_weapon' || lootType === 'legendary_armor' || lootType === 'legendary_item') {
+                    }
+                    // Legendary itemy
+                    else if (lootType === 'legendary' || lootType === 'legendary_weapon' || lootType === 'legendary_armor' || lootType === 'legendary_item') {
                         if (legendaryDropped) return;
-                        const legendaries = ITEMS.filter(i => i.rarity === 'legendary');
+                        const pool = lootType === 'legendary_weapon' 
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'weapon' || i.type === 'melee'))
+                            : lootType === 'legendary_armor'
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves'))
+                            : ITEMS.filter(i => i.rarity === 'legendary');
+                        const legendaries = pool.length > 0 ? pool : ITEMS.filter(i => i.rarity === 'legendary');
                         if (legendaries.length > 0) {
                             const item = legendaries[Math.floor(Math.random() * legendaries.length)];
                             if (canAddItem(item, 1)) {
                                 addItemToInventory(item, 1);
                                 notifyLoot(item.name, 'legendary', item.icon);
-                                legendaryDropped = true;
                             } else {
                                 addToGroundLoot({...item});
                                 notifyWarning('📦 Na zemi', `${item.name} zůstal na zemi (plný inventář)`);
-                                legendaryDropped = true;
                             }
+                            legendaryDropped = true;
                         }
-                    } else if (lootType === 'rare_weapon' || lootType === 'rare_armor' || lootType === 'rare_item' || lootType === 'rare') {
+                    }
+                    // Unique/artifact itemy
+                    else if (lootType === 'unique' || lootType === 'unique_artifact') {
+                        if (legendaryDropped) return; // Max 1 legendary/unique za dungeon
+                        const uniques = ITEMS.filter(i => i.rarity === 'legendary' || i.rarity === 'unique');
+                        if (uniques.length > 0) {
+                            const item = uniques[Math.floor(Math.random() * uniques.length)];
+                            if (canAddItem(item, 1)) {
+                                addItemToInventory(item, 1);
+                                notifyLoot(item.name, 'legendary', item.icon);
+                            } else {
+                                addToGroundLoot({...item});
+                                notifyWarning('📦 Na zemi', `${item.name} zůstal na zemi (plný inventář)`);
+                            }
+                            legendaryDropped = true;
+                        }
+                    }
+                    // Rare itemy
+                    else if (lootType === 'rare_weapon' || lootType === 'rare_armor' || lootType === 'rare_item' || lootType === 'rare') {
                         if (rareDroppedCount >= 3) return;
                         const rarePool = lootType === 'rare_weapon' 
                             ? ITEMS.filter(i => i.rarity === 'epic' && (i.type === 'weapon' || i.type === 'melee'))
@@ -46518,10 +46566,69 @@ function openFullscreenMap() {
                             }
                             rareDroppedCount++;
                         }
-                    } else {
+                    }
+                    // Weapon drop — náhodná uncommon+ zbraň
+                    else if (lootType === 'weapon') {
+                        const weapons = ITEMS.filter(i => (i.type === 'weapon' || i.type === 'melee') && (i.rarity === 'uncommon' || i.rarity === 'rare'));
+                        if (weapons.length > 0) {
+                            const item = weapons[Math.floor(Math.random() * weapons.length)];
+                            if (canAddItem(item, 1)) { addItemToInventory(item, 1); notifyLoot(item.name, item.rarity, item.icon); }
+                            else { addToGroundLoot({...item}); }
+                        }
+                    }
+                    // Armor drop — náhodná uncommon+ zbroj
+                    else if (lootType === 'armor' || lootType === 'armor_heavy' || lootType === 'vest') {
+                        const armors = ITEMS.filter(i => (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves') && (i.rarity === 'uncommon' || i.rarity === 'rare'));
+                        if (armors.length > 0) {
+                            const item = armors[Math.floor(Math.random() * armors.length)];
+                            if (canAddItem(item, 1)) { addItemToInventory(item, 1); notifyLoot(item.name, item.rarity, item.icon); }
+                            else { addToGroundLoot({...item}); }
+                        }
+                    }
+                    // Gems → peníze + crystal surovina
+                    else if (lootType === 'gems') {
+                        totalMoney += 50 + Math.floor(Math.random() * 100);
+                        resourceTotals['crystal'] = (resourceTotals['crystal'] || 0) + 3;
+                    }
+                    // Konkrétní itemy podle ID (ammo_cell, ai_module, antidote, documents, meat, food)
+                    else if (lootType === 'ammo_cell' || lootType === 'ai_module' || lootType === 'antidote' || lootType === 'stimpak' || lootType === 'stimpack' || lootType === 'poison') {
+                        const itemId = lootType === 'stimpack' ? 'stimpak' : lootType;
+                        const item = ITEMS.find(i => i.id === itemId);
+                        if (item) {
+                            const count = item.type === 'ammo' ? (3 + Math.floor(Math.random() * 5)) : 1;
+                            if (canAddItem(item, count)) { addItemToInventory(item, count, true); }
+                        }
+                    }
+                    // Specific weapon types by name (laser, rifle, shotgun, pistol)
+                    else if (lootType === 'laser' || lootType === 'rifle' || lootType === 'shotgun' || lootType === 'pistol' || lootType === 'pistole' || lootType === 'kladivo') {
+                        const matchPool = ITEMS.filter(i => (i.type === 'weapon' || i.type === 'melee') && 
+                            (i.id.includes(lootType) || i.name.toLowerCase().includes(lootType)));
+                        if (matchPool.length > 0) {
+                            const item = matchPool[Math.floor(Math.random() * matchPool.length)];
+                            if (canAddItem(item, 1)) { addItemToInventory(item, 1); notifyLoot(item.name, item.rarity, item.icon); }
+                            else { addToGroundLoot({...item}); }
+                        }
+                    }
+                    // Documents — bonus XP
+                    else if (lootType === 'documents') {
+                        const docXP = 30 + Math.floor(Math.random() * 50);
+                        totalXP += docXP;
+                    }
+                    // Meat/food — jídlo do settlement nebo inventáře
+                    else if (lootType === 'meat' || lootType === 'food') {
+                        const foodItem = ITEMS.find(i => i.id === (lootType === 'meat' ? 'raw_meat' : 'canned_food'));
+                        if (foodItem && canAddItem(foodItem, 2)) { addItemToInventory(foodItem, 2, true); }
+                        else { resourceTotals['food'] = (resourceTotals['food'] || 0) + 5; }
+                    }
+                    // Neznámý typ → peníze jako fallback
+                    else {
                         totalMoney += 35 + Math.floor(Math.random() * 65);
                     }
                 });
+                
+                // Obnov originální funkce
+                addItemToInventory = _origAddItem;
+                if (_origGroundLoot) addToGroundLoot = _origGroundLoot;
                 
                 // Přidej agregované suroviny
                 const resIcons = { metal: '⚙️', electronics: '💡', copper: '🔶', glass: '🔷', chemicals: '🧪', stone: '🪨', wood: '🪵', cloth: '🧵', scrap: '🔩', leather: '🟫' };
@@ -46544,14 +46651,74 @@ function openFullscreenMap() {
                     addMoney(totalMoney);
                     addLog(`+${totalMoney} 💰 z dungeonu`, '💰');
                 }
+                
+                // === ZOBRAZENÍ SHRNUTÍ LOOTU ===
+                let summaryHtml = '<div style="max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
+                summaryHtml += `<div style="text-align: center; margin-bottom: 1rem;">`;
+                summaryHtml += `<div style="font-size: 2.5rem;">🏰</div>`;
+                summaryHtml += `<h3 style="color: #ffd700; margin: 0.3rem 0;">${dungeonData?.name || 'Dungeon'}</h3>`;
+                summaryHtml += `<p style="color: #888;">Vyčištěno ${newlyClearedCount} ${newlyClearedCount === 1 ? 'patro' : newlyClearedCount < 5 ? 'patra' : 'pater'}${allCleared ? ' — KOMPLETNÍ! 🏆' : ''}</p>`;
+                summaryHtml += `</div>`;
+                
+                // Suroviny
+                if (Object.keys(resourceTotals).length > 0) {
+                    const resIcons2 = { metal: '⚙️', electronics: '💡', copper: '🔶', glass: '🔷', chemicals: '🧪', stone: '🪨', wood: '🪵', cloth: '🧵', scrap: '🔩', leather: '🟫', crystal: '💎', gold: '🥇', silver: '🥈', food: '🍖', fuel: '⛽' };
+                    summaryHtml += '<div style="background: #1a2a1a; padding: 0.6rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #3a5a3a;">';
+                    summaryHtml += '<div style="color: #8bc34a; font-weight: bold; font-size: 0.85rem; margin-bottom: 0.4rem;">📦 Suroviny</div>';
+                    summaryHtml += '<div style="display: flex; flex-wrap: wrap; gap: 0.3rem;">';
+                    for (const [resId, amount] of Object.entries(resourceTotals)) {
+                        const icon = resIcons2[resId] || RESOURCE_ICONS?.[resId] || '📦';
+                        const name = RESOURCE_NAMES?.[resId] || resId;
+                        summaryHtml += `<span style="background: #0a1a0a; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; color: #aaa;">${icon} +${amount} ${name}</span>`;
+                    }
+                    summaryHtml += '</div></div>';
+                }
+                
+                // Itemy (sleduj co bylo přidáno)
+                if (lootedItems && lootedItems.length > 0) {
+                    summaryHtml += '<div style="background: #2a1a2a; padding: 0.6rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #5a3a5a;">';
+                    summaryHtml += '<div style="color: #ce93d8; font-weight: bold; font-size: 0.85rem; margin-bottom: 0.4rem;">🎁 Předměty</div>';
+                    lootedItems.forEach(li => {
+                        const rarityColors = { common: '#aaa', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ff9800' };
+                        const col = rarityColors[li.rarity] || '#aaa';
+                        summaryHtml += `<div style="color: ${col}; font-size: 0.85rem; padding: 0.1rem 0;">${li.icon || '📦'} ${li.name}${li.count > 1 ? ' ×' + li.count : ''}</div>`;
+                    });
+                    summaryHtml += '</div>';
+                }
+                
+                // XP a peníze
+                if (totalXP > 0 || totalMoney > 0 || moneyBonus > 0) {
+                    const totalMoneyAll = totalMoney + moneyBonus;
+                    summaryHtml += '<div style="background: #1a1a2a; padding: 0.6rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #3a3a5a;">';
+                    if (totalXP > 0) summaryHtml += `<div style="color: #ffd700; font-size: 0.9rem;">⭐ +${totalXP} XP</div>`;
+                    if (totalMoneyAll > 0) summaryHtml += `<div style="color: #ffd700; font-size: 0.9rem;">💰 +${totalMoneyAll} peněz</div>`;
+                    summaryHtml += '</div>';
+                }
+                
+                if (Object.keys(resourceTotals).length === 0 && (!lootedItems || lootedItems.length === 0) && totalXP === 0 && totalMoney === 0 && moneyBonus === 0) {
+                    summaryHtml += '<p style="color: #888; text-align: center;">Žádný loot nebyl nasbírán.</p>';
+                }
+                
+                summaryHtml += '</div>';
+                summaryHtml += '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.8rem;">✓ OK</button>';
+                
+                // Cleanup dungeon state BEFORE showing modal
+                state.dungeon.active = null;
+                state.dungeon.floor = 0;
+                state.dungeon.loot = [];
+                saveGame();
+                renderFull();
+                
+                // Show summary AFTER renderFull
+                setTimeout(() => showModal('🎒 Loot z dungeonu', summaryHtml), 100);
+            } else {
+                state.dungeon.active = null;
+                state.dungeon.floor = 0;
+                state.dungeon.loot = [];
+                closeModal();
+                renderFull();
+                saveGame();
             }
-            
-            state.dungeon.active = null;
-            state.dungeon.floor = 0;
-            state.dungeon.loot = [];
-            
-            closeModal();
-            renderFull();
         }
         
         // === ENDLESS DUNGEON - PROPAST ===
@@ -92297,44 +92464,94 @@ function openFullscreenMap() {
             });
         }
         
-        // Naplánuj chat připomínky tomboly (25%, 50%, 10 min před koncem)
+        // Naplánuj chat připomínky tomboly s Firebase dedup
         let _tombolaRemindersScheduled = {};
         function scheduleTombolaChatReminders(tombola) {
             if (!tombola?.endsAt || !tombola?.createdAt) return;
             const id = tombola.name || 'tombola';
-            if (_tombolaRemindersScheduled[id]) return; // Už naplánováno
+            if (_tombolaRemindersScheduled[id]) return;
             _tombolaRemindersScheduled[id] = true;
             
             const now = Date.now();
             const duration = tombola.endsAt - tombola.createdAt;
             const time25 = tombola.createdAt + duration * 0.25;
             const time50 = tombola.createdAt + duration * 0.50;
+            const time75 = tombola.createdAt + duration * 0.75;
             const time10min = tombola.endsAt - 10 * 60 * 1000;
+            const time5min = tombola.endsAt - 5 * 60 * 1000;
             
-            const sendReminder = async (msg) => {
+            const sendReminder = async (msg, reminderId) => {
                 try {
+                    // Firebase dedup — každá připomínka se pošle jen jednou
+                    const dedupRef = firebaseDB.ref('tombola/reminders/' + reminderId);
+                    const dedupSnap = await dedupRef.once('value');
+                    if (dedupSnap.val()) return; // Už odesláno jiným klientem
+                    await dedupRef.set(true);
+                    
                     // Kontrola jestli tombola stále běží
                     const snap = await firebaseDB.ref('tombola/active/status').once('value');
                     if (snap.val() !== 'active') return;
+                    
+                    // Spočítej zbývající čas
+                    const remaining = Math.max(0, tombola.endsAt - Date.now());
+                    const hrs = Math.floor(remaining / 3600000);
+                    const mins = Math.floor((remaining % 3600000) / 60000);
+                    const timeStr = hrs > 0 ? `${hrs}h ${mins}min` : `${mins} minut`;
+                    
+                    // Spočítej aktuální účastníky
+                    let participantInfo = '';
+                    try {
+                        const tickSnap = await firebaseDB.ref('tombola/active/tickets').once('value');
+                        const tix = tickSnap.val();
+                        if (tix) {
+                            const players = Object.keys(tix).filter(p => tix[p]?.count > 0);
+                            const totalTix = Object.values(tix).reduce((s, t) => s + (t?.count || 0), 0);
+                            participantInfo = `\n👥 ${players.length} hráčů, ${totalTix} lístků celkem`;
+                        }
+                    } catch(e) {}
+                    
                     await firebaseDB.ref('chat/messages').push({
                         author: '🎟️ TOMBOLA',
-                        text: msg,
+                        text: msg + `\n⏰ Zbývá: ${timeStr}${participantInfo}`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         system: true
                     });
-                } catch(e) {}
+                } catch(e) { console.error('Tombola reminder error:', e); }
             };
             
             const name = tombola.name || 'Tombola';
+            const prize = typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???';
+            const safeName = id.replace(/[.#$\[\]\/]/g, '_');
             
             if (time25 > now) {
-                setTimeout(() => sendReminder(`🎰 Tombola "${name}" je v plném proudu! Už čtvrtina času pryč — kupte si lístky! 🎟️`), time25 - now);
+                setTimeout(() => sendReminder(
+                    `🎰 Tombola "${name}" je v plném proudu!\n🎁 Výhra: ${prize}\n💰 Lístek: ${tombola.ticketPrice} 💰`,
+                    safeName + '_25'
+                ), time25 - now);
             }
             if (time50 > now) {
-                setTimeout(() => sendReminder(`⏰ Tombola "${name}" — POLOVINA ČASU! Zbývá už jen ${Math.round((tombola.endsAt - time50) / 60000)} minut. Poslední šance na lístky! 🎟️`), time50 - now);
+                setTimeout(() => sendReminder(
+                    `⏰ Tombola "${name}" — POLOVINA ČASU!\n🎁 Výhra: ${prize}\n💰 Lístek: ${tombola.ticketPrice} 💰\nPoslední šance na lístky!`,
+                    safeName + '_50'
+                ), time50 - now);
             }
-            if (time10min > now) {
-                setTimeout(() => sendReminder(`🚨 TOMBOLA "${name}" KONČÍ ZA 10 MINUT! Poslední šance koupit lístek! 🎟️🔥`), time10min - now);
+            if (time75 > now) {
+                setTimeout(() => sendReminder(
+                    `⚠️ Tombola "${name}" — 75% času pryč!\n🎁 Výhra: ${prize}\nNezmeškej to!`,
+                    safeName + '_75'
+                ), time75 - now);
+            }
+            if (time10min > now && time10min > time75) {
+                setTimeout(() => sendReminder(
+                    `🚨 TOMBOLA "${name}" KONČÍ ZA 10 MINUT!\n🎁 Výhra: ${prize}\nPOSLEDNÍ ŠANCE! 🔥`,
+                    safeName + '_10m'
+                ), time10min - now);
+            }
+            if (time5min > now && time5min > time10min) {
+                setTimeout(() => sendReminder(
+                    `🔥🔥🔥 TOMBOLA "${name}" KONČÍ ZA 5 MINUT!\n🎁 Výhra: ${prize}\nTEĎ NEBO NIKDY!`,
+                    safeName + '_5m'
+                ), time5min - now);
             }
         }
         
@@ -93189,6 +93406,7 @@ function openFullscreenMap() {
             };
             
             try {
+                await firebaseDB.ref('tombola/reminders').remove();
                 await firebaseDB.ref('tombola/active').set(tombola);
                 notifySuccess('🎟️ Tombola vytvořena!', name);
                 
@@ -93198,9 +93416,10 @@ function openFullscreenMap() {
                 const endDateStr = endTime.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'numeric' });
                 
                 // Oznámení v chatu
+                const durationStr = durationHours >= 1 ? `${durationHours} hodin` : `${durationHours * 60} minut`;
                 await firebaseDB.ref('chat/messages').push({
                     author: '🎟️ TOMBOLA',
-                    text: `Nová tombola "${name}"! Cena lístku: ${ticketPrice} 💰. Výhra: ${getPrizeDescription(prize)}. Končí: ${endDateStr} v ${endTimeStr}!`,
+                    text: `🎰 NOVÁ TOMBOLA: "${name}"!\n\n🎁 Výhra: ${getPrizeDescription(prize)}\n💰 Cena lístku: ${ticketPrice} 💰\n🎟️ Max lístků na hráče: ${maxTickets}\n⏰ Trvání: ${durationStr} (do ${endDateStr} ${endTimeStr})\n\n💡 Klikni na Online → Tombola a kup si lístek!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -93386,6 +93605,7 @@ function openFullscreenMap() {
                 // Přesun do historie
                 await firebaseDB.ref('tombola/history').push(result);
                 await firebaseDB.ref('tombola/active').remove();
+                await firebaseDB.ref('tombola/reminders').remove();
                 
                 // Pošli výhru hráči
                 await firebaseDB.ref('notifications/' + winner).push({
@@ -93396,9 +93616,10 @@ function openFullscreenMap() {
                 });
                 
                 // Oznámení v chatu
+                const participantsCount = participants.length;
                 await firebaseDB.ref('chat/messages').push({
                     author: '🎉 TOMBOLA',
-                    text: `Výherce tomboly "${tombola.name}" je ${winner}! Měl ${winnerTickets} lístků (${winChance}% šance). Výhra: ${getPrizeDescription(tombola.prize)}`,
+                    text: `🏆 TOMBOLA "${tombola.name}" — VÝHERCE VYLOSOVÁN!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${getPrizeDescription(tombola.prize)}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participantsCount} účastníků\n\n🎊 Gratulujeme!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -93448,6 +93669,7 @@ function openFullscreenMap() {
                 }
                 
                 await firebaseDB.ref('tombola/active').remove();
+                await firebaseDB.ref('tombola/reminders').remove();
                 notifySuccess('Tombola zrušena', 'Tombola byla zrušena');
                 showAdminPanel();
             } catch (e) {
