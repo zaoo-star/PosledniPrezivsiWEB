@@ -976,6 +976,11 @@
             50% { filter: brightness(1.3); }
         }
         
+        @keyframes land-glow-own {
+            0%, 100% { box-shadow: 0 0 8px #4caf50aa, inset 0 0 6px #4caf5033; }
+            50% { box-shadow: 0 0 16px #4caf50cc, inset 0 0 10px #4caf5055; }
+        }
+        
         @keyframes tombola-pulse {
             0%, 100% { box-shadow: 0 0 5px #ffd700; }
             50% { box-shadow: 0 0 20px #ffd700, 0 0 40px #ffd70066; }
@@ -22211,6 +22216,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.companions || state.companions.length === 0) return;
             
             state.companions.forEach(comp => {
+                // Mrtví společníci nezískávají XP
+                if (comp.isDead || comp.hp <= 0) return;
                 comp.xp = (comp.xp || 0) + amount;
                 checkCompanionLevelUp(comp);
             });
@@ -32721,16 +32728,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     finalStyle += ' animation: pulse-glow 1.5s infinite; box-shadow: 0 0 10px var(--toxic-green);';
                 }
                 
+                // Pozemek majitele - záře kolem dlaždice (MUSÍ být před vykreslením divu)
+                const hasLandOwner = loc.type === 'empty' && window.landOwnershipCache?.[loc.id]?.owner;
+                const isMyLand = hasLandOwner && window.landOwnershipCache[loc.id].owner === (state.char?.name || '');
+                
+                if (hasLandOwner && isKnown && !isHere && !isWarZone && !isTreasure && !factionBorderColor) {
+                    if (isMyLand) {
+                        finalStyle += ` box-shadow: 0 0 10px #4caf50aa, inset 0 0 8px #4caf5044; border-color: #4caf50 !important; animation: land-glow-own 2s ease-in-out infinite;`;
+                    } else {
+                        finalStyle += ` box-shadow: 0 0 6px #4caf5066; border-color: #4caf5088 !important;`;
+                    }
+                }
+                
                 html += '<div onclick="' + clickAction + '" style="position: absolute; left: ' + left + 'px; top: ' + top + 'px; width: ' + (cellSize - 2) + 'px; height: ' + (cellSize - 2) + 'px; background: ' + bgColor + '; border: ' + borderWidth + ' solid ' + finalBorderColor + '; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1rem; cursor: ' + cursor + '; opacity: ' + (factionBorderColor ? Math.max(0.6, opacity) : opacity) + ';' + finalStyle + '" title="' + tooltipText + (territoryOwnerName ? ' [' + territoryOwnerName + ']' : '') + '">';
                 
                 // Zobraz ikonu - pro aktuální pozici přidej 📍, pro skrýš přidej 📦
-                // Pozemek majitele - přidej záři kolem dlaždice
-                const hasLandOwner = loc.type === 'empty' && window.landOwnershipCache?.[loc.id]?.owner;
-                const landOwnerColor = hasLandOwner ? (window.landOwnershipCache[loc.id].owner === (state.char?.name || '') ? '#4caf50' : '#ffd700') : null;
-                
-                if (hasLandOwner && isKnown && !isWarZone && !isTreasure && !factionBorderColor) {
-                    finalStyle += ` box-shadow: 0 0 6px ${landOwnerColor}88; animation: land-glow 3s ease-in-out infinite;`;
-                }
                 
                 if (isHere) {
                     html += '<span style="position: relative;">' + loc.icon + '<span style="position: absolute; top: -8px; right: -8px; font-size: 0.6rem;">📍</span>' + (hasStash ? '<span style="position: absolute; bottom: -6px; left: -6px; font-size: 0.5rem;">📦</span>' : '') + '</span>';
@@ -34149,7 +34161,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     const fee = tLand.fees?.[bId] ?? b.defaultFee ?? 0;
                                     return b.icon + ' ' + b.name + (fee > 0 && !isMyLand ? ' <span style="color:#ffd700;">(' + fee + '💰)</span>' : '');
                                 }).filter(Boolean).join(', ');
-                                const borderCol = isMyLand ? '#4caf50' : '#ffd700';
+                                const borderCol = '#4caf50';
                                 return '<div style="background: linear-gradient(135deg, #1a2a1a, #0d1a0d); padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; border: 1px solid ' + borderCol + ';">' +
                                     '<p style="color: ' + borderCol + '; margin: 0; font-size: 0.85rem;">' + (isMyLand ? '🏠 Tvůj pozemek' : '👑 Majitel: <strong>' + (typeof escapeHtml === 'function' ? escapeHtml(tLand.owner) : tLand.owner) + '</strong>') + '</p>' +
                                     (bIcons ? '<p style="color: #8bc34a; margin: 0.2rem 0 0 0; font-size: 0.8rem;">Služby: ' + bIcons + '</p>' : '<p style="color: #888; margin: 0.2rem 0 0 0; font-size: 0.8rem;">Žádné budovy</p>') +
@@ -46364,40 +46376,33 @@ function openFullscreenMap() {
             
             // Přidej bonus suroviny do loot poolu (vyhodnotí se při exitu)
             const bonusResources = ['metal', 'electronics', 'copper', 'glass', 'chemicals', 'stone', 'wood', 'cloth', 'scrap', 'leather'];
-            const resCount = 4 + Math.floor(Math.random() * 3) + Math.floor(state.dungeon.floor / 2);
+            const resCount = 1 + (Math.random() < 0.5 ? 1 : 0);
             const usedRes = new Set();
-            for (let r = 0; r < Math.min(resCount, bonusResources.length); r++) {
+            for (let r = 0; r < resCount; r++) {
                 let randomRes;
                 do { randomRes = bonusResources[Math.floor(Math.random() * bonusResources.length)]; } while (usedRes.has(randomRes));
                 usedRes.add(randomRes);
-                const resAmount = Math.floor(8 + state.dungeon.floor * 3 + Math.random() * 8);
-                // Uložíme jako speciální záznam do loot poolu
+                const resAmount = Math.floor(2 + Math.random() * 4);
                 state.dungeon.loot.push({ type: 'resource', id: randomRes, amount: resAmount });
             }
             
             // Akumuluj XP do loot poolu
-            const floorXP = Math.floor(60 + state.dungeon.floor * 30);
+            const floorXP = Math.floor(15 + state.dungeon.floor * 6);
             state.dungeon.loot.push({ type: 'xp', amount: floorXP });
             
-            // Akumuluj bonus itemy do loot poolu
-            const itemDropChance = 0.50 + state.dungeon.floor * 0.08;
-            if (Math.random() < itemDropChance) {
-                const bonusItemPool = ['medkit', 'stimpak', 'bandage', 'ammo_9mm', 'ammo_762', 'ammo_shotgun', 'ammo_cell', 'radaway', 'energy_drink'];
-                const bonusItemId = bonusItemPool[Math.floor(Math.random() * bonusItemPool.length)];
-                const bonusItem = ITEMS.find(i => i.id === bonusItemId);
-                if (bonusItem) {
-                    const count = bonusItem.type === 'ammo' ? (5 + Math.floor(Math.random() * 6)) : 1;
-                    state.dungeon.loot.push({ type: 'item', id: bonusItemId, count: count });
+            // Akumuluj consumables — garantované 2 za patro
+            const consumablePool = ['medkit', 'stimpak', 'bandage', 'ammo_9mm', 'ammo_762', 'ammo_shotgun', 'ammo_cell', 'radaway', 'energy_drink', 'radx'];
+            for (let ci = 0; ci < 2; ci++) {
+                const cId = consumablePool[Math.floor(Math.random() * consumablePool.length)];
+                const cItem = ITEMS.find(i => i.id === cId);
+                if (cItem) {
+                    const count = cItem.type === 'ammo' ? (2 + Math.floor(Math.random() * 3)) : 1;
+                    state.dungeon.loot.push({ type: 'item', id: cId, count: count });
                 }
-            }
-            if (Math.random() < 0.30 + state.dungeon.floor * 0.05) {
-                const bonusItemPool2 = ['medkit', 'stimpak', 'radaway', 'radx', 'energy_drink', 'bandage'];
-                const bonusItemId2 = bonusItemPool2[Math.floor(Math.random() * bonusItemPool2.length)];
-                state.dungeon.loot.push({ type: 'item', id: bonusItemId2, count: 1 });
             }
             
             // Akumuluj peníze za patro
-            state.dungeon.loot.push({ type: 'money', amount: 35 + Math.floor(Math.random() * 65) });
+            state.dungeon.loot.push({ type: 'money', amount: 10 + Math.floor(Math.random() * 15) + state.dungeon.floor * 1 });
             
             // Aktualizuj max floor
             if (state.dungeon.floor > (state.dungeon.maxFloor || 0)) {
@@ -46446,7 +46451,7 @@ function openFullscreenMap() {
             // === PENĚŽNÍ BONUS ZA CELÝ DUNGEON (jen za nová patra) ===
             let moneyBonus = 0;
             if (newlyClearedCount > 0) {
-                moneyBonus = Math.min(500, Math.floor(newlyClearedCount * 50 + (allCleared ? 150 : 0) + Math.random() * 60));
+                moneyBonus = Math.min(80, Math.floor(newlyClearedCount * 8 + (allCleared ? 15 : 0) + Math.random() * 10));
                 if (moneyBonus > 0) {
                     addMoney(moneyBonus);
                     addLog(`💰 +${moneyBonus} 💰 z dungeonu ${dungeonData?.name || ''}${allCleared ? ' (kompletní!)' : ''}`, '🏰');
@@ -46507,7 +46512,7 @@ function openFullscreenMap() {
                     
                     // Suroviny
                     if (resourceTypes.includes(lootType)) {
-                        const amount = 4 + Math.floor(Math.random() * 5);
+                        const amount = 2 + Math.floor(Math.random() * 3);
                         resourceTotals[lootType] = (resourceTotals[lootType] || 0) + amount;
                     }
                     // Legendary itemy
@@ -46587,15 +46592,15 @@ function openFullscreenMap() {
                     }
                     // Gems → peníze + crystal surovina
                     else if (lootType === 'gems') {
-                        totalMoney += 50 + Math.floor(Math.random() * 100);
-                        resourceTotals['crystal'] = (resourceTotals['crystal'] || 0) + 3;
+                        totalMoney += 15 + Math.floor(Math.random() * 20);
+                        resourceTotals['crystal'] = (resourceTotals['crystal'] || 0) + 1;
                     }
                     // Konkrétní itemy podle ID (ammo_cell, ai_module, antidote, documents, meat, food)
                     else if (lootType === 'ammo_cell' || lootType === 'ai_module' || lootType === 'antidote' || lootType === 'stimpak' || lootType === 'stimpack' || lootType === 'poison') {
                         const itemId = lootType === 'stimpack' ? 'stimpak' : lootType;
                         const item = ITEMS.find(i => i.id === itemId);
                         if (item) {
-                            const count = item.type === 'ammo' ? (3 + Math.floor(Math.random() * 5)) : 1;
+                            const count = item.type === 'ammo' ? (2 + Math.floor(Math.random() * 3)) : 1;
                             if (canAddItem(item, count)) { addItemToInventory(item, count, true); }
                         }
                     }
@@ -46611,7 +46616,7 @@ function openFullscreenMap() {
                     }
                     // Documents — bonus XP
                     else if (lootType === 'documents') {
-                        const docXP = 30 + Math.floor(Math.random() * 50);
+                        const docXP = 15 + Math.floor(Math.random() * 20);
                         totalXP += docXP;
                     }
                     // Meat/food — jídlo do settlement nebo inventáře
@@ -46622,7 +46627,7 @@ function openFullscreenMap() {
                     }
                     // Neznámý typ → peníze jako fallback
                     else {
-                        totalMoney += 35 + Math.floor(Math.random() * 65);
+                        totalMoney += 15 + Math.floor(Math.random() * 25);
                     }
                 });
                 
@@ -83242,6 +83247,17 @@ function openFullscreenMap() {
                 return;
             }
             
+            // Max 3 pozemky na hráče
+            const maxLands = 3;
+            try {
+                const landsSnap = await firebaseDB.ref('landOwnership').orderByChild('owner').equalTo(myName).once('value');
+                const ownedCount = landsSnap.exists() ? Object.keys(landsSnap.val()).length : 0;
+                if (ownedCount >= maxLands) {
+                    notifyWarning('Limit pozemků', `Můžeš vlastnit maximálně ${maxLands} pozemky!`);
+                    return;
+                }
+            } catch(e) {}
+            
             if (!confirm(`Koupit pozemek za ${formatNumber(price)} 💰?`)) return;
             
             try {
@@ -83410,6 +83426,15 @@ function openFullscreenMap() {
             
             const myName = getPlayerName();
             const price = LAND_CONFIG.purchasePrice;
+            
+            // Max 3 pozemky na hráče
+            const maxLands = 3;
+            const landsSnap = await firebaseDB.ref('landOwnership').orderByChild('owner').equalTo(myName).once('value');
+            const ownedCount = landsSnap.exists() ? Object.keys(landsSnap.val()).length : 0;
+            if (ownedCount >= maxLands) {
+                notifyWarning('Limit pozemků', `Můžeš vlastnit maximálně ${maxLands} pozemky!`);
+                return;
+            }
             
             if ((state.money || 0) < price) {
                 notifyWarning('Nedostatek peněz', `Potřebuješ ${price} 💰`);
@@ -84355,12 +84380,23 @@ function openFullscreenMap() {
             }
         }
         
-        function showBuyLandModal(locationId) {
+        async function showBuyLandModal(locationId) {
             const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
             if (!loc) return;
             
             const price = LAND_CONFIG.purchasePrice;
             const canAfford = (state.money || 0) >= price;
+            
+            // Zjisti kolik pozemků hráč vlastní
+            const maxLands = 3;
+            let ownedCount = 0;
+            try {
+                const myName = getPlayerName();
+                const landsSnap = await firebaseDB.ref('landOwnership').orderByChild('owner').equalTo(myName).once('value');
+                ownedCount = landsSnap.exists() ? Object.keys(landsSnap.val()).length : 0;
+            } catch(e) {}
+            const atLimit = ownedCount >= maxLands;
+            const canBuy = canAfford && !atLimit;
             
             // Sestav info o budovách
             let buildingsInfo = '';
@@ -84411,8 +84447,11 @@ function openFullscreenMap() {
                 </div>
                 
                 <div style="display: grid; gap: 0.5rem;">
-                    <button class="btn" onclick="buyLand('${locationId}')" style="background: ${canAfford ? '#4CAF50' : '#555'};" ${canAfford ? '' : 'disabled'}>
-                        🏗️ ${canAfford ? `Koupit za ${price} 💰` : `Nedostatek peněz (${state.money || 0}/${price})`}
+                    <div style="text-align: center; color: ${atLimit ? '#f44336' : '#888'}; font-size: 0.8rem; margin-bottom: 0.2rem;">
+                        🏗️ Pozemky: ${ownedCount}/${maxLands}${atLimit ? ' — LIMIT DOSAŽEN!' : ''}
+                    </div>
+                    <button class="btn" onclick="buyLand('${locationId}')" style="background: ${canBuy ? '#4CAF50' : '#555'};" ${canBuy ? '' : 'disabled'}>
+                        🏗️ ${atLimit ? 'Limit pozemků dosažen (max 3)' : canAfford ? `Koupit za ${price} 💰` : `Nedostatek peněz (${state.money || 0}/${price})`}
                     </button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">← Zpět</button>
                 </div>
