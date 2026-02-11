@@ -21682,16 +21682,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.equipped.powerArmor = item;
             state.equipped.powerArmorFuelTime = Date.now(); // Čas posledního natankování
             
-            // Aplikuj bonusy
-            if (item.stats?.hp) {
-                state.char.maxHp = (state.char.maxHp || 100) + item.stats.hp;
-                state.char.hp = Math.min(state.char.hp + item.stats.hp, state.char.maxHp);
-            }
+            // HP bonus se aplikuje přes calculateMaxHp() v renderFull()
             
             addLog(`🤖 Nasazena ${item.name}!`, '🤖', 'general', {
                 items: [{ id: item.id, count: 1 }]
             });
-            notifySuccess('🤖 Power Armor aktivována!', `+${item.stats?.defense || 80} DEF, +${item.stats?.damage || 15} DMG`);
+            notifySuccess('🤖 Power Armor aktivována!', `+${item.stats?.defense || 80} DEF, +${item.stats?.damage || 15} DMG${item.stats?.hp ? ', +' + item.stats.hp + ' HP' : ''}`);
             
             closeModal();
             renderFull();
@@ -21715,12 +21711,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            // Odeber bonusy
-            if (item.stats?.hp) {
-                state.char.maxHp = Math.max(100, (state.char.maxHp || 100) - item.stats.hp);
-                state.char.hp = Math.min(state.char.hp, state.char.maxHp);
-            }
-            
+            // Odeber power armor (HP se přepočítá v renderFull přes calculateMaxHp)
             state.equipped.powerArmor = null;
             state.equipped.powerArmorFuelTime = null;
             
@@ -27713,7 +27704,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const compName = deadCompanion.name || compInfo?.name || 'Společník';
             const compIcon = deadCompanion.icon || compInfo?.icon || '👤';
             
-            const reviveCost = compInfo?.cost > 0 ? Math.floor(compInfo.cost / 2) : 100;
+            const reviveCost = compInfo?.cost > 0 ? Math.floor(compInfo.cost / 4) : 50;
             const hasMoney = state.money >= reviveCost;
             
             showModal('💀 Mrtvý společník', `
@@ -27731,7 +27722,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         style="width: 100%; background: ${hasMoney ? 'var(--warning-yellow)' : '#555'}; color: ${hasMoney ? '#000' : '#888'};" ${!hasMoney ? 'disabled' : ''}>
                         💰 Oživit za ${reviveCost} peněz ${hasMoney ? '✓' : '(nemáš)'}
                     </button>
-                    <p style="color: #888; font-size: 0.75rem; margin-top: 0.5rem; text-align: center;">Společník se oživí s plným zdravím</p>
+                    <p style="color: #888; font-size: 0.75rem; margin-top: 0.5rem; text-align: center;">Společník se oživí s plným zdravím (cena = 25% jeho nákupní ceny)</p>
                 </div>
                 
                 <div style="background: #2a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4a2a2a;">
@@ -29189,6 +29180,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     // Pokud se maxHp zvýšilo, přidej HP
                     if (diff > 0) {
                         state.char.hp = Math.min(state.char.maxHp, state.char.hp + diff);
+                    } else {
+                        // Pokud se maxHp snížilo, ořízni HP
+                        state.char.hp = Math.min(state.char.hp, state.char.maxHp);
                     }
                 }
             }
@@ -66914,6 +66908,19 @@ function openFullscreenMap() {
                 }
             }
             
+            // 🤖 Power Armor HP bonus
+            if (state.equipped?.powerArmor?.stats?.hp) {
+                maxHp += state.equipped.powerArmor.stats.hp;
+            }
+            
+            // 📿 Accessory HP bonus (např. mutant set +30 HP)
+            if (state.equippedAccessory) {
+                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+                if (accItem?.bonus?.maxHp) {
+                    maxHp += accItem.bonus.maxHp;
+                }
+            }
+            
             return maxHp;
         }
         
@@ -97228,6 +97235,7 @@ function openFullscreenMap() {
                 // ATOMICKÁ TRANSAKCE - řeší race condition
                 let transactionSuccess = false;
                 let finalCount = 0;
+                let wasNewParticipant = false;
                 
                 try {
                     const ticketResult = await firebaseDB.ref('tombola/active/tickets/' + sanitizedName).transaction(currentData => {
@@ -97242,7 +97250,8 @@ function openFullscreenMap() {
                         return {
                             count: currentCount + count,
                             totalPaid: currentPaid + totalCost,
-                            lastPurchase: firebase.database.ServerValue.TIMESTAMP
+                            lastPurchase: firebase.database.ServerValue.TIMESTAMP,
+                            chatNotified: currentData?.chatNotified || false
                         };
                     });
                     
@@ -97252,7 +97261,9 @@ function openFullscreenMap() {
                     }
                     
                     transactionSuccess = true;
-                    finalCount = ticketResult.snapshot.val()?.count || count;
+                    const resultData = ticketResult.snapshot.val();
+                    finalCount = resultData?.count || count;
+                    wasNewParticipant = !resultData?.chatNotified;
                     
                     // Aktualizuj total pomocí transakce
                     await firebaseDB.ref('tombola/active/totalTickets').transaction(current => {
@@ -97274,7 +97285,7 @@ function openFullscreenMap() {
                     addLog(`Koupen lístek do tomboly "${escapeHtml(tombola.name)}" za ${totalCost} 💰`, '🎟️');
                     
                     // Chat oznámení - jen jednou za hráče (při prvním nákupu)
-                    if (finalCount === count) {
+                    if (wasNewParticipant) {
                         try {
                             const timeLeft = Math.max(0, tombola.endsAt - Date.now());
                             const hoursLeft = Math.floor(timeLeft / 3600000);
@@ -97287,6 +97298,9 @@ function openFullscreenMap() {
                                 timestamp: firebase.database.ServerValue.TIMESTAMP,
                                 system: true
                             });
+                            
+                            // Označ že chat notifikace byla odeslána
+                            await firebaseDB.ref('tombola/active/tickets/' + sanitizedName + '/chatNotified').set(true);
                         } catch(e) { console.error('Tombola chat error:', e); }
                     }
                     
