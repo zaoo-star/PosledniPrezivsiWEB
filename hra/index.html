@@ -15719,14 +15719,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function addAmmo(ammoType, amount) {
-            const ammoItem = state.inv.find(i => i.type === 'ammo' && i.ammoType === ammoType);
+            // Normalizace admin-sent typů na skutečné ammoType
+            const ammoTypeMap = {
+                'energy': 'cell',
+                'rifle': '556',  // default puškové = 5.56
+                'bullet': '9mm'
+            };
+            const normalizedType = ammoTypeMap[ammoType] || ammoType;
+            
+            const ammoItem = state.inv.find(i => i.type === 'ammo' && i.ammoType === normalizedType);
             if (ammoItem) {
                 ammoItem.count = (ammoItem.count || 0) + amount;
             } else {
                 // Najdi definici náboje v ITEMS
-                const ammoData = ITEMS.find(i => i.type === 'ammo' && i.ammoType === ammoType);
+                const ammoData = ITEMS.find(i => i.type === 'ammo' && i.ammoType === normalizedType);
                 if (ammoData) {
                     state.inv.push({...ammoData, count: amount});
+                } else {
+                    console.warn('⚠️ addAmmo: neznámý typ nábojů:', ammoType, '(normalized:', normalizedType, ')');
                 }
             }
         }
@@ -22317,7 +22327,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             if (skillTree && comp.skills) {
-                (Array.isArray(comp.skills) ? comp.skills : []).forEach(skillId => {
+                if (!Array.isArray(comp.skills)) comp.skills = Object.values(comp.skills).filter(s => typeof s === 'string');
+                comp.skills.forEach(skillId => {
                     Object.values(skillTree.trees).forEach(tree => {
                         const skill = tree.skills.find(s => s.id === skillId);
                         if (skill?.effect?.[stat]) {
@@ -22355,7 +22366,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let totalBonus = 0;
             
             state.companions.forEach(comp => {
-                if (!comp.skills || comp.skills.length === 0) return;
+                if (!comp.skills) return;
+                if (!Array.isArray(comp.skills)) comp.skills = Object.values(comp.skills).filter(s => typeof s === 'string');
+                if (comp.skills.length === 0) return;
                 
                 let skillTree = COMPANION_SKILL_TREES[comp.id];
                 if (!skillTree && typeof createGenericSkillTree === 'function') {
@@ -22364,7 +22377,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 if (skillTree) {
-                    (Array.isArray(comp.skills) ? comp.skills : []).forEach(skillId => {
+                    comp.skills.forEach(skillId => {
                         Object.values(skillTree.trees).forEach(tree => {
                             const skill = tree.skills.find(s => s.id === skillId);
                             if (skill?.effect?.travelSpeed) {
@@ -22487,7 +22500,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             });
             
             state.companions.forEach(comp => {
-                if (!comp.skills || comp.skills.length === 0) return;
+                if (!comp.skills) return;
+                if (!Array.isArray(comp.skills)) comp.skills = Object.values(comp.skills).filter(s => typeof s === 'string');
+                if (comp.skills.length === 0) return;
                 
                 let skillTree = COMPANION_SKILL_TREES[comp.id];
                 if (!skillTree && typeof createGenericSkillTree === 'function') {
@@ -22496,7 +22511,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 if (skillTree) {
-                    (Array.isArray(comp.skills) ? comp.skills : []).forEach(skillId => {
+                    comp.skills.forEach(skillId => {
                         Object.values(skillTree.trees).forEach(tree => {
                             const skill = tree.skills.find(s => s.id === skillId);
                             if (skill?.effect) {
@@ -36814,8 +36829,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const bootLoss = 2; // Boty se opotřebují cestou
                     travelBoots.durability = Math.max(0, travelBoots.durability - bootLoss);
                     if (travelBoots.durability === 0) {
-                        notifyWarning('💔 Boty zničeny!', `${travelBoots.icon} ${travelBoots.name} se rozpadly cestou!`);
+                        notifyWarning('💔 Boty zničeny!', `${travelBoots.icon} ${travelBoots.name} se rozpadly cestou! Přesunuty do inventáře.`);
                         addLog(`💔 ${travelBoots.icon} ${travelBoots.name} se rozpadly cestou!`, '👟');
+                        state.inv.push({...travelBoots});
                         state.equipped.boots = null;
                     } else if (travelBoots.durability <= 20) {
                         notifyWarning('⚠️ Boty se ničí', `${travelBoots.icon} ${travelBoots.name}: ${travelBoots.durability}/${travelBoots.maxDurability}`);
@@ -42680,7 +42696,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Speciální akce pro některé nástroje
             let specialAction = '';
             if (item.bonus === 'sharpen') {
-                specialAction = `<button class="btn" onclick="useSharpen(${idx})" style="background: #ff9800;">⚔️ Naostřit zbraň (+5 DMG)</button>`;
+                const wpn = state.equipped?.weapon;
+                const isRanged = wpn?.ammoType;
+                specialAction = isRanged 
+                    ? `<div style="background: #2a1a1a; padding: 0.8rem; border-radius: 8px; border: 1px solid #f44336;"><p style="color: #f44336; margin: 0;">❌ ${wpn.icon} ${wpn.name} je střelná zbraň</p><p style="color: #888; margin: 0.3rem 0 0 0; font-size: 0.85rem;">Brus funguje pouze na zbraně na blízko</p></div>`
+                    : `<button class="btn" onclick="useSharpen(${idx})" style="background: #ff9800;">⚔️ Naostřit zbraň (+5 DMG, 5 bojů)</button>`;
             } else if (item.bonus === 'signal') {
                 specialAction = `<button class="btn" onclick="useSignal(${idx})" style="background: #2196f3;">📡 Přivolat karavanu</button>`;
             } else if (item.bonus === 'smelt') {
@@ -42844,11 +42864,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 showModal('⚔️ Brus', 'Nemáš vybavenou zbraň k naostření!');
                 return;
             }
-            if (!state.weaponBuff) state.weaponBuff = { damage: 1, fights: 0 };
-            state.weaponBuff.damage += 5;
-            state.weaponBuff.fights += 5;
+            // Brus funguje jen na zbraně na blízko (bez ammoType)
+            if (weapon.ammoType) {
+                showModal('⚔️ Brus', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem;">❌</div>
+                        <p style="color: #ff9800;">${weapon.icon} ${weapon.name} je střelná zbraň.</p>
+                        <p style="color: #888;">Brus funguje pouze na zbraně na blízko!</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                `);
+                return;
+            }
+            // Reset - nestackuje se, vždy +5 DMG na 5 bojů
+            state.weaponBuff = { damage: 5, fights: 5 };
             closeModal();
-            showModal('⚔️ Naostřeno!', `${weapon.icon} ${weapon.name} je ostřejší!<br><span style="color: #8bc34a;">+5 DMG na 5 bojů</span>`);
+            showModal('⚔️ Naostřeno!', `🔥 ${weapon.icon} ${weapon.name} je ostřejší!<br><span style="color: #8bc34a;">+5 DMG na 5 bojů</span>`);
             renderFull();
         }
         
@@ -44453,10 +44484,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 addLog('🔥 Fénixův elixír aktivován - ochrana před smrtí!', '🔥');
                 renderFull();
             } else if (item.effect === 'weapon_buff') {
-                // Bonus k damage zbraně
-                if (!state.weaponBuff) state.weaponBuff = { damage: 1, fights: 0 };
-                state.weaponBuff.damage += item.value;
-                state.weaponBuff.fights += 10;
+                // Bonus k damage zbraně - nestackuje se, resetuje
+                state.weaponBuff = { damage: item.value, fights: 10 };
                 SoundSystem.play('pickup');
                 showModal('Použito', `${item.icon} ${item.name}!<br><span style="color: #ffd700;">⚔️ +${item.value} damage na 10 bojů!</span>`);
             } else if (item.effect === 'repair') {
@@ -63201,7 +63230,8 @@ function openFullscreenMap() {
                     if (eq && eq.durability !== undefined && eq.durability > 0) {
                         eq.durability = Math.max(0, eq.durability - slot.loss);
                         if (eq.durability === 0) {
-                            cs.log.push(`💔 ${eq.icon || '🛡️'} ${eq.name} se rozpadlo!`);
+                            cs.log.push(`💔 ${eq.icon || '🛡️'} ${eq.name} se rozpadlo! → inventář`);
+                            state.inv.push({...eq});
                             state.equipped[slot.key] = null;
                         } else if (eq.durability <= 15) {
                             cs.log.push(`⚠️ ${eq.name}: ${eq.durability}/${eq.maxDurability}`);
@@ -64198,7 +64228,10 @@ function openFullscreenMap() {
                     if (durLoss > 0) {
                         weapon.durability = Math.max(0, weapon.durability - durLoss);
                         if (weapon.durability === 0) {
-                            cs.log.push(`💔 ${weapon.icon} ${weapon.name} se rozpadla!`);
+                            cs.log.push(`💔 ${weapon.icon} ${weapon.name} se rozpadla! Přesunuta do inventáře.`);
+                            // Přesuň rozbitou zbraň do inventáře (ne zničit!)
+                            const brokenWeapon = {...weapon};
+                            state.inv.push(brokenWeapon);
                             state.equipped.weapon = null;
                             // Aktualizuj unit stats
                             unit.damage = Math.max(1, Math.floor((state.char.str || 5) * 1.5));
@@ -65914,7 +65947,8 @@ function openFullscreenMap() {
                 if (playerArmor && playerArmor.durability !== undefined) {
                     playerArmor.durability = Math.max(0, playerArmor.durability - 2);
                     if (playerArmor.durability === 0) {
-                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerArmor.icon} ${playerArmor.name} se rozpadlo!</div>`;
+                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerArmor.icon} ${playerArmor.name} se rozpadlo! Přesunuto do inventáře.</div>`;
+                        state.inv.push({...playerArmor});
                         state.equipped.armor = null;
                     } else if (playerArmor.durability <= 20) {
                         log.innerHTML += `<div style="color: #ff9800;">⚠️ Brnění: ${playerArmor.durability}/${playerArmor.maxDurability}</div>`;
@@ -65926,7 +65960,8 @@ function openFullscreenMap() {
                 if (playerHelmet && playerHelmet.durability !== undefined) {
                     playerHelmet.durability = Math.max(0, playerHelmet.durability - 1);
                     if (playerHelmet.durability === 0) {
-                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerHelmet.icon} ${playerHelmet.name} se rozpadla!</div>`;
+                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerHelmet.icon} ${playerHelmet.name} se rozpadla! Přesunuta do inventáře.</div>`;
+                        state.inv.push({...playerHelmet});
                         state.equipped.helmet = null;
                     } else if (playerHelmet.durability <= 20) {
                         log.innerHTML += `<div style="color: #ff9800;">⚠️ Helma: ${playerHelmet.durability}/${playerHelmet.maxDurability}</div>`;
@@ -65938,7 +65973,8 @@ function openFullscreenMap() {
                 if (playerBoots && playerBoots.durability !== undefined) {
                     playerBoots.durability = Math.max(0, playerBoots.durability - 1);
                     if (playerBoots.durability === 0) {
-                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerBoots.icon} ${playerBoots.name} se rozpadly!</div>`;
+                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerBoots.icon} ${playerBoots.name} se rozpadly! Přesunuty do inventáře.</div>`;
+                        state.inv.push({...playerBoots});
                         state.equipped.boots = null;
                     } else if (playerBoots.durability <= 20) {
                         log.innerHTML += `<div style="color: #ff9800;">⚠️ Boty: ${playerBoots.durability}/${playerBoots.maxDurability}</div>`;
@@ -65950,7 +65986,8 @@ function openFullscreenMap() {
                 if (playerGloves && playerGloves.durability !== undefined) {
                     playerGloves.durability = Math.max(0, playerGloves.durability - 1);
                     if (playerGloves.durability === 0) {
-                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerGloves.icon} ${playerGloves.name} se rozpadly!</div>`;
+                        log.innerHTML += `<div style="color: #c62828;">💔 ${playerGloves.icon} ${playerGloves.name} se rozpadly! Přesunuty do inventáře.</div>`;
+                        state.inv.push({...playerGloves});
                         state.equipped.gloves = null;
                     } else if (playerGloves.durability <= 20) {
                         log.innerHTML += `<div style="color: #ff9800;">⚠️ Rukavice: ${playerGloves.durability}/${playerGloves.maxDurability}</div>`;
@@ -68006,7 +68043,9 @@ function openFullscreenMap() {
                     if (durabilityLoss > 0) {
                         weapon.durability = Math.max(0, weapon.durability - durabilityLoss);
                         if (weapon.durability === 0) {
-                            log.innerHTML += `<div style="color: #c62828;">💔 ${weapon.icon} ${weapon.name} se rozpadla!</div>`;
+                            log.innerHTML += `<div style="color: #c62828;">💔 ${weapon.icon} ${weapon.name} se rozpadla! Přesunuta do inventáře.</div>`;
+                            const brokenWeapon = {...weapon};
+                            state.inv.push(brokenWeapon);
                             state.equipped.weapon = null;
                         } else if (weapon.durability <= 20) {
                             log.innerHTML += `<div style="color: #ff9800;">⚠️ ${weapon.name}: ${weapon.durability}/${weapon.maxDurability}</div>`;
@@ -89632,11 +89671,14 @@ function openFullscreenMap() {
                         <label style="color: #ff9800; font-size: 0.85rem;">🔫 Náboje:</label>
                         <select id="rewardAmmo" style="width: 100%; padding: 0.7rem; background: #1a1a1a; color: #fff; border: 1px solid #ff9800; border-radius: 6px; margin-top: 0.3rem;">
                             <option value="">-- Žádné --</option>
-                            <option value="9mm">🔹 9mm pistole</option>
-                            <option value="shell">🔸 Broky</option>
-                            <option value="rifle">🔹 Puškové</option>
-                            <option value="energy">⚡ Energetické</option>
+                            <option value="9mm">🔶 9mm</option>
+                            <option value="556">🔶 5.56 (puškové)</option>
+                            <option value="762">🔶 7.62 (odstřelovací)</option>
+                            <option value="shell">🔶 Broky</option>
+                            <option value="cell">🔵 Energetické články</option>
                             <option value="arrow">🏹 Šípy</option>
+                            <option value="bolt">🎯 Šipky (kuše)</option>
+                            <option value="fuel">⛽ Palivo</option>
                         </select>
                     </div>
                     <div>
@@ -89725,11 +89767,16 @@ function openFullscreenMap() {
             let ammoData = null;
             if (ammoType && ammoCount > 0) {
                 const ammoNames = {
-                    '9mm': '🔹 9mm',
-                    'shell': '🔸 Broky',
-                    'rifle': '🔹 Puškové',
-                    'energy': '⚡ Energetické',
-                    'arrow': '🏹 Šípy'
+                    '9mm': '🔶 9mm',
+                    '556': '🔶 5.56',
+                    '762': '🔶 7.62',
+                    'shell': '🔶 Broky',
+                    'cell': '🔵 Energetické',
+                    'arrow': '🏹 Šípy',
+                    'bolt': '🎯 Šipky',
+                    'fuel': '⛽ Palivo',
+                    'rifle': '🔶 Puškové',
+                    'energy': '🔵 Energetické'
                 };
                 ammoData = {
                     type: ammoType,
@@ -89827,11 +89874,14 @@ function openFullscreenMap() {
                         <label style="color: #ff9800; font-size: 0.8rem;">🔫 Náboje:</label>
                         <select id="qrAmmo" style="width: 100%; padding: 0.5rem; background: #1a1a1a; color: #fff; border: 1px solid #ff9800; border-radius: 6px;">
                             <option value="">-- Žádné --</option>
-                            <option value="9mm">🔹 9mm</option>
-                            <option value="shell">🔸 Broky</option>
-                            <option value="rifle">🔹 Puškové</option>
-                            <option value="energy">⚡ Energetické</option>
+                            <option value="9mm">🔶 9mm</option>
+                            <option value="556">🔶 5.56 (puškové)</option>
+                            <option value="762">🔶 7.62 (odstřelovací)</option>
+                            <option value="shell">🔶 Broky</option>
+                            <option value="cell">🔵 Energetické články</option>
                             <option value="arrow">🏹 Šípy</option>
+                            <option value="bolt">🎯 Šipky (kuše)</option>
+                            <option value="fuel">⛽ Palivo</option>
                         </select>
                     </div>
                     <div>
@@ -89892,7 +89942,7 @@ function openFullscreenMap() {
             
             let ammoData = null;
             if (ammoType && ammoCount > 0) {
-                const ammoNames = { '9mm': '🔹 9mm', 'shell': '🔸 Broky', 'rifle': '🔹 Puškové', 'energy': '⚡ Energetické', 'arrow': '🏹 Šípy' };
+                const ammoNames = { '9mm': '🔶 9mm', '556': '🔶 5.56', '762': '🔶 7.62', 'shell': '🔶 Broky', 'cell': '🔵 Energetické', 'arrow': '🏹 Šípy', 'bolt': '🎯 Šipky', 'fuel': '⛽ Palivo', 'rifle': '🔶 Puškové', 'energy': '🔵 Energetické' };
                 ammoData = { type: ammoType, count: Math.min(ammoCount, 9999), name: ammoNames[ammoType] || ammoType };
             }
             
@@ -90613,7 +90663,7 @@ function openFullscreenMap() {
                     
                     // Přidej náboje
                     let ammoText = '';
-                    const ammoNames = { '9mm': '🔹 9mm', 'shell': '🔸 Broky', 'rifle': '🔹 Puškové', 'energy': '⚡ Energetické', 'arrow': '🏹 Šípy' };
+                    const ammoNames = { '9mm': '🔶 9mm', '556': '🔶 5.56', '762': '🔶 7.62', 'shell': '🔶 Broky', 'cell': '🔵 Energetické', 'arrow': '🏹 Šípy', 'bolt': '🎯 Šipky', 'fuel': '⛽ Palivo', 'rifle': '🔶 Puškové', 'energy': '🔵 Energetické' };
                     for (const [type, count] of Object.entries(totalAmmo)) {
                         addAmmo(type, count);
                         ammoText += `<div style="color: #ff9800;">+${count}x ${ammoNames[type] || type}</div>`;
