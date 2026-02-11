@@ -32994,7 +32994,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 html += renderActionButton('💧', 'Nabrat vodu', 'collectWater()', '#1565C0');
             }
             if (location.resource === 'fuel') {
-                html += renderActionButton('⛽', 'Čerpat palivo', 'collectFuel()', '#ff9800');
+                const fuelLim = checkDailyActionLimit('fuel', location.id, 3);
+                if (fuelLim.canDo) {
+                    html += renderActionButton('⛽', `Čerpat palivo (${fuelLim.remaining}/3)`, 'collectFuel()', '#ff9800');
+                } else {
+                    html += renderActionButton('⛽', 'Benzínka vyčerpaná', '', '#444');
+                }
             }
             
             // === LOV - jen venku v přírodě ===
@@ -33672,7 +33677,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // === VYLEPŠENÉ AKCE S MODALY ===
         // Kontrola denního limitu akcí (3x za 24 hodin na lokaci)
-        function checkDailyActionLimit(actionType, locationId) {
+        function checkDailyActionLimit(actionType, locationId, maxActions) {
+            const limit = maxActions || 3;
             if (!state.world.actionLimits) state.world.actionLimits = {};
             const key = actionType + '_' + locationId;
             const now = Date.now();
@@ -33691,8 +33697,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             return { 
-                canDo: data.count < 3, 
-                remaining: 3 - data.count,
+                canDo: data.count < limit, 
+                remaining: limit - data.count,
                 resetIn: data.resetTime - now 
             };
         }
@@ -37846,6 +37852,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
             if (!loc) return;
             
+            // Denní limit (5x za 24 hodin)
+            const limit = checkDailyActionLimit('fuel', loc.id, 3);
+            if (!limit.canDo) {
+                const hours = Math.floor(limit.resetIn / 3600000);
+                const mins = Math.floor((limit.resetIn % 3600000) / 60000);
+                notifyWarning('Benzínka vyčerpaná', `Už jsi čerpal 5x. Další za ${hours}h ${mins}m`);
+                return;
+            }
+            
             // Cooldown
             const cooldownKey = 'fuel_' + loc.id;
             const lastCollect = state.world.locationCooldowns[cooldownKey] || 0;
@@ -37860,15 +37875,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             state.world.locationCooldowns[cooldownKey] = now;
+            useActionLimit('fuel', loc.id);
             
             const amount = 2 + Math.floor(Math.random() * 3);
             state.resources.fuel = (state.resources.fuel || 0) + amount;
+            
+            const fuelLimit = checkDailyActionLimit('fuel', loc.id, 3);
             
             showModal('⛽ Palivo', 
                 '<div style="text-align: center;">' +
                 '<div style="font-size: 3rem;">⛽</div>' +
                 '<h3>Načerpal jsi palivo!</h3>' +
                 '<p style="color: #8bc34a;">+' + amount + ' paliva</p>' +
+                '<p style="color: #888; font-size: 0.8rem;">Zbývá ' + fuelLimit.remaining + '/5 čerpání dnes</p>' +
                 '</div>' +
                 '<button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>'
             );
@@ -40276,6 +40295,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // 📟 Exotic bonus - Předválečná tech (+25% XP na 48h)
             if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > Date.now()) {
                 finalAmount = Math.floor(finalAmount * 1.25);
+            }
+            
+            // 📿 Accessory XP bonus (Zlatý amulet apod.)
+            if (state.equippedAccessory) {
+                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+                if (accItem && accItem.bonus === 'xp' && accItem.value > 0) {
+                    finalAmount = Math.floor(finalAmount * (1 + accItem.value / 100));
+                }
             }
             
             // ✝️ holy: +10% XP
@@ -66593,6 +66620,17 @@ function openFullscreenMap() {
                     }
                 }
                 
+                // 📿 Accessory luck bonus (Stříbrný/Drahokamový prsten +10% šance na extra loot)
+                if (state.equippedAccessory) {
+                    const accLuck = state.inv.find(i => i.id === state.equippedAccessory);
+                    if (accLuck && accLuck.bonus === 'luck' && accLuck.value > 0 && Math.random() < (accLuck.value / 100)) {
+                        if (enemyData.loot && enemyData.loot.length > 0) {
+                            generateSingleLoot(enemyData.loot);
+                            lootHtml += `<div style="color: #ffd700;">💍 Štěstí bonus loot!</div>`;
+                        }
+                    }
+                }
+                
                 // 🎒 scavenger special: +25% šance na bonus loot
                 if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('scavenger')) {
                     if (Math.random() < 0.25 && enemyData.loot && enemyData.loot.length > 0) {
@@ -67150,6 +67188,14 @@ function openFullscreenMap() {
             // 🛡️ Defense buff (Elixír železné kůže)
             if (state.buffs?.defense && state.buffs.defense.until > Date.now()) {
                 defense += state.buffs.defense.value;
+            }
+            
+            // 📿 Accessory defense bonus (Drahokamový přívěsek)
+            if (state.equippedAccessory) {
+                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+                if (accItem && accItem.bonus === 'defense' && accItem.value > 0) {
+                    defense += accItem.value;
+                }
             }
             
             return Math.max(0, defense);
@@ -71543,6 +71589,14 @@ function openFullscreenMap() {
                         if (hasEquippedSpecial('medic_bonus')) itemHealRate += 1;
                         if (itemHealRate > 0 && state.char.hp < state.char.maxHp) {
                             state.char.hp = Math.min(state.char.maxHp, state.char.hp + itemHealRate);
+                        }
+                    }
+                    
+                    // 📿 Accessory hp_regen bonus (Amulet mutantího srdce +3 HP/min)
+                    if (state.equippedAccessory && state.char.hp < state.char.maxHp) {
+                        const accRegen = state.inv.find(i => i.id === state.equippedAccessory);
+                        if (accRegen && accRegen.bonus === 'hp_regen' && accRegen.value > 0) {
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + accRegen.value);
                         }
                     }
                     
