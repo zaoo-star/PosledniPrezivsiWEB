@@ -93239,10 +93239,21 @@ function openFullscreenMap() {
             // Pokud jsem se neúčastnil, jen zobraz notifikaci
             if (!myData || myData.damage <= 0) {
                 notifyInfo('🐉 Boss poražen!', `${boss.icon} ${boss.name} byl poražen! Bohužel jsi se nezúčastnil raidu.`);
-                // Vyčisti raid po chvíli
-                setTimeout(() => cleanupWorldBossRaid(raidData), 10000);
                 return;
             }
+            
+            // Kontrola zda už jsem loot vyzvedl (pro případ opakovaného triggeru / refresh)
+            const lootClaimedKey = `_raidLootClaimed_${raidData.bossId}_${raidData.startedAt || ''}`;
+            if (window[lootClaimedKey] || myData.lootClaimed) {
+                console.log('🐉 Loot already claimed for this raid');
+                return;
+            }
+            window[lootClaimedKey] = true;
+            
+            // Označ v Firebase že jsem loot vyzvedl
+            try {
+                await firebaseDB.ref(`worldBossRaid/participants/${myName}/lootClaimed`).set(true);
+            } catch(e) {}
             
             // === VÝPOČET LOOTU PODLE PODÍLU DAMAGE ===
             const totalDamage = Object.values(raidData.participants || {}).reduce((sum, p) => sum + (p.damage || 0), 0);
@@ -93287,8 +93298,12 @@ function openFullscreenMap() {
                         ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ffd700;">[UNIKÁTNÍ]</span>
                     </div>`;
                 } else {
-                    addToGroundLoot(itemCopy);
-                    lootHtml += `<div style="color: #ff9800;">${uniqueItem.icon} ${uniqueItem.name} [UNIKÁTNÍ] (na zemi)</div>`;
+                    // Nemá nosnost - ulož do schránky bosse (boss_stash v inventáři)
+                    if (!state.bossStash) state.bossStash = [];
+                    state.bossStash.push(itemCopy);
+                    lootHtml += `<div style="color: #ff9800; padding: 0.3rem; background: #1a1a0a; border-radius: 4px; margin: 0.2rem 0;">
+                        ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ff9800;">[📦 SCHRÁNKA - nemáš nosnost!]</span>
+                    </div>`;
                 }
             });
             
@@ -93303,10 +93318,18 @@ function openFullscreenMap() {
                 const piece = setData.pieces[randomPieceKey];
                 const setItem = ITEMS.find(i => i.id === piece.id);
                 if (setItem) {
-                    state.inv.push({ ...setItem });
+                    const setItemCopy = { ...setItem };
+                    const canTakeSet = canAddItem(setItemCopy, 1);
+                    if (canTakeSet) {
+                        addItemToInventory(setItemCopy, 1, true);
+                    } else {
+                        if (!state.bossStash) state.bossStash = [];
+                        state.bossStash.push(setItemCopy);
+                    }
                     const className = CLASSES[randomClass]?.name || randomClass;
                     lootHtml += `<div style="color: #ffd700; padding: 0.3rem; background: #2a2a0a; border-radius: 4px; margin: 0.2rem 0;">
                         ${piece.icon} <strong>${piece.name}</strong> <span style="color: #ff9800;">[Set: ${className}]</span>
+                        ${!canTakeSet ? '<span style="color: #ff9800;"> [📦 SCHRÁNKA]</span>' : ''}
                     </div>`;
                 }
             }
@@ -93327,6 +93350,7 @@ function openFullscreenMap() {
             }).join('');
             
             // Zobraz victory modal
+            const hasStash = state.bossStash && state.bossStash.length > 0;
             showModal('🐉 RAID VÍTĚZSTVÍ!', `
                 <div style="text-align: center;">
                     <div style="font-size: 4rem; text-shadow: 0 0 30px rgba(255,215,0,0.5);">🏆</div>
@@ -93337,6 +93361,10 @@ function openFullscreenMap() {
                         <h4 style="margin: 0 0 0.3rem 0; color: #ce93d8;">🎁 Tvůj loot (${Math.round(myDamagePercent * 100)}% podíl):</h4>
                         ${lootHtml}
                     </div>
+                    
+                    ${hasStash ? `<div style="background: #2a1a0a; padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; border: 1px solid #ff9800;">
+                        <span style="color: #ff9800;">📦 ${state.bossStash.length} itemů ve schránce (nemáš nosnost). Vyzvedni je později přes inventář!</span>
+                    </div>` : ''}
                     
                     <div style="background: #1a1a1a; padding: 0.5rem; border-radius: 8px; margin: 0.5rem 0; text-align: left;">
                         <h4 style="margin: 0 0 0.3rem 0; color: #ff4444; font-size: 0.85rem;">📊 Damage Leaderboard:</h4>
@@ -93359,8 +93387,11 @@ function openFullscreenMap() {
             
             saveGame(true);
             
-            // Vyčisti raid
-            setTimeout(() => cleanupWorldBossRaid(raidData), 15000);
+            // Vyčisti raid po 30 minutách (aby offline hráči stihli vyzvednout loot)
+            // Jen killing blow hráč nebo admin čistí
+            if (raidData.killingBlow === myName || isStaff()) {
+                setTimeout(() => cleanupWorldBossRaid(raidData), 1800000); // 30 min
+            }
         }
         
         async function cleanupWorldBossRaid(raidData) {
@@ -93373,6 +93404,60 @@ function openFullscreenMap() {
                 }
             } catch(e) {}
         }
+        
+        // === BOSS STASH - schránka pro itemy co se nevešly do inventáře ===
+        function showBossStash() {
+            if (!state.bossStash || state.bossStash.length === 0) {
+                notifyInfo('📦 Schránka prázdná', 'Nemáš žádné nevyzvednuté itemy z World Bosse.');
+                return;
+            }
+            
+            let html = '<div style="text-align: center; margin-bottom: 0.5rem;">';
+            html += '<div style="font-size: 2rem;">📦</div>';
+            html += `<p style="color: #ff9800;">Máš ${state.bossStash.length} nevyzvednutých itemů z World Boss raidu!</p>`;
+            html += '<p style="color: #888; font-size: 0.8rem;">Vyber itemy k vyzvednutí (potřebuješ volnou nosnost):</p>';
+            html += '</div>';
+            
+            state.bossStash.forEach((item, idx) => {
+                const canTake = canAddItem(item, 1);
+                html += `<div style="display: flex; align-items: center; justify-content: space-between; padding: 0.4rem; margin: 0.2rem 0; background: ${canTake ? '#1a2a1a' : '#2a1a1a'}; border-radius: 6px; border: 1px solid ${canTake ? '#4caf50' : '#f44336'};">`;
+                html += `<div style="display: flex; align-items: center; gap: 0.3rem;">`;
+                html += `<span style="font-size: 1.2rem;">${item.icon}</span>`;
+                html += `<div><div style="color: ${RARITY_COLORS[item.rarity] || '#fff'}; font-weight: bold; font-size: 0.85rem;">${item.name}</div>`;
+                html += `<div style="color: #888; font-size: 0.7rem;">${item.type === 'weapon' ? `⚔️ ${item.damage} DMG` : item.type === 'armor' ? `🛡️ ${item.defense} DEF` : item.type === 'accessory' ? '💍 Příslušenství' : '📦 Item'} • ${item.weight || 0}kg</div>`;
+                html += `</div></div>`;
+                if (canTake) {
+                    html += `<button onclick="claimBossStashItem(${idx})" class="btn" style="padding: 0.3rem 0.6rem; background: #4caf50; font-size: 0.75rem;">✅ Vzít</button>`;
+                } else {
+                    html += `<span style="color: #f44336; font-size: 0.7rem;">⚠️ Plný inventář</span>`;
+                }
+                html += `</div>`;
+            });
+            
+            html += `<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.75rem;">Zavřít</button>`;
+            showModal('📦 Boss Schránka', html);
+        }
+        window.showBossStash = showBossStash;
+        
+        function claimBossStashItem(idx) {
+            if (!state.bossStash || !state.bossStash[idx]) return;
+            const item = state.bossStash[idx];
+            if (canAddItem(item, 1)) {
+                addItemToInventory(item, 1, true);
+                state.bossStash.splice(idx, 1);
+                notifySuccess('✅ Vyzvednuto!', `${item.icon} ${item.name} přidán do inventáře!`);
+                saveGame(true);
+                if (state.bossStash.length > 0) {
+                    showBossStash(); // Znovu zobraz schránku
+                } else {
+                    closeModal();
+                    notifySuccess('📦 Schránka prázdná', 'Všechny itemy vyzvednuty!');
+                }
+            } else {
+                notifyWarning('Plný inventář', 'Nemáš dost nosnosti! Vyhoď něco.');
+            }
+        }
+        window.claimBossStashItem = claimBossStashItem;
         
         async function expireWorldBossRaid() {
             if (!multiplayerEnabled || !firebaseDB) return;
@@ -95349,6 +95434,11 @@ function openFullscreenMap() {
                 const pd = window._pendingDecision;
                 if (pd) {
                     html += `<div onclick="switchTab('multiplayer'); setTimeout(showPoliticsPanel, 300);" style="cursor: pointer; background: linear-gradient(90deg, #2a1a0a, #3a2a1a, #2a1a0a); border: 1px solid #ff9800; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between;"><span style="color: #ff9800; font-size: 0.75rem; font-weight: bold;">${pd.icon} Rozhodnutí čeká!</span><span style="color: #888; font-size: 0.65rem;">Klikni → Politika</span></div>`;
+                }
+                
+                // Boss stash banner - nevyzvednuté itemy
+                if (state.bossStash && state.bossStash.length > 0) {
+                    html += `<div onclick="showBossStash()" style="cursor: pointer; background: linear-gradient(90deg, #1a0a2a, #2a1a3a, #1a0a2a); border: 1px solid #ce93d8; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between;"><span style="color: #ce93d8; font-size: 0.75rem; font-weight: bold;">📦 ${state.bossStash.length} itemů ve schránce!</span><span style="color: #888; font-size: 0.65rem;">Klikni → Vyzvednout</span></div>`;
                 }
                 
                 bannerDiv.innerHTML = html;
