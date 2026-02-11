@@ -93289,24 +93289,58 @@ function openFullscreenMap() {
                         data.defeated = true; // Lokálně taky nastavit
                     }
                     
+                    // Detekce nového bosse - reset handled flagu
+                    const raidKey = `${data.bossId}_${data.summonedAt || ''}`;
+                    if (state._lastHandledRaidBoss && state._lastHandledRaidBoss !== raidKey) {
+                        console.log('🐉 New boss detected, resetting victory handled flag');
+                        state._raidVictoryHandled = false;
+                    }
+                    
                     // Boss poražen?
                     if (data.defeated && !state._raidVictoryHandled) {
-                        state._raidVictoryHandled = true;
-                        // Malý delay aby se data plně propagovala (participant damage atd.)
-                        setTimeout(async () => {
-                            try {
-                                // Znovu načti čerstvá data z Firebase
-                                const freshSnap = await firebaseDB.ref('worldBossRaid').once('value');
-                                const freshData = freshSnap.val();
-                                if (freshData && freshData.defeated) {
-                                    handleRaidBossGlobalVictory(freshData);
-                                }
-                            } catch(e) {
-                                console.error('Raid victory fresh fetch error:', e);
-                                // Fallback - použij stará data
-                                handleRaidBossGlobalVictory(data);
+                        // GUARD: Nespouštěj victory popup pokud hráč zrovna bojuje, je v dungeonu nebo brání osadu
+                        const isInCombat = !!(window.combatState || state.activeCombat);
+                        const isInDungeon = !!(state.dungeon?.active);
+                        const isInSettlementRaid = !!window.isSettlementRaid;
+                        if (isInCombat || isInDungeon || isInSettlementRaid) {
+                            console.log('🐉 DEFER: Victory popup deferred - player busy:', { isInCombat, isInDungeon, isInSettlementRaid });
+                            // Neresetuj _raidVictoryHandled, zkusí se to znovu při dalším renderFull
+                        } else {
+                            // Ignoruj staré raidové výsledky (starší než 5 minut)
+                            const defeatedAge = data.defeatedAt ? (Date.now() - data.defeatedAt) : 0;
+                            // Kontrola localStorage - už jsme tento raid vyhodnotili?
+                            const raidInstanceKey = `raidClaimed_${data.bossId}_${data.summonedAt || ''}`;
+                            const alreadyClaimed = localStorage.getItem(raidInstanceKey);
+                            
+                            if (alreadyClaimed) {
+                                console.log('🐉 SKIP: Raid already claimed (localStorage):', raidInstanceKey);
+                                state._raidVictoryHandled = true;
+                            } else if (defeatedAge > 5 * 60 * 1000) {
+                                console.log('🐉 SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min. Auto-cleaning...');
+                                state._raidVictoryHandled = true;
+                                // Auto-cleanup starého raidu z Firebase
+                                firebaseDB.ref('worldBossRaid').set({ active: false }).catch(e => console.error('Auto-cleanup error:', e));
+                            } else {
+                                state._raidVictoryHandled = true;
+                                state._lastHandledRaidBoss = raidKey;
+                                localStorage.setItem(raidInstanceKey, Date.now().toString());
+                                // Malý delay aby se data plně propagovala (participant damage atd.)
+                                setTimeout(async () => {
+                                    try {
+                                        // Znovu načti čerstvá data z Firebase
+                                        const freshSnap = await firebaseDB.ref('worldBossRaid').once('value');
+                                        const freshData = freshSnap.val();
+                                        if (freshData && freshData.defeated) {
+                                            handleRaidBossGlobalVictory(freshData);
+                                        }
+                                    } catch(e) {
+                                        console.error('Raid victory fresh fetch error:', e);
+                                        // Fallback - použij stará data
+                                        handleRaidBossGlobalVictory(data);
+                                    }
+                                }, 2000);
                             }
-                        }, 2000);
+                        }
                     }
                     
                     // Aktualizuj banner
@@ -93527,6 +93561,20 @@ function openFullscreenMap() {
         async function handleRaidBossGlobalVictory(raidData) {
             if (!raidData || !raidData.defeated) return;
             
+            // Ignoruj staré výsledky (starší než 5 minut)
+            const defeatedAge = raidData.defeatedAt ? (Date.now() - raidData.defeatedAt) : 0;
+            if (defeatedAge > 5 * 60 * 1000) {
+                console.log('🐉 VICTORY HANDLER SKIP: Old raid result, age:', Math.round(defeatedAge / 60000), 'min');
+                return;
+            }
+            
+            // GUARD: Nespouštěj pokud hráč je v boji, dungeonu nebo settlement raidu
+            if (window.combatState || state.activeCombat || state.dungeon?.active || window.isSettlementRaid) {
+                console.log('🐉 VICTORY HANDLER SKIP: Player is busy');
+                state._raidVictoryHandled = false; // Reset aby se zkusilo znovu
+                return;
+            }
+            
             const boss = WORLD_BOSSES.find(b => b.id === raidData.bossId);
             if (!boss) { console.error('🐉 VICTORY: Boss not found:', raidData.bossId); return; }
             
@@ -93702,10 +93750,10 @@ function openFullscreenMap() {
             
             saveGame(true);
             
-            // Vyčisti raid po 30 minutách (aby offline hráči stihli vyzvednout loot)
+            // Vyčisti raid po 5 minutách (aby online hráči stihli vyzvednout loot)
             // Jen killing blow hráč nebo admin čistí
             if (raidData.killingBlow === myName || isStaff()) {
-                setTimeout(() => cleanupWorldBossRaid(raidData), 1800000); // 30 min
+                setTimeout(() => cleanupWorldBossRaid(raidData), 300000); // 5 min
             }
         }
         
@@ -93716,8 +93764,28 @@ function openFullscreenMap() {
                 const snap = await firebaseDB.ref('worldBossRaid').once('value');
                 const data = snap.val();
                 if (data && data.active && data.defeated && !state._raidVictoryHandled) {
+                    // GUARD: Nespouštěj pokud hráč je v boji, dungeonu nebo settlement raidu
+                    if (window.combatState || state.activeCombat || state.dungeon?.active || window.isSettlementRaid) {
+                        console.log('🐉 FALLBACK SKIP: Player is busy');
+                        return;
+                    }
+                    // Ignoruj staré raidové výsledky (starší než 5 minut)
+                    const defeatedAge = data.defeatedAt ? (Date.now() - data.defeatedAt) : 0;
+                    if (defeatedAge > 5 * 60 * 1000) {
+                        console.log('🐉 FALLBACK SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min');
+                        state._raidVictoryHandled = true;
+                        return;
+                    }
+                    // localStorage check
+                    const raidInstanceKey = `raidClaimed_${data.bossId}_${data.summonedAt || ''}`;
+                    if (localStorage.getItem(raidInstanceKey)) {
+                        console.log('🐉 FALLBACK SKIP: Already claimed (localStorage)');
+                        state._raidVictoryHandled = true;
+                        return;
+                    }
                     console.log('🐉 FALLBACK: Raid victory detected, triggering handler!');
                     state._raidVictoryHandled = true;
+                    localStorage.setItem(raidInstanceKey, Date.now().toString());
                     handleRaidBossGlobalVictory(data);
                 } else if (data && data.active && !data.defeated) {
                     // Boss žije, jen info
