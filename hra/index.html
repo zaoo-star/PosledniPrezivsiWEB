@@ -93209,6 +93209,17 @@ function openFullscreenMap() {
                 }
                 
                 if (data && data.active) {
+                    // Auto-fix: Boss má 0 HP ale defeated flag chybí
+                    if (data.currentHp <= 0 && !data.defeated) {
+                        console.log('🐉 AUTO-FIX: Boss has 0 HP but not marked defeated, fixing...');
+                        firebaseDB.ref('worldBossRaid').update({
+                            defeated: true,
+                            defeatedAt: Date.now(),
+                            currentHp: 0
+                        }).catch(e => console.error('Auto-fix defeated error:', e));
+                        data.defeated = true; // Lokálně taky nastavit
+                    }
+                    
                     // Boss poražen?
                     if (data.defeated && !state._raidVictoryHandled) {
                         state._raidVictoryHandled = true;
@@ -97904,6 +97915,7 @@ function openFullscreenMap() {
                         </div>
                     </div>
                     <button class="btn" onclick="adminStopWorldBoss()" style="background: #b71c1c; font-weight: bold;">🛑 Zastavit raid</button>
+                    ${activeRaid.currentHp <= 0 || activeRaid.defeated ? `<button class="btn" onclick="adminForceRaidVictory()" style="background: linear-gradient(135deg, #ffd700, #ff9800); color: #000; font-weight: bold;">🏆 Vyhlásit vítězství (boss je mrtvý!)</button>` : ''}
                     <button class="btn" onclick="adminResetWorldBossCooldown()" style="background: #555;">🔄 Resetovat cooldown</button>
                 `;
             } else {
@@ -97949,6 +97961,42 @@ function openFullscreenMap() {
             showModal('🐉 World Boss Admin', html);
         }
         window.adminWorldBoss = adminWorldBoss;
+        
+        async function adminForceRaidVictory() {
+            if (!isAdmin() || !firebaseDB) return;
+            if (!confirm('Opravdu vyhlásit vítězství? Všem účastníkům se rozdělí odměny.')) return;
+            
+            try {
+                const snap = await firebaseDB.ref('worldBossRaid').once('value');
+                const data = snap.val();
+                if (!data || !data.active) { notifyWarning('Žádný raid', 'Raid neběží'); return; }
+                
+                // Nastav defeated flag
+                const myName = getPlayerName().replace(/[\\/\\.#$\\[\\]]/g, '_');
+                await firebaseDB.ref('worldBossRaid').update({
+                    defeated: true,
+                    defeatedAt: Date.now(),
+                    currentHp: 0,
+                    killingBlow: data.killingBlow || myName
+                });
+                
+                notifySuccess('🏆 Vítězství vyhlášeno!', 'Odměny se rozdělí všem účastníkům.');
+                closeModal();
+                
+                // Trigger victory handler lokálně
+                state._raidVictoryHandled = false;
+                const freshSnap = await firebaseDB.ref('worldBossRaid').once('value');
+                const freshData = freshSnap.val();
+                if (freshData && freshData.defeated) {
+                    state._raidVictoryHandled = true;
+                    handleRaidBossGlobalVictory(freshData);
+                }
+            } catch(e) {
+                console.error('Force victory error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se vyhlásit vítězství');
+            }
+        }
+        window.adminForceRaidVictory = adminForceRaidVictory;
         
         async function adminLaunchWorldBoss() {
             if (!isAdmin()) return;
