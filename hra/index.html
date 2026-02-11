@@ -37765,7 +37765,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     break;
                     
                 case 'permanent_hp':
-                    state.char.maxHp = (state.char.maxHp || 100) + 5;
+                    state.permanentHpBonus = (state.permanentHpBonus || 0) + 5;
+                    state.char.maxHp = calculateMaxHp();
                     state.char.hp = Math.min(state.char.hp + 5, state.char.maxHp);
                     notifySuccess('Sérum účinkuje!', '+5 max HP trvale!');
                     break;
@@ -44315,9 +44316,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 addLog(`🍺 Vypil jsi ${item.name}`, '🍺');
                 renderFull(); // Aktualizuj HUD s buffy
             } else if (item.effect === 'permanent_hp') {
-                // Trvalé zvýšení max HP
+                // Trvalé zvýšení max HP - uloženo do persistentního counteru
                 const hpBoost = item.value || 5;
-                state.char.maxHp = (state.char.maxHp || 100) + hpBoost;
+                
+                // OP itemy (value >= 20) lze použít jen jednou
+                if (hpBoost >= 20) {
+                    if (!state.usedPermanentItems) state.usedPermanentItems = [];
+                    if (state.usedPermanentItems.includes(item.id)) {
+                        showModal('❌ Již použito', `
+                            <div style="text-align: center;">
+                                <div style="font-size: 3rem;">${item.icon}</div>
+                                <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
+                                <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
+                            </div>
+                            <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                        `);
+                        return;
+                    }
+                    state.usedPermanentItems.push(item.id);
+                }
+                
+                state.permanentHpBonus = (state.permanentHpBonus || 0) + hpBoost;
+                state.char.maxHp = calculateMaxHp();
                 state.char.hp = Math.min(state.char.hp + hpBoost, state.char.maxHp);
                 SoundSystem.play('pickup');
                 showModal('🧬 Sérum účinkuje!', `
@@ -44328,15 +44348,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 addLog(`🧬 Použil jsi ${item.name} - +${hpBoost} max HP trvale!`, '🧬');
                 renderFull();
             } else if (item.effect === 'permanent_all') {
-                // Trvalé zvýšení VŠECH atributů
+                // Trvalé zvýšení VŠECH atributů - lze použít jen jednou per item
                 const boost = item.value || 1;
+                
+                if (!state.usedPermanentItems) state.usedPermanentItems = [];
+                if (state.usedPermanentItems.includes(item.id)) {
+                    showModal('❌ Již použito', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem;">${item.icon}</div>
+                            <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
+                            <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                    `);
+                    return;
+                }
+                state.usedPermanentItems.push(item.id);
+                
                 const attrs = ['str', 'int', 'agi', 'per', 'end', 'lck'];
                 attrs.forEach(attr => {
                     state.char.attrs[attr] = (state.char.attrs[attr] || 5) + boost;
                 });
-                // Bonus k max HP za END
-                state.char.maxHp = (state.char.maxHp || 100) + (boost * 5);
-                state.char.hp = Math.min(state.char.hp + (boost * 5), state.char.maxHp);
+                // Přepočítej maxHp (END zvýšení se projeví v calculateMaxHp)
+                const oldMaxHp = state.char.maxHp;
+                state.char.maxHp = calculateMaxHp();
+                const hpGained = state.char.maxHp - oldMaxHp;
+                state.char.hp = Math.min(state.char.hp + Math.max(0, hpGained), state.char.maxHp);
                 SoundSystem.play('pickup');
                 particleBurst(window.innerWidth / 2, window.innerHeight / 2, '#ffd700', 30);
                 showModal('🐲 Neskutečná moc!', `
@@ -66922,6 +66959,19 @@ function openFullscreenMap() {
                 maxHp += 50;
             }
             
+            // Permanentní HP bonus (séra, srdce behemotha z raidu, apod.)
+            if (state.permanentHpBonus > 0) {
+                maxHp += state.permanentHpBonus;
+            }
+            
+            // Mutace s maxHp bonusem
+            if (state.mutations && state.mutations.length > 0) {
+                state.mutations.forEach(mutId => {
+                    const mut = MUTATIONS.find(m => m.id === mutId);
+                    if (mut?.effect?.maxHp) maxHp += mut.effect.maxHp;
+                });
+            }
+            
             // Gender bonus (male +3%) - sníženo z 5%
             if (state.char.gender === 'male') {
                 maxHp = Math.floor(maxHp * 1.03);
@@ -66946,6 +66996,12 @@ function openFullscreenMap() {
                 if (accItem?.bonus?.maxHp) {
                     maxHp += accItem.bonus.maxHp;
                 }
+            }
+            
+            // 🛡️ Set bonus maxHp (jednotlivé kusy + set bonus 2/3)
+            if (typeof getActiveSetEffects === 'function') {
+                const setFx = getActiveSetEffects();
+                if (setFx?.maxHp > 0) maxHp += setFx.maxHp;
             }
             
             return maxHp;
