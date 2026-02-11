@@ -38370,6 +38370,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 enemyChance *= dayPhase.enemyMod;
             }
             
+            // 🌙 Noční bezpečnost (rozhodnutí šéfa) - žádné noční útoky
+            if (typeof isPoliticalNightSafety === 'function' && isPoliticalNightSafety()) {
+                const nightHour = new Date().getHours();
+                if (nightHour >= 20 || nightHour < 6) {
+                    enemyChance = 0;
+                }
+            }
+            
             // Vynucený encounter na neprozkoumaném území NEBO šance na nepřítele
             if (forceEncounter || roll < enemyChance) {
                 // Pokud má companion ambushReduction, může se vyhnout i vynucenému
@@ -40740,7 +40748,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Filtruj items které mají cenu a jsou k prodeji
                 // VYLOUČENÍ: set itemy (setId) nejsou v normálním obchodě - jen loot nebo online tržnice
                 const shopItems = ITEMS.filter(item => item.price && item.price > 0 && !item.cantBuy && !item.setId);
-                console.log('🛒 shopItems count:', shopItems.length);
+                
+                // 🛍️ Rozhodnutí šéfa: vzácné itemy v obchodě - přidej epic/legendary
+                const rareShopActive = typeof isPoliticalRareShopItems === 'function' && isPoliticalRareShopItems();
+                if (rareShopActive) {
+                    const rareExtras = ITEMS.filter(item => 
+                        item.price && item.price > 0 && !item.setId && item.cantBuy && 
+                        (item.rarity === 'epic' || item.rarity === 'legendary')
+                    );
+                    rareExtras.forEach(item => {
+                        if (!shopItems.find(si => si.id === item.id)) {
+                            shopItems.push(item);
+                        }
+                    });
+                }
+                
+                console.log('🛒 shopItems count:', shopItems.length, rareShopActive ? '(+rare!)' : '');
             
             // Rozděl na kategorie
             const consumables = shopItems.filter(i => i.type === 'consumable');
@@ -56108,6 +56131,14 @@ function openFullscreenMap() {
                 state.settlement.morale = Math.max(0, Math.min(100, state.settlement.morale + moraleChange));
             }
             
+            // 🏛️ Politický bonus morálky osady (rozhodnutí šéfa)
+            if (typeof getPoliticalSettlementMorale === 'function') {
+                const polMorale = getPoliticalSettlementMorale();
+                if (polMorale > 0) {
+                    state.settlement.morale = Math.min(100, state.settlement.morale + polMorale);
+                }
+            }
+            
             // === ÚDRŽBA BUDOV ===
             let totalMaintenance = 0;
             const allBuildings = [...(state.base || []), ...(state.settlement?.buildings || [])];
@@ -65562,7 +65593,7 @@ function openFullscreenMap() {
                 
                 // 🏛️ Politický loot bonus
                 if (typeof getPoliticalLootBonus === 'function') {
-                    const politicalLoot = getPoliticalLootBonus();
+                    const politicalLoot = getPoliticalLootBonus({ enemyType: enemyData?.faction, isMutant: enemyData?.faction === 'mutants' });
                     if (politicalLoot > 0 && Math.random() < politicalLoot) {
                         if (enemyData.loot && enemyData.loot.length > 0) {
                             generateSingleLoot(enemyData.loot);
@@ -71133,6 +71164,25 @@ function openFullscreenMap() {
                 }
                 
                 state.status.mood = Math.max(0, Math.min(100, state.status.mood));
+            }
+            
+            // 🦠 Politická šance na nemoc (jednou za 5 minut max)
+            if (typeof getPoliticalSickChance === 'function') {
+                const sickChance = getPoliticalSickChance();
+                if (sickChance > 0) {
+                    if (!state._lastSickCheck || now - state._lastSickCheck > 300) { // 300s = 5 min
+                        state._lastSickCheck = now;
+                        if (Math.random() < sickChance * 0.1) { // 10% ze šance za kontrolu (celkem ~15% za 24h)
+                            const DISEASES_LIST = typeof DISEASES !== 'undefined' ? DISEASES : [];
+                            if (DISEASES_LIST.length > 0) {
+                                const randomDisease = DISEASES_LIST[Math.floor(Math.random() * DISEASES_LIST.length)];
+                                if (typeof tryInfectDisease === 'function') {
+                                    tryInfectDisease(randomDisease.id, 0.5);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             
             render();
@@ -82629,6 +82679,124 @@ function openFullscreenMap() {
                         notifySuccess('⛏️ Bonus suroviny!', `Veřejná těžba: +${bonusFood} 🍖, +${bonusWater} 💧, +${bonusMetal} ⚙️`);
                         firebaseDB.ref('notifications/' + myName + '/' + k).remove();
                     }
+                    
+                    // 🧪 Alchymistický bonus - herbs + chemicals
+                    if (v.type === 'crisis_alchemy' && !v.processed) {
+                        const bonusHerbs = 3 + Math.floor(Math.random() * 5);
+                        const bonusChemicals = 2 + Math.floor(Math.random() * 4);
+                        state.resources.herbs = (state.resources.herbs || 0) + bonusHerbs;
+                        state.resources.chemicals = (state.resources.chemicals || 0) + bonusChemicals;
+                        addLog(`🧪 Alchymistické suroviny: +${bonusHerbs} bylin, +${bonusChemicals} chemikálií`, '🧪');
+                        saveGame();
+                        notifySuccess('🧪 Alchymistický bonus!', `+${bonusHerbs} 🌿 bylin, +${bonusChemicals} 🧪 chemikálií`);
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // ☢️ Zdarma RadAway
+                    if (v.type === 'crisis_radaway' && !v.processed) {
+                        const radawayItem = ITEMS.find(i => i.id === 'radaway');
+                        if (radawayItem) {
+                            const amount = 2 + Math.floor(Math.random() * 2); // 2-3
+                            for (let ra = 0; ra < amount; ra++) {
+                                if (canAddItem(radawayItem, 1)) {
+                                    addItemToInventory({ ...radawayItem }, 1, true);
+                                }
+                            }
+                            addLog(`☢️ Šéf rozdal RadAway: +${amount} RadAway`, '💊');
+                            saveGame();
+                            notifySuccess('☢️ RadAway!', `Dostal jsi ${amount}x RadAway zdarma!`);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // 🔫 Bonus munice
+                    if (v.type === 'crisis_ammo' && !v.processed) {
+                        const ammoTypes = ITEMS.filter(i => i.type === 'ammo');
+                        if (ammoTypes.length > 0) {
+                            const randomAmmo = ammoTypes[Math.floor(Math.random() * ammoTypes.length)];
+                            const amount = 10 + Math.floor(Math.random() * 11); // 10-20
+                            if (canAddItem(randomAmmo, amount)) {
+                                addItemToInventory({ ...randomAmmo }, amount, true);
+                            }
+                            addLog(`🔫 Bonus munice: +${amount}x ${randomAmmo.name}`, '🔫');
+                            saveGame();
+                            notifySuccess('🔫 Munice!', `+${amount}x ${randomAmmo.icon} ${randomAmmo.name}`);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // 🛠️ Oprava vybavení - obnoví durabilitu
+                    if (v.type === 'crisis_repair' && !v.processed) {
+                        let repaired = 0;
+                        if (state.char.weapon?.durability !== undefined) {
+                            state.char.weapon.durability = state.char.weapon.maxDurability || 100;
+                            repaired++;
+                        }
+                        if (state.char.armor?.durability !== undefined) {
+                            state.char.armor.durability = state.char.armor.maxDurability || 100;
+                            repaired++;
+                        }
+                        ['helmet', 'boots', 'gloves', 'accessory', 'ring'].forEach(slot => {
+                            if (state.char[slot]?.durability !== undefined) {
+                                state.char[slot].durability = state.char[slot].maxDurability || 100;
+                                repaired++;
+                            }
+                        });
+                        addLog(`🛠️ Vybavení opraveno! (${repaired} předmětů)`, '🛠️');
+                        saveGame();
+                        notifySuccess('🛠️ Opraveno!', `${repaired} předmětů opraveno na plnou trvanlivost.`);
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // 📦 Bonus suroviny do osady
+                    if (v.type === 'crisis_settlement_resources' && !v.processed) {
+                        if (state.settlement) {
+                            const bFood = 5 + Math.floor(Math.random() * 8);
+                            const bWood = 3 + Math.floor(Math.random() * 5);
+                            const bMetal = 2 + Math.floor(Math.random() * 4);
+                            state.settlement.resources = state.settlement.resources || {};
+                            state.settlement.resources.food = (state.settlement.resources.food || 0) + bFood;
+                            state.settlement.resources.wood = (state.settlement.resources.wood || 0) + bWood;
+                            state.settlement.resources.metal = (state.settlement.resources.metal || 0) + bMetal;
+                            addLog(`📦 Zásoby do osady: +${bFood} jídla, +${bWood} dřeva, +${bMetal} kovu`, '🏘️');
+                            saveGame();
+                            notifySuccess('📦 Zásoby!', `Osada: +${bFood} 🍖, +${bWood} 🪵, +${bMetal} ⚙️`);
+                        } else {
+                            notifyInfo('📦 Zásoby', 'Nemáš osadu — zásoby nelze doručit.');
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // 💧 Bonus voda do osady
+                    if (v.type === 'crisis_settlement_water' && !v.processed) {
+                        if (state.settlement) {
+                            const waterAmt = v.waterAmount || 50;
+                            state.settlement.resources = state.settlement.resources || {};
+                            state.settlement.resources.water = (state.settlement.resources.water || 0) + waterAmt;
+                            addLog(`💧 Bonus voda do osady: +${waterAmt}`, '🏘️');
+                            saveGame();
+                            notifySuccess('💧 Voda!', `Osada: +${waterAmt} 💧 vody`);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
+                    
+                    // 🏗️ Oprava budov v osadě
+                    if (v.type === 'crisis_settlement_repair' && !v.processed) {
+                        if (state.settlement?.buildings) {
+                            let fixed = 0;
+                            state.settlement.buildings.forEach(b => {
+                                if (b.damaged || b.hp < (b.maxHp || 100)) {
+                                    b.damaged = false;
+                                    b.hp = b.maxHp || 100;
+                                    fixed++;
+                                }
+                            });
+                            addLog(`🏗️ Budovy opraveny! (${fixed} budov)`, '🏘️');
+                            saveGame();
+                            notifySuccess('🏗️ Opraveno!', `${fixed} budov v osadě opraveno.`);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove();
+                    }
                 });
                 // Zpracuj frontu odměn
                 if (rewardQueue.length > 0) {
@@ -89465,7 +89633,7 @@ function openFullscreenMap() {
         }
         
         // Získat loot bonus od šéfa a aktivních eventů
-        function getPoliticalLootBonus() {
+        function getPoliticalLootBonus(context) {
             let bonus = 0;
             
             // Šéf má automatický loot bonus 5%
@@ -89487,10 +89655,22 @@ function openFullscreenMap() {
                 }
                 // Týdenní lokační loot bonus
                 if (cachedPoliticalEffects.decision_locationLootBonus && cachedPoliticalEffects.decision_locationLootBonus.until > now) {
-                    // Pokud je to pro konkrétní lokaci, zkontroluj zda jsme tam
                     const locBonus = cachedPoliticalEffects.decision_locationLootBonus;
                     if (!locBonus.locationId || locBonus.locationId === state.world?.currentLocation) {
                         bonus += locBonus.value || 0.50;
+                    }
+                }
+                // 🦎 Mutant loot bonus (+25% z mutantů)
+                if (cachedPoliticalEffects.decision_mutantLootBonus && cachedPoliticalEffects.decision_mutantLootBonus.until > now) {
+                    if (context?.enemyType === 'mutant' || context?.isMutant) {
+                        bonus += 0.25;
+                    }
+                }
+                // 🔦 Noční loot bonus (+20% v noci)
+                if (cachedPoliticalEffects.decision_nightLootBonus && cachedPoliticalEffects.decision_nightLootBonus.until > now) {
+                    const hour = new Date().getHours();
+                    if (hour >= 20 || hour < 6) {
+                        bonus += cachedPoliticalEffects.decision_nightLootBonus.value || 0.20;
                     }
                 }
             }
@@ -89550,6 +89730,50 @@ function openFullscreenMap() {
                 }
             }
             return false;
+        }
+        
+        // 🌙 Zkontrolovat zda je aktivní noční bezpečnost (bez nočních útoků)
+        function isPoliticalNightSafety() {
+            if (cachedPoliticalEffects) {
+                const now = Date.now();
+                if (cachedPoliticalEffects.decision_nightSafety && cachedPoliticalEffects.decision_nightSafety.until > now) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // 🛍️ Zkontrolovat zda jsou aktivní vzácné itemy v obchodě
+        function isPoliticalRareShopItems() {
+            if (cachedPoliticalEffects) {
+                const now = Date.now();
+                if (cachedPoliticalEffects.decision_rareShopItems && cachedPoliticalEffects.decision_rareShopItems.until > now) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // 😊 Získat settlement morale bonus z rozhodnutí
+        function getPoliticalSettlementMorale() {
+            if (cachedPoliticalEffects) {
+                const now = Date.now();
+                if (cachedPoliticalEffects.decision_settlementMorale && cachedPoliticalEffects.decision_settlementMorale.until > now) {
+                    return cachedPoliticalEffects.decision_settlementMorale.value || 15;
+                }
+            }
+            return 0;
+        }
+        
+        // 🦠 Zkontrolovat zda je aktivní šance na nemoc hráče
+        function getPoliticalSickChance() {
+            if (cachedPoliticalEffects) {
+                const now = Date.now();
+                if (cachedPoliticalEffects.decision_sickChance && cachedPoliticalEffects.decision_sickChance.until > now) {
+                    return cachedPoliticalEffects.decision_sickChance.value || 0.15;
+                }
+            }
+            return 0;
         }
         
         // Získat aktivní bounty od šéfa
@@ -89613,7 +89837,6 @@ function openFullscreenMap() {
                 { key: 'decision_lootBonus', icon: '🎁', name: 'Loot bonus', valueFn: e => `+${Math.round((e.value || 0.15) * 100)}%`, color: '#ff9800' },
                 { key: 'decision_saferTravel', icon: '🛤️', name: 'Bezpečnější cesty', valueFn: () => 'Méně přepadení', color: '#4caf50' },
                 { key: 'free_healing', icon: '💊', name: 'Léčení zdarma', valueFn: () => 'Aktivní', color: '#e91e63' },
-                { key: 'decision_cheaperPrices', icon: '💰', name: 'Levnější nákupy', valueFn: e => `-${Math.round((e.value || 0.15) * 100)}%`, color: '#8bc34a' },
                 { key: 'decision_resourceBonus', icon: '📦', name: 'Bonus suroviny v osadách', valueFn: () => 'Aktivní', color: '#795548' },
                 { key: 'decision_settlementDefense', icon: '🛡️', name: 'Bonus obrana osad', valueFn: () => '-90% nájezdů', color: '#2196f3' },
                 
@@ -89625,8 +89848,31 @@ function openFullscreenMap() {
                 { key: 'decision_karmaLoss', icon: '🚫', name: 'Uprchlíci odmítnuti', valueFn: e => `-${e.value || 5} karma`, color: '#ff5722' },
                 { key: 'decision_settlerSickness', icon: '🦠', name: 'Epidemie', valueFn: e => `${Math.round((e.chance || 0.3) * 100)}% nemocných`, color: '#ff9800' },
                 { key: 'decision_publicResources', icon: '⛏️', name: 'Veřejná těžba', valueFn: () => 'Bonus suroviny', color: '#795548' },
+                { key: 'decision_radiationProtection', icon: '☢️', name: 'Ochrana před radiací', valueFn: () => 'Bez radiace', color: '#4caf50' },
+                { key: 'decision_freeRadaway', icon: '☢️', name: 'RadAway rozdán', valueFn: () => 'Aktivní', color: '#8bc34a' },
+                { key: 'decision_alchemyBonus', icon: '🧪', name: 'Alchymistické suroviny', valueFn: () => 'Bonus byliny/chem.', color: '#9c27b0' },
+                { key: 'decision_ammoBonus', icon: '🔫', name: 'Bonus munice', valueFn: () => 'Rozdáno', color: '#795548' },
+                { key: 'decision_durabilityRestore', icon: '🛠️', name: 'Oprava vybavení', valueFn: () => 'Opraveno', color: '#607d8b' },
+                { key: 'decision_sickChance', icon: '🤢', name: 'Riziko nemoci', valueFn: e => `${Math.round((e.value || 0.15) * 100)}% šance`, color: '#f44336' },
+                { key: 'decision_hungerPenalty', icon: '🤢', name: 'Rychlejší hlad', valueFn: () => '+20% spotřeba', color: '#ff5722' },
                 
-                // Týdenní efekty
+                // Nové denní efekty
+                { key: 'decision_damageBonus', icon: '⚔️', name: 'Damage bonus', valueFn: e => `+${Math.round((e.value || 0.1) * 100)}%`, color: '#f44336' },
+                { key: 'decision_consumptionReduction', icon: '🏕️', name: 'Nižší spotřeba', valueFn: e => `-${Math.round((e.value || 0.2) * 100)}%`, color: '#8bc34a' },
+                { key: 'decision_hungerSlower', icon: '🍖', name: 'Pomalejší hlad', valueFn: () => '-25%', color: '#8bc34a' },
+                { key: 'decision_thirstSlower', icon: '💧', name: 'Pomalejší žízeň', valueFn: () => '-25%', color: '#42a5f5' },
+                { key: 'decision_moodBoost', icon: '😊', name: 'Nálada boost', valueFn: e => `+${e.value || 20}`, color: '#ffd700' },
+                { key: 'decision_moodPenalty', icon: '😞', name: 'Nálada penalizace', valueFn: e => `${e.value || -10}`, color: '#ff5722' },
+                { key: 'decision_energyWeaponBonus', icon: '🔋', name: 'Energy zbraně DMG', valueFn: e => `+${Math.round((e.value || 0.15) * 100)}%`, color: '#64b5f6' },
+                { key: 'decision_nightSafety', icon: '🌙', name: 'Noční bezpečnost', valueFn: () => 'Bez nočních útoků', color: '#9c27b0' },
+                { key: 'decision_nightLootBonus', icon: '🔦', name: 'Noční loot bonus', valueFn: e => `+${Math.round((e.value || 0.2) * 100)}%`, color: '#ff9800' },
+                { key: 'decision_mutantLootBonus', icon: '🦎', name: 'Mutant loot bonus', valueFn: () => '+25%', color: '#4caf50' },
+                { key: 'decision_rareShopItems', icon: '🛍️', name: 'Vzácné zboží v obchodě', valueFn: () => 'Epic/Legendary', color: '#ce93d8' },
+                { key: 'decision_settlementMorale', icon: '😊', name: 'Morálka osad', valueFn: e => `+${e.value || 15}`, color: '#ffd700' },
+                { key: 'decision_settlementWater', icon: '💧', name: 'Bonus voda', valueFn: e => `+${e.value || 50}`, color: '#42a5f5' },
+                { key: 'decision_settlementRepair', icon: '🏗️', name: 'Budovy opraveny', valueFn: () => 'Aktivní', color: '#607d8b' },
+                { key: 'decision_dungeonBonus', icon: '🏰', name: 'Dungeon XP bonus', valueFn: () => '+25%', color: '#9c27b0' },
+                { key: 'decision_cheaperPrices', icon: '💰', name: 'Levnější nákupy', valueFn: e => `-${Math.round((e.value || 0.15) * 100)}%`, color: '#8bc34a' },
                 { key: 'decision_weeklyDefense', icon: '🗼', name: 'Obranné věže', valueFn: () => 'Méně nájezdů', color: '#2196f3' },
                 { key: 'decision_weeklyDiscount', icon: '🏪', name: 'Obchodní stanice', valueFn: e => `-${Math.round((e.value || 0.05) * 100)}% sleva`, color: '#8bc34a' },
                 { key: 'decision_weeklyXP', icon: '🔬', name: 'Laboratoř', valueFn: e => `+${Math.round((e.value || 0.05) * 100)}% XP`, color: '#9c27b0' },
@@ -93316,6 +93562,115 @@ function openFullscreenMap() {
                     await firebaseDB.ref('politics/activeEvents/decision_alchemyBonus').set({
                         until: dayEnd, activatedBy: mayorName, activatedAt: now
                     });
+                    // Pošli suroviny všem online hráčům
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_alchemy',
+                            message: `🧪 Alchymistické suroviny nalezeny! Bonus byliny a chemikálie.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // 💊 Zdarma RadAway - pošli hráčům
+                if (effect.freeRadaway) {
+                    await firebaseDB.ref('politics/activeEvents/decision_freeRadaway').set({
+                        until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_radaway',
+                            message: `☢️ RadAway rozdán! Šéf rozhodl rozdat zásoby RadAway.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                // 🔫 Bonus munice - pošli hráčům
+                if (effect.ammoBonus) {
+                    await firebaseDB.ref('politics/activeEvents/decision_ammoBonus').set({
+                        until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_ammo',
+                            message: `🔫 Munice vyrobena! Bonus munice pro všechny.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                // 🛠️ Oprava vybavení - pošli hráčům
+                if (effect.durabilityRestore) {
+                    await firebaseDB.ref('politics/activeEvents/decision_durabilityRestore').set({
+                        until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_repair',
+                            message: `🛠️ Oprava vybavení! Technici opravili všechen equipment.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                // 📦 Bonus suroviny do osad (denní rozhodnutí)
+                if (effect.resourceBonus) {
+                    await firebaseDB.ref('politics/activeEvents/decision_resourceBonus').set({
+                        until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_settlement_resources',
+                            message: `📦 Zásoby rozděleny! Bonus suroviny pro tvou osadu.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                // 💧 Voda do osad
+                if (effect.settlementWater) {
+                    await firebaseDB.ref('politics/activeEvents/decision_settlementWater').set({
+                        value: effect.settlementWater, until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_settlement_water',
+                            waterAmount: effect.settlementWater,
+                            message: `💧 Bonus voda! +${effect.settlementWater} vody do tvé osady.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                // 🏗️ Oprava budov v osadách
+                if (effect.settlementRepair) {
+                    await firebaseDB.ref('politics/activeEvents/decision_settlementRepair').set({
+                        until: dayEnd, activatedBy: mayorName, activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_settlement_repair',
+                            message: `🏗️ Budovy opraveny! Osada obnovena na plný výkon.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
                 }
                 
                 console.log('🏛️ Decision effect applied:', effect);
