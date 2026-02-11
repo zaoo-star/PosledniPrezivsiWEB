@@ -28845,6 +28845,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const radCritical = state.status.radiation >= 80;
                 const radLethal = state.status.radiation >= 100;
                 
+                // Election & Tombola active checks (pro HUD dlaždice)
+                const _me = window.mayorElection;
+                const _ep = _me?.cycleStart && typeof getElectionPhase === 'function' ? getElectionPhase() : null;
+                const electionActive = _ep && ['nomination','campaign','voting'].includes(_ep.phase);
+                const _ct = window.currentTombola;
+                const tombolaActive = _ct && (!_ct.status || _ct.status === 'active') && (!_ct.endsAt || _ct.endsAt > Date.now());
+                
                 document.getElementById('statusBars').innerHTML = `
                     <div style="background: #111; border: 1px solid #333; border-radius: 6px; padding: 0.2rem;">
                         <div id="hudGrid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px;">
@@ -28856,11 +28863,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 <span onclick="event.stopPropagation(); toggleSound()" style="font-size: 0.55rem; cursor: pointer;">🔊</span>
                                 <span onclick="event.stopPropagation(); showGameInfo()" style="font-size: 0.55rem; cursor: pointer;">📟</span>
                             </div>
-                            <div id="hudSefTile" onclick="showPoliticsPanel()" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a06; padding: 0.2rem; border-radius: 3px; border: 1px solid #2a2a18; cursor: pointer;">
-                                <span style="font-size: 0.6rem; font-weight: bold; color: #ffd700;">🏛️ Šéf</span>
+                            <div id="hudSefTile" onclick="showPoliticsPanel()" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: ${electionActive ? '#0a0a1a' : '#0a0a06'}; padding: 0.2rem; border-radius: 3px; border: 1px solid ${electionActive ? '#7986CB' : '#2a2a18'}; cursor: pointer; ${electionActive ? 'animation: nav-dot-pulse 1.5s infinite;' : ''}">
+                                <span style="font-size: 0.6rem; font-weight: bold; color: ${electionActive ? '#7986CB' : '#ffd700'};">🏛️ Šéf</span>
                             </div>
-                            <div id="hudTombolaTile" onclick="switchTab('multiplayer'); setTimeout(showTombola, 300);" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a0a; padding: 0.2rem; border-radius: 3px; border: 1px solid #222; cursor: pointer;">
-                                <span style="font-size: 0.6rem; font-weight: bold; color: #555;">🎰 Tombola</span>
+                            <div id="hudTombolaTile" onclick="switchTab('multiplayer'); setTimeout(showTombola, 300);" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: ${tombolaActive ? '#1a1a05' : '#0a0a0a'}; padding: 0.2rem; border-radius: 3px; border: 1px solid ${tombolaActive ? '#ffd700' : '#222'}; cursor: pointer; ${tombolaActive ? 'animation: tombola-pulse 1.5s infinite;' : ''}">
+                                <span style="font-size: 0.6rem; font-weight: bold; color: ${tombolaActive ? '#ffd700' : '#555'};">🎰 Tombola</span>
                             </div>
                             <div onclick="openAllQuests()" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a0a; padding: 0.2rem; border-radius: 3px; border: 1px solid ${(state.dailyQuests.completed?.length || 0) >= (state.dailyQuests.quests?.length || 3) ? '#2a4a2a' : '#2a1818'}; cursor: pointer;">
                                 <span style="font-size: 0.6rem; font-weight: bold; color: ${(state.dailyQuests.completed?.length || 0) >= (state.dailyQuests.quests?.length || 3) ? '#8bc34a' : '#ff9800'};">📋 Úkoly</span>
@@ -31983,6 +31990,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         window.activeTreasure = null;
                     }
                 }).catch(e => console.log('Treasure cache error:', e));
+                
+                // === NAČTI WORLD BOSS RAID ===
+                firebaseDB.ref('worldBossRaid').once('value').then(snapshot => {
+                    const raid = snapshot.val();
+                    if (raid && raid.active && !raid.defeated) {
+                        window.worldBossRaidData = raid;
+                        console.log('🐉 World Boss active:', raid.bossName, 'at', raid.locationId || 'unknown');
+                    }
+                }).catch(e => console.log('World boss cache error:', e));
             }
             
             // === KONTROLA VŠECH QUEST PROGRESS PŘI ZOBRAZENÍ MAPY ===
@@ -33170,12 +33186,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // === WORLD BOSS - červené pulsující svícení na lokaci bosse ===
                 let isWorldBoss = false;
                 const _raidData = window.worldBossRaidData;
-                if (_raidData && _raidData.active && !_raidData.defeated && _raidData.locationId === loc.id) {
-                    isWorldBoss = true;
-                    if (!isWarZone) {
-                        factionBorderColor = '#ff0000';
-                        factionBorderStyle = ` box-shadow: 0 0 40px #ff0000, 0 0 80px #ff0000aa, 0 0 120px #ff000066; animation: war-zone-pulse 1s infinite ease-in-out; border-color: #ff0000 !important; z-index: 10; background: radial-gradient(circle, #ff000044 0%, transparent 70%) !important;`;
-                        territoryOwnerName = (_raidData.bossIcon || '🐉') + ' ' + (_raidData.bossName || 'WORLD BOSS');
+                if (_raidData && _raidData.active && !_raidData.defeated) {
+                    // Pokud boss má locationId, blikej na té lokaci; pokud ne, vezmi první dangerous lokaci
+                    const bossLocId = _raidData.locationId || WORLD_LOCATIONS.find(l => l.type === 'dangerous')?.id;
+                    if (bossLocId === loc.id) {
+                        isWorldBoss = true;
+                        if (!isWarZone) {
+                            factionBorderColor = '#ff0000';
+                            factionBorderStyle = ` box-shadow: 0 0 40px #ff0000, 0 0 80px #ff0000aa, 0 0 120px #ff000066; animation: war-zone-pulse 1s infinite ease-in-out; border-color: #ff0000 !important; z-index: 10; background: radial-gradient(circle, #ff000044 0%, transparent 70%) !important;`;
+                            territoryOwnerName = (_raidData.bossIcon || '🐉') + ' ' + (_raidData.bossName || 'WORLD BOSS');
+                        }
                     }
                 }
                 
@@ -92884,6 +92904,11 @@ function openFullscreenMap() {
                 
                 // Aktualizuj event bannery nahoře
                 if (typeof updateEventBanners === 'function') updateEventBanners();
+                
+                // Překresli mapu pokud je aktivní (aby se zobrazil/skryl boss marker)
+                if ((data?.active || wasActive) && state.activeTab === 'map') {
+                    renderFull();
+                }
                 
                 if (data && data.active) {
                     // Kontrola expirace
