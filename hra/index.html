@@ -9787,9 +9787,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 chance: 0.10,
                 trigger: () => {
                     // Aktivuj globální karavanu
-                    state.caravan = state.caravan || { active: false, until: 0, lastCheck: Date.now() };
-                    state.caravan.active = true;
-                    state.caravan.until = Date.now() + 300000; // 5 minut
+                    activateCaravan(300000); // 5 minut
                     
                     showModal('🐪 Obchodní karavana!', 
                         '<p>Potkal jsi obchodní karavanu!</p>' +
@@ -10687,6 +10685,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             // Skill tree - inicializuj pokud neexistuje
             companion.skills = companion.skills || [];
             
+            // Inventář společníka
+            if (!companion.inventory) companion.inventory = [];
+            
             // Vybavení - inicializuj pokud neexistuje
             companion.equipped = companion.equipped || {
                 weapon: null,
@@ -10755,7 +10756,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             // Normalizuj společníka před přidáním
             newCompanion = normalizeCompanion(newCompanion);
             
-            if (state.companions.length < getMaxCompanions()) {
+            // Počítej jen ŽIVÉ společníky (ne mrtvé)
+            const aliveCount = state.companions.filter(c => !c.isDead).length;
+            if (aliveCount < getMaxCompanions()) {
                 // Místo je volné - rovnou přidej
                 state.companions.push(newCompanion);
                 notifySuccess('Nový společník!', `${newCompanion.name} se přidal k tobě!`);
@@ -10851,18 +10854,30 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             const oldIcon = oldCompanion.icon || COMPANIONS.find(c => c.id === oldCompanion.id)?.icon || '👤';
             const oldName = oldCompanion.name || COMPANIONS.find(c => c.id === oldCompanion.id)?.name || 'Společník';
             
-            // Vrať vybavení starého společníka do inventáře
+            // Vrať inventář z batohu starého společníka
+            returnCompanionInventory(oldCompanion);
+            
+            // Vrať vybavení starého společníka (co se nevejde, spadne na zem)
             if (oldCompanion.equipped) {
                 Object.values(oldCompanion.equipped).forEach(item => {
                     if (item) {
-                        const existing = state.inv.find(i => i.id === item.id);
-                        if (existing) {
-                            existing.count = (existing.count || 1) + 1;
+                        const itemWeight = item.weight || 0;
+                        const playerCurW = calculateCurrentWeight();
+                        const playerMaxW = calculateMaxWeight();
+                        
+                        if (playerCurW + itemWeight <= playerMaxW) {
+                            const existing = state.inv.find(i => i.id === item.id);
+                            if (existing) {
+                                existing.count = (existing.count || 1) + 1;
+                            } else {
+                                state.inv.push({...item, count: 1});
+                            }
                         } else {
-                            state.inv.push({...item, count: 1});
+                            addToGroundLoot({...item, count: 1});
                         }
                     }
                 });
+                updateCarryWeight();
             }
             
             // Odeber starého
@@ -22152,6 +22167,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         
                         // MRTVÝ SPOLEČNÍK - speciální zobrazení
                         if (comp.isDead) {
+                            const deadInvCount = comp.inventory?.length || 0;
+                            const deadEquipCount = comp.equipped ? Object.values(comp.equipped).filter(e => e).length : 0;
                             return `
                                 <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; border: 2px solid #c62828; opacity: 0.9;">
                                     <div style="display: flex; align-items: center; gap: 1rem;">
@@ -22166,9 +22183,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                         <div style="font-size: 2rem; filter: grayscale(100%);">${compIcon}</div>
                                     </div>
                                     
+                                    ${(deadInvCount > 0 || deadEquipCount > 0) ? `
+                                        <div style="background: #2a2a1a; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem; display: flex; gap: 0.5rem; justify-content: center;">
+                                            ${deadInvCount > 0 ? `<button class="btn" onclick="showCompanionInventory('${comp.uniqueId || comp.id}')" style="background: #795548; font-size: 0.8rem; padding: 0.4rem 0.8rem;">🎒 Batoh (${deadInvCount})</button>` : ''}
+                                        </div>
+                                    ` : ''}
+                                    
                                     <div style="background: #2a1a1a; padding: 0.8rem; border-radius: 6px; margin-top: 0.5rem; text-align: center;">
                                         <p style="color: #ff9800; margin: 0; font-size: 0.9rem;">⚰️ Společníka můžeš oživit v <strong>OSADĚ</strong></p>
-                                        <p style="color: #666; font-size: 0.75rem; margin: 0.3rem 0 0 0;">Jdi do osady → Společníci 🐕 → Oživit za 💰</p>
+                                        <p style="color: #666; font-size: 0.75rem; margin: 0.3rem 0 0 0;">Jdi do osady → Parťáci 💀 → Oživit za 💰</p>
                                     </div>
                                 </div>
                             `;
@@ -22332,9 +22355,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     return '';
                                 })()}
                                 
-                                <div style="display: grid; grid-template-columns: ${(compType === 'human' || comp.canEquip || comp.id === 'survivor') ? 'repeat(5, 1fr)' : 'repeat(4, 1fr)'}; gap: 0.4rem; margin-top: 0.5rem;">
+                                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin-top: 0.5rem;">
                                     <button class="btn" onclick="showFeedCompanionDialog('${comp.uniqueId || comp.id}')" style="background: #ff9800; font-size: 0.75rem; padding: 0.4rem;">🍖 ${currentLang === "en" ? "Feed" : "Krmit"}</button>
                                     ${(compType === 'human' || comp.canEquip || comp.id === 'survivor') ? `<button class="btn" onclick="showCompanionEquipment('${comp.uniqueId || comp.id}')" style="background: #9c27b0; font-size: 0.75rem; padding: 0.4rem;">🎽 Výbava</button>` : ''}
+                                    <button class="btn" onclick="showCompanionInventory('${comp.uniqueId || comp.id}')" style="background: #795548; font-size: 0.75rem; padding: 0.4rem;">🎒 Batoh${comp.inventory?.length ? ` (${comp.inventory.length})` : ''}</button>
                                     <button class="btn" onclick="showCompanionSkillTree('${comp.uniqueId || comp.id}')" style="background: ${skillPoints > 0 ? 'var(--rust)' : '#444'}; font-size: 0.75rem; padding: 0.4rem;">🌳 Skill</button>
                                     <button class="btn" onclick="renameCompanion('${comp.uniqueId || comp.id}')" style="background: #2196f3; font-size: 0.75rem; padding: 0.4rem;">✏️ ${currentLang === "en" ? "Name" : "Jméno"}</button>
                                     <button class="btn" onclick="confirmDismissCompanion('${comp.uniqueId || comp.id}')" style="background: #333; font-size: 0.75rem; padding: 0.4rem;">👋 ${currentLang === "en" ? "Dismiss" : "Pryč"}</button>
@@ -22361,7 +22385,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 
                 <p style="color: #999; font-size: 0.85rem; text-align: center; margin-top: 0.5rem;">
-                    ${'Společníci:'} ${state.companions.length}/${getMaxCompanions()} | ${'Společníci získávají XP z bojů!'}
+                    ${'Společníci:'} ${state.companions.filter(c => !c.isDead).length}/${getMaxCompanions()} | ${'Společníci získávají XP z bojů!'}
                 </p>
                 <p style="color: #ff9800; font-size: 0.8rem; text-align: center; margin: 0.3rem 0;">
                     ⚠️ ${'Denní spotřeba:'} ${state.companions.filter(c => !c.isDead).length}x 🍖 ${'jídlo'} + ${state.companions.filter(c => !c.isDead).length}x 💧 ${'voda'}
@@ -22384,7 +22408,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function getCompanionStat(comp, stat) {
             const base = COMPANIONS.find(c => c.id === comp.id) || comp;
             
-            let value = base[stat] || comp[stat] || 0;
+            // Použij vyšší z base definice a aktuální hodnoty společníka
+            const baseVal = base[stat] || 0;
+            const compVal = comp[stat] || 0;
+            let value = Math.max(baseVal, compVal);
+            // Pro HP: base je maxHp, comp.hp je aktuální - použij base/maxHp jako základ
+            if (stat === 'hp') {
+                value = Math.max(baseVal, comp.maxHp || 0);
+            }
             
             // Přidej bonus z levelu společníka
             const level = comp.level || 1;
@@ -22852,6 +22883,282 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             return leveledUp;
+        }
+        
+        // === INVENTÁŘ SPOLEČNÍKŮ ===
+        function getCompanionMaxCarry(comp) {
+            // Base: 25kg pro lidské společníky, 5kg pro zvířata
+            const isHuman = comp.type === 'human' || comp.canEquip || comp.id === 'survivor';
+            let base = isHuman ? 25 : 5;
+            // +3kg za každý level nad 1
+            base += ((comp.level || 1) - 1) * 3;
+            // Skill bonus
+            let skillTree = COMPANION_SKILL_TREES[comp.id];
+            if (skillTree && comp.skills) {
+                const skills = Array.isArray(comp.skills) ? comp.skills : [];
+                skills.forEach(skillId => {
+                    Object.values(skillTree.trees).forEach(tree => {
+                        const skill = tree.skills.find(s => s.id === skillId);
+                        if (skill?.effect?.carry) base += skill.effect.carry;
+                    });
+                });
+            }
+            return base;
+        }
+        
+        function getCompanionCurrentWeight(comp) {
+            if (!comp.inventory || !Array.isArray(comp.inventory)) return 0;
+            return comp.inventory.reduce((sum, item) => sum + (item.weight || 0) * (item.count || 1), 0);
+        }
+        
+        function showCompanionInventory(companionId) {
+            const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
+            if (!comp) return;
+            if (!comp.inventory) comp.inventory = [];
+            
+            const compName = comp.name || 'Společník';
+            const compIcon = comp.icon || '👤';
+            const maxCarry = getCompanionMaxCarry(comp);
+            const currentWeight = getCompanionCurrentWeight(comp);
+            const freeSpace = Math.max(0, maxCarry - currentWeight);
+            const weightPercent = Math.min(100, (currentWeight / maxCarry) * 100);
+            const weightColor = weightPercent > 90 ? '#f44336' : weightPercent > 70 ? '#ff9800' : '#4caf50';
+            
+            const compUid = comp.uniqueId || comp.id;
+            
+            // Společníkovy věci
+            let compItemsHtml = '';
+            if (comp.inventory.length === 0) {
+                compItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 1rem;">🎒 Batoh je prázdný</p>';
+            } else {
+                compItemsHtml = comp.inventory.map((item, idx) => {
+                    const count = item.count || 1;
+                    const countText = count > 1 ? ` x${count}` : '';
+                    const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
+                    const color = rarityColors[item.rarity] || '#aaa';
+                    const itemWeight = (item.weight || 0) * count;
+                    
+                    return `
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem;">
+                            <span style="font-size: 1.3rem;">${item.icon || '📦'}</span>
+                            <div style="flex: 1;">
+                                <div style="color: ${color}; font-size: 0.85rem;">${item.name}${countText}</div>
+                                <div style="font-size: 0.7rem; color: #666;">
+                                    ${item.damage ? `⚔️${item.damage} ` : ''}${item.defense ? `🛡️${item.defense} ` : ''}⚖️${itemWeight.toFixed(1)}kg
+                                </div>
+                            </div>
+                            <button class="btn" onclick="transferFromCompanion('${compUid}', ${idx})" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: #2196f3;">
+                                ← Vzít
+                            </button>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            // Hráčovy věci k předání (filtruj nepřenosné)
+            const playerItems = (state.inv || []).filter(i => {
+                // Nevkládej quest itemy, klíče a speciální předměty
+                if (i.id?.startsWith('quest_') || i.id?.startsWith('key_') || i.id?.startsWith('lore_')) return false;
+                if (i.id === 'backpack') return false;
+                return true;
+            });
+            
+            let playerItemsHtml = '';
+            if (playerItems.length === 0) {
+                playerItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 0.5rem;">Nemáš žádné předměty k předání</p>';
+            } else {
+                playerItemsHtml = playerItems.map((item, idx) => {
+                    const realIdx = state.inv.indexOf(item);
+                    const count = item.count || 1;
+                    const countText = count > 1 ? ` x${count}` : '';
+                    const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
+                    const color = rarityColors[item.rarity] || '#aaa';
+                    const singleWeight = item.weight || 0;
+                    const canFit = singleWeight <= freeSpace;
+                    
+                    return `
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem; ${!canFit ? 'opacity: 0.5;' : ''}">
+                            <span style="font-size: 1.3rem;">${item.icon || '📦'}</span>
+                            <div style="flex: 1;">
+                                <div style="color: ${color}; font-size: 0.85rem;">${item.name}${countText}</div>
+                                <div style="font-size: 0.7rem; color: #666;">
+                                    ${item.damage ? `⚔️${item.damage} ` : ''}${item.defense ? `🛡️${item.defense} ` : ''}⚖️${singleWeight.toFixed(1)}kg
+                                </div>
+                            </div>
+                            <button class="btn" onclick="transferToCompanion('${compUid}', ${realIdx})" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: ${canFit ? '#4caf50' : '#555'};" ${!canFit ? 'disabled' : ''}>
+                                ${canFit ? 'Dát →' : '🚫'}
+                            </button>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            showModal(`🎒 ${compIcon} ${compName} - Batoh`, `
+                <div style="margin-bottom: 0.8rem;">
+                    <!-- Nosnost bar -->
+                    <div style="background: #1a1a2a; padding: 0.5rem 0.8rem; border-radius: 8px; border: 1px solid ${weightColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+                            <span style="color: #888; font-size: 0.85rem;">⚖️ Nosnost:</span>
+                            <span style="color: ${weightColor}; font-weight: bold; font-size: 0.85rem;">${currentWeight.toFixed(1)} / ${maxCarry.toFixed(1)} kg</span>
+                        </div>
+                        <div style="height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                            <div style="height: 100%; width: ${weightPercent}%; background: ${weightColor}; transition: width 0.3s;"></div>
+                        </div>
+                        <div style="text-align: center; margin-top: 0.2rem; font-size: 0.75rem; color: ${freeSpace > 3 ? '#4caf50' : '#ff9800'};">
+                            Volno: ${freeSpace.toFixed(1)} kg | +3kg/level
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Společníkovy věci -->
+                <div style="margin-bottom: 0.8rem;">
+                    <h4 style="margin: 0 0 0.3rem 0; font-size: 0.9rem; color: #ff9800;">🎒 V batohu (${comp.inventory.length} ks)</h4>
+                    <div style="max-height: 25vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+                        ${compItemsHtml}
+                    </div>
+                </div>
+                
+                <!-- Hráčovy věci -->
+                <div>
+                    <h4 style="margin: 0 0 0.3rem 0; font-size: 0.9rem; color: #4caf50;">📦 Tvůj inventář (${playerItems.length} ks)</h4>
+                    <div style="max-height: 25vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+                        ${playerItemsHtml}
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                    <button class="btn" onclick="showCompanionsInfo()" style="background: #555;">← Zpět</button>
+                    <button class="btn" onclick="closeModal()" style="background: #333;">✕ Zavřít</button>
+                </div>
+            `);
+        }
+        
+        function transferToCompanion(companionId, playerInvIdx) {
+            const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
+            if (!comp) return;
+            if (!comp.inventory) comp.inventory = [];
+            
+            const item = state.inv[playerInvIdx];
+            if (!item) return;
+            
+            const singleWeight = item.weight || 0;
+            const maxCarry = getCompanionMaxCarry(comp);
+            const currentWeight = getCompanionCurrentWeight(comp);
+            
+            if (singleWeight > (maxCarry - currentWeight)) {
+                notifyWarning('Plný batoh', `${comp.name} unese max ${maxCarry.toFixed(1)} kg!`);
+                return;
+            }
+            
+            const count = item.count || 1;
+            
+            if (count > 1) {
+                // Odeber 1 kus
+                item.count--;
+                // Přidej do společníkova inventáře
+                const existing = comp.inventory.find(i => i.id === item.id);
+                if (existing) {
+                    existing.count = (existing.count || 1) + 1;
+                } else {
+                    comp.inventory.push({...item, count: 1});
+                }
+            } else {
+                // Odeber celý item
+                state.inv.splice(playerInvIdx, 1);
+                const existing = comp.inventory.find(i => i.id === item.id);
+                if (existing) {
+                    existing.count = (existing.count || 1) + 1;
+                } else {
+                    comp.inventory.push({...item, count: 1});
+                }
+            }
+            
+            updateCarryWeight();
+            saveGame();
+            // Refresh UI
+            showCompanionInventory(companionId);
+        }
+        
+        function transferFromCompanion(companionId, compInvIdx) {
+            const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
+            if (!comp || !comp.inventory) return;
+            
+            const item = comp.inventory[compInvIdx];
+            if (!item) return;
+            
+            // Kontrola váhy hráče
+            const singleWeight = item.weight || 0;
+            const playerCurrentWeight = calculateCurrentWeight();
+            const playerMaxWeight = calculateMaxWeight();
+            
+            if (singleWeight > (playerMaxWeight - playerCurrentWeight)) {
+                notifyWarning('Plný inventář', 'Nemáš dost nosnosti!');
+                return;
+            }
+            
+            const count = item.count || 1;
+            
+            if (count > 1) {
+                item.count--;
+                const existing = state.inv.find(i => i.id === item.id);
+                if (existing) {
+                    existing.count = (existing.count || 1) + 1;
+                } else {
+                    state.inv.push({...item, count: 1});
+                }
+            } else {
+                comp.inventory.splice(compInvIdx, 1);
+                const existing = state.inv.find(i => i.id === item.id);
+                if (existing) {
+                    existing.count = (existing.count || 1) + 1;
+                } else {
+                    state.inv.push({...item, count: 1});
+                }
+            }
+            
+            updateCarryWeight();
+            saveGame();
+            showCompanionInventory(companionId);
+        }
+        
+        // Vrátí věci z batohu společníka do hráčova inventáře (co se nevejde, spadne na zem)
+        function returnCompanionInventory(comp) {
+            if (!comp?.inventory || comp.inventory.length === 0) return;
+            
+            let returnedCount = 0;
+            let droppedCount = 0;
+            
+            comp.inventory.forEach(item => {
+                const itemWeight = (item.weight || 0) * (item.count || 1);
+                const playerCurrentWeight = calculateCurrentWeight();
+                const playerMaxWeight = calculateMaxWeight();
+                
+                if (playerCurrentWeight + itemWeight <= playerMaxWeight) {
+                    // Vejde se do inventáře
+                    const existing = state.inv.find(i => i.id === item.id);
+                    if (existing) {
+                        existing.count = (existing.count || 1) + (item.count || 1);
+                    } else {
+                        state.inv.push({...item});
+                    }
+                    returnedCount += (item.count || 1);
+                    updateCarryWeight();
+                } else {
+                    // Nevejde se – hoď na zem
+                    addToGroundLoot({...item});
+                    droppedCount += (item.count || 1);
+                }
+            });
+            
+            comp.inventory = [];
+            
+            if (returnedCount > 0) {
+                notifyInfo('Vrácené věci', `${returnedCount} předmětů vráceno z batohu ${comp.name || 'společníka'}`);
+            }
+            if (droppedCount > 0) {
+                notifyWarning('Plný inventář', `${droppedCount} předmětů spadlo na zem!`);
+            }
+            updateCarryWeight();
         }
         
         // === VYBAVENÍ SPOLEČNÍKŮ ===
@@ -25759,10 +26066,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const radioCaravanCooldown = 30 * 60 * 1000; // 30 minut cooldown
                 const lastRadioCaravan = state.caravan.lastRadioSpawn || 0;
                 if (!state.caravan.active && (Date.now() - lastRadioCaravan) > radioCaravanCooldown) {
-                    state.caravan.active = true;
-                    state.caravan.until = Date.now() + 10 * 60 * 1000; // 10 minut
+                    activateCaravan(10 * 60 * 1000); // 10 minut
                     state.caravan.lastRadioSpawn = Date.now();
-                    state.caravanPresent = true;
                     notifySuccess('🐪 Karavana dorazila!', 'Obchodníci budou v oblasti 10 minut');
                     addLog('Rádio přilákalo karavanu obchodníků!', '🐪');
                 } else if (state.caravan.active) {
@@ -26013,9 +26318,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             switch (selectedEffect.type) {
                 case 'caravan':
                     state.caravanPresent = true;
-                    state.caravan = state.caravan || {};
-                    state.caravan.active = true;
-                    state.caravan.until = now + 10 * 60 * 1000; // 10 minut
+                    activateCaravan(10 * 60 * 1000); // 10 minut
                     resultHtml = `
                         <p style="color: #8bc34a;">Signál přilákal karavanu!</p>
                         <p>Obchodník bude v oblasti 10 minut.</p>
@@ -27771,6 +28074,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.companions = state.companions || [];
             state.companions.push({
                 id: dogCompanion.id,
+                uniqueId: `${dogCompanion.id}_${Date.now()}`,
                 name: dogCompanion.name,
                 icon: dogCompanion.icon,
                 type: dogCompanion.type || 'animal',
@@ -27838,6 +28142,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const reviveCost = compInfo?.cost > 0 ? Math.floor(compInfo.cost / 4) : 50;
             const hasMoney = state.money >= reviveCost;
+            const deadInvCount = deadCompanion.inventory?.length || 0;
+            const deadEquipCount = deadCompanion.equipped ? Object.values(deadCompanion.equipped).filter(e => e).length : 0;
+            const hasStuff = deadInvCount > 0 || deadEquipCount > 0;
             
             showModal('💀 Mrtvý společník', `
                 <div style="text-align: center; margin-bottom: 1rem;">
@@ -27846,6 +28153,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <p style="color: #c62828;">☠️ Padl v boji</p>
                 </div>
                 <p style="margin-bottom: 1rem; text-align: center; color: #888;">Tvůj společník padl v boji. Můžeš ho oživit nebo se s ním rozloučit.</p>
+                
+                ${hasStuff ? `
+                    <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #4a6a4a;">
+                        <div style="display: flex; justify-content: center; gap: 1rem; font-size: 0.85rem;">
+                            ${deadInvCount > 0 ? `<span style="color: #ff9800;">🎒 ${deadInvCount} věcí v batohu</span>` : ''}
+                            ${deadEquipCount > 0 ? `<span style="color: #9c27b0;">🎽 ${deadEquipCount} ks výbavy</span>` : ''}
+                        </div>
+                        <p style="color: #888; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Při pohřbu se věci vrátí (co se nevejde, spadne na zem)</p>
+                    </div>
+                ` : ''}
                 
                 <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                     <h4 style="margin: 0 0 0.5rem 0; color: var(--warning-yellow);">Oživení:</h4>
@@ -27881,6 +28198,33 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const compInfo = COMPANIONS.find(c => c.id === comp.id) || comp;
             const compName = comp.name || compInfo?.name || 'Společník';
             const compIcon = comp.icon || compInfo?.icon || '👤';
+            
+            // Vrať inventář z batohu (co se nevejde, spadne na zem)
+            returnCompanionInventory(comp);
+            
+            // Vrať vybavení (co se nevejde, spadne na zem)
+            if (comp.equipped) {
+                ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory'].forEach(slot => {
+                    if (comp.equipped[slot]) {
+                        const item = {...comp.equipped[slot], count: 1};
+                        const itemWeight = item.weight || 0;
+                        const playerCurW = calculateCurrentWeight();
+                        const playerMaxW = calculateMaxWeight();
+                        
+                        if (playerCurW + itemWeight <= playerMaxW) {
+                            const existing = state.inv.find(i => i.id === item.id);
+                            if (existing) {
+                                existing.count = (existing.count || 1) + 1;
+                            } else {
+                                state.inv.push(item);
+                            }
+                        } else {
+                            addToGroundLoot(item);
+                        }
+                    }
+                });
+                updateCarryWeight();
+            }
             
             // Odstraň společníka
             state.companions.splice(compIndex, 1);
@@ -27978,6 +28322,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.companions = state.companions || [];
             state.companions.push({
                 id: companion.id,
+                uniqueId: `${companion.id}_${Date.now()}`,
                 name: companion.name,
                 icon: companion.icon,
                 type: companion.type || 'animal',
@@ -28016,7 +28361,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            if (state.companions?.find(c => c.id === companionId)) {
+            if (state.companions?.find(c => c.id === companionId && !c.isDead)) {
                 showModal('Už máš', 'Tohoto společníka už máš!');
                 return;
             }
@@ -28036,6 +28381,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 skillPoints: 0,
                 skills: [],
                 loyalty: 50,
+                inCombat: true,
+                canEquip: companion.type === 'human',
                 equipped: companion.type === 'human' ? { weapon: null, armor: null, helmet: null, gloves: null, boots: null, accessory: null } : null
             };
             
@@ -28066,8 +28413,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const maxCount = getMaxCompanions();
             const canHire = currentCount < maxCount;
             
-            // Dostupní společníci k najmutí (ti co nemáš)
-            const availableCompanions = COMPANIONS.filter(c => !state.companions?.find(sc => sc.id === c.id));
+            // Mrtví společníci k oživení
+            const deadCompanions = state.companions?.filter(c => c.isDead) || [];
+            
+            // Dostupní společníci k najmutí (ti co nemáš ŽIVÉ)
+            const availableCompanions = COMPANIONS.filter(c => !state.companions?.find(sc => sc.id === c.id && !sc.isDead));
             
             let html = '<div style="margin-bottom: 1rem;">';
             html += '<p style="text-align: center; color: #8bc34a;">👥 Společníci: ' + currentCount + '/' + maxCount + '</p>';
@@ -28077,6 +28427,43 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             html += '<p style="text-align: center; color: #ff9800; font-size: 0.8rem; margin-top: 0.5rem;">🍖💧 Každý společník spotřebuje 1 jídlo + 1 vodu denně!</p>';
             html += '</div>';
             
+            // === SEKCE OŽIVENÍ MRTVÝCH ===
+            if (deadCompanions.length > 0) {
+                html += '<div style="margin-bottom: 1rem;">';
+                html += '<h4 style="color: #c62828; margin: 0 0 0.5rem 0; text-align: center;">💀 Mrtví společníci</h4>';
+                deadCompanions.forEach(comp => {
+                    const compInfo = COMPANIONS.find(c => c.id === comp.id) || comp;
+                    const compName = comp.name || compInfo?.name || 'Společník';
+                    const compIcon = comp.icon || compInfo?.icon || '👤';
+                    const reviveCost = compInfo?.cost > 0 ? Math.floor(compInfo.cost / 4) : 50;
+                    const canAfford = getMoney() >= reviveCost;
+                    const canRevive = canAfford && currentCount < maxCount;
+                    const invCount = comp.inventory?.length || 0;
+                    
+                    html += '<div style="background: #2a1a1a; padding: 0.8rem; margin: 0.5rem 0; border-radius: 8px; border: 1px solid #c62828;">';
+                    html += '<div style="display: flex; justify-content: space-between; align-items: center;">';
+                    html += '<div style="display: flex; align-items: center; gap: 0.5rem;">';
+                    html += '<span style="font-size: 2rem; filter: grayscale(80%);">' + compIcon + '</span>';
+                    html += '<div>';
+                    html += '<div style="font-weight: bold; color: #888; text-decoration: line-through;">' + compName + '</div>';
+                    html += '<div style="font-size: 0.8rem; color: #c62828;">☠️ Zemřel v boji</div>';
+                    if (invCount > 0) html += '<div style="font-size: 0.75rem; color: #ff9800;">🎒 ' + invCount + ' věcí v batohu</div>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div style="display: flex; flex-direction: column; gap: 0.3rem; align-items: flex-end;">';
+                    html += '<button class="btn" onclick="reviveCompanionWithMoney(\'' + (comp.uniqueId || comp.id) + '\', ' + reviveCost + ')" ' + (!canRevive ? 'disabled' : '') + ' style="padding: 0.4rem 0.8rem; background: ' + (canRevive ? '#c62828' : '#555') + '; font-size: 0.85rem;">💚 Oživit (' + reviveCost + ' 💰)</button>';
+                    html += '<button class="btn" onclick="buryCompanion(\'' + (comp.uniqueId || comp.id) + '\');" style="padding: 0.3rem 0.6rem; background: #333; font-size: 0.75rem; color: #888;">⚰️ Pohřbít</button>';
+                    html += '</div>';
+                    html += '</div>';
+                    if (!canAfford) html += '<div style="text-align: center; font-size: 0.75rem; color: #ff9800; margin-top: 0.3rem;">💰 Potřebuješ ' + reviveCost + ', máš ' + getMoney() + '</div>';
+                    if (currentCount >= maxCount) html += '<div style="text-align: center; font-size: 0.75rem; color: #ff9800; margin-top: 0.3rem;">👥 Plný tým - propusť někoho</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+                html += '<hr style="border-color: #333; margin: 1rem 0;">';
+            }
+            
+            // === SEKCE NÁJMU ===
             if (availableCompanions.length === 0) {
                 html += '<p style="text-align: center; color: #888;">Všechny společníky už máš!</p>';
             } else {
@@ -28112,17 +28499,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
             if (!comp) return;
             
-            // Vrať vybavení do inventáře
+            // Vrať inventář z batohu
+            returnCompanionInventory(comp);
+            
+            // Vrať vybavení do inventáře (co se nevejde, spadne na zem)
             if (comp?.equipped) {
-                ['weapon', 'armor', 'accessory'].forEach(slot => {
+                ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory'].forEach(slot => {
                     if (comp.equipped[slot]) {
-                        const item = {...comp.equipped[slot]};
-                        const existing = state.inv.find(i => i.id === item.id);
-                        if (existing) {
-                            existing.count = (existing.count || 1) + 1;
+                        const item = {...comp.equipped[slot], count: 1};
+                        const itemWeight = item.weight || 0;
+                        const playerCurW = calculateCurrentWeight();
+                        const playerMaxW = calculateMaxWeight();
+                        
+                        if (playerCurW + itemWeight <= playerMaxW) {
+                            const existing = state.inv.find(i => i.id === item.id);
+                            if (existing) {
+                                existing.count = (existing.count || 1) + 1;
+                            } else {
+                                state.inv.push(item);
+                            }
                         } else {
-                            item.count = 1;
-                            state.inv.push(item);
+                            addToGroundLoot(item);
                         }
                     }
                 });
@@ -28431,8 +28828,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
-            // Kontrola otevírací doby
-            if (!isShopOpen('caravan')) {
+            // Kontrola otevírací doby - ALE pokud je karavana aktivně přivolaná, nechej ji otevřenou
+            const caravanIsHere = (state.caravan?.active && Date.now() < state.caravan?.until) ||
+                                  (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant?.until);
+            if (!isShopOpen('caravan') && !caravanIsHere) {
                 showModal('🌙 Karavana odpočívá', `
                     <div style="text-align: center;">
                         <div style="font-size: 4rem; margin-bottom: 1rem;">🐪💤</div>
@@ -29330,6 +29729,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     // Najdi definici společníka
                     const baseDef = COMPANIONS.find(c => c.id === comp.id);
                     
+                    // Generuj uniqueId pokud chybí
+                    if (!comp.uniqueId) {
+                        comp.uniqueId = `${comp.id}_migrated_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                    }
+                    
+                    // Vymaž excluded pozice z uložených pozic (common bug source)
+                    if (state.savedCompanionPositions) {
+                        const compId = comp.uniqueId || comp.id;
+                        const savedPos = state.savedCompanionPositions[compId];
+                        if (savedPos && (savedPos.id === 'excluded' || savedPos.excluded)) {
+                            delete state.savedCompanionPositions[compId];
+                        }
+                        // Vymaž i pozice uložené pod holým id (starý formát)
+                        const savedPosById = state.savedCompanionPositions[comp.id];
+                        if (savedPosById && (savedPosById.id === 'excluded' || savedPosById.excluded)) {
+                            delete state.savedCompanionPositions[comp.id];
+                        }
+                    }
+                    
                     // Oprava freed_slave společníků (speciální případ)
                     if (comp.uniqueId && comp.uniqueId.startsWith('freed_slave')) {
                         comp.id = 'survivor';
@@ -29353,6 +29771,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                     if (comp.loyalty === undefined) comp.loyalty = 50;
                     if (comp.inCombat === undefined) comp.inCombat = true;
+                    if (!comp.inventory) comp.inventory = [];
                     
                     // Equipped jen pro lidi
                     if (comp.type === 'human' || comp.id === 'survivor') {
@@ -30939,9 +31358,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <span style="font-size: 0.9rem; color: ${state.settlement.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until ? '#6a8a6a' : '#8a7a5a'};">${state.settlement.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until ? 'ZDE' : '100$'}</span>
                         </button>
                         
-                        <button class="btn" onclick="showHireCompanionsModal()" style="background: #0a0a0a; padding: 0.5rem 0.3rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; border: 1px solid #3a4a4a; font-family: 'Share Tech Mono', monospace;">
-                            <span style="font-size: 0.6rem; color: #555;">PARŤÁCI</span>
-                            <span style="font-size: 0.9rem; color: #5a8a7a;">${state.companions?.filter(c => !c.isDead).length || 0}/${getMaxCompanions()}</span>
+                        <button class="btn" onclick="showHireCompanionsModal()" style="background: #0a0a0a; padding: 0.5rem 0.3rem; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; border: 1px solid ${state.companions?.some(c => c.isDead) ? '#5a3a3a' : '#3a4a4a'}; font-family: 'Share Tech Mono', monospace;">
+                            <span style="font-size: 0.6rem; color: #555;">${state.companions?.some(c => c.isDead) ? '💀 PARŤÁCI' : 'PARŤÁCI'}</span>
+                            <span style="font-size: 0.9rem; color: ${state.companions?.some(c => c.isDead) ? '#8a5a5a' : '#5a8a7a'};">${state.companions?.filter(c => !c.isDead).length || 0}/${getMaxCompanions()}</span>
                         </button>
                     </div>
                     
@@ -36163,7 +36582,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Přidej společníka s defaultním jménem
-            const newCompanion = {...companion, hp: companion.hp, maxHp: companion.hp};
+            const newCompanion = {...companion, hp: companion.hp, maxHp: companion.hp, uniqueId: `${companion.id}_${Date.now()}`};
             state.companions.push(newCompanion);
             closeModal();
             resolveCurrentEvent(); // Označ event jako vyřešený
@@ -42981,11 +43400,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 showModal('📡 Vysílačka', 'Karavana už je v oblasti!');
                 return;
             }
-            state.caravan = state.caravan || {};
-            state.caravan.active = true;
-            state.caravan.until = Date.now() + 600000; // 10 minut
+            activateCaravan(600000); // 10 minut
             closeModal();
-            notifySuccess('📡 Signál odeslán!', 'Karavana dorazí za chvíli');
+            notifySuccess('📡 Signál odeslán!', 'Karavana dorazila!');
             addLog('Přivolal jsi karavanu vysílačkou!', '📡');
             renderFull();
         }
@@ -57748,10 +58165,7 @@ function openFullscreenMap() {
                     break;
                     
                 case 'trade':
-                    state.settlement.visitingMerchant = {
-                        until: Date.now() + (event.duration || 10) * 60 * 1000, // duration v minutách
-                        discount: 0.2
-                    };
+                    activateCaravan((event.duration || 10) * 60 * 1000, 0.2);
                     message += '<p style="color: var(--warning-yellow);">Obchodník zůstane ' + (event.duration || 10) + ' minut. Navštiv obchod pro slevu!</p>';
                     break;
                     
@@ -58723,6 +59137,22 @@ function openFullscreenMap() {
             showModal('🐪 Obchodní karavana', html + buttons);
         }
         
+        // Centrální funkce pro aktivaci karavany - synchronizuje oba systémy
+        function activateCaravan(durationMs, discount = 0.25) {
+            const until = Date.now() + durationMs;
+            state.caravan = state.caravan || { active: false, until: 0, lastCheck: Date.now() };
+            state.caravan.active = true;
+            state.caravan.until = until;
+            state.caravanPresent = true;
+            
+            // Sync pro settlement UI
+            if (!state.settlement) state.settlement = {};
+            state.settlement.visitingMerchant = {
+                until: until,
+                discount: discount
+            };
+        }
+        
         function doSummonCaravan() {
             // Kontrola otevírací doby
             if (!isShopOpen('caravan')) {
@@ -58733,20 +59163,23 @@ function openFullscreenMap() {
             const cost = 100;
             const hasCommTower = state.base?.includes('comms') || state.settlement?.buildings?.includes('comms');
             
-            if (!hasCommTower || !hasPower() || getMoney() < cost) return;
+            if (!hasCommTower) {
+                notifyWarning('Chybí věž', 'Potřebuješ Komunikační věž! Postav ji v sekci Budovy.');
+                return;
+            }
+            if (!hasPower()) {
+                notifyWarning('Bez proudu', 'Komunikační věž nemá elektřinu! Postav Generátor nebo Solární panely.');
+                return;
+            }
+            if (getMoney() < cost) {
+                notifyWarning('Málo peněz', `Potřebuješ ${cost} 💰, máš jen ${getMoney()}.`);
+                return;
+            }
             
             removeMoney(cost);
             
-            // Použij globální karavana systém
-            state.caravan = state.caravan || { active: false, until: 0, lastCheck: Date.now() };
-            state.caravan.active = true;
-            state.caravan.until = Date.now() + 60 * 60 * 1000; // 1 hodina (delší protože zaplacena)
-            
-            // Pro zpětnou kompatibilitu
-            state.settlement.visitingMerchant = {
-                until: state.caravan.until,
-                discount: 0.25
-            };
+            // Aktivuj karavanu na 1 hodinu (zaplacená)
+            activateCaravan(60 * 60 * 1000, 0.25);
             
             changeReputation('traders', 3, 'přivolání karavany');
             
@@ -62362,6 +62795,36 @@ function openFullscreenMap() {
                 
                 // Přidej živé společníky
                 if (state.companions) {
+                    // === SAFETY FIX: Oprav společníky s nekonzistentním stavem ===
+                    state.companions.forEach(c => {
+                        // Fix hp=0 bez isDead
+                        if (!c.isDead && c.hp !== undefined && c.hp <= 0) {
+                            console.warn(`⚠️ Oprava: ${c.name} měl hp=${c.hp} ale isDead=false, nastavuji hp=1`);
+                            c.hp = 1;
+                        }
+                        // Fix NaN hp
+                        if (c.hp !== undefined && isNaN(c.hp)) {
+                            console.warn(`⚠️ Oprava: ${c.name} měl hp=NaN, nastavuji na maxHp`);
+                            c.hp = c.maxHp || 50;
+                        }
+                        // Zajisti uniqueId
+                        if (!c.uniqueId) {
+                            c.uniqueId = `${c.id}_combat_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                        }
+                    });
+                    
+                    // === DIAGNOSTIKA: Loguj všechny společníky a jejich stav ===
+                    console.log('⚔️ === COMPANION COMBAT CHECK ===');
+                    console.log('⚔️ Celkem společníků:', state.companions.length);
+                    state.companions.forEach((c, i) => {
+                        console.log(`⚔️ [${i}] ${c.name} (id=${c.id}, uid=${c.uniqueId}): hp=${c.hp}/${c.maxHp}, isDead=${c.isDead}, type=${c.type}, inCombat=${c.inCombat}`);
+                    });
+                    const filteredComps = state.companions.filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
+                    console.log('⚔️ Po filtraci (alive):', filteredComps.length, filteredComps.map(c => c.name));
+                    console.log('⚔️ savedCompanionPositions:', JSON.stringify(state.savedCompanionPositions));
+                    console.log('⚔️ companionPositionsOverride:', JSON.stringify(window.companionPositionsOverride));
+                    console.log('⚔️ ========================');
+                    
                     state.companions.filter(c => !c.isDead && (c.hp === undefined || c.hp > 0)).forEach((comp, idx) => {
                         const compData = COMPANIONS.find(cd => cd.id === comp.id);
                         // Pro dynamické společníky (rescued survivor) použij data z comp
@@ -62371,25 +62834,40 @@ function openFullscreenMap() {
                         // Použij getCompanionStat pro damage a defense (zahrnuje vybavení)
                         const compDamage = getCompanionStat(comp, 'damage');
                         const compDefense = getCompanionStat(comp, 'defense');
+                        const compMaxHp = getCompanionStat(comp, 'hp') || comp.maxHp || 50;
+                        // HP: pokud companion má plné zdraví, použij compMaxHp; jinak zachovej poměr
+                        let compHp;
+                        if (!comp.hp || comp.hp >= (comp.maxHp || 50)) {
+                            compHp = compMaxHp;
+                        } else {
+                            // Zachovej poměr hp/maxHp
+                            const ratio = comp.hp / (comp.maxHp || 50);
+                            compHp = Math.max(1, Math.floor(compMaxHp * ratio));
+                        }
                         
                         // Spawn pozice - použij override pokud existuje, jinak default
                         const compId = comp.uniqueId || comp.id;
                         let pos;
                         
+                        // Výchozí pozice kolem hráče (pravá strana)
+                        const defaultPositions = [
+                            { x: 7, y: 1 }, { x: 7, y: 3 }, // Nad a pod hráčem
+                            { x: 8, y: 2 }, { x: 8, y: 1 }, { x: 8, y: 3 } // Úplně vpravo
+                        ];
+                        
                         if (window.companionPositionsOverride && window.companionPositionsOverride[compId]) {
                             pos = window.companionPositionsOverride[compId];
                             
-                            // Pokud je společník vyloučený z boje, přeskoč ho
+                            // OPRAVA: Excluded společník dostane defaultní pozici místo přeskočení
                             if (pos.excluded || pos.id === 'excluded') {
-                                console.log(`🚫 ${compName} vynechán z boje (excluded)`);
-                                return; // Přeskoč tohoto společníka
+                                console.warn(`⚠️ ${compName} měl excluded pozici - přepisuju na default!`);
+                                pos = defaultPositions[idx] || { x: 7, y: idx % 5 };
+                                // Vymaž excluded z uložených pozic
+                                if (state.savedCompanionPositions && state.savedCompanionPositions[compId]) {
+                                    delete state.savedCompanionPositions[compId];
+                                }
                             }
                         } else {
-                            // Výchozí pozice kolem hráče (pravá strana)
-                            const defaultPositions = [
-                                { x: 7, y: 1 }, { x: 7, y: 3 }, // Nad a pod hráčem
-                                { x: 8, y: 2 }, { x: 8, y: 1 }, { x: 8, y: 3 } // Úplně vpravo
-                            ];
                             pos = defaultPositions[idx] || { x: 7, y: idx % 5 };
                         }
                         
@@ -62397,8 +62875,8 @@ function openFullscreenMap() {
                             id: unitId++,
                             name: compName,
                             icon: compIcon,
-                            hp: comp.hp,
-                            maxHp: comp.maxHp,
+                            hp: compHp,
+                            maxHp: compMaxHp,
                             damage: compDamage,
                             defense: compDefense,
                             speed: 8 + idx,
@@ -62861,7 +63339,14 @@ function openFullscreenMap() {
             
             // Synchronizuj HP společníka
             const comp = state.companions?.find(c => c.id === unit.companionId || c.uniqueId === unit.companionId);
-            if (comp) comp.hp = Math.max(0, unit.hp);
+            if (comp) {
+                comp.hp = Math.max(0, unit.hp);
+                // Pokud společník zemřel (terrain damage apod.), nastav isDead
+                if (!unit.alive || unit.hp <= 0) {
+                    comp.isDead = true;
+                    comp.hp = 0;
+                }
+            }
             
             setTimeout(() => {
                 unit.actionsLeft = 0;
@@ -63912,9 +64397,9 @@ function openFullscreenMap() {
             // Společník se střelnou zbraní - spotřebuj munici z inventáře hráče
             if (companionWeapon && companionWeapon.ammoType) {
                 if (!consumeAmmo(companionWeapon.ammoType, 1)) {
-                    cs.log.push(`⚠️ ${unit.name} nemá náboje (${getAmmoName(companionWeapon.ammoType)})!`);
-                    renderHeroesCombatUI();
-                    return;
+                    cs.log.push(`⚠️ ${unit.name} nemá náboje → útočí na blízko!`);
+                    // FALLBACK: Útočí na blízko bez zbraně (snížený damage)
+                    // Nevrací se - pokračuje v útoku s base damage bez weapon bonusu
                 }
             }
             
@@ -64427,7 +64912,13 @@ function openFullscreenMap() {
             // Synchronizuj HP společníka
             if (isCompanion) {
                 const comp = state.companions?.find(c => c.id === unit.companionId);
-                if (comp) comp.hp = Math.max(0, unit.hp);
+                if (comp) {
+                    comp.hp = Math.max(0, unit.hp);
+                    if (!unit.alive || unit.hp <= 0) {
+                        comp.isDead = true;
+                        comp.hp = 0;
+                    }
+                }
             }
             
             // === OPOTŘEBENÍ ZBRANĚ (durability) ===
@@ -65403,6 +65894,20 @@ function openFullscreenMap() {
                 }
                 
                 // Pokud máme společníky a není přepadení, ukaž pre-combat setup
+                // === SAFETY FIX: Oprav společníky s nekonzistentním stavem ===
+                if (state.companions) {
+                    state.companions.forEach(c => {
+                        if (!c.isDead && c.hp !== undefined && c.hp <= 0) {
+                            c.hp = 1;
+                        }
+                        if (c.hp !== undefined && isNaN(c.hp)) {
+                            c.hp = c.maxHp || 50;
+                        }
+                        if (!c.uniqueId) {
+                            c.uniqueId = `${c.id}_combat_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                        }
+                    });
+                }
                 const aliveCompanions = (state.companions || []).filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
                 if (aliveCompanions.length > 0 && !isAmbush) {
                     showPreCombatSetup(enemyGroup, isVillageRaid ? 'settlement_raid' : 'normal');
@@ -65434,14 +65939,20 @@ function openFullscreenMap() {
             }
             
             // Inicializuj pozice společníků - použij uložené nebo výchozí
+            // DŮLEŽITÉ: Nikdy nenačítej 'excluded' z uložených pozic automaticky!
             window.preCombatPositions = {};
             aliveCompanions.forEach((comp, idx) => {
                 const compId = comp.uniqueId || comp.id;
-                if (state.savedCompanionPositions[compId]) {
-                    // Použij uloženou pozici
-                    window.preCombatPositions[compId] = state.savedCompanionPositions[compId];
+                const savedPos = state.savedCompanionPositions[compId];
+                if (savedPos && savedPos.id !== 'excluded' && !savedPos.excluded) {
+                    // Použij uloženou pozici (ale jen pokud NENÍ excluded)
+                    window.preCombatPositions[compId] = savedPos;
                 } else {
-                    // Výchozí pozice
+                    // Výchozí pozice (nebo reset z excluded)
+                    if (savedPos && (savedPos.id === 'excluded' || savedPos.excluded)) {
+                        // Vymaž starou excluded pozici
+                        delete state.savedCompanionPositions[compId];
+                    }
                     window.preCombatPositions[compId] = defaultPositions[idx] || defaultPositions[0];
                 }
             });
@@ -65517,7 +66028,7 @@ function openFullscreenMap() {
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn" onclick="confirmPreCombatSetup()" style="background: #555;">
+                    <button class="btn" onclick="resetCompanionPositions()" style="background: #555;">
                         🎲 Výchozí pozice
                     </button>
                     <button class="btn" onclick="confirmPreCombatSetup()" style="background: linear-gradient(135deg, #8B0000, #5a0000);">
@@ -65542,11 +66053,40 @@ function openFullscreenMap() {
             const newPos = positions[positionId] || positions['back_mid'];
             window.preCombatPositions[compId] = newPos;
             
-            // Ulož do state pro příští boje
+            // Ulož do state pro příští boje - ale NIKDY neukládej 'excluded' permanentně!
             if (!state.savedCompanionPositions) state.savedCompanionPositions = {};
-            state.savedCompanionPositions[compId] = newPos;
+            if (positionId !== 'excluded') {
+                state.savedCompanionPositions[compId] = newPos;
+            } else {
+                // Excluded platí jen pro TENTO boj, nesave-ovat
+                delete state.savedCompanionPositions[compId];
+            }
             
             // Překresli modal pro vizuální feedback
+            renderPreCombatSetup();
+        }
+        
+        function resetCompanionPositions() {
+            const aliveCompanions = (state.companions || []).filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
+            const defaultPositions = [
+                { id: 'back_top', x: 8, y: 1, label: 'Vzadu nahoře' },
+                { id: 'back_bot', x: 8, y: 3, label: 'Vzadu dole' },
+                { id: 'back_mid', x: 8, y: 2, label: 'Vzadu střed' },
+                { id: 'front_top', x: 7, y: 1, label: 'Nahoře' },
+                { id: 'front_bot', x: 7, y: 3, label: 'Dole' }
+            ];
+            
+            // Reset všech uložených pozic
+            state.savedCompanionPositions = {};
+            window.preCombatPositions = {};
+            
+            aliveCompanions.forEach((comp, idx) => {
+                const compId = comp.uniqueId || comp.id;
+                const pos = defaultPositions[idx] || defaultPositions[0];
+                window.preCombatPositions[compId] = pos;
+                state.savedCompanionPositions[compId] = pos;
+            });
+            
             renderPreCombatSetup();
         }
         
@@ -65567,9 +66107,18 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Ulož pozice do state pro příští boje
+            // Ulož pozice do state pro příští boje - ale NIKDY neukládej excluded!
             if (!state.savedCompanionPositions) state.savedCompanionPositions = {};
-            Object.assign(state.savedCompanionPositions, window.preCombatPositions);
+            if (window.preCombatPositions) {
+                Object.entries(window.preCombatPositions).forEach(([compId, pos]) => {
+                    if (pos.id !== 'excluded' && !pos.excluded) {
+                        state.savedCompanionPositions[compId] = pos;
+                    } else {
+                        // Vymaž případně starou excluded pozici
+                        delete state.savedCompanionPositions[compId];
+                    }
+                });
+            }
             
             // Předej pozice do startCombatWithGroup
             window.companionPositionsOverride = window.preCombatPositions;
@@ -65766,10 +66315,11 @@ function openFullscreenMap() {
                         const ammoType = comp.equipped.weapon.ammoType;
                         const playerAmmo = getAmmoCount(ammoType);
                         if (playerAmmo < 1) {
-                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || '👤'} nemá munici!</div>`;
-                            return;
+                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || '👤'} nemá munici → útočí na blízko!</div>`;
+                            // FALLBACK: Pokračuje v útoku bez zbraně (nevrací se)
+                        } else {
+                            consumeAmmo(ammoType, 1);
                         }
-                        consumeAmmo(ammoType, 1);
                     }
                     
                     // Najdi cíl (náhodný živý nepřítel)
@@ -66047,10 +66597,11 @@ function openFullscreenMap() {
                         const ammoType = comp.equipped.weapon.ammoType;
                         const playerAmmo = getAmmoCount(ammoType);
                         if (playerAmmo < 1) {
-                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || compInfo.name} nemá munici (${getAmmoName(ammoType)})!</div>`;
-                            return;
+                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || compInfo.name} nemá munici → útočí na blízko!</div>`;
+                            // FALLBACK: Pokračuje v útoku bez weapon bonusu
+                        } else {
+                            consumeAmmo(ammoType, 1);
                         }
-                        consumeAmmo(ammoType, 1);
                     }
                     
                     const aliveTarget = enemyGroup.find(e => e.alive);
@@ -68422,10 +68973,11 @@ function openFullscreenMap() {
                         const ammoType = comp.equipped.weapon.ammoType;
                         const playerAmmo = getAmmoCount(ammoType);
                         if (playerAmmo < 1) {
-                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || compInfo.name} nemá munici (${getAmmoName(ammoType)})!</div>`;
-                            return;
+                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || compInfo.name} nemá munici → útočí na blízko!</div>`;
+                            // FALLBACK: Pokračuje v útoku s base damage
+                        } else {
+                            consumeAmmo(ammoType, 1);
                         }
-                        consumeAmmo(ammoType, 1);
                     }
                     
                     // Použij getCompanionStat pro damage včetně bonusů ze skillů a levelů
@@ -70006,6 +70558,7 @@ function openFullscreenMap() {
                         comp.canEquip = (comp.type === 'human' || comp.id === 'survivor' || baseDef?.type === 'human');
                     }
                     if (comp.inCombat === undefined) comp.inCombat = true;
+                    if (!comp.inventory) comp.inventory = [];
                     if (!comp.skills || !Array.isArray(comp.skills)) {
                         comp.skills = comp.skills ? Object.values(comp.skills).filter(s => typeof s === 'string') : [];
                     }
@@ -72454,8 +73007,7 @@ function openFullscreenMap() {
                     }
                     
                     if (Math.random() < caravanChance) {
-                        state.caravan.active = true;
-                        state.caravan.until = now + 300000; // 5 minut
+                        activateCaravan(300000); // 5 minut
                         notifyInfo('🐪 Karavana dorazila!', 'Obchodníci jsou v oblasti na 5 minut');
                         sendSystemNotification('Karavana dorazila!', 'Obchodníci jsou v oblasti na 5 minut', '🐪');
                         addLog('Karavana obchodníků dorazila!', '🐪');
@@ -72465,6 +73017,11 @@ function openFullscreenMap() {
                 // Kontrola jestli karavana neodešla
                 if (state.caravan.active && now > state.caravan.until) {
                     state.caravan.active = false;
+                    state.caravanPresent = false;
+                    // Sync: vymaž i visitingMerchant
+                    if (state.settlement?.visitingMerchant) {
+                        state.settlement.visitingMerchant = null;
+                    }
                     addLog('Karavana odjela.', '🐪');
                 }
                 
@@ -79050,6 +79607,60 @@ function openFullscreenMap() {
         }
         
         // Dialog pro nákup s výběrem počtu
+        // Fallout-style obchodní hlášky pro potvrzení nákupu
+        const WASTELAND_BUY_QUOTES = [
+            { quote: "V pustině platí: dvakrát měř, jednou plať. Nebo se prostě přestaň měřit a kup to.", author: "Obchodník z Hub" },
+            { quote: "Za tyhle víčka bys v Vault City dostal maximálně facku. Tady je to fér cena!", author: "Potulný kramář" },
+            { quote: "Válka... válka se nikdy nemění. Ale ceny na tržišti jo.", author: "Narrator" },
+            { quote: "Kdo šetří, má za tři. Kdo nešetří, má aspoň cool výbavu.", author: "Raider filosof" },
+            { quote: "Pamatuj: každá utracená mince je investice do přežití. Nebo do blbosti. Záleží na tobě.", author: "Starý obchodník" },
+            { quote: "Jednou mi chlap řekl, že peníze jsou jen papír. Pak ho sežral deathclaw. Nesouvisí to, ale poučné.", author: "Karavanní stráž" },
+            { quote: "Kupuješ z tržiště? Odvážné. Naposledy jsem tam koupil 'čerstvé' maso... chodilo.", author: "Přeživší" },
+            { quote: "Obchod je obchod. A v pustině je každý obchod potenciálně poslední.", author: "Smutný ekonom" },
+            { quote: "Radši utratit za zbraň a nepotřebovat ji, než potřebovat a nemít. Platí i pro ponožky.", author: "Ranger veterán" },
+            { quote: "Vzácný předmět za pár víček? Buď je to kšeft století, nebo past. Tak či tak – vzrušující!", author: "Gambler z New Vegas" },
+            { quote: "Můj děda říkal: nekupuj nic od cizinců. Ale děda taky žil v jeskyni a jedl houby.", author: "Osadník" },
+            { quote: "99 ze 100 obchodníků doporučuje tenhle nákup. Ten stý se záhadně ztratil v pustině.", author: "Reklamní cedule" },
+            { quote: "Peníze šťastí nekoupí. Ale koupí brnění. A s brněním přežiješ dost dlouho na to, abys štěstí našel.", author: "Kovář z osady" },
+            { quote: "V Pustině existují dva typy lidí: ti co kupují, a ti co lootují mrtvoly těch prvních.", author: "Obchodní filosof" },
+            { quote: "Tohle zboží je zárukou kvality! *záruční doba: do konce konverzace*", author: "Pochybný prodejce" },
+        ];
+        
+        function confirmBuyMarketOffer(offerId, count, totalPriceOverride) {
+            const offer = marketplaceOffers.find(o => o.id === offerId);
+            if (!offer) return;
+            
+            const itemName = offer.item?.name || 'Předmět';
+            const itemIcon = offer.item?.icon || '📦';
+            const sellerName = offer.seller || '???';
+            const totalPrice = totalPriceOverride || (count * (offer.price || 0));
+            const quote = WASTELAND_BUY_QUOTES[Math.floor(Math.random() * WASTELAND_BUY_QUOTES.length)];
+            const countText = count > 1 ? ` (${count}x)` : '';
+            
+            showModal('🤝 Uzavřít obchod?', `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">${escapeHtml(itemIcon)}</div>
+                    <div style="font-size: 1.1rem; color: #fff; margin-bottom: 0.3rem;">${escapeHtml(itemName)}${countText}</div>
+                    <div style="color: #888; font-size: 0.85rem; margin-bottom: 0.5rem;">od ${escapeHtml(sellerName)}</div>
+                    <div style="color: #ffd700; font-size: 1.3rem; font-weight: bold; margin-bottom: 1rem;">${totalPrice} 💰</div>
+                    
+                    <div style="background: #1a1a0a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border-left: 3px solid #8B4513;">
+                        <p style="color: #c8b070; font-style: italic; margin: 0; font-size: 0.85rem;">"${quote.quote}"</p>
+                        <p style="color: #665530; font-size: 0.75rem; margin: 0.3rem 0 0 0; text-align: right;">— ${quote.author}</p>
+                    </div>
+                    
+                    <div style="color: #666; font-size: 0.8rem; margin-bottom: 1rem;">
+                        Tvé peníze: ${state.money} 💰 → zbyde ${state.money - totalPrice} 💰
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        <button class="btn" onclick="showMarketplace()" style="background: #555;">🚶 Jdu dál...</button>
+                        <button class="btn" onclick="buyMarketOffer('${offerId}', ${count})" style="background: #4CAF50;">🤝 Plácnem!</button>
+                    </div>
+                </div>
+            `);
+        }
+        
         function promptBuyOffer(offerId, maxCount, pricePerUnit) {
             const offer = marketplaceOffers.find(o => o.id === offerId);
             if (!offer) return;
@@ -79082,8 +79693,8 @@ function openFullscreenMap() {
             }
             
             if (maxCount === 1) {
-                // Pokud je jen 1 kus, kup rovnou
-                buyMarketOffer(offerId, 1);
+                // Potvrzení nákupu s Fallout hláškou
+                confirmBuyMarketOffer(offerId, 1, pricePerUnit);
                 return;
             }
             
@@ -79118,7 +79729,7 @@ function openFullscreenMap() {
                     
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                         <button class="btn" onclick="showMarketplace()" style="background: #555;">❌ Zrušit</button>
-                        <button class="btn" onclick="buyMarketOffer('${escapeHtml(offerId)}', parseInt(document.getElementById('buyCountInput').value))" style="background: #4CAF50;">✓ Koupit</button>
+                        <button class="btn" onclick="confirmBuyMarketOffer('${escapeHtml(offerId)}', parseInt(document.getElementById('buyCountInput').value), parseInt(document.getElementById('buyCountInput').value) * ${pricePerUnit})" style="background: #4CAF50;">✓ Koupit</button>
                     </div>
                 </div>
             `);
@@ -101547,6 +102158,10 @@ function openFullscreenMap() {
         // === GLOBÁLNÍ EXPORTY PRO ONCLICK ===
         window.showSettlerTalk = showSettlerTalk;
         window.showSettlementMapFullscreen = showSettlementMapFullscreen;
+        window.resetCompanionPositions = resetCompanionPositions;
+        window.showCompanionInventory = showCompanionInventory;
+        window.transferToCompanion = transferToCompanion;
+        window.transferFromCompanion = transferFromCompanion;
         window.renderSettlementVisualMap = renderSettlementVisualMap;
         window.getSettlerDialog = getSettlerDialog;
         window.assignSettlerPersonality = assignSettlerPersonality;
