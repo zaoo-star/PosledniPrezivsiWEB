@@ -3012,6 +3012,13 @@
             if (isEquippedItem(state.equipped.gloves)) return true;
             if (isEquippedItem(state.equipped.boots)) return true;
             
+            // Power Armor - speciální kontrola (po save/load reference se ztratí)
+            if (state.equipped.powerArmor) {
+                if (isEquippedItem(state.equipped.powerArmor)) return true;
+                // Fallback: kontrola podle id a typu (po deserializaci)
+                if (item.id && item.type === 'power_armor' && state.equipped.powerArmor.id === item.id) return true;
+            }
+            
             // Kontrola accessory (accessory se ukládá jako ID, ne jako reference)
             if (item.type === 'accessory' && state.equippedAccessory === item.id) return true;
             
@@ -20401,93 +20408,155 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const gloves = state.equipped?.gloves || null;
             const boots = state.equipped?.boots || null;
             const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
+            const powerArmor = state.equipped?.powerArmor || null;
             
-            const endBonus = Math.floor(state.char.attrs.end * 0.5);
+            // Stejný výpočet jako calculateDefense - END * 1.0 s getEffectiveAttr
+            const effectiveEnd = typeof getEffectiveAttr === 'function' ? getEffectiveAttr('end') : (state.char.attrs.end || 5);
+            const endBonus = Math.floor(effectiveEnd * 1);
             const armorDef = armor ? armor.defense : 0;
             const helmetDef = helmet ? helmet.defense : 0;
             const glovesDef = gloves ? gloves.defense : 0;
             const bootsDef = boots ? boots.defense : 0;
+            const paDef = powerArmor ? (powerArmor.stats?.defense || 80) : 0;
             const accDef = (() => {
                 if (!accessory) return 0;
                 let def = 0;
-                // Crafted: bonus === 'defense'
                 if (accessory.bonus === 'defense' && accessory.value) def += accessory.value;
-                // Boss loot: bonus.end → defense
                 if (typeof accessory.bonus === 'object' && accessory.bonus.end) def += Math.floor(accessory.bonus.end * 1);
-                // Direct defense
                 if (accessory.defense) def += accessory.defense;
                 return def;
             })();
-            const mutantDef = state.char.class === 'mutant' ? 10 : 0;
+            const isMutant = state.char.classId === 'mutant' || state.char.class === 'mutant';
+            const mutantDef = isMutant ? 10 : 0;
+            const skillTreeDef = typeof getSkillTreeBonus === 'function' ? getSkillTreeBonus('defense') : 0;
+            const mutBonuses = typeof getMutationBonuses === 'function' ? getMutationBonuses() : {};
+            const mutationDef = mutBonuses.defense || 0;
             
-            const total = endBonus + armorDef + helmetDef + glovesDef + bootsDef + accDef + mutantDef;
+            // Celková obrana - použij calculateDefense pro přesnou hodnotu
+            const total = typeof calculateDefense === 'function' ? calculateDefense() : 0;
             
             // Mutant info
-            const mutantInfo = state.char.class === 'mutant' ? `
+            const mutantInfo = isMutant ? `
                 <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
                     <span>🦎 Mutantí kůže</span>
                     <span style="color: #76ff03;">+10</span>
                 </div>
-                <div style="background: #1a2a1a; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; border: 1px solid #76ff03;">
-                    <p style="color: #76ff03; margin: 0; font-size: 0.8rem;">⚠️ Nemůžeš nosit brnění ani helmy - jsi příliš velký!</p>
-                </div>
             ` : '';
             
-            showModal('🛡️ Obrana - Detaily', `
-                <div style="background: linear-gradient(135deg, #1a2a1a, #0a1a0a); padding: 1rem; border-radius: 10px; border: 2px solid var(--toxic-dark); margin-bottom: 1rem;">
-                    <div style="text-align: center; font-size: 3rem; color: var(--toxic-green); font-weight: bold;">🛡️ ${total}</div>
-                    <div style="text-align: center; color: #888;">Celková obrana</div>
-                </div>
-                
-                <h4 style="margin-bottom: 0.5rem; color: #8bc34a;">📊 Složení obrany:</h4>
-                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+            // Extra bonusy (skill tree, mutace, trénink)
+            let extraBonusesHtml = '';
+            if (skillTreeDef > 0) {
+                extraBonusesHtml += `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                    <span>🌳 Dovednosti</span>
+                    <span style="color: #81c784;">+${skillTreeDef}</span>
+                </div>`;
+            }
+            if (mutationDef > 0) {
+                extraBonusesHtml += `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                    <span>🧬 Mutace</span>
+                    <span style="color: #76ff03;">+${mutationDef}</span>
+                </div>`;
+            }
+            if (state.trainingBonuses?.defense > 0) {
+                extraBonusesHtml += `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                    <span>🎖️ Vojenský trénink</span>
+                    <span style="color: #ffd700;">+${Math.round(state.trainingBonuses.defense * 100)}%</span>
+                </div>`;
+            }
+            
+            // Power Armor info
+            let equipmentHtml = '';
+            if (powerArmor) {
+                equipmentHtml = `
                     <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
-                        <span>💚 Výdrž (END ${state.char.attrs.end})</span>
-                        <span style="color: #8bc34a;">+${endBonus}</span>
+                        <span>🤖 ${powerArmor.name}</span>
+                        <span style="color: #9c27b0; font-weight: bold;">+${paDef}</span>
                     </div>
-                    ${mutantInfo}
-                    ${armor && state.char.class !== 'mutant' ? `
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
-                            <span>${armor.icon} ${armor.name}</span>
-                            <span style="color: #8bc34a;">+${armorDef}</span>
-                        </div>
-                    ` : (state.char.class !== 'mutant' ? `
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
-                            <span>👕 Bez zbroje</span>
-                            <span style="color: #666;">+0</span>
-                        </div>
-                    ` : '')}
-                    ${helmet && state.char.class !== 'mutant' ? `
-                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
-                            <span>${helmet.icon} ${helmet.name}</span>
-                            <span style="color: #8bc34a;">+${helmetDef}</span>
-                        </div>
-                    ` : ''}
-                    ${gloves && state.char.class !== 'mutant' ? `
+                    ${gloves ? `
                         <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
                             <span>${gloves.icon} ${gloves.name}</span>
                             <span style="color: #ff9800;">+${glovesDef}</span>
                         </div>
                     ` : ''}
-                    ${boots && state.char.class !== 'mutant' ? `
+                    <div style="padding: 0.3rem 0; color: #666; font-size: 0.75rem; font-style: italic;">
+                        ⚡ PA nahrazuje: zbroj, helmu, boty
+                    </div>
+                `;
+            } else {
+                equipmentHtml = `
+                    ${mutantInfo}
+                    ${armor && !isMutant ? `
+                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                            <span>${armor.icon} ${armor.name}</span>
+                            <span style="color: #8bc34a;">+${armorDef}</span>
+                        </div>
+                    ` : (!isMutant ? `
+                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                            <span>👕 Bez zbroje</span>
+                            <span style="color: #666;">+0</span>
+                        </div>
+                    ` : '')}
+                    ${helmet && !isMutant ? `
+                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                            <span>${helmet.icon} ${helmet.name}</span>
+                            <span style="color: #8bc34a;">+${helmetDef}</span>
+                        </div>
+                    ` : ''}
+                    ${gloves && !isMutant ? `
+                        <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                            <span>${gloves.icon} ${gloves.name}</span>
+                            <span style="color: #ff9800;">+${glovesDef}</span>
+                        </div>
+                    ` : ''}
+                    ${boots && !isMutant ? `
                         <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
                             <span>${boots.icon} ${boots.name}</span>
                             <span style="color: #00bcd4;">+${bootsDef}</span>
                         </div>
                     ` : ''}
+                `;
+            }
+            
+            showModal('🛡️ Obrana - Detaily', `
+                <div style="background: linear-gradient(135deg, ${powerArmor ? '#1a1a2a' : '#1a2a1a'}, #0a0a0a); padding: 1rem; border-radius: 10px; border: 2px solid ${powerArmor ? '#9c27b0' : 'var(--toxic-dark)'}; margin-bottom: 1rem;">
+                    <div style="text-align: center; font-size: 3rem; color: ${powerArmor ? '#9c27b0' : 'var(--toxic-green)'}; font-weight: bold;">${powerArmor ? '🤖' : '🛡️'} ${total}</div>
+                    <div style="text-align: center; color: #888;">${powerArmor ? 'Power Armor obrana' : 'Celková obrana'}</div>
+                </div>
+                
+                <h4 style="margin-bottom: 0.5rem; color: #8bc34a;">📊 Složení obrany:</h4>
+                <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                        <span>💚 Výdrž (END ${effectiveEnd}${effectiveEnd !== state.char.attrs.end ? ' ← ' + state.char.attrs.end + '+bonus' : ''})</span>
+                        <span style="color: #8bc34a;">+${endBonus}</span>
+                    </div>
+                    ${equipmentHtml}
                     ${accDef > 0 ? `
                         <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
                             <span>${accessory.icon} ${accessory.name}</span>
                             <span style="color: #ffd700;">+${accDef}</span>
                         </div>
                     ` : ''}
+                    ${extraBonusesHtml}
                 </div>
+                
+                ${powerArmor ? `
+                    <div style="background: #1a0a2a; padding: 0.8rem; border-radius: 8px; border: 1px solid #9c27b0; margin-bottom: 1rem;">
+                        <h4 style="margin: 0 0 0.5rem 0; color: #9c27b0; font-size: 0.85rem;">🤖 Power Armor bonusy:</h4>
+                        <div style="font-size: 0.8rem; color: #aaa;">
+                            <div>🛡️ +${paDef} obrana</div>
+                            <div>⚔️ +${powerArmor.stats?.damage || 10} útok</div>
+                            <div>❤️ +${powerArmor.stats?.hp || 30} max HP</div>
+                            <div>🎒 +${powerArmor.carryBonus || 50} nosnost</div>
+                            <div>⛽ Spotřeba: ${powerArmor.fuelConsumption || 1} palivo/den</div>
+                        </div>
+                    </div>
+                ` : ''}
                 
                 <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 8px; border: 1px solid #2d2d4a;">
                     <h4 style="margin: 0 0 0.5rem 0; color: #64b5f6; font-size: 0.85rem;">💡 Jak zvýšit obranu</h4>
                     <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.8rem; color: #aaa;">
                         <li>Zvyš atribut Výdrž (END)</li>
-                        ${state.char.class !== 'mutant' ? '<li>Vyrobí si lepší zbroj a helmu</li>' : ''}
+                        ${!isMutant ? '<li>Vyrobí si lepší zbroj a helmu</li>' : ''}
                         <li>Nasaď Drahokamový přívěsek (+10)</li>
                     </ul>
                 </div>
@@ -21786,7 +21855,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: #ccc;">
                         <li>Zabere sloty: Zbroj, Helma, Boty</li>
                         <li>Spotřeba: ${fuelNeeded} paliva ihned + ${fuelNeeded}/den</li>
-                        <li>Váha: ${item.weight} kg (nelze snadno sundat!)</li>
                         <li>Bez paliva: -20% rychlost cestování</li>
                     </ul>
                 </div>
@@ -21820,12 +21888,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Spotřebuj palivo
             state.resources.fuel -= fuelNeeded;
             
-            // Sundej všechny sloty které power armor zabírá
-            const slotsToUnequip = item.slotsOccupied || ['armor', 'helmet', 'gloves', 'boots'];
+            // Sundej všechny sloty které power armor zabírá a VRAŤ DO INVENTÁŘE
+            const paItemDef = ITEMS.find(i => i.id === item.id);
+            const slotsToUnequip = item.slotsOccupied || paItemDef?.slotsOccupied || ['armor', 'helmet', 'boots'];
             slotsToUnequip.forEach(slot => {
                 if (state.equipped[slot]) {
+                    const unequippedItem = state.equipped[slot];
                     // Vrať do inventáře
-                    addLog(`Sundáno: ${state.equipped[slot].name}`, state.equipped[slot].icon);
+                    const existing = state.inv.find(i => i.id === unequippedItem.id && i.type === unequippedItem.type);
+                    if (!existing || !unequippedItem.stackable) {
+                        state.inv.push(unequippedItem);
+                    }
+                    addLog(`Sundáno: ${unequippedItem.name}`, unequippedItem.icon);
                     state.equipped[slot] = null;
                 }
             });
@@ -21849,19 +21923,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.equipped?.powerArmor) return;
             
             const item = state.equipped.powerArmor;
-            
-            // Kontrola - power armor je těžká, potřebuješ být v základně
-            if (!state.map?.inBase && state.world?.currentLocation !== 'shelter') {
-                showModal('🤖 Nelze sundat', `
-                    <div style="text-align: center;">
-                        <div style="font-size: 3rem;">🤖</div>
-                        <p style="color: #ff9800;">Power Armor je příliš těžká (${item.weight} kg)!</p>
-                        <p>Můžeš ji sundat pouze v základně nebo úkrytu.</p>
-                    </div>
-                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
-                `);
-                return;
-            }
             
             // Odeber power armor (HP se přepočítá v renderFull přes calculateMaxHp)
             state.equipped.powerArmor = null;
@@ -21934,9 +21995,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <button class="btn" onclick="unequipPowerArmor()" style="width: 100%; background: #f44336; margin-bottom: 0.5rem;">
                         🔓 Sundat Power Armor
                     </button>
-                    <div style="color: #ff9800; font-size: 0.8rem; text-align: center; margin-bottom: 0.5rem;">
-                        ⚠️ Lze sundat pouze v základně/úkrytu!
-                    </div>
                     ${!currentlyHasFuel && hasFuel ? `
                     <button class="btn" onclick="refuelPowerArmor()" style="width: 100%; background: #ff9800; margin-bottom: 0.5rem;">
                         ⛽ Doplnit palivo (${item.fuelConsumption || 1})
@@ -21972,7 +22030,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="background: #2a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #f44336;">
                     <div style="color: #f44336; font-weight: bold; margin-bottom: 0.5rem;">⚠️ Omezení:</div>
                     <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.8rem; color: #ccc;">
-                        <li>Zabírá sloty: Zbroj, Helma, Rukavice, Boty</li>
+                        <li>Zabírá sloty: Zbroj, Helma, Boty (rukavice volné!)</li>
                         <li>Váha: <strong>${item.weight} kg</strong></li>
                         <li>Palivo: ${item.fuelConsumption || 1}/den</li>
                         <li>Bez paliva: -20% rychlost cestování</li>
@@ -61453,25 +61511,30 @@ function openFullscreenMap() {
             
             // Zkontroluj jestli má hráč nějaké nemoci
             initDiseases();
-            if (!state.diseases.active || state.diseases.active.length === 0) {
+            const activeDiseases = state.diseases.active ? [...state.diseases.active] : [];
+            if (activeDiseases.length === 0) {
                 notifyWarning('🩺 Zdravý pacient', 'Nemáš žádné nemoci k vyléčení!');
                 return;
             }
             
             // Úroveň medika ovlivňuje kolik nemocí vyléčí
             const medicLevel = settler.skillLevel || 1;
-            const diseasesToCure = Math.min(state.diseases.active.length, medicLevel);
+            const diseasesToCure = Math.min(activeDiseases.length, Math.max(1, medicLevel));
             
-            // Vyléč nemoci (od nejhorší)
+            // Vyléč nemoci pomocí standardní cureDisease() funkce
             const curedDiseases = [];
             for (let i = 0; i < diseasesToCure; i++) {
-                if (state.diseases.active.length > 0) {
-                    const disease = state.diseases.active.shift();
-                    const diseaseDef = DISEASES.find(d => d.id === disease.id);
-                    curedDiseases.push(diseaseDef?.name || disease.id);
-                    // Přidej imunitu
-                    addDiseaseImmunity(disease.id, 48 * 60 * 60 * 1000);
+                const diseaseEntry = activeDiseases[i];
+                if (diseaseEntry && hasDisease(diseaseEntry.id)) {
+                    const diseaseDef = DISEASES.find(d => d.id === diseaseEntry.id);
+                    cureDisease(diseaseEntry.id);
+                    curedDiseases.push(diseaseDef?.name || diseaseEntry.id);
                 }
+            }
+            
+            if (curedDiseases.length === 0) {
+                notifyWarning('🩺 Hmm', 'Léčba se nezdařila.');
+                return;
             }
             
             // Bonus HP léčení podle úrovně
@@ -61496,25 +61559,30 @@ function openFullscreenMap() {
             
             // Zkontroluj jestli má hráč nějaká zranění
             initInjuries();
-            if (!state.injuries.active || state.injuries.active.length === 0) {
+            const activeInjuries = state.injuries.active ? [...state.injuries.active] : [];
+            if (activeInjuries.length === 0) {
                 notifyWarning('🩹 Bez zranění', 'Nemáš žádná zranění k ošetření!');
                 return;
             }
             
             // Úroveň medika ovlivňuje kolik zranění vyléčí
             const medicLevel = settler.skillLevel || 1;
-            const injuriesToCure = Math.min(state.injuries.active.length, Math.ceil(medicLevel * 1.5));
+            const injuriesToCure = Math.min(activeInjuries.length, Math.max(1, Math.ceil(medicLevel * 1.5)));
             
-            // Vyléč zranění
+            // Vyléč zranění pomocí standardní healInjury() funkce
             const curedInjuries = [];
             for (let i = 0; i < injuriesToCure; i++) {
-                if (state.injuries.active.length > 0) {
-                    const injury = state.injuries.active.shift();
-                    const injuryDef = INJURIES.find(j => j.id === injury.id);
-                    curedInjuries.push(injuryDef?.name || injury.id);
-                    // Přidej imunitu
-                    addInjuryImmunity(injury.id, 30 * 60 * 1000);
+                const injuryEntry = activeInjuries[i];
+                if (injuryEntry && hasInjury(injuryEntry.id)) {
+                    const injuryDef = INJURIES.find(j => j.id === injuryEntry.id);
+                    healInjury(injuryEntry.id);
+                    curedInjuries.push(injuryDef?.name || injuryEntry.id);
                 }
+            }
+            
+            if (curedInjuries.length === 0) {
+                notifyWarning('🩹 Hmm', 'Ošetření se nezdařilo.');
+                return;
             }
             
             // Bonus HP léčení
@@ -68191,12 +68259,30 @@ function openFullscreenMap() {
                 defense = Math.floor(defense * (1 + state.trainingBonuses.defense));
             }
             
-            // 🤖 POWER ARMOR defense (nahrazuje jednotlivé kusy)
+            // 🤖 POWER ARMOR defense (nahrazuje zbroj/helmu/boty, ale NE rukavice)
             if (state.equipped?.powerArmor) {
-                // Power armor NAHRAZUJE normální zbroj
+                // Power armor NAHRAZUJE normální zbroj, ale rukavice zůstávají
                 if (typeof getPowerArmorBonuses === 'function') {
                     const paBonuses = getPowerArmorBonuses();
-                    defense = paBonuses.defense; // Kompletní nahrazení
+                    // Základ: END bonus + PA defense + rukavice (ty PA nezakrývá)
+                    const effectiveEndDef2 = typeof getEffectiveAttr === 'function' ? getEffectiveAttr('end') : (state.char.attrs.end || 5);
+                    defense = Math.floor(effectiveEndDef2 * 1) + paBonuses.defense;
+                    // Přidej rukavice - ty zůstávají nasazené
+                    const paGloves = state.equipped?.gloves;
+                    if (paGloves && paGloves.defense) defense += paGloves.defense;
+                    // Skill tree bonus
+                    defense += getSkillTreeBonus('defense');
+                    // Mutant bonus
+                    if (state.char.classId === 'mutant') defense += 10;
+                    // Mutation bonuses
+                    const mutBonusesPA = getMutationBonuses();
+                    defense += mutBonusesPA.defense || 0;
+                    // Znovu aplikuj class bonusy
+                    if (state.char.classId === 'tank') defense = Math.floor(defense * 1.3);
+                    if (state.char.classId === 'berserker') defense = Math.floor(defense * 0.7);
+                    if (state.trainingBonuses?.defense > 0) {
+                        defense = Math.floor(defense * (1 + state.trainingBonuses.defense));
+                    }
                 }
             }
             
@@ -80906,6 +80992,12 @@ function openFullscreenMap() {
             const item = state.inv[invIndex];
             if (!item) {
                 notifyWarning('Chyba', 'Předmět nenalezen v inventáři');
+                return;
+            }
+            
+            // Blokuj prodej nasazeného vybavení (zejména Power Armor)
+            if (isItemEquipped(item)) {
+                notifyWarning('Nasazeno!', `${item.icon} ${item.name} máš nasazený/ou! Nejdříve sundej.`);
                 return;
             }
             
