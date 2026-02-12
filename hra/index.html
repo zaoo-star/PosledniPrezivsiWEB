@@ -14585,7 +14585,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Oprav durability
                 if (item.durability !== undefined) {
-                    item.durability = safeInteger(item.durability, 100, 0, 100);
+                    const maxDur = item.maxDurability || 100;
+                    item.durability = safeInteger(item.durability, maxDur, 0, maxDur);
                 }
                 
                 // Oprav damage/defense
@@ -15058,17 +15059,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 newItem.obtainedDay = state.time?.days || 1;
             }
             
-            // Doplň chybějící vlastnosti z ITEMS definice (price, weight, atd.)
-            if (!newItem.price || !newItem.weight || !newItem.special || (newItem.type === 'weapon' && !newItem.ammoType)) {
-                const itemDef = ITEMS.find(i => i.id === item.id);
-                if (itemDef) {
-                    if (!newItem.price && itemDef.price) newItem.price = itemDef.price;
-                    if (!newItem.weight && itemDef.weight) newItem.weight = itemDef.weight;
-                    if (!newItem.rarity && itemDef.rarity) newItem.rarity = itemDef.rarity;
-                    if (!newItem.special && itemDef.special) newItem.special = itemDef.special;
-                    if (!newItem.defense && itemDef.defense) newItem.defense = itemDef.defense;
-                    if (!newItem.ammoType && itemDef.ammoType) newItem.ammoType = itemDef.ammoType;
-                }
+            // Doplň chybějící vlastnosti z ITEMS definice (price, weight, effect, atd.)
+            const itemDef = ITEMS.find(i => i.id === item.id);
+            if (itemDef) {
+                if (!newItem.price && itemDef.price) newItem.price = itemDef.price;
+                if (!newItem.weight && itemDef.weight) newItem.weight = itemDef.weight;
+                if (!newItem.rarity && itemDef.rarity) newItem.rarity = itemDef.rarity;
+                if (!newItem.special && itemDef.special) newItem.special = itemDef.special;
+                if (!newItem.defense && itemDef.defense) newItem.defense = itemDef.defense;
+                if (!newItem.ammoType && itemDef.ammoType) newItem.ammoType = itemDef.ammoType;
+                if (!newItem.effect && itemDef.effect) newItem.effect = itemDef.effect;
+                if (newItem.value === undefined && itemDef.value !== undefined) newItem.value = itemDef.value;
+                if (!newItem.type && itemDef.type) newItem.type = itemDef.type;
+                if (!newItem.damage && itemDef.damage) newItem.damage = itemDef.damage;
+                if (!newItem.desc && itemDef.desc) newItem.desc = itemDef.desc;
             }
             
             if (stackableTypes.includes(item.type) || item.stackable) {
@@ -39058,7 +39062,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             if (existing) existing.count = (existing.count || 1) + 1;
                             else state.inv.push({...foundItem, count: 1});
                         } else {
-                            state.inv.push({...foundItem, durability: 100, maxDurability: 100});
+                            const baseDur = foundItem.rarity === 'legendary' ? 200 : foundItem.rarity === 'epic' ? 150 : foundItem.rarity === 'rare' ? 120 : foundItem.rarity === 'uncommon' ? 80 : 50;
+                            state.inv.push({...foundItem, durability: baseDur, maxDurability: baseDur});
                         }
                         
                         // Notifikace
@@ -44207,6 +44212,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             console.log('item.effect:', item.effect);
             
+            // Doplň chybějící effect/value z ITEMS definice (migrace starých inventářů)
+            if (!item.effect || item.value === undefined) {
+                const itemDef = ITEMS.find(i => i.id === item.id);
+                if (itemDef) {
+                    if (!item.effect && itemDef.effect) item.effect = itemDef.effect;
+                    if (item.value === undefined && itemDef.value !== undefined) item.value = itemDef.value;
+                }
+            }
+            
             // For other consumables, use item data
             console.log('Processing other consumable...');
             
@@ -46786,10 +46800,24 @@ function openFullscreenMap() {
                 }
             });
             
+            // Vojenská specializace: +50 obrana + strážci +25%
+            if (state.settlement.specialization === 'military') {
+                const milSpec = SETTLEMENT_SPECIALIZATIONS.find(s => s.id === 'military');
+                if (milSpec?.bonus?.defense) defense += milSpec.bonus.defense;
+                if (milSpec?.bonus?.guardBonus) {
+                    // Přepočítej guard defense s bonusem
+                    const guardDefenseBase = state.settlement.settlers.filter(s => s.type === 'guard').reduce((sum, g) => {
+                        const skillData = SETTLER_SKILLS['combat'];
+                        const level = g.skillLevel || 1;
+                        const levelData = skillData?.levels[level - 1];
+                        return sum + (levelData?.effect?.defense || 0);
+                    }, 0);
+                    defense += Math.floor(guardDefenseBase * (milSpec.bonus.guardBonus / 100));
+                }
+            }
+            
             return defense;
         }
-        
-        // === SYSTÉM NÁJEZDŮ NA OSADU ===
         function checkForRaid() {
             const now = Date.now();
             const hoursSinceLastRaid = (now - (state.settlement.lastRaid || 0)) / (1000 * 60 * 60);
@@ -56615,15 +56643,15 @@ function openFullscreenMap() {
                     
                     for (let i = 0; i < amount; i++) {
                         const res = resources[Math.floor(Math.random() * resources.length)];
-                        state.settlement.resources[res] = (state.settlement.resources[res] || 0) + 1;
-                        todayGather.resources[res] = (todayGather.resources[res] || 0) + 1;
+                        state.settlement.resources[res] = (state.settlement.resources[res] || 0) + resMult;
+                        todayGather.resources[res] = (todayGather.resources[res] || 0) + resMult;
                     }
                     
                     // Šance na vzácnou surovinu
                     if (effect.rareChance && Math.random() < effect.rareChance) {
                         const rareRes = effect.electronics ? 'electronics' : ['chemicals', 'glass', 'scrap'][Math.floor(Math.random() * 3)];
-                        state.settlement.resources[rareRes] = (state.settlement.resources[rareRes] || 0) + 1;
-                        todayGather.resources[rareRes] = (todayGather.resources[rareRes] || 0) + 1;
+                        state.settlement.resources[rareRes] = (state.settlement.resources[rareRes] || 0) + resMult;
+                        todayGather.resources[rareRes] = (todayGather.resources[rareRes] || 0) + resMult;
                     }
                     
                     // Šance na předmět (lvl 5+)
@@ -56654,7 +56682,7 @@ function openFullscreenMap() {
                 if (settler.type === 'farmer' && effect.food) {
                     let food = effect.food;
                     if (state.settlement.buildings?.includes('farmland')) food += 2;
-                    if (state.settlement.specialization === 'farming') food = Math.floor(food * 1.5);
+                    if (state.settlement.specialization === 'farming') food = Math.floor(food * 2);
                     food = Math.floor(food * workMultiplier);
                     // Bonus z osobnosti a morálky jde navíc ke skladu
                     const bonusFood = food - (effect.food + (state.settlement.buildings?.includes('farmland') ? 2 : 0));
@@ -56679,16 +56707,17 @@ function openFullscreenMap() {
                     let logText = `🏹 ${settler.name} ulovil ${effect.meat}x maso`;
                     
                     if (effect.leather) {
-                        state.settlement.resources.leather = (state.settlement.resources.leather || 0) + effect.leather;
-                        logText += `, ${effect.leather}x kůže`;
+                        const leatherAmt = effect.leather * resMult;
+                        state.settlement.resources.leather = (state.settlement.resources.leather || 0) + leatherAmt;
+                        logText += `, ${leatherAmt}x kůže`;
                     }
                     addLog(logText, '🏹');
                 }
                 
                 // === ALCHYMISTA ===
                 if (settler.type === 'alchemist') {
-                    const herbsAmount = effect.herbs || 1;
-                    const chemsAmount = effect.chemicals || 1;
+                    const herbsAmount = (effect.herbs || 1) * resMult;
+                    const chemsAmount = (effect.chemicals || 1) * resMult;
                     state.settlement.resources.herbs = (state.settlement.resources.herbs || 0) + herbsAmount;
                     state.settlement.resources.chemicals = (state.settlement.resources.chemicals || 0) + chemsAmount;
                     addLog(`⚗️ ${settler.name} nasbíral ${herbsAmount}x byliny, ${chemsAmount}x chemikálie`, '⚗️');
@@ -56696,18 +56725,20 @@ function openFullscreenMap() {
                 
                 // === DŘEVORUBEC ===
                 if (settler.type === 'lumberjack') {
-                    const woodAmount = effect.wood || 3;
+                    const woodAmount = (effect.wood || 3) * resMult;
                     state.settlement.resources.wood = (state.settlement.resources.wood || 0) + woodAmount;
                     addLog(`🪓 ${settler.name} nasbíral ${woodAmount}x dřevo`, '🪓');
                     
                     if (effect.rope) {
-                        state.settlement.resources.rope = (state.settlement.resources.rope || 0) + effect.rope;
+                        const ropeAmt = effect.rope * resMult;
+                        state.settlement.resources.rope = (state.settlement.resources.rope || 0) + ropeAmt;
                     }
                     if (effect.scrap) {
-                        state.settlement.resources.scrap = (state.settlement.resources.scrap || 0) + effect.scrap;
+                        const scrapAmt = effect.scrap * resMult;
+                        state.settlement.resources.scrap = (state.settlement.resources.scrap || 0) + scrapAmt;
                     }
                     if (effect.rareWood && Math.random() < 0.15) {
-                        const bonusWood = Math.floor(Math.random() * 5) + 3;
+                        const bonusWood = (Math.floor(Math.random() * 5) + 3) * resMult;
                         state.settlement.resources.wood = (state.settlement.resources.wood || 0) + bonusWood;
                         addLog(`🪓 ${settler.name} našel vzácné dřevo: +${bonusWood}!`, '✨');
                     }
@@ -56764,6 +56795,9 @@ function openFullscreenMap() {
             // Initialize production report
             const prodReport = { food: 0, water: 0, resources: {}, items: [] };
             
+            // Průmyslová specializace: 2x produkce surovin
+            const resMult = (state.settlement.specialization === 'industrial') ? 2 : 1;
+            
             // Calculate production
             let foodProd = 0, waterProd = 0;
             
@@ -56785,22 +56819,26 @@ function openFullscreenMap() {
                             waterProd += b.production.water;
                             prodReport.water += b.production.water;
                         }
-                        // Produkce surovin z budov - do skladu osady
+                        // Produkce surovin z budov - do skladu osady (průmyslová spec: 2x)
                         if (b.production.wood) {
-                            state.settlement.resources.wood += b.production.wood;
-                            prodReport.resources.wood = (prodReport.resources.wood || 0) + b.production.wood;
+                            const amt = b.production.wood * resMult;
+                            state.settlement.resources.wood += amt;
+                            prodReport.resources.wood = (prodReport.resources.wood || 0) + amt;
                         }
                         if (b.production.metal) {
-                            state.settlement.resources.metal += b.production.metal;
-                            prodReport.resources.metal = (prodReport.resources.metal || 0) + b.production.metal;
+                            const amt = b.production.metal * resMult;
+                            state.settlement.resources.metal += amt;
+                            prodReport.resources.metal = (prodReport.resources.metal || 0) + amt;
                         }
                         if (b.production.stone) {
-                            state.settlement.resources.stone += b.production.stone;
-                            prodReport.resources.stone = (prodReport.resources.stone || 0) + b.production.stone;
+                            const amt = b.production.stone * resMult;
+                            state.settlement.resources.stone += amt;
+                            prodReport.resources.stone = (prodReport.resources.stone || 0) + amt;
                         }
                         if (b.production.cloth) {
-                            state.settlement.resources.cloth += b.production.cloth;
-                            prodReport.resources.cloth = (prodReport.resources.cloth || 0) + b.production.cloth;
+                            const amt = b.production.cloth * resMult;
+                            state.settlement.resources.cloth += amt;
+                            prodReport.resources.cloth = (prodReport.resources.cloth || 0) + amt;
                         }
                     }
                 }
@@ -56833,7 +56871,7 @@ function openFullscreenMap() {
                 if (settler.type === 'farmer' && effect.food) {
                     let settlerFood = effect.food;
                     if (state.settlement.buildings?.includes('farmland')) settlerFood += 2;
-                    if (state.settlement.specialization === 'farming') settlerFood = Math.floor(settlerFood * 1.5);
+                    if (state.settlement.specialization === 'farming') settlerFood = Math.floor(settlerFood * 2);
                     foodProd += settlerFood;
                     prodReport.food += settlerFood;
                 }
@@ -56913,6 +56951,28 @@ function openFullscreenMap() {
             
             // Calculate consumption
             const consumption = calculateSettlementConsumption();
+            
+            // === SPECIALIZAČNÍ BONUSY ===
+            if (state.settlement.specialization) {
+                const activeSpec = SETTLEMENT_SPECIALIZATIONS.find(s => s.id === state.settlement.specialization);
+                if (activeSpec?.bonus) {
+                    // Zemědělská: +100% produkce jídla (flat bonus), +50 vody
+                    if (activeSpec.bonus.foodBonus) {
+                        const farmBonus = activeSpec.bonus.foodBonus;
+                        foodProd += farmBonus;
+                        prodReport.food += farmBonus;
+                    }
+                    if (activeSpec.bonus.waterBonus) {
+                        const waterBonus = activeSpec.bonus.waterBonus;
+                        waterProd += waterBonus;
+                        prodReport.water += waterBonus;
+                    }
+                    // Vojenská: +50 obrana, strážci +25% (aplikováno v calculateSettlementDefense)
+                    // Obchodní: +25% ceny, +50 příjem (aplikováno jinde)
+                    // Léčitelská: +20 HP/den (aplikováno výše u medika), -80% nemoci
+                    // Průmyslová: 2x produkce surovin (resMult aplikováno v produkci výše)
+                }
+            }
             
             // Apply production and consumption
             state.settlement.resources.food += foodProd - consumption.food;
@@ -59728,7 +59788,7 @@ function openFullscreenMap() {
             }
             
             // Trade specialization
-            if (state.settlement.specialization === 'trade') {
+            if (state.settlement.specialization === 'trading') {
                 html += '<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #2a3a2a;">';
                 html += '<span>🏛️ ' + ('Obchodní specializace') + '</span>';
                 html += '<span style="color: #8bc34a;">+25 💰</span>';
@@ -62989,6 +63049,14 @@ function openFullscreenMap() {
         function performAITurn(unit) {
             const cs = window.combatState;
             if (!unit.alive || unit.actionsLeft <= 0) {
+                unit.actionsLeft = 0;
+                useAction(unit, 0);
+                return;
+            }
+            
+            // Omráčený nepřítel přeskočí tah
+            if (unit.stunned) {
+                cs.log.push(`💫 ${unit.name} je omráčený a nemůže jednat!`);
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
                 return;
@@ -70630,6 +70698,45 @@ function openFullscreenMap() {
             }
             
             console.log('✅ Migrace dokončena');
+            
+            // === MIGRACE: Doplň chybějící effect/value/type na inventářních předmětech ===
+            if (state.inv && state.inv.length > 0) {
+                let fixedItems = 0;
+                state.inv.forEach(item => {
+                    const itemDef = ITEMS.find(i => i.id === item.id);
+                    if (itemDef) {
+                        if (!item.effect && itemDef.effect) { item.effect = itemDef.effect; fixedItems++; }
+                        if (item.value === undefined && itemDef.value !== undefined) item.value = itemDef.value;
+                        if (!item.type && itemDef.type) item.type = itemDef.type;
+                        if (!item.damage && itemDef.damage) item.damage = itemDef.damage;
+                        // Oprava maxDurability pro legendary/epic itemy co mají víc než 100
+                        if (item.durability !== undefined && item.maxDurability) {
+                            const expectedDur = itemDef.rarity === 'legendary' ? 200 : itemDef.rarity === 'epic' ? 150 : itemDef.rarity === 'rare' ? 120 : itemDef.rarity === 'uncommon' ? 80 : 50;
+                            if (item.maxDurability < expectedDur) {
+                                console.log(`🔧 Migrace: ${item.name || item.id} maxDurability ${item.maxDurability} → ${expectedDur}`);
+                                item.maxDurability = expectedDur;
+                            }
+                        }
+                    }
+                });
+                if (fixedItems > 0) console.log(`🔧 Migrace: Opraven effect/value u ${fixedItems} předmětů`);
+            }
+            
+            // Také oprav equipped items
+            if (state.equipped) {
+                Object.values(state.equipped).forEach(item => {
+                    if (item && item.maxDurability) {
+                        const itemDef = ITEMS.find(i => i.id === item.id);
+                        if (itemDef) {
+                            const expectedDur = itemDef.rarity === 'legendary' ? 200 : itemDef.rarity === 'epic' ? 150 : itemDef.rarity === 'rare' ? 120 : itemDef.rarity === 'uncommon' ? 80 : 50;
+                            if (item.maxDurability < expectedDur) {
+                                console.log(`🔧 Migrace: Equipped ${item.name || item.id} maxDurability ${item.maxDurability} → ${expectedDur}`);
+                                item.maxDurability = expectedDur;
+                            }
+                        }
+                    }
+                });
+            }
         }
         
         function toggleSound() {
