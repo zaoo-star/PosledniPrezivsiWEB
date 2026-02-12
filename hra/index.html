@@ -64565,7 +64565,7 @@ function openFullscreenMap() {
                         <div style="font-size: 4rem;">⚠️</div>
                         <h2 style="color: #ff9800;">Chyba boje</h2>
                         <p style="color: #888;">Combat state byl ztracen.</p>
-                        <button class="btn" onclick="window.combatState = null; delete state.activeCombat; closeModal(); renderFull(); saveGame(true);" style="width: 100%; margin-top: 1rem;">← Zpět do hry</button>
+                        <button class="btn" onclick="window.combatState = null; delete state.activeCombat; state._raidVictoryHandled = false; closeModal(); renderFull(); saveGame(true); setTimeout(function(){ if(typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, 1500);" style="width: 100%; margin-top: 1rem;">← Zpět do hry</button>
                     </div>
                 `;
                 return;
@@ -64882,6 +64882,12 @@ function openFullscreenMap() {
             window.combatState = null;
             delete state.activeCombat;
             saveGame(); // Uložit že boj skončil
+            // Po skončení boje zkontroluj nevyzvednuté raid odměny
+            setTimeout(() => {
+                if (typeof checkRaidVictoryFallback === 'function' && !state._raidVictoryHandled) {
+                    checkRaidVictoryFallback();
+                }
+            }, 2000);
         }
         
         function handleCombatDefeat() {
@@ -88420,6 +88426,14 @@ function openFullscreenMap() {
                         </div>
                     </button>
                     
+                    <button class="btn" onclick="adminRetriggerRaidRewards()" style="background: linear-gradient(135deg, #e65100 0%, #ff6d00 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">🎁</span>
+                        <div>
+                            <div style="font-weight: bold;">Raid Odměny Znovu</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Re-doručit odměny účastníkům raidu</div>
+                        </div>
+                    </button>
+                    
                     <button class="btn" onclick="showStaffManager()" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
                         <span style="font-size: 1.5rem;">👥</span>
                         <div>
@@ -93512,7 +93526,7 @@ function openFullscreenMap() {
                             if (alreadyClaimed) {
                                 console.log('🐉 SKIP: Raid already claimed (localStorage):', raidInstanceKey);
                                 state._raidVictoryHandled = true;
-                            } else if (defeatedAge > 5 * 60 * 1000) {
+                            } else if (defeatedAge > 30 * 60 * 1000) {
                                 console.log('🐉 SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min. Auto-cleaning...');
                                 state._raidVictoryHandled = true;
                                 // Auto-cleanup starého raidu z Firebase
@@ -93758,9 +93772,9 @@ function openFullscreenMap() {
         async function handleRaidBossGlobalVictory(raidData) {
             if (!raidData || !raidData.defeated) return;
             
-            // Ignoruj staré výsledky (starší než 5 minut)
+            // Ignoruj staré výsledky (starší než 30 minut)
             const defeatedAge = raidData.defeatedAt ? (Date.now() - raidData.defeatedAt) : 0;
-            if (defeatedAge > 5 * 60 * 1000) {
+            if (defeatedAge > 30 * 60 * 1000) {
                 console.log('🐉 VICTORY HANDLER SKIP: Old raid result, age:', Math.round(defeatedAge / 60000), 'min');
                 return;
             }
@@ -93947,10 +93961,10 @@ function openFullscreenMap() {
             
             saveGame(true);
             
-            // Vyčisti raid po 5 minutách (aby online hráči stihli vyzvednout loot)
+            // Vyčisti raid po 30 minutách (aby online hráči stihli vyzvednout loot)
             // Jen killing blow hráč nebo admin čistí
             if (raidData.killingBlow === myName || isStaff()) {
-                setTimeout(() => cleanupWorldBossRaid(raidData), 300000); // 5 min
+                setTimeout(() => cleanupWorldBossRaid(raidData), 1800000); // 30 min
             }
         }
         
@@ -93966,9 +93980,9 @@ function openFullscreenMap() {
                         console.log('🐉 FALLBACK SKIP: Player is busy');
                         return;
                     }
-                    // Ignoruj staré raidové výsledky (starší než 5 minut)
+                    // Ignoruj staré raidové výsledky (starší než 30 minut)
                     const defeatedAge = data.defeatedAt ? (Date.now() - data.defeatedAt) : 0;
-                    if (defeatedAge > 5 * 60 * 1000) {
+                    if (defeatedAge > 30 * 60 * 1000) {
                         console.log('🐉 FALLBACK SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min');
                         state._raidVictoryHandled = true;
                         return;
@@ -94005,6 +94019,161 @@ function openFullscreenMap() {
                     await firebaseDB.ref('worldBossRaid').set({ active: false });
                 }
             } catch(e) {}
+        }
+        
+        // Admin: Re-trigger raid rewards pro všechny účastníky
+        async function adminRetriggerRaidRewards() {
+            if (!isAdmin()) return;
+            
+            try {
+                const snap = await firebaseDB.ref('worldBossRaid').once('value');
+                const data = snap.val();
+                
+                if (!data || !data.defeated) {
+                    notifyWarning('Žádný raid', 'Nenalezen žádný poražený World Boss v databázi.');
+                    return;
+                }
+                
+                const boss = WORLD_BOSSES.find(b => b.id === data.bossId);
+                if (!boss) { notifyWarning('Chyba', 'Boss nenalezen: ' + data.bossId); return; }
+                
+                const participants = data.participants || {};
+                const participantNames = Object.keys(participants);
+                const totalDamage = Object.values(participants).reduce((sum, p) => sum + (p.damage || 0), 0);
+                
+                if (participantNames.length === 0) {
+                    notifyWarning('Žádní účastníci', 'Raid nemá žádné účastníky.');
+                    return;
+                }
+                
+                // Zobraz přehled a zeptej se
+                let participantHtml = participantNames
+                    .sort((a, b) => (participants[b].damage || 0) - (participants[a].damage || 0))
+                    .map(name => {
+                        const p = participants[name];
+                        const pct = totalDamage > 0 ? Math.round((p.damage || 0) / totalDamage * 100) : 0;
+                        const claimed = p.lootClaimed ? '✅' : '❌';
+                        return `<div style="display: flex; justify-content: space-between; padding: 0.2rem 0.4rem; background: ${p.lootClaimed ? '#1a2a1a' : '#2a1a1a'}; border-radius: 4px; margin: 0.15rem 0; font-size: 0.85rem;">
+                            <span style="color: ${p.lootClaimed ? '#8bc34a' : '#ff4444'};">${claimed} ${name.replace(/_/g, ' ')}</span>
+                            <span style="color: #ffd700;">${formatNumber(p.damage || 0)} (${pct}%)</span>
+                        </div>`;
+                    }).join('');
+                
+                const unclaimedCount = participantNames.filter(n => !participants[n].lootClaimed).length;
+                
+                showModal('🎁 Re-doručit Raid Odměny', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem;">${boss.icon}</div>
+                        <h3 style="color: #ffd700;">${boss.name}</h3>
+                        <p style="color: #888; font-size: 0.85rem;">Celkový damage: ${formatNumber(totalDamage)} | Účastníků: ${participantNames.length}</p>
+                        <p style="color: ${unclaimedCount > 0 ? '#ff4444' : '#8bc34a'}; font-weight: bold;">
+                            ${unclaimedCount > 0 ? `⚠️ ${unclaimedCount} hráčů NEDOSTALO odměny` : '✅ Všichni si vyzvedli odměny'}
+                        </p>
+                    </div>
+                    
+                    <div style="max-height: 30vh; overflow-y: auto; margin: 0.5rem 0;">
+                        ${participantHtml}
+                    </div>
+                    
+                    <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
+                        <button class="btn" onclick="adminForceRetriggerMyRewards()" style="background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.8rem;">
+                            🎁 Vyzvednout MÉ odměny znovu
+                        </button>
+                        <button class="btn" onclick="adminSendMissingRewards()" style="background: linear-gradient(135deg, #ff9800 0%, #e65100 100%); padding: 0.8rem;">
+                            📨 Poslat odměny VŠEM kdo nedostali (přes notifikace)
+                        </button>
+                        <button class="btn" onclick="showAdminPanel()" style="background: #555;">← Zpět</button>
+                    </div>
+                `);
+            } catch(e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
+        // Admin: Force retrigger own rewards
+        async function adminForceRetriggerMyRewards() {
+            if (!isAdmin()) return;
+            try {
+                const snap = await firebaseDB.ref('worldBossRaid').once('value');
+                const data = snap.val();
+                if (!data || !data.defeated) { notifyWarning('Chyba', 'Raid nenalezen'); return; }
+                
+                const myName = getPlayerName().replace(/[\\/\\.#$\\[\\]]/g, '_');
+                // Reset claimed flags
+                state._raidVictoryHandled = false;
+                const raidInstanceKey = `raidClaimed_${data.bossId}_${data.summonedAt || ''}`;
+                localStorage.removeItem(raidInstanceKey);
+                const lootClaimedKey = `_raidLootClaimed_${data.bossId}_${data.summonedAt || data.startedAt || ''}`;
+                window[lootClaimedKey] = false;
+                
+                // Reset lootClaimed v Firebase
+                try { await firebaseDB.ref(`worldBossRaid/participants/${myName}/lootClaimed`).set(false); } catch(e) {}
+                
+                // Override defeated age
+                if (!data.defeatedAt) data.defeatedAt = Date.now();
+                
+                closeModal();
+                handleRaidBossGlobalVictory(data);
+                notifySuccess('Odměny doručeny!', 'Tvé raid odměny byly znovu vyplaceny.');
+            } catch(e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
+        // Admin: Send missing rewards to all unclaimed participants via notifications
+        async function adminSendMissingRewards() {
+            if (!isAdmin()) return;
+            try {
+                const snap = await firebaseDB.ref('worldBossRaid').once('value');
+                const data = snap.val();
+                if (!data || !data.defeated) { notifyWarning('Chyba', 'Raid nenalezen'); return; }
+                
+                const boss = WORLD_BOSSES.find(b => b.id === data.bossId);
+                if (!boss) return;
+                
+                const participants = data.participants || {};
+                const totalDamage = Object.values(participants).reduce((sum, p) => sum + (p.damage || 0), 0);
+                const moneyRewards = { sandworm: 1500, mech_titan: 2500, shadow_patriarch: 2000, behemoth: 3000, rad_hydra: 4000, ancient_leviathan: 6000 };
+                const baseMoney = moneyRewards[boss.id] || Math.floor(boss.cost * 1.0);
+                
+                let sentCount = 0;
+                
+                for (const [name, pData] of Object.entries(participants)) {
+                    if (pData.lootClaimed) continue; // Už dostal
+                    if (!pData.damage || pData.damage <= 0) continue;
+                    
+                    const dmgPct = totalDamage > 0 ? pData.damage / totalDamage : 0;
+                    const myXp = Math.max(Math.floor(boss.xp * 0.10), Math.floor(boss.xp * dmgPct));
+                    const myMoney = Math.max(Math.floor(baseMoney * 0.10), Math.floor(baseMoney * dmgPct));
+                    
+                    // Vyber náhodný unikátní item
+                    const randomItem = boss.uniqueLoot[Math.floor(Math.random() * boss.uniqueLoot.length)];
+                    
+                    const rewardData = {
+                        type: 'admin_reward',
+                        money: myMoney,
+                        xp: myXp,
+                        item: randomItem ? { id: randomItem.id, name: randomItem.name, icon: randomItem.icon, count: 1 } : null,
+                        reason: `🐉 Kompenzace za ${boss.name} raid (${Math.round(dmgPct * 100)}% DMG)`,
+                        from: ADMIN_NICK,
+                        timestamp: Date.now(),
+                        claimed: false
+                    };
+                    
+                    await firebaseDB.ref(`notifications/${name}`).push(rewardData);
+                    
+                    // Označ jako claimed aby se neposlalo znovu
+                    try { await firebaseDB.ref(`worldBossRaid/participants/${name}/lootClaimed`).set(true); } catch(e) {}
+                    
+                    sentCount++;
+                }
+                
+                notifySuccess('Odměny odeslány!', `${sentCount} hráčům byly odeslány kompenzační odměny za ${boss.name} raid.`);
+                // Refresh dialog
+                adminRetriggerRaidRewards();
+            } catch(e) {
+                notifyWarning('Chyba', e.message);
+            }
         }
         
         // === BOSS STASH - schránka pro itemy co se nevešly do inventáře ===
