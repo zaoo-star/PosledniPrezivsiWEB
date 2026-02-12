@@ -10690,23 +10690,47 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             companion.defense = companion.defense || 3;
             
             // Skill tree - inicializuj pokud neexistuje
-            companion.skills = companion.skills || [];
+            if (!companion.skills || (typeof companion.skills === 'object' && !Array.isArray(companion.skills))) {
+                companion.skills = companion.skills ? Object.values(companion.skills).filter(s => typeof s === 'string') : [];
+            }
             
             // Inventář společníka
             if (!companion.inventory) companion.inventory = [];
             
-            // Vybavení - inicializuj pokud neexistuje
-            companion.equipped = companion.equipped || {
-                weapon: null,
-                armor: null
-            };
-            
             // Typ společníka (human/animal) - důležité pro skill tree
             if (!companion.type) {
-                // Pokusí se určit typ podle COMPANIONS definice
                 const baseDef = COMPANIONS.find(c => c.id === companion.id);
                 companion.type = baseDef?.type || 'human';
             }
+            
+            // Vybavení - inicializuj VŠECHNY sloty pokud neexistuje
+            if (!companion.equipped || typeof companion.equipped !== 'object') {
+                companion.equipped = { weapon: null, armor: null, helmet: null, gloves: null, boots: null, accessory: null };
+            } else {
+                // Doplň chybějící sloty
+                if (!('helmet' in companion.equipped)) companion.equipped.helmet = null;
+                if (!('gloves' in companion.equipped)) companion.equipped.gloves = null;
+                if (!('boots' in companion.equipped)) companion.equipped.boots = null;
+                if (!('accessory' in companion.equipped)) companion.equipped.accessory = null;
+                if (!('weapon' in companion.equipped)) companion.equipped.weapon = null;
+                if (!('armor' in companion.equipped)) companion.equipped.armor = null;
+            }
+            
+            // Bojové vlastnosti
+            if (companion.inCombat === undefined) companion.inCombat = true;
+            if (companion.canEquip === undefined) {
+                companion.canEquip = (companion.type === 'human' || companion.id === 'survivor');
+            }
+            
+            // Ability fallback
+            if (!companion.ability) {
+                const baseDef = COMPANIONS.find(c => c.id === companion.id);
+                companion.ability = baseDef?.ability || 'Společník';
+                companion.abilityDesc = companion.abilityDesc || baseDef?.abilityDesc || '';
+            }
+            
+            // isDead flag
+            if (companion.isDead === undefined) companion.isDead = false;
             
             // Pokud nemá skill tree definovaný v COMPANION_SKILL_TREES, vytvoř generický
             createGenericSkillTree(companion);
@@ -36792,7 +36816,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Přidej společníka s defaultním jménem
-            const newCompanion = {...companion, hp: companion.hp, maxHp: companion.hp, uniqueId: `${companion.id}_${Date.now()}`};
+            const newCompanion = normalizeCompanion({...companion, hp: companion.hp, maxHp: companion.hp, uniqueId: `${companion.id}_${Date.now()}`});
             state.companions.push(newCompanion);
             closeModal();
             resolveCurrentEvent(); // Označ event jako vyřešený
@@ -53480,7 +53504,7 @@ function openFullscreenMap() {
             // Odstraň mrtvou Mayu pokud existuje
             state.companions = state.companions.filter(c => c.id !== 'maya_companion');
             
-            state.companions.push({
+            state.companions.push(normalizeCompanion({
                 id: 'maya_companion',
                 name: 'Maya',
                 icon: '🏃‍♀️',
@@ -53492,8 +53516,8 @@ function openFullscreenMap() {
                 ability: 'Průzkumnice',
                 abilityDesc: 'Detekce pastí, rychlé cestování',
                 cost: 0,
-                skills: {} // Skills se odemykají přes skill tree
-            });
+                skills: []
+            }));
             
             showModal('🏃‍♀️ Maya se přidala!', `
                 <div style="text-align: center;">
@@ -54083,7 +54107,7 @@ function openFullscreenMap() {
                 return;
             }
             
-            state.companions.push({
+            state.companions.push(normalizeCompanion({
                 id: 'orphan_companion',
                 name: 'Tomík',
                 icon: '👦',
@@ -54092,8 +54116,9 @@ function openFullscreenMap() {
                 maxHp: 30,
                 damage: 4,
                 defense: 2,
-                special: 'Najde skryté předměty, +10% loot'
-            });
+                ability: 'Sběrač',
+                abilityDesc: 'Najde skryté předměty, +10% loot'
+            }));
             
             showModal('👦 Sirotek adoptován!', `
                 <div style="text-align: center;">
@@ -63028,8 +63053,9 @@ function openFullscreenMap() {
                 
                 // Přidej živé společníky
                 if (state.companions) {
-                    // === SAFETY FIX: Oprav společníky s nekonzistentním stavem ===
+                    // === SAFETY FIX: Normalizuj všechny společníky před bojem ===
                     state.companions.forEach(c => {
+                        normalizeCompanion(c);
                         // Fix hp=0 bez isDead
                         if (!c.isDead && c.hp !== undefined && c.hp <= 0) {
                             console.warn(`⚠️ Oprava: ${c.name} měl hp=${c.hp} ale isDead=false, nastavuji hp=1`);
@@ -63039,10 +63065,6 @@ function openFullscreenMap() {
                         if (c.hp !== undefined && isNaN(c.hp)) {
                             console.warn(`⚠️ Oprava: ${c.name} měl hp=NaN, nastavuji na maxHp`);
                             c.hp = c.maxHp || 50;
-                        }
-                        // Zajisti uniqueId
-                        if (!c.uniqueId) {
-                            c.uniqueId = `${c.id}_combat_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                         }
                     });
                     
@@ -63124,6 +63146,59 @@ function openFullscreenMap() {
                         });
                     });
                 }
+                
+                // === KOLIZE POZIC - zajisti že žádné dvě jednotky nesdílejí pozici ===
+                // Spouštíme VŽDY pro všechny jednotky (nepřátelé + hráč + společníci)
+                const occupiedPositions = new Set();
+                units.forEach(u => {
+                    const key = `${u.x},${u.y}`;
+                    if (occupiedPositions.has(key)) {
+                        // Najdi volnou pozici poblíž (pro player team = pravá strana, pro enemy = levá)
+                        const isPlayerTeam = u.team === 'player';
+                        const fallbackPositions = isPlayerTeam ? [
+                            {x: 8, y: 0}, {x: 8, y: 4}, {x: 7, y: 0}, {x: 7, y: 4},
+                            {x: 6, y: 1}, {x: 6, y: 3}, {x: 6, y: 0}, {x: 6, y: 4},
+                            {x: 8, y: 1}, {x: 8, y: 2}, {x: 8, y: 3},
+                            {x: 7, y: 1}, {x: 7, y: 2}, {x: 7, y: 3},
+                            {x: 5, y: 1}, {x: 5, y: 2}, {x: 5, y: 3}
+                        ] : [
+                            {x: 0, y: 0}, {x: 0, y: 4}, {x: 1, y: 0}, {x: 1, y: 4},
+                            {x: 2, y: 0}, {x: 2, y: 4}, {x: 0, y: 1}, {x: 0, y: 3},
+                            {x: 2, y: 1}, {x: 2, y: 3}, {x: 3, y: 0}, {x: 3, y: 4}
+                        ];
+                        let resolved = false;
+                        for (const fp of fallbackPositions) {
+                            const fpKey = `${fp.x},${fp.y}`;
+                            if (!occupiedPositions.has(fpKey) && fp.x >= 0 && fp.x < COMBAT_GRID.cols && fp.y >= 0 && fp.y < COMBAT_GRID.rows) {
+                                console.log(`⚔️ Kolize pozic: ${u.name} [${u.x},${u.y}] → [${fp.x},${fp.y}]`);
+                                u.x = fp.x;
+                                u.y = fp.y;
+                                occupiedPositions.add(fpKey);
+                                resolved = true;
+                                break;
+                            }
+                        }
+                        if (!resolved) {
+                            // Krajní případ - najdi JAKOUKOLIV volnou buňku
+                            for (let fy = 0; fy < COMBAT_GRID.rows; fy++) {
+                                for (let fx = 0; fx < COMBAT_GRID.cols; fx++) {
+                                    const fKey = `${fx},${fy}`;
+                                    if (!occupiedPositions.has(fKey)) {
+                                        console.warn(`⚔️ Nouzové umístění: ${u.name} → [${fx},${fy}]`);
+                                        u.x = fx;
+                                        u.y = fy;
+                                        occupiedPositions.add(fKey);
+                                        resolved = true;
+                                        break;
+                                    }
+                                }
+                                if (resolved) break;
+                            }
+                        }
+                    } else {
+                        occupiedPositions.add(key);
+                    }
+                });
                 
                 // Cleanup pozic
                 window.companionPositionsOverride = null;
@@ -65701,7 +65776,9 @@ function openFullscreenMap() {
             
             for (let y = 0; y < COMBAT_GRID.rows; y++) {
                 for (let x = 0; x < COMBAT_GRID.cols; x++) {
-                    const unit = cs.units.find(u => u.alive && u.x === x && u.y === y);
+                    const unitsHere = cs.units.filter(u => u.alive && u.x === x && u.y === y);
+                    const unit = unitsHere[0] || null;
+                    const hasStacked = unitsHere.length > 1;
                     const terrain = cs.terrain[y]?.[x];
                     
                     // Zvýraznění
@@ -65768,7 +65845,7 @@ function openFullscreenMap() {
                         ">
                             ${terrain && terrain.type !== 'empty' && !unit ? `<span style="opacity: ${terrain.blocked ? '0.6' : '0.35'}; font-size: 0.85rem;">${terrain.icon}</span>` : ''}
                             ${unit ? `
-                                <span style="filter: ${unit.stunned ? 'grayscale(1)' : 'none'}; font-size: 1.1rem;">${unit.icon}</span>
+                                <span style="filter: ${unit.stunned ? 'grayscale(1)' : 'none'}; font-size: 1.1rem;">${hasStacked ? unitsHere.map(u => u.icon).join('') : unit.icon}</span>
                                 <div style="
                                     position: absolute;
                                     bottom: 1px;
@@ -65785,6 +65862,7 @@ function openFullscreenMap() {
                                         background: ${unit.team === 'player' ? '#4caf50' : '#f44336'};
                                     "></div>
                                 </div>
+                                ${hasStacked ? `<span style="position: absolute; top: -2px; right: -2px; font-size: 0.5rem; background: #ff9800; color: #000; border-radius: 50%; padding: 0 2px; font-weight: bold;">${unitsHere.length}</span>` : ''}
                                 ${unit.poisoned ? '<span style="position: absolute; top: -2px; right: -2px; font-size: 0.5rem;">☠️</span>' : ''}
                                 ${unit.bleeding ? '<span style="position: absolute; top: -2px; left: -2px; font-size: 0.5rem;">🩸</span>' : ''}
                                 ${unit.stunned ? '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 0.7rem;">💫</span>' : ''}
@@ -66127,17 +66205,15 @@ function openFullscreenMap() {
                 }
                 
                 // Pokud máme společníky a není přepadení, ukaž pre-combat setup
-                // === SAFETY FIX: Oprav společníky s nekonzistentním stavem ===
+                // === SAFETY FIX: Normalizuj společníky ===
                 if (state.companions) {
                     state.companions.forEach(c => {
+                        normalizeCompanion(c);
                         if (!c.isDead && c.hp !== undefined && c.hp <= 0) {
                             c.hp = 1;
                         }
                         if (c.hp !== undefined && isNaN(c.hp)) {
                             c.hp = c.maxHp || 50;
-                        }
-                        if (!c.uniqueId) {
-                            c.uniqueId = `${c.id}_combat_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                         }
                     });
                 }
@@ -66187,6 +66263,26 @@ function openFullscreenMap() {
                         delete state.savedCompanionPositions[compId];
                     }
                     window.preCombatPositions[compId] = defaultPositions[idx] || defaultPositions[0];
+                }
+            });
+            
+            // === KOLIZE KONTORLA - oprav duplicitní pozice ===
+            const usedPosKeys = new Set();
+            Object.entries(window.preCombatPositions).forEach(([compId, pos]) => {
+                if (pos.excluded) return;
+                const key = `${pos.x},${pos.y}`;
+                if (usedPosKeys.has(key)) {
+                    // Najdi volnou defaultní pozici
+                    const freePos = defaultPositions.find(dp => {
+                        const dpKey = `${dp.x},${dp.y}`;
+                        return !usedPosKeys.has(dpKey);
+                    });
+                    if (freePos) {
+                        window.preCombatPositions[compId] = freePos;
+                        usedPosKeys.add(`${freePos.x},${freePos.y}`);
+                    }
+                } else {
+                    usedPosKeys.add(key);
                 }
             });
             
@@ -66284,6 +66380,23 @@ function openFullscreenMap() {
                 'back_bot': { id: 'back_bot', x: 8, y: 3 }
             };
             const newPos = positions[positionId] || positions['back_mid'];
+            
+            // Kolize check - pokud jiný společník už má tuto pozici, prohoď je
+            if (positionId !== 'excluded' && window.preCombatPositions) {
+                Object.entries(window.preCombatPositions).forEach(([otherId, otherPos]) => {
+                    if (otherId !== compId && otherPos.x === newPos.x && otherPos.y === newPos.y && !otherPos.excluded) {
+                        // Prohoď - ten druhý dostane moji starou pozici
+                        const myOldPos = window.preCombatPositions[compId];
+                        if (myOldPos && !myOldPos.excluded) {
+                            window.preCombatPositions[otherId] = myOldPos;
+                            if (state.savedCompanionPositions) {
+                                state.savedCompanionPositions[otherId] = myOldPos;
+                            }
+                        }
+                    }
+                });
+            }
+            
             window.preCombatPositions[compId] = newPos;
             
             // Ulož do state pro příští boje - ale NIKDY neukládej 'excluded' permanentně!
@@ -70786,6 +70899,9 @@ function openFullscreenMap() {
             // Migration: Fix dynamic companions (rescued survivors)
             if (state.companions) {
                 state.companions.forEach(comp => {
+                    // Normalizuj VŠECHNY společníky - doplní chybějící vlastnosti
+                    normalizeCompanion(comp);
+                    
                     // Najdi definici z COMPANIONS pro nastavení správných hodnot
                     const baseDef = COMPANIONS.find(c => c.id === comp.id);
                     
@@ -70820,6 +70936,12 @@ function openFullscreenMap() {
                         comp.type = 'human';
                         comp.canEquip = true;
                         if (!comp.id) comp.id = 'survivor';
+                    }
+                    
+                    // Zajisti uniqueId pro VŠECHNY společníky
+                    if (!comp.uniqueId) {
+                        comp.uniqueId = `${comp.id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                        console.log(`🔑 Migrace: Přidán uniqueId pro ${comp.name}: ${comp.uniqueId}`);
                     }
                 });
             }
