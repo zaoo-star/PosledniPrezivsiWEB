@@ -5506,6 +5506,14 @@
                 }
             });
             
+            // Boss loot accessory bonusy (bonus je objekt)
+            if (state.equippedAccessory) {
+                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+                if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr]) {
+                    total += acc.bonus[attr];
+                }
+            }
+            
             // Bonusy z aktivních buffy (lektvary atd.)
             if (state.activeBuffs) {
                 state.activeBuffs.forEach(buff => {
@@ -5527,6 +5535,13 @@
                     bonus += item.bonus[attr];
                 }
             });
+            // Boss loot accessory bonusy (bonus je objekt, ne string)
+            if (state.equippedAccessory) {
+                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+                if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr]) {
+                    bonus += acc.bonus[attr];
+                }
+            }
             return bonus;
         }
         
@@ -20300,7 +20315,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const helmetDef = helmet ? helmet.defense : 0;
             const glovesDef = gloves ? gloves.defense : 0;
             const bootsDef = boots ? boots.defense : 0;
-            const accDef = (accessory?.bonus === 'defense') ? accessory.value : 0;
+            const accDef = (() => {
+                if (!accessory) return 0;
+                let def = 0;
+                // Crafted: bonus === 'defense'
+                if (accessory.bonus === 'defense' && accessory.value) def += accessory.value;
+                // Boss loot: bonus.end → defense
+                if (typeof accessory.bonus === 'object' && accessory.bonus.end) def += Math.floor(accessory.bonus.end * 1);
+                // Direct defense
+                if (accessory.defense) def += accessory.defense;
+                return def;
+            })();
             const mutantDef = state.char.class === 'mutant' ? 10 : 0;
             
             const total = endBonus + armorDef + helmetDef + glovesDef + bootsDef + accDef + mutantDef;
@@ -22312,6 +22337,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (comp.equipped.helmet) value += comp.equipped.helmet.defense || 0;
                     if (comp.equipped.gloves) value += comp.equipped.gloves.defense || 0;
                     if (comp.equipped.boots) value += comp.equipped.boots.defense || 0;
+                }
+                // Accessory bonusy pro společníky
+                if (comp.equipped.accessory) {
+                    const acc = comp.equipped.accessory;
+                    // Crafted accessories: bonus je string
+                    if (stat === 'defense' && acc.bonus === 'defense' && acc.value) {
+                        value += acc.value;
+                    }
+                    // Boss loot accessories: bonus je objekt { str, end, ... }
+                    if (typeof acc.bonus === 'object') {
+                        if (stat === 'damage' && acc.bonus.str) value += acc.bonus.str * 2;
+                        if (stat === 'defense' && acc.bonus.end) value += Math.floor(acc.bonus.end * 1);
+                        if (stat === 'hp' && acc.bonus.maxHp) value += acc.bonus.maxHp;
+                    }
+                    // Direct damage/defense na itemu
+                    if (stat === 'damage' && acc.damage) value += acc.damage;
+                    if (stat === 'defense' && acc.defense) value += acc.defense;
                 }
             }
             
@@ -27636,9 +27678,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Bonusy z accessory (prsteny, amulety, artefakty)
-            const accessories = [state.equipped?.accessory, state.equipped?.accessory2].filter(a => a);
-            accessories.forEach(acc => {
-                if (acc.bonus) {
+            // state.equipped.accessory/accessory2 je starý systém, state.equippedAccessory je aktivní
+            const accessoryItems = [state.equipped?.accessory, state.equipped?.accessory2].filter(a => a);
+            // Přidej aktuální equippedAccessory (hráčův doplněk přes equippedAccessory ID)
+            if (state.equippedAccessory) {
+                const equippedAcc = state.inv?.find(i => i.id === state.equippedAccessory);
+                if (equippedAcc && !accessoryItems.some(a => a.id === equippedAcc.id)) {
+                    accessoryItems.push(equippedAcc);
+                }
+            }
+            accessoryItems.forEach(acc => {
+                if (acc.bonus && typeof acc.bonus === 'object') {
                     if (acc.bonus.regenPerTurn) effects.regenPerTurn += acc.bonus.regenPerTurn;
                     if (acc.bonus.critChance) effects.critBonus += acc.bonus.critChance;
                     if (acc.bonus.dodgeChance) effects.bonusDodge += acc.bonus.dodgeChance;
@@ -65979,7 +66029,14 @@ function openFullscreenMap() {
                 // Accessory defense bonus
                 if (state.equippedAccessory) {
                     const acc = state.inv.find(i => i.id === state.equippedAccessory);
-                    if (acc?.bonus === 'defense') playerDef += acc.value || 0;
+                    if (acc) {
+                        // Crafted: bonus === 'defense'
+                        if (acc.bonus === 'defense') playerDef += acc.value || 0;
+                        // Boss loot: bonus.end → defense
+                        if (typeof acc.bonus === 'object' && acc.bonus.end) playerDef += Math.floor(acc.bonus.end * 1);
+                        // Direct defense
+                        if (acc.defense) playerDef += acc.defense;
+                    }
                 }
                 
                 enemyDmg = Math.max(1, enemyDmg - playerDef);
@@ -67127,6 +67184,14 @@ function openFullscreenMap() {
             // Base damage + STR bonus (+2 per point above 5)
             let baseDmg = 5 + getAttrBonus('str');
             
+            // Boss loot accessory STR bonus → damage
+            if (state.equippedAccessory) {
+                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+                if (accItem?.bonus && typeof accItem.bonus === 'object' && accItem.bonus.str) {
+                    baseDmg += accItem.bonus.str * 2; // +2 DMG per STR point (same as attr bonus)
+                }
+            }
+            
             // Weapon damage
             const weapon = state.equipped?.weapon || null;
             if (weapon) {
@@ -67380,11 +67445,23 @@ function openFullscreenMap() {
                 defense += state.buffs.defense.value;
             }
             
-            // 📿 Accessory defense bonus (Drahokamový přívěsek)
+            // 📿 Accessory defense bonus (Drahokamový přívěsek + boss loot)
             if (state.equippedAccessory) {
                 const accItem = state.inv.find(i => i.id === state.equippedAccessory);
-                if (accItem && accItem.bonus === 'defense' && accItem.value > 0) {
-                    defense += accItem.value;
+                if (accItem) {
+                    // Crafted accessories: bonus je string 'defense', value je číslo
+                    if (accItem.bonus === 'defense' && accItem.value > 0) {
+                        defense += accItem.value;
+                    }
+                    // Boss loot accessories: bonus je objekt { str, end, ... }
+                    // END bonus z accessory → defense (END * 1)
+                    if (typeof accItem.bonus === 'object' && accItem.bonus.end) {
+                        defense += Math.floor(accItem.bonus.end * 1);
+                    }
+                    // Direct defense bonus z accessory
+                    if (accItem.defense && accItem.defense > 0) {
+                        defense += accItem.defense;
+                    }
                 }
             }
             
@@ -67418,8 +67495,19 @@ function openFullscreenMap() {
             
             // Accessory crit bonus
             const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
-            if (accessory?.bonus === 'crit' && accessory?.value) {
-                crit += accessory.value / 100; // value je v procentech
+            if (accessory) {
+                // Crafted: bonus === 'crit', value v procentech
+                if (accessory.bonus === 'crit' && accessory.value) {
+                    crit += accessory.value / 100;
+                }
+                // Boss loot: bonus.critChance jako desetinné číslo (0.20 = 20%)
+                if (typeof accessory.bonus === 'object' && accessory.bonus.critChance) {
+                    crit += accessory.bonus.critChance;
+                }
+                // Direct critChance na itemu (fallback)
+                if (accessory.critChance) {
+                    crit += accessory.critChance;
+                }
             }
             
             // Skill tree bonus
