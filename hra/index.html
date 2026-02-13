@@ -5522,6 +5522,11 @@
                 }
             }
             
+            // OPRAVA: Silný elixír (+20 ke všem statům) - all_stats buff
+            if (state.buffs?.allStats && state.buffs.allStats.until > Date.now()) {
+                total += state.buffs.allStats.value;
+            }
+            
             // Bonusy z aktivních buffy (lektvary atd.)
             if (state.activeBuffs) {
                 state.activeBuffs.forEach(buff => {
@@ -9172,7 +9177,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 loot: ['legendary_weapon', 'rare_item', 'money', 'money'],
                 uniqueLoot: [
                     { id: 'shadow_daggers', name: 'Stínové Dýky', icon: '🗡️', type: 'weapon', damage: 38, weight: 1, price: 5500, rarity: 'legendary', special: 'poison', critBonus: 35, desc: 'Dvojice dýk nasáklých stínem. +35% crit, každý zásah otrávý. Exkluzivní World Boss drop!' },
-                    { id: 'shadow_cloak', name: 'Plášť Stínů', icon: '🧥', type: 'armor', defense: 35, weight: 2, price: 6000, rarity: 'legendary', special: 'dodge', bonus: { agi: 5, dodgeChance: 0.25 }, desc: 'Neviditelný plášť z čisté tmy. +5 AGI, 25% šance na úhyb. Exkluzivní World Boss drop!' },
+                    { id: 'shadow_cloak', name: 'Plášť Stínů', icon: '🧥', type: 'armor', defense: 35, weight: 2, price: 6000, rarity: 'legendary', special: 'dodge', bonus: { agi: 5 }, desc: 'Neviditelný plášť z čisté tmy. +5 AGI, 25% šance na úhyb. Exkluzivní World Boss drop!' },
                     { id: 'shadow_amulet', name: 'Amulet Patriarchy', icon: '🔮', type: 'accessory', weight: 0.3, price: 8000, rarity: 'legendary', bonus: { agi: 4, lck: 4, critChance: 0.20 }, desc: 'Pulzuje temnou energií. +4 AGI, +4 LCK, +20% crit šance. Unikátní artefakt!' }
                 ],
                 globalReward: { xpMultiplier: 1.5, duration: 18000000 }, // +50% XP na 5h
@@ -30066,12 +30071,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     lastRaid: 0,
                     resources: { food: 10, water: 10 },
                     defense: 0,
-                    lastUpdateDay: 0
+                    lastUpdateDay: 0,
+                    specialization: null // OPRAVA: Přidána inicializace specializace
                 };
             }
             // Zajisti že všechny properties existují
             if (!state.settlement.settlers) state.settlement.settlers = [];
             if (!state.settlement.buildings) state.settlement.buildings = [];
+            // OPRAVA: Zajisti že specialization property existuje (migrace starých savů)
+            if (state.settlement.specialization === undefined) {
+                state.settlement.specialization = null;
+            }
             // Migrace: hráči kteří nemají základní budovy zahrada + sběrač vody
             if (!state.settlement.buildings.includes('garden')) state.settlement.buildings.push('garden');
             if (!state.settlement.buildings.includes('water')) state.settlement.buildings.push('water');
@@ -32193,6 +32203,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             document.getElementById('modal').classList.remove('show');
             document.body.classList.remove('modal-open'); // Povol pull-to-refresh zpět
             
+            // OPRAVA: Reset land workshop/campfire access při zavření modalu
+            window._landWorkshopAccess = false;
+            window._landCampfireAccess = false;
+            
             // Uvolni flag pro výsledkové modaly
             window._resultModalActive = false;
             
@@ -32656,6 +32670,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function switchTab(tabName) {
             state.activeTab = tabName;
+            
+            // OPRAVA: Reset land workshop access při změně tabu
+            if (tabName !== 'crafting') {
+                window._landWorkshopAccess = false;
+                window._landCampfireAccess = false;
+            }
             
             // Přepni obsah bez efektu
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -45067,7 +45087,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 let energyBonus = 30;
                 let thirstPenalty = 20;
-                let damageBonus = 15;
+                let damageBonus = 10; // OPRAVA: bylo 15, popis říká +10%
                 let healBonus = 0;
                 let moraleBonus = 10; // Základní bonus nálady
                 let buffDuration = 2 * 60 * 60 * 1000; // 2 hodiny
@@ -45075,7 +45095,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (item.id === 'vodka') {
                     energyBonus = 40;
                     thirstPenalty = 25;
-                    damageBonus = 20;
+                    damageBonus = 14; // OPRAVA: bylo 20, popis říká +14%
                     moraleBonus = 15; // Vodka = lepší nálada
                 } else if (item.id === 'wine') {
                     energyBonus = 25;
@@ -48415,12 +48435,20 @@ function openFullscreenMap() {
                     // Legendary itemy
                     else if (lootType === 'legendary' || lootType === 'legendary_weapon' || lootType === 'legendary_armor' || lootType === 'legendary_item') {
                         if (legendaryDropped) return;
+                        
+                        // OPRAVA: World boss exclusive loot - nemůže padat z dungeonů
+                        const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
+                                                  'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
+                                                  'titan_cannon', 'titan_plating', 'titan_core',
+                                                  'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
+                                                  'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood'];
+                        
                         const pool = lootType === 'legendary_weapon' 
-                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'weapon' || i.type === 'melee'))
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'weapon' || i.type === 'melee') && !worldBossLootIds.includes(i.id))
                             : lootType === 'legendary_armor'
-                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves'))
-                            : ITEMS.filter(i => i.rarity === 'legendary');
-                        const legendaries = pool.length > 0 ? pool : ITEMS.filter(i => i.rarity === 'legendary');
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves') && !worldBossLootIds.includes(i.id))
+                            : ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id));
+                        const legendaries = pool.length > 0 ? pool : ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id));
                         if (legendaries.length > 0) {
                             const item = legendaries[Math.floor(Math.random() * legendaries.length)];
                             if (canAddItem(item, 1)) {
@@ -48436,7 +48464,15 @@ function openFullscreenMap() {
                     // Unique/artifact itemy
                     else if (lootType === 'unique' || lootType === 'unique_artifact') {
                         if (legendaryDropped) return; // Max 1 legendary/unique za dungeon
-                        const uniques = ITEMS.filter(i => i.rarity === 'legendary' || i.rarity === 'unique');
+                        
+                        // OPRAVA: World boss exclusive loot - nemůže padat z dungeonů
+                        const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
+                                                  'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
+                                                  'titan_cannon', 'titan_plating', 'titan_core',
+                                                  'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
+                                                  'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood'];
+                        
+                        const uniques = ITEMS.filter(i => (i.rarity === 'legendary' || i.rarity === 'unique') && !worldBossLootIds.includes(i.id));
                         if (uniques.length > 0) {
                             const item = uniques[Math.floor(Math.random() * uniques.length)];
                             if (canAddItem(item, 1)) {
@@ -63113,14 +63149,10 @@ function openFullscreenMap() {
                         if (window.companionPositionsOverride && window.companionPositionsOverride[compId]) {
                             pos = window.companionPositionsOverride[compId];
                             
-                            // OPRAVA: Excluded společník dostane defaultní pozici místo přeskočení
+                            // OPRAVA: Pokud je companion excluded, NEPŘIDÁVEJ ho do boje
                             if (pos.excluded || pos.id === 'excluded') {
-                                console.warn(`⚠️ ${compName} měl excluded pozici - přepisuju na default!`);
-                                pos = defaultPositions[idx] || { x: 7, y: idx % 5 };
-                                // Vymaž excluded z uložených pozic
-                                if (state.savedCompanionPositions && state.savedCompanionPositions[compId]) {
-                                    delete state.savedCompanionPositions[compId];
-                                }
+                                console.log(`⚔️ ${compName} je excluded - NEZAPOJUJE se do boje`);
+                                return; // Přeskoč tohoto společníka
                             }
                         } else {
                             pos = defaultPositions[idx] || { x: 7, y: idx % 5 };
@@ -67758,15 +67790,22 @@ function openFullscreenMap() {
                 
                 // Pokud není přímý item, zkus kategorie
                 if (!lootItem) {
+                    // OPRAVA: World boss unique loot ID seznam - nemůže padat nikde jinde
+                    const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
+                                              'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
+                                              'titan_cannon', 'titan_plating', 'titan_core',
+                                              'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
+                                              'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood'];
+                    
                     const categoryItems = {
                         'weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity !== 'legendary'),
                         'rare_weapon': ITEMS.filter(i => i.type === 'weapon' && (i.rarity === 'rare' || i.rarity === 'epic')),
-                        'legendary_weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity === 'legendary'),
+                        'legendary_weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
                         'armor': ITEMS.filter(i => i.type === 'armor' && i.rarity !== 'legendary'),
                         'rare_armor': ITEMS.filter(i => i.type === 'armor' && (i.rarity === 'rare' || i.rarity === 'epic')),
-                        'legendary_armor': ITEMS.filter(i => i.type === 'armor' && i.rarity === 'legendary'),
-                        'legendary': ITEMS.filter(i => i.rarity === 'legendary'),
-                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary'),
+                        'legendary_armor': ITEMS.filter(i => i.type === 'armor' && i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
+                        'legendary': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
+                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
                         'rare': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
                         'rare_item': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
                         'ammo': ITEMS.filter(i => i.type === 'ammo'),
@@ -67775,7 +67814,7 @@ function openFullscreenMap() {
                         'radaway': ITEMS.filter(i => i.id === 'radaway' || i.id === 'radaway_super'),
                         'radx': ITEMS.filter(i => i.id === 'radx'),
                         'tech': ITEMS.filter(i => i.type === 'tool'),
-                        'unique': ITEMS.filter(i => i.rarity === 'legendary'),
+                        'unique': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
                         'stimpak': ITEMS.filter(i => i.id === 'stimpak' || i.id === 'medkit'),
                         'stimpack': ITEMS.filter(i => i.id === 'stimpak' || i.id === 'medkit'),
                         'poison': ITEMS.filter(i => i.id === 'chemicals'),
@@ -68594,6 +68633,10 @@ function openFullscreenMap() {
             if (weapon?.critChance) {
                 crit += weapon.critChance;
             }
+            // OPRAVA: World boss zbraně mají critBonus (v procentech, ne 0-1)
+            if (weapon?.critBonus) {
+                crit += weapon.critBonus / 100;
+            }
             
             // Accessory crit bonus
             const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
@@ -69285,7 +69328,8 @@ function openFullscreenMap() {
             // Degrade weapon durability (unless Engineer)
             if (!hasClassPassive('noDurabilityLoss')) {
                 const weapon = state.equipped?.weapon;
-                if (weapon && weapon.durability !== undefined) {
+                // OPRAVA: Setové zbraně (včetně Jedové injekce) se NEKAZÍ
+                if (weapon && weapon.durability !== undefined && !weapon.setId) {
                     // Technik zpevnění - menší opotřebení
                     const compBonuses = getAllCompanionBonuses();
                     let durabilityLoss = 2;
@@ -69324,6 +69368,8 @@ function openFullscreenMap() {
             if (state.companions && state.companions.length > 0) {
                 state.companions.forEach(comp => {
                     if (comp.isDead) return; // Mrtvý společník neútočí
+                    // OPRAVA: Společník s inCombat=false se nezapojuje do boje
+                    if (comp.inCombat === false) return;
                     
                     const compInfo = COMPANIONS.find(c => c.id === comp.id);
                     if (!compInfo) return;
@@ -73034,7 +73080,8 @@ function openFullscreenMap() {
             }
             
             // === VLASTNÍ POZEMEK - REGENERACE ===
-            if (state.confirmed && !state.vacationMode && state.currentLocation) {
+            // OPRAVA: Bylo state.currentLocation (neexistuje), má být state.world.currentLocation
+            if (state.confirmed && !state.vacationMode) {
                 if (!state.lastLandRegenTick) state.lastLandRegenTick = now;
                 const timeSinceLandRegen = now - state.lastLandRegenTick;
                 
@@ -73083,8 +73130,9 @@ function openFullscreenMap() {
                         }
                     }
                     
-                    // Zkontroluj jestli jsme na vlastním pozemku
-                    const landData = getLandData(state.currentLocation);
+                    // Zkontroluj jestli jsme na vlastním pozemku (pouze pro land regeneraci, ne pro HP regen)
+                    const currentLoc = state.world?.currentLocation;
+                    const landData = currentLoc ? getLandData(currentLoc) : null;
                     const myName = getPlayerName();
                     
                     if (landData && landData.owner === myName) {
