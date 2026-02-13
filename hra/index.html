@@ -43060,14 +43060,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const healAmount = Math.floor(state.char.maxHp * 0.5);
             state.char.hp = Math.min(state.char.maxHp, state.char.hp + healAmount);
             
+            // OPRAVA: Vyléč vyčerpání (exhaustion) během spánku
+            const hadExhaustion = state.injuries?.active?.some(i => i.id === 'exhaustion');
+            if (hadExhaustion && typeof healInjury === 'function') {
+                healInjury('exhaustion');
+            }
+            
             // Daily quest progress - healing
             if (state.dailyQuests?.progress) {
                 state.dailyQuests.progress.healed = (state.dailyQuests.progress.healed || 0) + healAmount;
                 checkDailyQuests();
             }
             
-            addLog('Dobře ses vyspal v úkrytu. Energie obnovena!', '💤');
-            notifySuccess('Odpočatý!', `⚡ 100% | ❤️ +${healAmount} HP`);
+            addLog('Dobře ses vyspal v úkrytu. Energie obnovena!' + (hadExhaustion ? ' Vyléčil ses z vyčerpání.' : ''), '💤');
+            notifySuccess('Odpočatý!', `⚡ 100% | ❤️ +${healAmount} HP${hadExhaustion ? ' | ✅ Vyčerpání vyléčeno' : ''}`);
             
             saveGame();
             renderFull();
@@ -73526,17 +73532,24 @@ function openFullscreenMap() {
                 state.sleepEndTime = null;
                 state.isSleeping = false;
                 
+                // OPRAVA: Vyléč vyčerpání (exhaustion) během spánku
+                const hadExhaustion = state.injuries?.active?.some(i => i.id === 'exhaustion');
+                if (hadExhaustion && typeof healInjury === 'function') {
+                    healInjury('exhaustion');
+                }
+                
                 // Daily quest progress - healing
                 if (state.dailyQuests?.progress) {
                     state.dailyQuests.progress.healed = (state.dailyQuests.progress.healed || 0) + sleepHeal;
                     checkDailyQuests();
                 }
                 
-                addLog('Probudil ses ze spánku! Cítíš se odpočatý.', '😊');
+                addLog('Probudil ses ze spánku! Cítíš se odpočatý.' + (hadExhaustion ? ' Vyléčil ses z vyčerpání.' : ''), '😊');
                 showModal('😊 Probudil ses!', `
                     <p>Spal jsi 1 hodinu a cítíš se odpočatý!</p>
                     <p style="color: #8bc34a;">✓ Energie: 100%</p>
                     <p style="color: #8bc34a;">✓ HP: +50</p>
+                    ${hadExhaustion ? '<p style="color: #4CAF50;">✓ Vyčerpání vyléčeno</p>' : ''}
                     <p style="color: #ff9800;">⚠️ Hlad: -30</p>
                     <p style="color: #ff9800;">⚠️ Žízeň: -40</p>
                     <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">✓ OK</button>
@@ -94572,6 +94585,21 @@ function openFullscreenMap() {
         
         // === WORLD BOSS SYSTÉM ===
         function showWorldBossForm() {
+            // OPRAVA: Pouze šéf pustiny může spouštět world bossy
+            const isMayorOrStaff = isStaff() || mayorPasswordUnlocked || (typeof isMayor === 'function' && isMayor());
+            if (!isMayorOrStaff) {
+                showModal('🔒 Přístup odepřen', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">👑</div>
+                        <p style="color: #ff9800;">Pouze Šéf Pustiny může vyvolávat World Bossy.</p>
+                        <p style="color: #888; font-size: 0.85rem; margin-top: 0.5rem;">Tato mocná schopnost je vyhrazena jen pro voleného vůdce osady.</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">OK</button>
+                `);
+                return;
+            }
+            
+            // Načti peníze z veřejné kasy a zobraz formulář
             let publicMoney = 0;
             try {
                 const snap = firebaseDB.ref('politics/publicMoney').once('value');
@@ -94742,6 +94770,15 @@ function openFullscreenMap() {
             const boss = WORLD_BOSSES.find(b => b.id === bossId);
             if (!boss) return;
             
+            // OPRAVA: Definuj isMayorOrStaff na začátku pro použití v cooldown i platbě
+            const isMayorOrStaff = isStaff() || mayorPasswordUnlocked || (typeof isMayor === 'function' && isMayor());
+            
+            // OPRAVA: Pouze šéf pustiny může vyvolávat world bossy
+            if (!isMayorOrStaff) {
+                notifyWarning('🔒 Přístup odepřen', 'Pouze Šéf Pustiny může vyvolávat World Bossy');
+                return;
+            }
+            
             // Resolve location
             let raidLocationId = locationId || 'random';
             if (raidLocationId === 'random') {
@@ -94754,7 +94791,7 @@ function openFullscreenMap() {
             // Validace doby trvání (min 10 min, max 12 hodin)
             durationMinutes = Math.max(10, Math.min(720, durationMinutes || 60));
             
-            // Kontrola peněz
+            // Kontrola peněz - VŠICHNI platí z veřejné kasy (i starosta)
             let publicMoney = 0;
             try {
                 const snap = await firebaseDB.ref('politics/publicMoney').once('value');
@@ -94766,8 +94803,9 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Cooldown kontrola (admin obchází)
-            if (!isStaff()) {
+            // Cooldown kontrola (admin a STAROSTA obchází)
+            // OPRAVA: Šéf pustiny může vyvolávat world bossy kdykoliv (bez cooldownu)
+            if (!isMayorOrStaff) {
                 if (cachedPoliticalEffects?.summon_world_boss?.cooldownUntil > Date.now()) {
                     const minsLeft = Math.ceil((cachedPoliticalEffects.summon_world_boss.cooldownUntil - Date.now()) / 60000);
                     const hoursLeft = Math.floor(minsLeft / 60);
@@ -94795,16 +94833,19 @@ function openFullscreenMap() {
                     ? `${Math.floor(durationMinutes / 60)}h${durationMinutes % 60 > 0 ? ` ${durationMinutes % 60}m` : ''}` 
                     : `${durationMinutes} min`;
                 
-                // Odečti z veřejné kasy
+                // Odečti z veřejné kasy (VŠICHNI platí, i starosta)
                 await removeFromPublicTreasury(boss.cost, 'world_boss', `Vyvolání: ${boss.name}`);
                 
-                // Nastav cooldown
-                await firebaseDB.ref('politics/activeEvents/summon_world_boss').set({
-                    activatedAt: now,
-                    activatedBy: getPlayerName(),
-                    bossId: bossId,
-                    cooldownUntil: now + 172800000 // 48h
-                });
+                // OPRAVA: Nastav cooldown JEN pokud NENÍ starosta/admin
+                // isMayorOrStaff je již definován na začátku funkce
+                if (!isMayorOrStaff) {
+                    await firebaseDB.ref('politics/activeEvents/summon_world_boss').set({
+                        activatedAt: now,
+                        activatedBy: getPlayerName(),
+                        bossId: bossId,
+                        cooldownUntil: now + 172800000 // 48h
+                    });
+                }
                 
                 // === VYTVOŘIT RAID NA FIREBASE ===
                 await firebaseDB.ref('worldBossRaid').set({
