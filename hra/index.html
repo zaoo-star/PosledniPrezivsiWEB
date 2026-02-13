@@ -14504,12 +14504,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 lastStand: 0         // X% šance přežít smrtelný úder
             };
             
-            if (!state.skills) return effects;
-            
+            // OPRAVA: Čti z OBOU systémů - starý state.skills I nový state.skillTree
             // Projdi všechny skill větve
             for (const [branchId, branch] of Object.entries(SKILL_TREE)) {
                 branch.skills.forEach(skill => {
-                    const level = state.skills[skill.id] || 0;
+                    // Nový systém (skillTree) má přednost, fallback na starý (skills)
+                    const level = (state.skillTree?.[branchId]?.[skill.id]) || (state.skills?.[skill.id]) || 0;
                     if (level > 0 && skill.effect) {
                         Object.entries(skill.effect).forEach(([key, value]) => {
                             if (typeof value === 'number' && effects.hasOwnProperty(key)) {
@@ -15580,6 +15580,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // ☢️ Exotic bonus - Radiační talisman (-50% radiace trvale)
             if (state.exoticBonuses?.radResistPermanent > 0) {
                 totalResist += state.exoticBonuses.radResistPermanent;
+            }
+            
+            // ☢️ OPRAVA: Enchant "Radiační štít" - -30% radiace per enchanted armor piece
+            if (state.equipped) {
+                const enchSlots = ['armor', 'helmet', 'gloves', 'boots'];
+                enchSlots.forEach(slot => {
+                    const equip = state.equipped[slot];
+                    if (equip?.enchantment) {
+                        const ench = ENCHANTMENTS.find(e => e.id === equip.enchantment);
+                        if (ench?.effect?.radResist) {
+                            totalResist += ench.effect.radResist;
+                        }
+                    }
+                });
             }
             
             // === MAXIMUM 90% ODOLNOST ===
@@ -24961,7 +24975,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             const skillBonus = (state.skills_secondary?.hunting || 0) * 5;
-            const hitChance = 0.6 + (state.char.attrs.per * 0.02) + (skillBonus * 0.01);
+            let hitChance = 0.6 + (state.char.attrs.per * 0.02) + (skillBonus * 0.01);
+            
+            // 🐾 OPRAVA: Skill Tree "Stopař" (huntingBonus) - +20% úspěšnost lovu per level
+            if (typeof getSkillTreeBonus === 'function') {
+                const huntBonus = getSkillTreeBonus('huntingBonus');
+                if (huntBonus > 0) hitChance += huntBonus;
+            }
+            hitChance = Math.min(hitChance, 0.95); // Max 95%
             
             console.log('🏹 Lov:', animal.name, '| Šance na zásah:', (hitChance * 100).toFixed(0) + '%');
             
@@ -43200,6 +43221,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <p style="color: #c62828; margin: 0.5rem 0;">⚔️ Damage: ${item.damage}${item.aiUpgraded ? ' <span style="color: #9c27b0; font-size: 0.85rem;">🧠 AI +10</span>' : ''}</p>
                     ${ammoInfo}
                     ${specialText ? `<p style="color: #9c27b0;">${specialText}</p>` : ''}
+                    ${item.enchantment ? (() => { const ench = ENCHANTMENTS.find(e => e.id === item.enchantment); return ench ? `<p style="color: #ce93d8; margin: 0.3rem 0;">✨ Enchant: ${ench.icon} <strong>${ench.name}</strong> - ${ench.desc}</p>` : ''; })() : ''}
                     
                     ${item.durability !== undefined ? `
                         <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin: 1rem 0; ${item.durability <= 0 ? 'border: 2px solid #f44336;' : ''}">
@@ -43225,6 +43247,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${needsRepair ? `<button class="btn" onclick="repairItemForMoney(${idx})" style="background: ${canRepair ? '#2196f3' : '#555'};" ${!canRepair ? 'disabled' : ''}>🔧 ${'Opravit za'} ${repairCost} 💰</button>` : ''}
                     ${!isEquipped ? `<button class="btn" onclick="equipWeaponByIndex(${idx})" style="background: ${item.durability !== undefined && item.durability <= 0 ? '#555' : '#4caf50'};" ${item.durability !== undefined && item.durability <= 0 ? 'disabled' : ''}>✋ ${item.durability !== undefined && item.durability <= 0 ? '💔 Nejdříve oprav!' : 'Nasadit'}</button>` : `<button class="btn" onclick="unequipWeapon()" style="background: #ff9800;">👋 ${'Sundat'}</button>`}
+                    <button class="btn" onclick="closeModal(); showEnchantMenu(${idx});" style="background: linear-gradient(135deg, #7b1fa2, #9c27b0);">✨ Enchantovat${item.enchantment ? ' (' + (ENCHANTMENTS.find(e=>e.id===item.enchantment)?.icon||'✨') + ')' : ''}</button>
                     <button class="btn" onclick="recycleItem(${idx})" style="background: #795548;">♻️ Recyklovat</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ ${'Zahodit'}</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
@@ -43780,6 +43803,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <p style="color: #3949AB; margin: 0.5rem 0;">🛡️ Obrana: +${item.defense}${item.aiUpgraded ? ' <span style="color: #9c27b0; font-size: 0.85rem;">🧠 AI +10</span>' : ''}</p>
                     <p style="color: #888; margin: 0.2rem 0; font-size: 0.85rem;">⚖️ Váha: ${item.weight || 0} kg</p>
                     ${specialText ? `<p style="color: #9c27b0; margin: 0.5rem 0;">${specialText}</p>` : ''}
+                    ${item.enchantment ? (() => { const ench = ENCHANTMENTS.find(e => e.id === item.enchantment); return ench ? `<p style="color: #ce93d8; margin: 0.3rem 0;">✨ Enchant: ${ench.icon} <strong>${ench.name}</strong> - ${ench.desc}</p>` : ''; })() : ''}
                     
                     ${item.durability !== undefined ? `
                         <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin: 1rem 0; ${item.durability <= 0 ? 'border: 2px solid #f44336;' : ''}">
@@ -43805,6 +43829,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${needsRepair ? `<button class="btn" onclick="repairItemForMoney(${idx})" style="background: ${canRepair ? '#2196f3' : '#555'};" ${!canRepair ? 'disabled' : ''}>🔧 Opravit za ${repairCost} 💰</button>` : ''}
                     ${!isEquipped ? `<button class="btn" onclick="equipArmorByIndex(${idx})" style="background: ${item.durability !== undefined && item.durability <= 0 ? '#555' : '#4caf50'};" ${item.durability !== undefined && item.durability <= 0 ? 'disabled' : ''}>✋ ${item.durability !== undefined && item.durability <= 0 ? '💔 Nejdříve oprav!' : 'Nasadit'}</button>` : `<button class="btn" onclick="unequipArmor()" style="background: #ff9800;">👋 Sundat</button>`}
+                    <button class="btn" onclick="closeModal(); showEnchantMenu(${idx});" style="background: linear-gradient(135deg, #7b1fa2, #9c27b0);">✨ Enchantovat${item.enchantment ? ' (' + (ENCHANTMENTS.find(e=>e.id===item.enchantment)?.icon||'✨') + ')' : ''}</button>
                     <button class="btn" onclick="recycleItem(${idx})" style="background: #795548;">♻️ Recyklovat</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
@@ -44058,6 +44083,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${!isEquipped ? `<button class="btn" onclick="equipGlovesByIndex(${idx})" style="background: #4caf50;">✋ Nasadit</button>` : `<button class="btn" onclick="unequipGloves()" style="background: #ff9800;">👋 Sundat</button>`}
+                    <button class="btn" onclick="closeModal(); showEnchantMenu(${idx});" style="background: linear-gradient(135deg, #7b1fa2, #9c27b0);">✨ Enchantovat${item.enchantment ? ' (' + (ENCHANTMENTS.find(e=>e.id===item.enchantment)?.icon||'✨') + ')' : ''}</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
                 </div>
@@ -44140,6 +44166,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${!isEquipped ? `<button class="btn" onclick="equipBootsByIndex(${idx})" style="background: #4caf50;">✋ Nasadit</button>` : `<button class="btn" onclick="unequipBoots()" style="background: #ff9800;">👋 Sundat</button>`}
+                    <button class="btn" onclick="closeModal(); showEnchantMenu(${idx});" style="background: linear-gradient(135deg, #7b1fa2, #9c27b0);">✨ Enchantovat${item.enchantment ? ' (' + (ENCHANTMENTS.find(e=>e.id===item.enchantment)?.icon||'✨') + ')' : ''}</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
                 </div>
@@ -44222,6 +44249,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
                     ${!isEquipped ? `<button class="btn" onclick="equipHelmetByIndex(${idx})" style="background: #4caf50;">✋ Nasadit</button>` : `<button class="btn" onclick="unequipHelmet()" style="background: #ff9800;">👋 Sundat</button>`}
+                    <button class="btn" onclick="closeModal(); showEnchantMenu(${idx});" style="background: linear-gradient(135deg, #7b1fa2, #9c27b0);">✨ Enchantovat${item.enchantment ? ' (' + (ENCHANTMENTS.find(e=>e.id===item.enchantment)?.icon||'✨') + ')' : ''}</button>
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
                 </div>
@@ -44945,6 +44973,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     healAmount = Math.floor(healAmount * 1.25);
                 }
                 
+                // ⚗️ OPRAVA: Skill Tree "Alchymista" (potionBonus) - +20% efekt lektvarů per level
+                if (typeof getSkillTreeBonus === 'function') {
+                    const potionBonusPct = getSkillTreeBonus('potionBonus');
+                    if (potionBonusPct > 0) {
+                        healAmount = Math.floor(healAmount * (1 + potionBonusPct));
+                    }
+                }
+                
                 state.char.hp = Math.min(state.char.maxHp, state.char.hp + healAmount);
                 SoundSystem.play('pickup');
                 showFloatingNumber(healAmount, 'heal');
@@ -45005,7 +45041,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     checkDailyQuests();
                 }
             } else if (item.effect === 'radiation') {
-                state.status.radiation = Math.max(0, state.status.radiation + item.value);
+                // ⚗️ OPRAVA: Skill Tree "Alchymista" (potionBonus) - zesílený efekt radiačních léků
+                let radValue = item.value;
+                if (typeof getSkillTreeBonus === 'function') {
+                    const potionBonusPct = getSkillTreeBonus('potionBonus');
+                    if (potionBonusPct > 0 && radValue < 0) {
+                        radValue = Math.floor(radValue * (1 + potionBonusPct)); // více negativní = více léčí
+                    }
+                }
+                state.status.radiation = Math.max(0, state.status.radiation + radValue);
                 SoundSystem.play('pickup');
                 
                 // LÉČENÍ NEMOCI Z OZÁŘENÍ - pokud má item cures
@@ -45337,6 +45381,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // 🎖️ Vojenský trénink - survival bonus (+5% efektivita jídla/vody za každý trénink)
                 if ((item.effect === 'hunger' || item.effect === 'thirst') && state.trainingBonuses?.survival > 0) {
                     effectValue = Math.floor(effectValue * (1 + state.trainingBonuses.survival));
+                }
+                
+                // 👨‍🍳 OPRAVA: Skill Tree "Kuchař" (foodBonus) - +20% efekt jídla per level
+                if (item.effect === 'hunger' && typeof getSkillTreeBonus === 'function') {
+                    const foodBonusPct = getSkillTreeBonus('foodBonus');
+                    if (foodBonusPct > 0) {
+                        effectValue = Math.floor(effectValue * (1 + foodBonusPct));
+                    }
                 }
                 
                 // 🌶️ Exotic bonus - Exotické koření (dvojnásobný efekt jídla)
@@ -46466,6 +46518,124 @@ function openFullscreenMap() {
             `);
         }
         
+        // ✨ === ENCHANTMENT SYSTÉM === ✨
+        const ENCHANT_COSTS = {
+            fire:         { chemicals: 5, scrap: 10 },
+            ice:          { chemicals: 5, crystal: 2 },
+            poison:       { chemicals: 10, herbs: 5 },
+            lifesteal:    { chemicals: 8, mutant_heart: 1 },
+            critical:     { metal: 15, gems: 1 },
+            fortify:      { metal: 20, scrap: 15 },
+            regeneration: { herbs: 10, chemicals: 5 },
+            rad_shield:   { chemicals: 15, crystal: 3 }
+        };
+        
+        function showEnchantMenu(invIndex) {
+            const item = state.inv[invIndex];
+            if (!item) return;
+            
+            const isWeapon = item.type === 'weapon';
+            const isArmor = item.type === 'armor' || item.type === 'helmet' || item.type === 'gloves' || item.type === 'boots';
+            
+            if (!isWeapon && !isArmor) {
+                notifyWarning('❌', 'Tento předmět nelze enchantovat.');
+                return;
+            }
+            
+            const availableEnchants = ENCHANTMENTS.filter(e => {
+                if (isWeapon && e.type === 'weapon') return true;
+                if (isArmor && e.type === 'armor') return true;
+                return false;
+            });
+            
+            let html = `<div style="max-height: 60vh; overflow-y: auto;">`;
+            html += `<p style="color: #aaa; margin-bottom: 0.5rem;">Enchantuj: ${item.icon} <strong>${item.name}</strong></p>`;
+            
+            if (item.enchantment) {
+                const currentEnch = ENCHANTMENTS.find(e => e.id === item.enchantment);
+                html += `<p style="color: #ffd700; margin-bottom: 0.5rem;">Aktuální enchant: ${currentEnch?.icon || '✨'} ${currentEnch?.name || item.enchantment} <em style="color:#999;">(bude nahrazen)</em></p>`;
+            }
+            
+            availableEnchants.forEach(ench => {
+                const cost = ENCHANT_COSTS[ench.id] || {};
+                let canAfford = true;
+                let costHtml = Object.entries(cost).map(([res, amount]) => {
+                    const has = (state.resources[res] || 0);
+                    const enough = has >= amount;
+                    if (!enough) canAfford = false;
+                    const icons = { chemicals: '🧪', crystal: '💎', metal: '⚙️', scrap: '🔩', herbs: '🌿', gems: '💠', mutant_heart: '💜' };
+                    return `<span style="color: ${enough ? '#8bc34a' : '#f44336'};">${icons[res] || '📦'} ${amount} ${res} (${has})</span>`;
+                }).join(', ');
+                
+                html += `
+                    <div style="background: #1a1a2a; border: 1px solid ${canAfford ? '#5a5aaa' : '#333'}; border-radius: 8px; padding: 0.6rem; margin-bottom: 0.4rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong style="color: #ddd;">${ench.icon} ${ench.name}</strong>
+                                <p style="color: #999; font-size: 0.8rem; margin: 0.2rem 0;">${ench.desc}</p>
+                                <p style="font-size: 0.75rem; margin: 0.2rem 0;">${costHtml}</p>
+                            </div>
+                            <button class="btn" onclick="applyEnchantment(${invIndex}, '${ench.id}')" 
+                                style="padding: 0.3rem 0.8rem; font-size: 0.8rem; background: ${canAfford ? 'linear-gradient(135deg, #7b1fa2, #9c27b0)' : '#333'};"
+                                ${canAfford ? '' : 'disabled'}>
+                                ✨ Enchant
+                            </button>
+                        </div>
+                    </div>`;
+            });
+            
+            html += `</div>`;
+            html += `<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">❌ Zrušit</button>`;
+            
+            showModal('✨ Enchantování', html);
+        }
+        
+        function applyEnchantment(invIndex, enchantId) {
+            const item = state.inv[invIndex];
+            if (!item) return;
+            
+            const ench = ENCHANTMENTS.find(e => e.id === enchantId);
+            if (!ench) return;
+            
+            const cost = ENCHANT_COSTS[enchantId] || {};
+            
+            // Ověření surovin
+            for (const [res, amount] of Object.entries(cost)) {
+                if ((state.resources[res] || 0) < amount) {
+                    notifyError('❌ Nedostatek surovin', `Nemáš dost ${res}!`);
+                    return;
+                }
+            }
+            
+            // Spotřebování surovin
+            for (const [res, amount] of Object.entries(cost)) {
+                state.resources[res] -= amount;
+            }
+            
+            // Aplikace enchantmentu
+            item.enchantment = enchantId;
+            
+            // Pokud je item equipped, aktualizuj equipped verzi
+            if (state.equipped) {
+                const slots = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
+                slots.forEach(slot => {
+                    if (state.equipped[slot] && state.equipped[slot].id === item.id) {
+                        state.equipped[slot].enchantment = enchantId;
+                    }
+                });
+            }
+            
+            closeModal();
+            SoundSystem.play('pickup');
+            particleBurst(window.innerWidth / 2, window.innerHeight / 2, '#9c27b0', 20);
+            
+            addLog(`✨ Enchantováno: ${item.icon} ${item.name} → ${ench.icon} ${ench.name}`, '✨');
+            notifySuccess('✨ Enchantováno!', `${item.icon} ${item.name} má nyní enchant ${ench.icon} ${ench.name}!`);
+            
+            saveGame(true);
+            renderFull();
+        }
+        
         function craftItem(recipeId) {
             const recipe = CRAFTING.find(r => r.id === recipeId);
             if (!recipe) return;
@@ -46592,13 +46762,23 @@ function openFullscreenMap() {
                 }
             }
             
+            // ⭐ OPRAVA: Skill Tree "Mistr řemesla" (doubleCraft) - šance na dvojitý výstup
+            let isDoubleCraft = false;
+            if (typeof getSkillTreeBonus === 'function') {
+                const doubleCraftChance = getSkillTreeBonus('doubleCraft');
+                if (doubleCraftChance > 0 && Math.random() < doubleCraftChance) {
+                    isDoubleCraft = true;
+                }
+            }
+            
             // Add crafted item
             if (recipe.result.type === 'resource') {
                 // Přidání suroviny přímo do resources
                 const resType = recipe.result.resource;
-                const amount = recipe.result.amount || 1;
+                let amount = recipe.result.amount || 1;
+                if (isDoubleCraft) amount *= 2;
                 state.resources[resType] = (state.resources[resType] || 0) + amount;
-                showModal('Vyrobeno!', `${recipe.icon} ${recipe.name}! +${amount} ${resType}`);
+                showModal('Vyrobeno!', `${recipe.icon} ${recipe.name}! +${amount} ${resType}${isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : ''}`);
                 state.stats.itemsCrafted++;
                 if (state.dailyQuests.progress) {
                     state.dailyQuests.progress.crafted = (state.dailyQuests.progress.crafted || 0) + 1;
@@ -46612,17 +46792,20 @@ function openFullscreenMap() {
                 // Najdi váhu z ITEMS nebo použij rozumný default
                 const itemDef = ITEMS.find(i => i.id === recipeId);
                 const itemWeight = recipe.result.weight || itemDef?.weight || 0.3;
+                const craftCount = isDoubleCraft ? 2 : 1;
                 if (existing) {
-                    existing.count = (existing.count || 1) + 1;
+                    existing.count = (existing.count || 1) + craftCount;
                 } else {
-                    state.inv.push({id: recipeId, name: recipe.name, icon: recipe.icon, ...recipe.result, count: 1, weight: itemWeight});
+                    state.inv.push({id: recipeId, name: recipe.name, icon: recipe.icon, ...recipe.result, count: craftCount, weight: itemWeight});
                 }
             } else if (recipe.result.type === 'throwable' || recipe.result.type === 'ammo') {
                 // Pro ammo hledej podle itemId (např. 'ammo_arrow'), pro ostatní podle recipeId
                 const searchId = recipe.result.itemId || recipeId;
                 const existing = state.inv.find(i => i.id === searchId);
+                const baseCount = recipe.result.count || 1;
+                const craftCount = isDoubleCraft ? baseCount * 2 : baseCount;
                 if (existing) {
-                    existing.count = (existing.count || 1) + (recipe.result.count || 1);
+                    existing.count = (existing.count || 1) + craftCount;
                 } else {
                     // Použij itemId jako id pro správné stackování s nalezenými předměty
                     const itemDef = ITEMS.find(it => it.id === recipe.result.itemId);
@@ -46632,7 +46815,7 @@ function openFullscreenMap() {
                         icon: itemDef?.icon || recipe.icon, 
                         type: recipe.result.type,
                         ammoType: recipe.result.ammoType || itemDef?.ammoType,
-                        count: recipe.result.count || 1, 
+                        count: craftCount, 
                         weight: itemDef?.weight || 0.1
                     };
                     // Throwable: zachovej damage, aoe, effect, special
@@ -46727,8 +46910,8 @@ function openFullscreenMap() {
             }
             
             // Přidej do herního deníku
-            addLog(`🔨 Vyrobeno: ${recipe.icon} ${recipe.name}`, '🔨', 'craft', {
-                items: [{ id: recipeId, count: 1 }],
+            addLog(`🔨 Vyrobeno: ${recipe.icon} ${recipe.name}${isDoubleCraft ? ' (2x!)' : ''}`, '🔨', 'craft', {
+                items: [{ id: recipeId, count: isDoubleCraft ? 2 : 1 }],
                 resources: recipe.requires
             });
             
@@ -46736,7 +46919,8 @@ function openFullscreenMap() {
             particleBurst(window.innerWidth / 2, window.innerHeight / 2, '#8bc34a', 12);
             
             const engineerText = engineerReduction < 1 ? ' (Engineer: -50% surovin)' : '';
-            showModal('Vyrobeno!', `${recipe.icon} ${recipe.name} byl vyroben!${engineerText}`);
+            const doubleCraftText = isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : '';
+            showModal('Vyrobeno!', `${recipe.icon} ${recipe.name} byl vyroben!${engineerText}${doubleCraftText}`);
             checkAchievements();
             renderFull();
         }
@@ -64893,6 +65077,16 @@ function openFullscreenMap() {
                 critChance += 0.05;
             }
             
+            // ✨ OPRAVA: Enchant "Kritický úder" - +15% crit chance, +25% crit damage
+            let enchantCritDamageBonus = 0;
+            if (!isCompanion && state.equipped?.weapon?.enchantment === 'critical') {
+                const critEnch = ENCHANTMENTS.find(e => e.id === 'critical');
+                if (critEnch?.effect) {
+                    critChance += critEnch.effect.critChance || 0;
+                    enchantCritDamageBonus = critEnch.effect.critDamage || 0;
+                }
+            }
+            
             let isCrit = Math.random() < critChance;
             
             // 🛡️ crit_immune / leviathan: hráč je imunní na kritické zásahy nepřátel
@@ -64925,6 +65119,11 @@ function openFullscreenMap() {
                 if (!isCompanion) {
                     const stCritDmg = typeof getSkillTreeBonus === 'function' ? getSkillTreeBonus('critDamage') : 0;
                     critMultiplier += stCritDmg;
+                    
+                    // ✨ OPRAVA: Enchant "Kritický úder" - +25% crit damage
+                    if (enchantCritDamageBonus > 0) {
+                        critMultiplier += enchantCritDamageBonus;
+                    }
                 }
                 
                 // Overflow bonus: přetečení crit šance přes 75% cap → bonus crit damage
@@ -64958,6 +65157,25 @@ function openFullscreenMap() {
             // Terénní bonus obrany
             const terrain = cs.terrain[target.y]?.[target.x];
             let defense = target.defense;
+            
+            // ✨ OPRAVA: Enchant "Zpevnění" - +5 obrany z armor enchantmentu
+            if (target.isPlayer) {
+                const armorSlots = ['armor', 'helmet', 'gloves', 'boots'];
+                armorSlots.forEach(slot => {
+                    const equip = state.equipped?.[slot];
+                    if (equip?.enchantment) {
+                        const ench = ENCHANTMENTS.find(e => e.id === equip.enchantment);
+                        if (ench?.effect?.bonusDefense) {
+                            defense += ench.effect.bonusDefense;
+                        }
+                    }
+                });
+            }
+            
+            // ❄️ OPRAVA: Enchant "Led" - zpomalený nepřítel dělá -20% damage
+            if (unit._enchantSlowed && unit.team === 'enemy') {
+                damage = Math.floor(damage * 0.8);
+            }
             
             // Armor pierce - ignoruje část obrany
             if (!isCompanion && playerSkillEffects.armorPierce > 0) {
@@ -65211,6 +65429,38 @@ function openFullscreenMap() {
                     unit.hp = Math.min(unit.maxHp, unit.hp + regenAmount);
                     state.char.hp = Math.min(state.char.maxHp, state.char.hp + regenAmount);
                     cs.log.push(`💚 Mutantí regenerace: +${regenAmount} HP`);
+                }
+            }
+            
+            // ✨ OPRAVA: ENCHANTMENT EFEKTY NA ZBRANÍCH (fire, ice, poison, lifesteal)
+            if (!isCompanion && state.equipped?.weapon?.enchantment) {
+                const weaponEnch = ENCHANTMENTS.find(e => e.id === state.equipped.weapon.enchantment);
+                if (weaponEnch?.effect) {
+                    // 🔥 Oheň: bonus fire damage jako burn DOT
+                    if (weaponEnch.effect.bonusDamage && weaponEnch.effect.element === 'fire') {
+                        target.burnDamage = Math.max(target.burnDamage || 0, weaponEnch.effect.bonusDamage);
+                        target.burnRounds = Math.max(target.burnRounds || 0, 2);
+                        if (cs.round <= 2) cs.log.push(`🔥 Enchant Oheň: +${weaponEnch.effect.bonusDamage} burn DMG!`);
+                    }
+                    // ❄️ Led: bonus damage + zpomalení (snížený damage nepřítele)
+                    if (weaponEnch.effect.slow) {
+                        target._enchantSlowed = true;
+                        if (cs.round <= 2) cs.log.push(`❄️ Enchant Led: nepřítel zpomalen!`);
+                    }
+                    // 🧪 Jed: DOT damage
+                    if (weaponEnch.effect.dot) {
+                        target.poisoned = Math.max(target.poisoned || 0, weaponEnch.effect.dot);
+                        if (cs.round <= 2) cs.log.push(`🧪 Enchant Jed: ${weaponEnch.effect.dot} DMG/kolo!`);
+                    }
+                    // 🧛 Lifesteal: heal on hit
+                    if (weaponEnch.effect.lifesteal > 0) {
+                        const lsHeal = Math.floor(finalDamage * weaponEnch.effect.lifesteal);
+                        if (lsHeal > 0) {
+                            unit.hp = Math.min(unit.maxHp, unit.hp + lsHeal);
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
+                            cs.log.push(`🧛 Enchant Lifesteal: +${lsHeal} HP`);
+                        }
+                    }
                 }
             }
             
@@ -68314,6 +68564,14 @@ function openFullscreenMap() {
             if (typeof getActiveSetEffects === 'function') {
                 const setFx = getActiveSetEffects();
                 if (setFx?.maxHp > 0) maxHp += setFx.maxHp;
+            }
+            
+            // 🏰 OPRAVA: Skill Tree "Pevnost" (maxHpBonus) - +20% max HP per level
+            if (typeof getSkillTreeBonus === 'function') {
+                const maxHpBonusPct = getSkillTreeBonus('maxHpBonus');
+                if (maxHpBonusPct > 0) {
+                    maxHp = Math.floor(maxHp * (1 + maxHpBonusPct));
+                }
             }
             
             return maxHp;
@@ -73146,10 +73404,49 @@ function openFullscreenMap() {
                     }
                     
                     // 📿 Accessory hp_regen bonus (Amulet mutantího srdce +3 HP/min)
-                    if (state.equippedAccessory && state.char.hp < state.char.maxHp) {
-                        const accRegen = state.inv.find(i => i.id === state.equippedAccessory);
-                        if (accRegen && accRegen.bonus === 'hp_regen' && accRegen.value > 0) {
-                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + accRegen.value);
+                    if (state.char.hp < state.char.maxHp) {
+                        let accRegenTotal = 0;
+                        
+                        // Starý systém: state.equippedAccessory
+                        if (state.equippedAccessory) {
+                            const accRegen = state.inv.find(i => i.id === state.equippedAccessory);
+                            if (accRegen && accRegen.bonus === 'hp_regen' && accRegen.value > 0) {
+                                accRegenTotal += accRegen.value;
+                            }
+                        }
+                        
+                        // OPRAVA: Nový systém state.equipped.accessory / accessory2
+                        ['accessory', 'accessory2'].forEach(slot => {
+                            const acc = state.equipped?.[slot];
+                            if (acc && acc.bonus === 'hp_regen' && acc.value > 0) {
+                                // Nepočítej dvakrát pokud je totožný s equippedAccessory
+                                if (!(state.equippedAccessory && acc.id === state.equippedAccessory)) {
+                                    accRegenTotal += acc.value;
+                                }
+                            }
+                        });
+                        
+                        if (accRegenTotal > 0) {
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + accRegenTotal);
+                        }
+                    }
+                    
+                    // 💚 OPRAVA: Enchantment "Regenerace" na zbroji (+regenHp HP/min)
+                    if (state.equipped && state.char.hp < state.char.maxHp) {
+                        let enchantRegen = 0;
+                        const enchantSlots = ['armor', 'helmet', 'gloves', 'boots', 'weapon'];
+                        enchantSlots.forEach(slot => {
+                            const item = state.equipped[slot];
+                            if (item && item.enchantment) {
+                                const ench = ENCHANTMENTS.find(e => e.id === item.enchantment);
+                                if (ench && ench.effect && ench.effect.regenHp) {
+                                    enchantRegen += ench.effect.regenHp;
+                                }
+                            }
+                        });
+                        if (enchantRegen > 0) {
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + enchantRegen);
+                            if (Math.random() < 0.1) addLog(`💚 Enchant Regenerace: +${enchantRegen} HP`, '💚');
                         }
                     }
                     
@@ -73602,6 +73899,15 @@ function openFullscreenMap() {
                     energyRate *= (1 - skill.value * enduranceLevel);
                 }
                 
+                // 📊 OPRAVA: Skill Tree "Efektivita" (consumeReduction) - -10% spotřeba jídla/vody per level
+                if (typeof getSkillTreeBonus === 'function') {
+                    const consumeReductionBonus = getSkillTreeBonus('consumeReduction');
+                    if (consumeReductionBonus > 0) {
+                        hungerRate *= (1 - consumeReductionBonus);
+                        thirstRate *= (1 - consumeReductionBonus);
+                    }
+                }
+                
                 // Nomad passive - 50% slower consumption
                 const consumptionMod = hasClassPassive('consumptionReduction') ? 0.5 : 1.0;
                 
@@ -73729,8 +74035,8 @@ function openFullscreenMap() {
                     }
                     
                     if (state.base.includes('bed')) {
-                        state.char.hp = Math.min(state.char.maxHp, state.char.hp + 2 * delta / 3600);
-                        state.status.energy = Math.min(100, state.status.energy + 2 * delta / 3600);
+                        state.char.hp = Math.min(state.char.maxHp, state.char.hp + 2 * delta / 60); // OPRAVA: +2 HP/min (bylo /3600 = /hod)
+                        state.status.energy = Math.min(100, state.status.energy + 2 * delta / 60); // OPRAVA: +2 energie/min
                     }
                     if (state.base.includes('garden')) {
                         state.status.hunger = Math.min(100, state.status.hunger + 1 * delta / 3600);
@@ -73744,6 +74050,17 @@ function openFullscreenMap() {
                     if (survivorLevel > 0) {
                         const skill = SKILLS.find(s => s.id === 'survivor');
                         state.char.hp = Math.min(state.char.maxHp, state.char.hp + skill.value * survivorLevel * delta / 60);
+                    }
+                    
+                    // OPRAVA: Medic passive regen v základně (chybělo - fungovalo jen mimo base)
+                    if (state.char.classId === 'medic' && state.char.hp < state.char.maxHp) {
+                        state.char.hp = Math.min(state.char.maxHp, state.char.hp + 2 * delta / 60); // +2 HP per minute
+                    }
+                    
+                    // OPRAVA: Companion regenPerMin v základně (Medik - Léčivá aura, chybělo)
+                    const regenCompBonusesBase = getAllCompanionBonuses();
+                    if (regenCompBonusesBase.regenPerMin > 0 && state.char.hp < state.char.maxHp) {
+                        state.char.hp = Math.min(state.char.maxHp, state.char.hp + regenCompBonusesBase.regenPerMin * delta / 60);
                     }
                 }
                 
