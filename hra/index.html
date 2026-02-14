@@ -15582,11 +15582,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 totalResist += state.exoticBonuses.radResistPermanent;
             }
             
-            // 🧬 Mutace Radiační adaptace: -70% radiace
-            if (state.mutations?.includes('radiation_adaptation')) {
-                totalResist += 0.7;
-            }
-            
             // ☢️ OPRAVA: Enchant "Radiační štít" - -30% radiace per enchanted armor piece
             if (state.equipped) {
                 const enchSlots = ['armor', 'helmet', 'gloves', 'boots'];
@@ -16327,8 +16322,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             
                             // Radiační bouře - speciální efekt
                             if (weather.id === 'radstorm' && !state.map.inBase) {
-                                addRadiation(8);
-                                addLog('Radiační bouře! +radiace', '☢️');
+                                state.status.radiation = Math.min(100, state.status.radiation + 15);
+                                addLog('Radiační bouře! +15 radiace', '☢️');
                             }
                         }
                         break;
@@ -16991,7 +16986,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (pb.healBonus) effects.healBonus += pb.healBonus;
                 if (pb.lifesteal) effects.lifesteal += pb.lifesteal;
                 if (pb.radResist) effects.radResist += pb.radResist;
-                if (pb.damageReduction) effects.damageReduction += pb.damageReduction;
                 if (pb.travelSpeed) effects.travelSpeed += pb.travelSpeed;
                 if (pb.lootBonus) effects.lootBonus += pb.lootBonus;
                 if (pb.shopDiscount) effects.shopDiscount += pb.shopDiscount;
@@ -24891,7 +24885,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             if (found.radiation) {
-                addRadiation(Math.max(1, Math.floor(found.radiation * 0.5)));
+                state.status.radiation = Math.min(100, state.status.radiation + found.radiation);
             }
             
             showModal('⛏️ Vytěženo!', `
@@ -25038,7 +25032,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 addXP(animal.xp);
                 
                 if (animal.radiation) {
-                    addRadiation(Math.max(1, Math.floor(animal.radiation * 0.5)));
+                    state.status.radiation = Math.min(100, state.status.radiation + animal.radiation);
                 }
                 
                 addLog(`🏹 Ulovil ${animal.name}: ${lootDisplay.map(l => `+${l.amount} ${l.item}`).join(', ')}`, '🏹');
@@ -36174,7 +36168,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Radiace podle nebezpečí a počasí (výrazně sníženo)
             let radMod = weather?.effect?.radMod || 1.0;
-            state.map.travelRadRate = (path.danger || 0) * 0.0001 * radMod; // 0.0001 - polovina původní hodnoty
+            state.map.travelRadRate = (path.danger || 0) * 0.0002 * radMod; // 0.0002 místo 0.001 (5x méně)
             state.map.travelRadAccumulated = 0; // Reset radiace za cestu (max 20%)
             
             // Synchronizace pro zpětnou kompatibilitu
@@ -36714,16 +36708,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function handleRadiationEvent(dangerLevel) {
             pauseTravelForEvent(); // Pausovat cestu při zobrazení eventu
-            const radGain = Math.max(1, Math.floor((5 + dangerLevel * 5) * 0.5));
+            const radGain = 5 + dangerLevel * 5;
             
             // Kontrola ochrany na radiaci (hazmat oblek atd.)
             const armor = state.equipped?.armor;
             const hasRadProtection = armor?.special === 'rad_immune' || armor?.special === 'rad_resist';
             const reduction = hasRadProtection ? (armor?.special === 'rad_immune' ? 0.5 : 0.3) : 0;
-            const actualRadGain = Math.max(1, Math.floor(radGain * (1 - reduction)));
+            const actualRadGain = Math.floor(radGain * (1 - reduction));
             
-            // Použijeme přímo state.status.radiation, protože redukci počítáme ručně pro UI
-            state.status.radiation = Math.min(100, state.status.radiation + actualRadGain);
+            addRadiation(actualRadGain);
             const humor = getRandomHumor('radiation');
             
             if (hasRadProtection) {
@@ -37773,11 +37766,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Radiace na nebezpečných lokacích (menší dávka při příjezdu)
                 if (loc?.radiation) {
                     // Radiace je per-minute, při příjezdu dostaneš jen zlomek
-                    let radGain = Math.max(1, Math.ceil(loc.radiation * 0.1)); // 10% z hodnoty
-                    // addRadiation handles mutant class, armor special, etc.
+                    let radGain = Math.ceil(loc.radiation * 0.2); // 20% z hodnoty
+                    // Mutant class: -50% radiace
+                    if (state.char.class === 'mutant') {
+                        radGain = Math.floor(radGain * 0.5);
+                    }
+                    // Mutace Radiační adaptace: -70% radiace
+                    if (state.mutations?.includes('radiation_adaptation')) {
+                        radGain = Math.floor(radGain * 0.3);
+                    }
                     if (radGain > 0) {
-                        addRadiation(radGain);
-                        notifyWarning('Radiace!', '+radiace ☢️');
+                        state.status.radiation = Math.min(100, state.status.radiation + radGain);
+                        notifyWarning('Radiace!', '+' + radGain + ' ☢️');
                     }
                 }
                 
@@ -38095,8 +38095,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.world.locationCooldowns[cooldownKey] = now;
             
             // Radiace
-            const radGain = Math.max(1, Math.floor((loc.radiation || 10) * 0.5));
-            addRadiation(radGain);
+            const radGain = loc.radiation || 10;
+            state.status.radiation = Math.min(100, state.status.radiation + radGain);
             
             // Náhodný výsledek
             const roll = Math.random();
@@ -38867,9 +38867,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (cachedPoliticalEffects?.decision_radiationProtection && cachedPoliticalEffects.decision_radiationProtection.until > Date.now()) {
                     addLog('☢️ Ochrana před radiací (rozhodnutí šéfa)', '🏛️');
                 } else {
-                    const radGain = Math.max(1, Math.floor((loc.radiation || 5) * 0.5));
-                    addRadiation(radGain);
-                    addLog(`+radiace ☢️`, '☢️');
+                    const radGain = loc.radiation || 5;
+                    state.status.radiation = Math.min(100, state.status.radiation + radGain);
+                    addLog(`+${radGain} ☢️ radiace`, '☢️');
                 }
             }
             
@@ -63954,8 +63954,8 @@ function openFullscreenMap() {
                     }
                     // Radiace z terénu (jen hráč)
                     if (terrain?.radiation && u.isPlayer) {
-                        addRadiation(Math.max(1, Math.floor(terrain.radiation * 0.5)));
-                        cs.log.push(`☢️ +radiace z ${terrain.name || 'terénu'}`);
+                        state.status.radiation = Math.min(100, state.status.radiation + terrain.radiation);
+                        cs.log.push(`☢️ +${terrain.radiation} radiace z ${terrain.name || 'terénu'}`);
                     }
                 }
                 
@@ -64857,8 +64857,8 @@ function openFullscreenMap() {
                         cs.log.push(`🔥 ${terrain.name || 'Terén'} způsobil ${terrain.damage} DMG!`);
                     }
                     if (terrain?.radiation && unit.isPlayer) {
-                        addRadiation(Math.max(1, Math.floor(terrain.radiation * 0.5)));
-                        cs.log.push(`☢️ +radiace!`);
+                        state.status.radiation = Math.min(100, state.status.radiation + terrain.radiation);
+                        cs.log.push(`☢️ +${terrain.radiation} radiace!`);
                     }
                     
                     cs.selectedAction = null;
@@ -67411,44 +67411,27 @@ function openFullscreenMap() {
                     enemyDmg = Math.floor(enemyDmg * weather.effect.enemyDmgMod);
                 }
                 
-                // Player defense - použij calculateDefense() pro KOMPLETNÍ obranu (armor+helmet+boots+gloves+END+skills+mutace+tréninky...)
-                let playerDef = calculateDefense();
+                // Player defense - použij equipped armor (VČETNĚ equipment bonusů END)
+                const effectiveEnd = typeof getEffectiveAttr === 'function' ? getEffectiveAttr('end') : (state.char.attrs.end || 5);
+                let playerDef = Math.max(0, Math.floor((effectiveEnd - 5) * 1)); // END bonus
+                if (playerArmor && playerArmor.defense) playerDef += playerArmor.defense;
+                playerDef += getSkillTreeBonus('defense');
                 if (cs.playerDefending) playerDef *= 2;
                 
-                // Accessory defense bonus (calculateDefense nezahrnuje)
+                // Accessory defense bonus
                 if (state.equippedAccessory) {
                     const acc = state.inv.find(i => i.id === state.equippedAccessory);
                     if (acc) {
+                        // Crafted: bonus === 'defense'
                         if (acc.bonus === 'defense') playerDef += acc.value || 0;
+                        // Boss loot: bonus.end → defense
                         if (typeof acc.bonus === 'object' && acc.bonus.end) playerDef += Math.floor(acc.bonus.end * 1);
+                        // Direct defense
                         if (acc.defense) playerDef += acc.defense;
                     }
                 }
                 
                 enemyDmg = Math.max(1, enemyDmg - playerDef);
-                
-                // === SET BONUSY - OBRANA ===
-                if (typeof getActiveSetEffects === 'function') {
-                    const setFx = getActiveSetEffects();
-                    
-                    // Damage Reduction (survivor set 2, tank set 2, psychic armor) - % snížení přijatého damage
-                    if (setFx.damageReduction > 0) {
-                        const reduction = Math.floor(enemyDmg * setFx.damageReduction);
-                        enemyDmg = Math.max(1, enemyDmg - reduction);
-                    }
-                    
-                    // Fortress Improved (tank set 3) - blokuje 40% damage
-                    if (setFx.fortressImproved && state.char.classId === 'tank') {
-                        const blockAmount = Math.floor(enemyDmg * 0.40);
-                        enemyDmg = Math.max(1, enemyDmg - blockAmount);
-                    }
-                    
-                    // Mind Shield (psychic) - 30% šance ignorovat damage
-                    if (setFx.mindShield && Math.random() < 0.30) {
-                        enemyDmg = 0;
-                    }
-                }
-                
                 totalDamage += enemyDmg;
             });
             
@@ -73988,7 +73971,7 @@ function openFullscreenMap() {
                         const MAX_TRAVEL_RAD = 20; // Max 20% radiace za jednu cestu
                         if (state.map.travelRadAccumulated < MAX_TRAVEL_RAD) {
                             const allowedGain = Math.min(radGain, MAX_TRAVEL_RAD - state.map.travelRadAccumulated);
-                            addRadiation(allowedGain);
+                            state.status.radiation = Math.min(100, state.status.radiation + allowedGain);
                             state.map.travelRadAccumulated += allowedGain;
                         }
                     }
@@ -74100,8 +74083,8 @@ function openFullscreenMap() {
                 
                 // Radiation sickness - HP drain POUZE při 100% radiaci
                 if (state.status.radiation >= 100) {
-                    // 100%: kritické - pomalá smrt (2 HP/15min) - nutné léčit!
-                    const radDamage = 2 * delta / 900; // 2 HP za 15 minut (900 sekund)
+                    // 100%: kritické - pomalá smrt (2 HP/5min) - nutné léčit!
+                    const radDamage = 2 * delta / 300; // 2 HP za 5 minut (300 sekund)
                     state.char.hp = Math.max(0, state.char.hp - radDamage);
                     
                     // Log warning každou minutu
@@ -92461,15 +92444,13 @@ function openFullscreenMap() {
                 
                 for (const [key, reward] of Object.entries(pendingData)) {
                     if (!reward.claimed) {
-                        // Raid odměny nemají cap, ostatní ano
-                        const isRaid = reward.type === 'raid_reward';
-                        const money = isRaid ? (reward.money || 0) : Math.min(reward.money || 0, 1000);
-                        const xp = isRaid ? (reward.xp || 0) : Math.min(reward.xp || 0, 500);
+                        const money = Math.min(reward.money || 0, 1000);
+                        const xp = Math.min(reward.xp || 0, 500);
                         totalMoney += money;
                         totalXP += xp;
                         if (reward.reason) reasons.push(reward.reason);
                         
-                        // Jednotlivý předmět (starý systém)
+                        // Předmět
                         if (reward.item && reward.item.id) {
                             const itemDef = ITEMS.find(i => i.id === reward.item.id);
                             if (itemDef) {
@@ -92479,31 +92460,6 @@ function openFullscreenMap() {
                                 addItemToInventory(itemCopy, count);
                                 receivedItems.push(`${count}x ${itemDef.icon} ${itemDef.name}`);
                             }
-                        }
-                        
-                        // Více předmětů (raid rewards)
-                        if (reward.items && Array.isArray(reward.items)) {
-                            reward.items.forEach(ri => {
-                                // Hledej v ITEMS podle ID
-                                let itemDef = ITEMS.find(i => i.id === ri.id);
-                                // Pokud není v ITEMS, hledej v boss uniqueLoot
-                                if (!itemDef && reward.bossId) {
-                                    const boss = typeof WORLD_BOSSES !== 'undefined' ? WORLD_BOSSES.find(b => b.id === reward.bossId) : null;
-                                    if (boss) itemDef = boss.uniqueLoot?.find(u => u.id === ri.id);
-                                }
-                                if (itemDef) {
-                                    const itemCopy = JSON.parse(JSON.stringify(itemDef));
-                                    if (itemCopy.effect === 'permanent_hp') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
-                                    if (itemCopy.effect === 'permanent_all') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
-                                    if (canAddItem(itemCopy, 1)) {
-                                        addItemToInventory(itemCopy, 1, true);
-                                    } else {
-                                        if (!state.bossStash) state.bossStash = [];
-                                        state.bossStash.push(itemCopy);
-                                    }
-                                    receivedItems.push(`${ri.icon || '🎁'} ${ri.name || itemDef.name}`);
-                                }
-                            });
                         }
                         
                         // SMAŽ odměnu z Firebase (ne jen claimed flag)
@@ -93684,12 +93640,12 @@ function openFullscreenMap() {
                         // shop_sale s typem income = starý systém (5% daň), počítej jako příjem
                         else if (entry.source === 'shop_sale') totalShopIncome += entry.amount || 0;
                     } else {
-                        if (entry.reason === 'shop_sale') totalShopExpenses += Math.abs(entry.amount || 0);
-                        else if (entry.source === 'mayor_salary' || entry.reason === 'mayor_salary') totalMayorSalary += Math.abs(entry.amount || 0);
-                        else if (entry.source === 'new_player' || entry.reason === 'new_player') totalNewPlayer += Math.abs(entry.amount || 0);
-                        else if (entry.reason === 'mayor_event') totalMayorEvents += Math.abs(entry.amount || 0);
-                        else if (entry.reason === 'grant') totalGrants += Math.abs(entry.amount || 0);
-                        else totalExpenses += Math.abs(entry.amount || 0);
+                        if (entry.reason === 'shop_sale') totalShopExpenses += entry.amount || 0;
+                        else if (entry.source === 'mayor_salary' || entry.reason === 'mayor_salary') totalMayorSalary += entry.amount || 0;
+                        else if (entry.source === 'new_player' || entry.reason === 'new_player') totalNewPlayer += entry.amount || 0;
+                        else if (entry.reason === 'mayor_event') totalMayorEvents += entry.amount || 0;
+                        else if (entry.reason === 'grant') totalGrants += entry.amount || 0;
+                        else totalExpenses += entry.amount || 0;
                     }
                 });
                 
@@ -93826,7 +93782,7 @@ function openFullscreenMap() {
                                         ${entry.details ? `<div style="color: #666; font-size: 0.7rem;">${escapeHtml(entry.details.substring(0, 40))}</div>` : ''}
                                     </div>
                                     <div style="text-align: right;">
-                                        <div style="color: ${isIncome ? '#4caf50' : '#f44336'}; font-weight: bold;">${isIncome ? '+' : '-'}${Math.abs(entry.amount || 0)} 💰</div>
+                                        <div style="color: ${isIncome ? '#4caf50' : '#f44336'}; font-weight: bold;">${isIncome ? '+' : '-'}${entry.amount || 0} 💰</div>
                                         <div style="color: #666; font-size: 0.65rem;">${time}</div>
                                     </div>
                                 </div>
@@ -95351,7 +95307,7 @@ function openFullscreenMap() {
                             if (alreadyClaimed) {
                                 console.log('🐉 SKIP: Raid already claimed (localStorage):', raidInstanceKey);
                                 state._raidVictoryHandled = true;
-                            } else if (defeatedAge > 5 * 60 * 1000) {
+                            } else if (defeatedAge > 30 * 60 * 1000) {
                                 console.log('🐉 SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min. Auto-cleaning...');
                                 state._raidVictoryHandled = true;
                                 // Auto-cleanup starého raidu z Firebase
@@ -95605,9 +95561,9 @@ function openFullscreenMap() {
         async function handleRaidBossGlobalVictory(raidData) {
             if (!raidData || !raidData.defeated) return;
             
-            // Ignoruj staré výsledky (starší než 10 minut)
+            // Ignoruj staré výsledky (starší než 30 minut)
             const defeatedAge = raidData.defeatedAt ? (Date.now() - raidData.defeatedAt) : 0;
-            if (defeatedAge > 10 * 60 * 1000) {
+            if (defeatedAge > 30 * 60 * 1000) {
                 console.log('🐉 VICTORY HANDLER SKIP: Old raid result, age:', Math.round(defeatedAge / 60000), 'min');
                 return;
             }
@@ -95666,53 +95622,40 @@ function openFullscreenMap() {
             addMoney(myMoney);
             lootHtml += `<div style="color: #ffd700;">💰 +${formatNumber(myMoney)} mincí</div>`;
             
-            // === ZJISTI RANK HRÁČE PODLE DMG ===
-            const sortedByDamage = Object.entries(raidData.participants || {})
-                .map(([name, p]) => ({ name, damage: p.damage || 0 }))
-                .sort((a, b) => b.damage - a.damage);
-            const myRank = sortedByDamage.findIndex(p => p.name === myName) + 1; // 1-based
-            const isTop5 = myRank >= 1 && myRank <= 5;
-            
-            // Unikátní loot - POUZE PRO TOP 5 DPS HRÁČŮ
-            if (isTop5) {
-                const lootChance = Math.min(0.75, Math.max(0.25, myDamagePercent * 1.5));
-                const droppedUnique = [];
-                boss.uniqueLoot.forEach(item => {
-                    if (Math.random() < lootChance) {
-                        droppedUnique.push(item);
-                    }
-                });
-                // Garantovaně 1 unikátní pro top 5 účastníky
-                if (droppedUnique.length === 0 && boss.uniqueLoot.length > 0) {
-                    droppedUnique.push(boss.uniqueLoot[Math.floor(Math.random() * boss.uniqueLoot.length)]);
+            // Unikátní loot - zvýšená šance (min 25%, max 75%)
+            const lootChance = Math.min(0.75, Math.max(0.25, myDamagePercent * 1.5));
+            const droppedUnique = [];
+            boss.uniqueLoot.forEach(item => {
+                if (Math.random() < lootChance) {
+                    droppedUnique.push(item);
                 }
-                
-                droppedUnique.forEach(uniqueItem => {
-                    const itemCopy = { ...uniqueItem };
-                    if (itemCopy.effect === 'permanent_hp') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
-                    if (itemCopy.effect === 'permanent_all') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
-                    if (canAddItem(itemCopy, 1)) {
-                        addItemToInventory(itemCopy, 1, true);
-                        lootHtml += `<div style="color: #ce93d8; padding: 0.3rem; background: #1a0a2a; border-radius: 4px; margin: 0.2rem 0;">
-                            ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ffd700;">[UNIKÁTNÍ]</span>
-                        </div>`;
-                    } else {
-                        if (!state.bossStash) state.bossStash = [];
-                        state.bossStash.push(itemCopy);
-                        lootHtml += `<div style="color: #ff9800; padding: 0.3rem; background: #1a1a0a; border-radius: 4px; margin: 0.2rem 0;">
-                            ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ff9800;">[📦 SCHRÁNKA - nemáš nosnost!]</span>
-                        </div>`;
-                    }
-                });
-            } else {
-                lootHtml += `<div style="color: #888; padding: 0.3rem; background: #1a1a1a; border-radius: 4px; margin: 0.2rem 0;">
-                    🏅 Unikátní loot pouze pro top 5 DPS (tvé místo: #${myRank})
-                </div>`;
+            });
+            // Garantovaně 1 unikátní pro každého účastníka
+            if (droppedUnique.length === 0 && boss.uniqueLoot.length > 0) {
+                droppedUnique.push(boss.uniqueLoot[Math.floor(Math.random() * boss.uniqueLoot.length)]);
             }
             
-            // Set item šance - POUZE PRO TOP 5 DPS
-            if (isTop5) {
-                const setChance = Math.min(0.25, Math.max(0.05, myDamagePercent * 0.5));
+            droppedUnique.forEach(uniqueItem => {
+                const itemCopy = { ...uniqueItem };
+                if (itemCopy.effect === 'permanent_hp') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
+                if (itemCopy.effect === 'permanent_all') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
+                if (canAddItem(itemCopy, 1)) {
+                    addItemToInventory(itemCopy, 1, true);
+                    lootHtml += `<div style="color: #ce93d8; padding: 0.3rem; background: #1a0a2a; border-radius: 4px; margin: 0.2rem 0;">
+                        ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ffd700;">[UNIKÁTNÍ]</span>
+                    </div>`;
+                } else {
+                    // Nemá nosnost - ulož do schránky bosse (boss_stash v inventáři)
+                    if (!state.bossStash) state.bossStash = [];
+                    state.bossStash.push(itemCopy);
+                    lootHtml += `<div style="color: #ff9800; padding: 0.3rem; background: #1a1a0a; border-radius: 4px; margin: 0.2rem 0;">
+                        ${uniqueItem.icon} <strong>${uniqueItem.name}</strong> <span style="color: #ff9800;">[📦 SCHRÁNKA - nemáš nosnost!]</span>
+                    </div>`;
+                }
+            });
+            
+            // Set item šance (škálováno)
+            const setChance = Math.min(0.25, Math.max(0.05, myDamagePercent * 0.5));
             if (Math.random() < setChance && typeof CLASS_SETS !== 'undefined') {
                 const allClasses = Object.keys(CLASS_SETS);
                 const randomClass = allClasses[Math.floor(Math.random() * allClasses.length)];
@@ -95737,7 +95680,6 @@ function openFullscreenMap() {
                     </div>`;
                 }
             }
-            } // end isTop5 for set items
             
             // Leaderboard
             const sortedAll = Object.entries(raidData.participants || {})
@@ -95746,11 +95688,10 @@ function openFullscreenMap() {
             
             const leaderboardHtml = sortedAll.map((p, i) => {
                 const pct = totalDamage > 0 ? Math.round(p.damage / totalDamage * 100) : 0;
-                const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i < 5 ? '⭐' : '⚔️';
+                const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '⚔️';
                 const isMe = p.name.replace(/[\\/\\.#$\\[\\]]/g, '_') === myName;
-                const isTopFive = i < 5;
                 return `<div style="display: flex; justify-content: space-between; padding: 0.2rem 0.4rem; ${isMe ? 'background: #1a2a1a; border-radius: 4px;' : ''} font-size: 0.8rem;">
-                    <span style="color: ${isMe ? '#8bc34a' : isTopFive ? '#ce93d8' : '#aaa'};">${medal} ${p.name.replace(/_/g, ' ')} ${isTopFive ? '🎁' : ''}</span>
+                    <span style="color: ${isMe ? '#8bc34a' : '#aaa'};">${medal} ${p.name.replace(/_/g, ' ')}</span>
                     <span style="color: ${isMe ? '#ffd700' : '#888'};">${formatNumber(p.damage)} (${pct}%)</span>
                 </div>`;
             }).join('');
@@ -95764,7 +95705,7 @@ function openFullscreenMap() {
                     <p style="color: #888; font-size: 0.85rem;">Killing blow: ${(raidData.killingBlow || '?').replace(/_/g, ' ')}</p>
                     
                     <div style="background: #1a0a2a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 2px solid #9c27b0; text-align: left;">
-                        <h4 style="margin: 0 0 0.3rem 0; color: #ce93d8;">🎁 Tvůj loot (${Math.round(myDamagePercent * 100)}% podíl, #${myRank} místo):</h4>
+                        <h4 style="margin: 0 0 0.3rem 0; color: #ce93d8;">🎁 Tvůj loot (${Math.round(myDamagePercent * 100)}% podíl):</h4>
                         ${lootHtml}
                     </div>
                     
@@ -95773,7 +95714,7 @@ function openFullscreenMap() {
                     </div>` : ''}
                     
                     <div style="background: #1a1a1a; padding: 0.5rem; border-radius: 8px; margin: 0.5rem 0; text-align: left;">
-                        <h4 style="margin: 0 0 0.3rem 0; color: #ff4444; font-size: 0.85rem;">📊 Damage Leaderboard: <span style="color: #ce93d8; font-size: 0.75rem;">(🎁 = vzácný loot)</span></h4>
+                        <h4 style="margin: 0 0 0.3rem 0; color: #ff4444; font-size: 0.85rem;">📊 Damage Leaderboard:</h4>
                         ${leaderboardHtml}
                     </div>
                     
@@ -95790,84 +95731,12 @@ function openFullscreenMap() {
             if (raidData.killingBlow === myName) {
                 activateWorldBossGlobalReward(boss.id);
                 
-                // === ZAPSAT ODMĚNY PRO OFFLINE HRÁČE DO FIREBASE ===
-                // Počkej 5s aby online hráči stihli nastavit lootClaimed
-                setTimeout(async () => {
-                try {
-                    // Načti čerstvá data (online hráči už mohli nastavit lootClaimed)
-                    const freshRaidSnap = await firebaseDB.ref('worldBossRaid').once('value');
-                    const freshRaidData = freshRaidSnap.val();
-                    if (!freshRaidData || !freshRaidData.participants) return;
-                    
-                    const allParticipants = Object.entries(freshRaidData.participants || {});
-                    const totalDmg = allParticipants.reduce((sum, [, p]) => sum + (p.damage || 0), 0);
-                    const sortedForRewards = allParticipants
-                        .map(([name, p]) => ({ name, damage: p.damage || 0 }))
-                        .sort((a, b) => b.damage - a.damage);
-                    
-                    const moneyRewardsMap = { sandworm: 1500, mech_titan: 2500, shadow_patriarch: 2000, behemoth: 3000, rad_hydra: 4000, ancient_leviathan: 6000 };
-                    const totalMoney = moneyRewardsMap[boss.id] || Math.floor(boss.cost * 1.0);
-                    const rewardTimestamp = Date.now();
-                    let offlineCount = 0;
-                    
-                    for (const [pName, pData] of allParticipants) {
-                        // Přeskoč hráče co už loot vyzvedli (online hráči)
-                        if (pData.lootClaimed) continue;
-                        // Přeskoč sebe (killing blow = online, už dostal)
-                        if (pName === myName) continue;
-                        
-                        const pDmgPct = totalDmg > 0 ? (pData.damage || 0) / totalDmg : 0;
-                        const pRank = sortedForRewards.findIndex(p => p.name === pName) + 1;
-                        const pIsTop5 = pRank >= 1 && pRank <= 5;
-                        
-                        const pMoney = Math.max(Math.floor(totalMoney * 0.10), Math.floor(totalMoney * pDmgPct));
-                        const pXp = Math.max(Math.floor(boss.xp * 0.10), Math.floor(boss.xp * pDmgPct));
-                        
-                        // Unikátní itemy pro top 5
-                        const rewardItems = [];
-                        if (pIsTop5 && boss.uniqueLoot && boss.uniqueLoot.length > 0) {
-                            const pLootChance = Math.min(0.75, Math.max(0.25, pDmgPct * 1.5));
-                            boss.uniqueLoot.forEach(item => {
-                                if (Math.random() < pLootChance) {
-                                    rewardItems.push({ id: item.id, name: item.name, icon: item.icon });
-                                }
-                            });
-                            // Garantovaně 1 pro top 5
-                            if (rewardItems.length === 0) {
-                                const randItem = boss.uniqueLoot[Math.floor(Math.random() * boss.uniqueLoot.length)];
-                                rewardItems.push({ id: randItem.id, name: randItem.name, icon: randItem.icon });
-                            }
-                        }
-                        
-                        // Zapiš do Firebase
-                        const rewardKey = `raid_${boss.id}_${rewardTimestamp}`;
-                        await firebaseDB.ref(`players/${pName}/pendingRewards/${rewardKey}`).set({
-                            type: 'raid_reward',
-                            bossId: boss.id,
-                            bossName: boss.name,
-                            bossIcon: boss.icon,
-                            money: pMoney,
-                            xp: pXp,
-                            rank: pRank,
-                            damagePercent: Math.round(pDmgPct * 100),
-                            items: rewardItems.length > 0 ? rewardItems : null,
-                            reason: `🐉 World Boss: ${boss.icon} ${boss.name} (#${pRank} DPS, ${Math.round(pDmgPct * 100)}%)`,
-                            timestamp: rewardTimestamp
-                        });
-                        offlineCount++;
-                    }
-                    console.log(`🐉 Offline rewards written for ${offlineCount} participants`);
-                } catch(e) {
-                    console.error('🐉 Offline reward write error:', e);
-                }
-                }, 5000); // 5s delay - počkat než online hráči claimnou
-                
                 // Pošli chat zprávu o poražení bosse
                 try {
                     const sortedParticipants = Object.entries(raidData.participants || {})
                         .sort((a, b) => (b[1].damage || 0) - (a[1].damage || 0))
-                        .slice(0, 5)
-                        .map((p, i) => `${['🥇','🥈','🥉','⭐','⭐'][i]} ${p[0].replace(/_/g, ' ')}: ${formatNumber(p[1].damage)} DMG`)
+                        .slice(0, 3)
+                        .map((p, i) => `${['🥇','🥈','🥉'][i]} ${p[0].replace(/_/g, ' ')}: ${formatNumber(p[1].damage)} DMG`)
                         .join(' | ');
                     
                     await firebaseDB.ref('chat/messages').push({
@@ -95881,9 +95750,11 @@ function openFullscreenMap() {
             
             saveGame(true);
             
-            // Vyčisti raid po 5 minutách (aby online hráči stihli vyzvednout loot)
-            // Každý účastník naplánuje cleanup pro jistotu
-            setTimeout(() => cleanupWorldBossRaid(raidData), 300000); // 5 min
+            // Vyčisti raid po 30 minutách (aby online hráči stihli vyzvednout loot)
+            // Jen killing blow hráč nebo admin čistí
+            if (raidData.killingBlow === myName || isStaff()) {
+                setTimeout(() => cleanupWorldBossRaid(raidData), 1800000); // 30 min
+            }
         }
         
         // Fallback: Zkontroluj raid victory po zavření combat modalu
