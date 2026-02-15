@@ -36657,7 +36657,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
-            // Filtruj itemy které se dají náhodně najít (ne lore, ne quest itemy, ne cantBuy, ne world boss)
+            // Filtruj itemy které se dají náhodně najít (ne lore, ne quest itemy, ne cantBuy)
             const lootableItems = ITEMS.filter(i => 
                 !i.id?.startsWith('lore_') && 
                 !i.id?.startsWith('quest_') && 
@@ -61384,7 +61384,6 @@ function openFullscreenMap() {
                 const mayorIncome = Math.floor(publicMoney * MAYOR_SYSTEM.taxation.mayorDailyShare);
                 if (mayorIncome <= 0) return;
                 
-                // Odeber z veřejné kasy + zaloguj do treasury (MUSÍ být await!)
                 const salaryPaid = await removeFromPublicTreasury(mayorIncome, 'mayor_salary', `Denní plat šéfa ${mayor.name}`);
                 if (!salaryPaid) {
                     console.warn('👑 Treasury deduction failed for mayor salary');
@@ -63367,6 +63366,14 @@ function openFullscreenMap() {
                             pos = defaultPositions[idx] || { x: 7, y: idx % 5 };
                         }
                         
+                        // Spočítej regenPerTurn z accessory společníka
+                        let compRegenPerTurn = 0;
+                        if (comp.equipped?.accessory?.bonus && typeof comp.equipped.accessory.bonus === 'object') {
+                            compRegenPerTurn += comp.equipped.accessory.bonus.regenPerTurn || 0;
+                        }
+                        // Nano armor společníka
+                        if (comp.equipped?.armor?.special === 'nano') compRegenPerTurn += 2;
+                        
                         units.push({
                             id: unitId++,
                             name: compName,
@@ -63383,7 +63390,8 @@ function openFullscreenMap() {
                             companionId: comp.uniqueId || comp.id, // Použij uniqueId pro dynamické
                             alive: true,
                             acted: false,
-                            equipped: comp.equipped || null // Pro referenci v boji
+                            equipped: comp.equipped || null, // Pro referenci v boji
+                            regenPerTurn: compRegenPerTurn // Regenerace z accessory/armor
                         });
                     });
                 }
@@ -64888,6 +64896,18 @@ function openFullscreenMap() {
                     unit.hp += healAmt;
                     state.char.hp = unit.hp; // Synchronizuj se state
                     cs.log.push(`🔬 Nano zbroj regeneruje +${healAmt} HP`);
+                }
+            }
+            
+            // Regenerace pro společníky (z accessory jako Reaktorové Jádro, Tříhlavé Srdce)
+            if (unit.isCompanion && unit.regenPerTurn > 0 && unit.hp < unit.maxHp) {
+                const healAmt = Math.min(unit.regenPerTurn, unit.maxHp - unit.hp);
+                unit.hp += healAmt;
+                cs.log.push(`⚡ ${unit.name} regeneruje +${healAmt} HP`);
+                // Synchronizuj HP zpět do state
+                if (unit.companionId && state.companions) {
+                    const comp = state.companions.find(c => (c.uniqueId || c.id) === unit.companionId);
+                    if (comp) comp.hp = Math.min(unit.hp, unit.maxHp);
                 }
             }
             
@@ -95258,7 +95278,7 @@ function openFullscreenMap() {
                     locationName: raidLocationName,
                     summonedBy: getPlayerName(),
                     summonedAt: now,
-                    expiresAt: now + 2592000000, // 30 dní - boss zůstává dokud neumře
+                    expiresAt: now + 172800000, // 48 hodin
                     defeated: false,
                     participants: {},
                     canStun: boss.canStun || false,
@@ -95350,12 +95370,33 @@ function openFullscreenMap() {
                     // Auto-fix: Boss má 0 HP ale defeated flag chybí
                     if (data.currentHp <= 0 && !data.defeated) {
                         console.log('🐉 AUTO-FIX: Boss has 0 HP but not marked defeated, fixing...');
-                        firebaseDB.ref('worldBossRaid').update({
-                            defeated: true,
-                            defeatedAt: Date.now(),
-                            currentHp: 0
+                        firebaseDB.ref('worldBossRaid').transaction(d => {
+                            if (d && d.active && d.currentHp <= 0 && !d.defeated) {
+                                d.defeated = true;
+                                d.defeatedAt = Date.now();
+                                d.currentHp = 0;
+                            }
+                            return d;
                         }).catch(e => console.error('Auto-fix defeated error:', e));
-                        data.defeated = true; // Lokálně taky nastavit
+                        data.defeated = true;
+                    }
+                    
+                    // Auto-expiry: Boss je aktivní příliš dlouho (>48h)
+                    if (!data.defeated && data.summonedAt) {
+                        const bossAge = Date.now() - data.summonedAt;
+                        const MAX_BOSS_AGE = 48 * 60 * 60 * 1000;
+                        if (bossAge > MAX_BOSS_AGE) {
+                            console.log('🐉 AUTO-EXPIRY: Boss active for', Math.round(bossAge / 3600000), 'hours. Cleaning up...');
+                            firebaseDB.ref('worldBossRaid').transaction(d => {
+                                if (d && d.active && !d.defeated && d.summonedAt && (Date.now() - d.summonedAt > MAX_BOSS_AGE)) {
+                                    d.active = false;
+                                    d.expired = true;
+                                    d.expiredAt = Date.now();
+                                }
+                                return d;
+                            }).catch(e => console.error('Auto-expiry error:', e));
+                            return;
+                        }
                     }
                     
                     // Detekce nového bosse - reset handled flagu
@@ -95375,7 +95416,7 @@ function openFullscreenMap() {
                             console.log('🐉 DEFER: Victory popup deferred - player busy:', { isInCombat, isInDungeon, isInSettlementRaid });
                             // Neresetuj _raidVictoryHandled, zkusí se to znovu při dalším renderFull
                         } else {
-                            // Ignoruj staré raidové výsledky (starší než 5 minut)
+                            // Ignoruj staré raidové výsledky (starší než 30 minut)
                             const defeatedAge = data.defeatedAt ? (Date.now() - data.defeatedAt) : 0;
                             // Kontrola localStorage - už jsme tento raid vyhodnotili?
                             const raidInstanceKey = `raidClaimed_${data.bossId}_${data.summonedAt || ''}`;
@@ -95384,11 +95425,11 @@ function openFullscreenMap() {
                             if (alreadyClaimed) {
                                 console.log('🐉 SKIP: Raid already claimed (localStorage):', raidInstanceKey);
                                 state._raidVictoryHandled = true;
-                            } else if (defeatedAge > 5 * 60 * 1000) {
+                            } else if (defeatedAge > 30 * 60 * 1000) {
                                 console.log('🐉 SKIP: Old defeated boss, age:', Math.round(defeatedAge / 60000), 'min. Auto-cleaning...');
                                 state._raidVictoryHandled = true;
-                                // Auto-cleanup starého raidu z Firebase
-                                firebaseDB.ref('worldBossRaid').set({ active: false }).catch(e => console.error('Auto-cleanup error:', e));
+                                // Auto-cleanup starého raidu z Firebase - zachovej data pro offline odměny
+                                firebaseDB.ref('worldBossRaid').update({ active: false, cleanedAt: Date.now() }).catch(e => console.error('Auto-cleanup error:', e));
                             } else {
                                 state._raidVictoryHandled = true;
                                 state._lastHandledRaidBoss = raidKey;
@@ -95415,11 +95456,21 @@ function openFullscreenMap() {
                     // Aktualizuj banner
                     renderWorldBossRaidBanner();
                     
-                    // Periodický refresh banneru (cooldown timer ticking)
+                    // Periodický refresh banneru + retry deferred victories
                     if (!window._raidBannerInterval) {
                         window._raidBannerInterval = setInterval(() => {
                             if (worldBossRaidData && worldBossRaidData.active) {
                                 renderWorldBossRaidBanner();
+                                // Retry deferred victory
+                                if (worldBossRaidData.defeated && !state._raidVictoryHandled) {
+                                    const isInCombat = !!(window.combatState || state.activeCombat);
+                                    const isInDungeon = !!(state.dungeon?.active);
+                                    const isInSettlementRaid = !!window.isSettlementRaid;
+                                    if (!isInCombat && !isInDungeon && !isInSettlementRaid) {
+                                        console.log('🐉 DEFERRED RETRY: Player no longer busy, triggering victory...');
+                                        checkRaidVictoryFallback();
+                                    }
+                                }
                             } else {
                                 clearInterval(window._raidBannerInterval);
                                 window._raidBannerInterval = null;
@@ -95435,6 +95486,10 @@ function openFullscreenMap() {
                     if (window._raidBannerInterval) {
                         clearInterval(window._raidBannerInterval);
                         window._raidBannerInterval = null;
+                    }
+                    // Plná purge starých dat (>1 hodina po cleanup)
+                    if (data && data.cleanedAt && (Date.now() - data.cleanedAt > 60 * 60 * 1000)) {
+                        firebaseDB.ref('worldBossRaid').set({ active: false }).catch(() => {});
                     }
                     // Překresli mapu aby zmizel boss panel
                     if (state.activeTab === 'map') renderFull();
@@ -95638,9 +95693,9 @@ function openFullscreenMap() {
         async function handleRaidBossGlobalVictory(raidData) {
             if (!raidData || !raidData.defeated) return;
             
-            // Ignoruj staré výsledky (starší než 10 minut)
+            // Ignoruj staré výsledky (starší než 30 minut)
             const defeatedAge = raidData.defeatedAt ? (Date.now() - raidData.defeatedAt) : 0;
-            if (defeatedAge > 10 * 60 * 1000) {
+            if (defeatedAge > 30 * 60 * 1000) {
                 console.log('🐉 VICTORY HANDLER SKIP: Old raid result, age:', Math.round(defeatedAge / 60000), 'min');
                 return;
             }
@@ -95964,12 +96019,17 @@ function openFullscreenMap() {
         async function cleanupWorldBossRaid(raidData) {
             if (!multiplayerEnabled || !firebaseDB) return;
             try {
-                // Ověř že raid stále existuje a je defeated
                 const snap = await firebaseDB.ref('worldBossRaid/defeated').once('value');
                 if (snap.val() === true) {
-                    await firebaseDB.ref('worldBossRaid').set({ active: false });
+                    await firebaseDB.ref('worldBossRaid').update({ 
+                        active: false, 
+                        cleanedAt: Date.now() 
+                    });
+                    console.log('🐉 Raid cleaned up (active: false, data preserved)');
                 }
-            } catch(e) {}
+            } catch(e) {
+                console.error('Raid cleanup error:', e);
+            }
         }
         
         // Admin: Re-trigger raid rewards pro všechny účastníky
@@ -100561,7 +100621,7 @@ function openFullscreenMap() {
                     locationName: raidLocationName,
                     summonedBy: getPlayerName() + ' (Admin)',
                     summonedAt: now,
-                    expiresAt: now + 2592000000, // 30 dní - boss zůstává dokud neumře
+                    expiresAt: now + 172800000, // 48 hodin
                     defeated: false,
                     participants: {},
                     canStun: boss.canStun || false,
