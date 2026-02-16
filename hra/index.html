@@ -77997,10 +77997,14 @@ function openFullscreenMap() {
                         }
                         
                         // Kontrola jestli někdo nedobývá - KRITICKÉ!
-                        if (territory.activeCapture) {
-                            const timePassed = now - (territory.activeCapture.startTime || 0);
-                            if (timePassed < 35 * 60 * 1000) {
-                                return; // abort - probíhá dobývání
+                        // Data jsou v activeCaptures (PLURAL), ne activeCapture
+                        if (territory.activeCaptures) {
+                            const captureEntries = Object.values(territory.activeCaptures);
+                            for (const cap of captureEntries) {
+                                const timePassed = now - (cap.startTime || 0);
+                                if (timePassed < 20 * 60 * 1000) {
+                                    return; // abort - probíhá dobývání
+                                }
                             }
                         }
                         
@@ -78030,9 +78034,8 @@ function openFullscreenMap() {
                         
                         if (territory.owner !== faction) {
                             notifyWarning('Nelze!', 'Toto území už nepatří tvé frakci!');
-                        } else if (territory.activeCapture) {
-                            const action = territory.activeCapture.action === 'fighting' ? 'bojuje' : 'dobývá';
-                            notifyWarning('Území v boji!', `Hráč ${territory.activeCapture.player} ${action} - nelze přidat strážce!`);
+                        } else if (territory.activeCaptures && Object.values(territory.activeCaptures).some(cap => (Date.now() - (cap.startTime || 0)) < 20 * 60 * 1000)) {
+                            notifyWarning('Území v boji!', 'Někdo právě dobývá - nelze přidat strážce!');
                         } else if ((territory.guards || []).length >= MAX_GUARDS_PER_TERRITORY) {
                             notifyWarning('Maximum!', `Území má max ${MAX_GUARDS_PER_TERRITORY} strážce`);
                         } else {
@@ -78075,11 +78078,15 @@ function openFullscreenMap() {
                     guards = territory?.guards || [];
                     
                     // Kontrola jestli někdo jiný nebojuje
-                    if (territory?.activeCapture) {
-                        const timePassed = Date.now() - (territory.activeCapture.startTime || 0);
-                        if (timePassed < 35 * 60 * 1000 && territory.activeCapture.player !== myName) {
-                            notifyWarning('Obsazeno!', `Hráč ${territory.activeCapture.player} zde právě bojuje`);
-                            return;
+                    if (territory?.activeCaptures) {
+                        const now = Date.now();
+                        const mySafeName = myName.replace(/[.#$\[\]]/g, '_');
+                        for (const [capKey, cap] of Object.entries(territory.activeCaptures)) {
+                            const timePassed = now - (cap.startTime || 0);
+                            if (timePassed < 20 * 60 * 1000 && capKey !== mySafeName) {
+                                notifyWarning('Obsazeno!', `Hráč ${cap.player || capKey} zde právě dobývá`);
+                                return;
+                            }
                         }
                     }
                 } catch(e) {
@@ -78139,6 +78146,19 @@ function openFullscreenMap() {
                 try {
                     const captureRef = firebaseDB.ref('territories/' + locationId + '/activeCapture');
                     const startTime = Date.now();
+                    
+                    // Zkontroluj jestli neprobíhá pasivní dobývání (activeCaptures - plural)
+                    const terrSnap = await firebaseDB.ref('territories/' + locationId + '/activeCaptures').once('value');
+                    const activeCaps = terrSnap.val();
+                    if (activeCaps) {
+                        const mySafe = myName.replace(/[.#$\[\]]/g, '_');
+                        for (const [capKey, cap] of Object.entries(activeCaps)) {
+                            if (capKey !== mySafe && (startTime - (cap.startTime || 0)) < 20 * 60 * 1000) {
+                                notifyWarning('Obsazeno!', `Hráč ${cap.player || capKey} zde právě dobývá`);
+                                return;
+                            }
+                        }
+                    }
                     
                     // Atomicky zkontroluj a nastav že bojujeme
                     const result = await captureRef.transaction((currentCapture) => {
@@ -78232,14 +78252,21 @@ function openFullscreenMap() {
                         const result = await territoryRef.transaction((territory) => {
                             if (!territory) territory = {};
                             
-                            // Zkontroluj že activeCapture je náš
-                            if (territory.activeCapture && territory.activeCapture.player !== myName) {
-                                return; // abort - někdo jiný
+                            // Zkontroluj že activeCaptures neobsahuje jiného hráče
+                            if (territory.activeCaptures) {
+                                const mySafe = myName.replace(/[.#$\[\]]/g, '_');
+                                for (const [capKey, cap] of Object.entries(territory.activeCaptures)) {
+                                    if (capKey !== mySafe && cap.player !== myName) {
+                                        const age = Date.now() - (cap.startTime || 0);
+                                        if (age < 20 * 60 * 1000) return; // abort - někdo jiný dobývá
+                                    }
+                                }
                             }
                             
                             territory.owner = faction;
                             territory.guards = null; // smaž strážce
-                            territory.activeCapture = null;
+                            territory.activeCaptures = null; // smaž všechny aktivní capture
+                            territory.activeCapture = null; // smaž i starý singulární záznam
                             territory.capturedAt = Date.now();
                             territory.capturedBy = myName;
                             
@@ -78282,6 +78309,14 @@ function openFullscreenMap() {
                                 if (!territory) territory = {};
                                 territory.guards = remainingGuards.length > 0 ? remainingGuards : null;
                                 territory.activeCapture = null;
+                                // Smaž i plurální activeCaptures pro tohoto hráče
+                                if (territory.activeCaptures) {
+                                    const mySafe = myName.replace(/[.#$\[\]]/g, '_');
+                                    delete territory.activeCaptures[mySafe];
+                                    if (Object.keys(territory.activeCaptures).length === 0) {
+                                        territory.activeCaptures = null;
+                                    }
+                                }
                                 return territory;
                             });
                         } else {
@@ -78342,8 +78377,9 @@ function openFullscreenMap() {
                         if (territory.owner) {
                             const ownerFaction = PVP_FACTIONS[territory.owner];
                             notifyWarning('Území obsazeno!', `Území již patří ${ownerFaction?.name || 'jiné frakci'}`);
-                        } else if (territory.activeCapture) {
-                            notifyWarning('Území v boji!', `${territory.activeCapture.player} právě dobývá`);
+                        } else if (territory.activeCaptures && Object.values(territory.activeCaptures).some(cap => (Date.now() - (cap.startTime || 0)) < 20 * 60 * 1000)) {
+                            const activeCap = Object.values(territory.activeCaptures).find(cap => (Date.now() - (cap.startTime || 0)) < 20 * 60 * 1000);
+                            notifyWarning('Území v boji!', `${activeCap?.player || 'Někdo'} právě dobývá`);
                         } else {
                             notifyWarning('Chyba', 'Nepodařilo se obsadit území');
                         }
@@ -78647,7 +78683,9 @@ function openFullscreenMap() {
             if (!state.confirmed) return;
             
             const myName = getPlayerName();
+            const mySafeName = myName.replace(/[.#$\[\]]/g, '_');
             const currentLocationId = state.world?.currentLocation;
+            const CAPTURE_DURATION = 15 * 60 * 1000; // 15 minut (stejné jako všude jinde)
             
             try {
                 // Prohledej VŠECHNY území jestli tam nemáme aktivní capture
@@ -78655,11 +78693,12 @@ function openFullscreenMap() {
                 const territories = snapshot.val() || {};
                 
                 for (const [locationId, territory] of Object.entries(territories)) {
-                    const activeCapture = territory.activeCapture;
+                    // Čti z activeCaptures (PLURAL) - tam se data zapisují
+                    const myCapture = territory.activeCaptures?.[mySafeName];
                     
-                    if (activeCapture && activeCapture.player === myName) {
-                        const elapsed = Date.now() - activeCapture.startTime;
-                        const progress = Math.min(100, (elapsed / (30 * 60 * 1000)) * 100);
+                    if (myCapture && myCapture.player === myName) {
+                        const elapsed = Date.now() - myCapture.startTime;
+                        const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
                         
                         console.log(`🏴 Found active capture at ${locationId}: ${progress.toFixed(1)}%`);
                         
@@ -78671,10 +78710,10 @@ function openFullscreenMap() {
                             // Jsme na té lokaci - obnov lokální stav
                             if (!state.territoryCapture) state.territoryCapture = {};
                             state.territoryCapture[locationId] = {
-                                startTime: activeCapture.startTime,
+                                startTime: myCapture.startTime,
                                 progress: progress,
-                                faction: activeCapture.faction,
-                                originalOwner: activeCapture.originalOwner
+                                faction: myCapture.faction,
+                                originalOwner: myCapture.originalOwner
                             };
                             
                             // Spusť listener
@@ -78685,7 +78724,7 @@ function openFullscreenMap() {
                         } else {
                             // Nejsme na té lokaci - zruš capture
                             console.log('🏴 Cancelling capture at', locationId, '- player is elsewhere');
-                            await firebaseDB.ref('territories/' + locationId + '/activeCapture').remove();
+                            await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + mySafeName).remove();
                             notifyWarning('Obsazování zrušeno', `Opustil jsi ${locationId} před dokončením`);
                         }
                     }
@@ -90052,10 +90091,15 @@ function openFullscreenMap() {
         function hasPermission(permission) {
             const playerName = getPlayerName();
             const role = getStaffRole(playerName);
-            if (!role) return false;
-            const roleData = STAFF_ROLES[role];
-            if (!roleData) return false;
-            return roleData.permissions.includes('all') || roleData.permissions.includes(permission);
+            if (role) {
+                const roleData = STAFF_ROLES[role];
+                if (roleData && (roleData.permissions.includes('all') || roleData.permissions.includes(permission))) return true;
+            }
+            // Šéf Pustiny má přístup k tombole a pokladu
+            if ((permission === 'tombola' || permission === 'treasure') && typeof isMayor === 'function' && isMayor()) {
+                return true;
+            }
+            return false;
         }
         
         function isStaff() {
@@ -94615,6 +94659,31 @@ function openFullscreenMap() {
             });
             
             html += `
+                </div>
+                
+                <!-- Tombola a Poklad - dostupné pro šéfa -->
+                <div style="margin-top: 1rem; border-top: 1px solid #333; padding-top: 1rem;">
+                    <div style="color: #ffd700; font-weight: bold; margin-bottom: 0.5rem; font-size: 0.85rem;">🎁 Speciální eventy</div>
+                    <div style="display: grid; gap: 0.5rem;">
+                        <div style="background: #1a1a2a; border: 1px solid #e91e63; border-radius: 8px; padding: 0.75rem; cursor: pointer;" onclick="showAdminTombola()">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span style="font-size: 1.8rem;">🎟️</span>
+                                <div>
+                                    <div style="color: #e91e63; font-weight: bold;">Tombola</div>
+                                    <div style="color: #888; font-size: 0.8rem;">Vytvoř tombolu s cenami pro hráče</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="background: #1a1a0a; border: 1px solid #ff9800; border-radius: 8px; padding: 0.75rem; cursor: pointer;" onclick="adminTreasure()">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span style="font-size: 1.8rem;">💎</span>
+                                <div>
+                                    <div style="color: #ff9800; font-weight: bold;">Ztracený poklad</div>
+                                    <div style="color: #888; font-size: 0.8rem;">Umísti poklad na lokaci pro hráče</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 ${buildActiveEffectsHtml() || ''}
@@ -100781,16 +100850,30 @@ function openFullscreenMap() {
                 const snap = await firebaseDB.ref('territories').once('value');
                 const territories = snap.val() || {};
                 
-                // Najdi všechny aktivní capture
+                // Najdi všechny aktivní capture (starý singulární i nový plurální systém)
                 const activeCaptures = [];
                 for (const [locId, territory] of Object.entries(territories)) {
+                    const loc = WORLD_LOCATIONS.find(l => l.id === locId);
+                    // Starý systém (singular)
                     if (territory.activeCapture) {
-                        const loc = WORLD_LOCATIONS.find(l => l.id === locId);
                         activeCaptures.push({
                             locationId: locId,
                             locationName: loc?.name || locId,
-                            ...territory.activeCapture
+                            ...territory.activeCapture,
+                            _path: 'activeCapture'
                         });
+                    }
+                    // Nový systém (plural)
+                    if (territory.activeCaptures) {
+                        for (const [playerKey, cap] of Object.entries(territory.activeCaptures)) {
+                            activeCaptures.push({
+                                locationId: locId,
+                                locationName: loc?.name || locId,
+                                ...cap,
+                                _playerKey: playerKey,
+                                _path: 'activeCaptures'
+                            });
+                        }
                     }
                 }
                 
@@ -100852,7 +100935,9 @@ function openFullscreenMap() {
             if (!isAdmin()) return;
             
             try {
+                // Smaž obě cesty (starý singulární i nový plurální systém)
                 await firebaseDB.ref('territories/' + locationId + '/activeCapture').remove();
+                await firebaseDB.ref('territories/' + locationId + '/activeCaptures').remove();
                 notifySuccess('Smazáno', `Capture na ${locationId} byl odstraněn`);
                 adminClearCaptures(); // Refresh
             } catch(e) {
@@ -100875,6 +100960,10 @@ function openFullscreenMap() {
                     if (territory.activeCapture) {
                         await firebaseDB.ref('territories/' + locId + '/activeCapture').remove();
                         count++;
+                    }
+                    if (territory.activeCaptures) {
+                        await firebaseDB.ref('territories/' + locId + '/activeCaptures').remove();
+                        count += Object.keys(territory.activeCaptures).length;
                     }
                 }
                 
