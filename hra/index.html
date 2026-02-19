@@ -32967,6 +32967,58 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // CRITICAL: Zablokuj cloud sync na 10 sekund - aby se nenačetl starý save
             window._blockCloudSyncUntil = Date.now() + 10000;
             
+            // === UVÍTACÍ ZPRÁVY PRO NOVÉHO HRÁČE ===
+            setTimeout(async () => {
+                if (!multiplayerEnabled || !firebaseDB) return;
+                const newPlayerName = state.char.name;
+                const clsData = CLASSES[state.char.classId] || {};
+                const clsIcon = clsData.icon || '🧍';
+                const clsName = clsData.name || state.char.classId;
+                
+                try {
+                    // 1) Soukromá uvítací zpráva hráči
+                    const welcomeText = [
+                        'Vítej v pustině, ' + newPlayerName + '! 🌄',
+                        '',
+                        'Jsi ' + clsIcon + ' ' + clsName + ' – máš před sebou těžkou cestu, ale nejsi sám.',
+                        '',
+                        '📌 Pár tipů na začátek:',
+                        '• 🗺️ Cestuj po mapě a prozkoumávej lokace',
+                        '• ⚔️ Bojuj s nepřáteli a získávej XP a loot',
+                        '• 🏠 Postav si osadu a najmi osadníky',
+                        '• 🤝 Mluv s NPC – dávají questy a odměny',
+                        '• 💬 Piš do chatu – ostatní hráči ti rádi pomůžou',
+                        '• 📦 Sbírej suroviny – jídlo a voda jsou nutné k přežití',
+                        '',
+                        'Hodně štěstí, přeživší. Pustina tě čeká. 💀'
+                    ].join('\n');
+                    
+                    await firebaseDB.ref('chat/private/' + newPlayerName).push({
+                        from: '🌍 Pustina',
+                        to: newPlayerName,
+                        text: welcomeText,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true,
+                        read: false
+                    });
+                    
+                    // 2) Veřejná zpráva do globálního chatu
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🌍 Pustina',
+                        text: '⚡ Do pustiny právě vstoupil nový přeživší: ' + newPlayerName + ' (' + clsIcon + ' ' + clsName + '). Přivítejte ho!',
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true,
+                        level: 1,
+                        rankName: 'Systém',
+                        rankColor: '#ff9800'
+                    });
+                    
+                    console.log('✓ Uvítací zprávy odeslány pro:', newPlayerName);
+                } catch(e) {
+                    console.warn('Uvítací zpráva selhala:', e);
+                }
+            }, 1500);
+            
             // CRITICAL: Okamžitě ulož do CLOUDU - zabrání načtení starého save!
             // Toto přepíše jakýkoliv starý cloud save novou postavou
             setTimeout(async () => {
@@ -81113,12 +81165,13 @@ function openFullscreenMap() {
                         factionPrefix = `<span style="color: ${f.color}; font-size: 0.65rem;">[${factionShort}]</span> `;
                     }
                     
-                    // Systémové zprávy (tombola, war zone apod.)
+                    // Systémové zprávy (tombola, war zone, pustina apod.)
                     const isSystemMessage = msg.system || 
                         msg.author === '🎟️ TOMBOLA' || 
                         msg.author === '🎉 TOMBOLA' ||
                         msg.author === '⚔️ WAR ZONE' ||
                         msg.author === '⚔️ VÁLEČNÁ ZÓNA' ||
+                        msg.author === '🌍 Pustina' ||
                         msg.author?.includes('SYSTÉM');
                     
                     // Klikatelné jméno pro menu, celá zpráva pro rychlou odpověď
@@ -81128,9 +81181,12 @@ function openFullscreenMap() {
                     } else if (isSystemMessage) {
                         // Systémová zpráva - klik podle typu
                         const isWarZone = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
+                        const isPustina = msg.author === '🌍 Pustina';
                         const clickAction = isWarZone ? 'showFactionTab()' : 'showTombola()';
-                        const msgColor = isWarZone ? '#f44336' : '#e91e63';
-                        authorHtml = `<span onclick="event.stopPropagation(); ${clickAction};" style="color: ${msgColor}; font-weight: bold; cursor: pointer; text-decoration: underline;">${escapeHtml(msg.author)}</span>`;
+                        const msgColor = isWarZone ? '#f44336' : isPustina ? '#8bc34a' : '#e91e63';
+                        authorHtml = isPustina
+                            ? `<span style="color: ${msgColor}; font-weight: bold;">${escapeHtml(msg.author)}</span>`
+                            : `<span onclick="event.stopPropagation(); ${clickAction};" style="color: ${msgColor}; font-weight: bold; cursor: pointer; text-decoration: underline;">${escapeHtml(msg.author)}</span>`;
                     } else {
                         authorHtml = `${factionPrefix}<span onclick="event.stopPropagation(); showChatPlayerMenu('${escapeHtml(msg.author).replace(/'/g, "\\'")}', event)" style="color: ${isRainbow ? '#ff0000' : authorColor}; ${rainbowStyle} font-weight: bold; cursor: pointer; text-decoration: underline; text-decoration-style: dotted;">${escapeHtml(msg.author)}</span>${staffBadge}${vipBadge}${politicsBadge}`;
                     }
@@ -81140,9 +81196,10 @@ function openFullscreenMap() {
                     
                     // Barva systémové zprávy podle typu
                     const isWarZoneMsg = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
-                    const systemMsgColor = isWarZoneMsg ? '#f44336' : '#e91e63';
-                    const systemBgColor = isWarZoneMsg ? '#2a1515' : '#2a1a2a';
-                    const systemBorderColor = isWarZoneMsg ? '#f44336' : '#e91e63';
+                    const isPustinaMsg = msg.author === '🌍 Pustina';
+                    const systemMsgColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#8bc34a' : '#e91e63';
+                    const systemBgColor = isWarZoneMsg ? '#2a1515' : isPustinaMsg ? '#1a2a1a' : '#2a1a2a';
+                    const systemBorderColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#4caf50' : '#e91e63';
                     
                     messagesHtml += `
                         <div style="margin-bottom: 0.5rem; ${isMe ? 'text-align: right;' : ''}">
@@ -87533,9 +87590,10 @@ function openFullscreenMap() {
                     const isFromMe = conv.lastMsg?.from === myName;
                     const preview = conv.lastMsg?.text ? (conv.lastMsg.text.substring(0, 40) + (conv.lastMsg.text.length > 40 ? '...' : '')) : 'Žádná zpráva';
                     
+                    const isPustinaConv = conv.name === '🌍 Pustina';
                     html += `
-                        <div onclick="showPrivateChat('${escapeHtml(conv.name)}')" style="display: flex; align-items: center; gap: 0.8rem; background: ${conv.unreadCount > 0 ? '#1a2a3a' : '#1a1a1a'}; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; cursor: pointer; border-left: 3px solid ${conv.unreadCount > 0 ? '#2196f3' : '#333'};">
-                            <div style="font-size: 2rem;">👤</div>
+                        <div onclick="showPrivateChat('${escapeHtml(conv.name)}')" style="display: flex; align-items: center; gap: 0.8rem; background: ${conv.unreadCount > 0 ? (isPustinaConv ? '#1a2a1a' : '#1a2a3a') : '#1a1a1a'}; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; cursor: pointer; border-left: 3px solid ${conv.unreadCount > 0 ? (isPustinaConv ? '#4caf50' : '#2196f3') : '#333'};">
+                            <div style="font-size: 2rem;">${isPustinaConv ? '🌍' : '👤'}</div>
                             <div style="flex: 1; min-width: 0;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <span style="font-weight: bold; color: #fff;">${escapeHtml(conv.name)}</span>
