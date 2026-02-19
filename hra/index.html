@@ -34301,7 +34301,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const _wbValid = _wbData && _wbData.active && !_wbData.defeated && _wbData.currentHp > 0;
                 if (_wbValid && _wbLocId === location.id) {
                     const _wbMyName = (state.char?.name || '').replace(/[.\[\]#$/]/g, '_');
-                    const _wbLastAttack = _wbData.participants?.[_wbMyName]?.lastAttack || 0;
+                    const _wbFbLastAttack = _wbData.participants?.[_wbMyName]?.lastAttack || 0;
+                    const _wbLocalLastAttack = window._wbLastAttack?.[_wbMyName] || 0;
+                    const _wbLastAttack = Math.max(_wbFbLastAttack, _wbLocalLastAttack); // Nejnovější
                     const _wbCooldownMs = 3 * 60 * 60 * 1000; // 3 hodiny
                     const _wbCooldownLeft = Math.max(0, _wbCooldownMs - (Date.now() - _wbLastAttack));
                     const _wbOnCooldown = _wbLastAttack > 0 && _wbCooldownLeft > 0;
@@ -47092,6 +47094,21 @@ function openFullscreenMap() {
                 return;
             }
             
+            // Enchantování vyžaduje živého Technika ve skupině
+            const hasTechnik = (state.companions || []).some(c => c.id === 'engineer_npc' && !c.isDead);
+            if (!hasTechnik) {
+                showModal('🔧 Enchantování', `
+                    <div style="text-align: center; padding: 1rem;">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">🔧</div>
+                        <h3 style="color: #f44336;">Nemáš Technika!</h3>
+                        <p style="color: #aaa; margin: 0.5rem 0;">Enchantování předmětů vyžaduje společníka <strong style="color:#ffd700;">🔧 Technik</strong> ve tvé skupině.</p>
+                        <p style="color: #666; font-size: 0.85rem;">Technika najdeš v určitých lokacích – přidej ho do skupiny a vrať se.</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
+                `);
+                return;
+            }
+            
             const availableEnchants = ENCHANTMENTS.filter(e => {
                 if (isWeapon && e.type === 'weapon') return true;
                 if (isArmor && e.type === 'armor') return true;
@@ -47146,6 +47163,13 @@ function openFullscreenMap() {
             
             const ench = ENCHANTMENTS.find(e => e.id === enchantId);
             if (!ench) return;
+            
+            // Bezpečnostní kontrola Technika
+            const hasTechnik = (state.companions || []).some(c => c.id === 'engineer_npc' && !c.isDead);
+            if (!hasTechnik) {
+                notifyWarning('🔧 Nemáš Technika!', 'Enchantování vyžaduje společníka Technik ve skupině.');
+                return;
+            }
             
             const cost = ENCHANT_COSTS[enchantId] || {};
             
@@ -69216,10 +69240,15 @@ function openFullscreenMap() {
                 // Výhra = hráč si nechá své aktuální HP z boje (žádná penalizace)
                 // HP je už synchronizované z combatu
                 
-                // Společníci přežijí raid - obnov vyřazené na 1 HP
+                // Společníci přežijí raid - obnov ty co zemřeli BĚHEM tohoto boje (ne pre-existující mrtvé)
                 if (state.companions) {
+                    const preDeadIds = new Set(state.activeWorldBoss?.preRaidDeadCompanions || []);
                     state.companions.forEach(comp => {
-                        if (!comp.isDead && comp.hp <= 0) {
+                        const compId = comp.uniqueId || comp.id;
+                        if (preDeadIds.has(compId)) return; // Byl mrtvý už před bojem - neobnov
+                        // Obnov na 1 HP pokud byl vyřazen (hp <= 0 nebo isDead = true) BĚHEM tohoto boje
+                        if (comp.isDead || comp.hp <= 0) {
+                            comp.isDead = false;
                             comp.hp = 1;
                         }
                     });
@@ -69342,15 +69371,30 @@ function openFullscreenMap() {
             
             // === DEAD COMPANIONS INFO ===
             let deadCompanionHtml = '';
-            const deadCompanions = state.companions?.filter(c => c.isDead) || [];
-            if (deadCompanions.length > 0) {
-                const deadNames = deadCompanions.map(c => `${c.icon || '👤'} ${c.name}`).join(', ');
-                deadCompanionHtml = `
-                    <div style="background: #2a1a1a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 1px solid #c62828;">
-                        <p style="color: #c62828; margin: 0; font-size: 0.9rem;">💀 Padlí společníci: ${deadNames}</p>
-                        <p style="color: #888; margin: 0.2rem 0 0 0; font-size: 0.75rem;">Oživit: Osada → 💀 Oživit společníka</p>
-                    </div>
-                `;
+            // Po World Boss raidu se společníci obnoví - nezobrazuj je jako mrtvé
+            const isRaidVictory = cs.units?.some(u => u.isRaidBoss || u.isWorldBoss) || enemyData.isRaidBoss || enemyData.isWorldBoss;
+            if (!isRaidVictory) {
+                const deadCompanions = state.companions?.filter(c => c.isDead) || [];
+                if (deadCompanions.length > 0) {
+                    const deadNames = deadCompanions.map(c => `${c.icon || '👤'} ${c.name}`).join(', ');
+                    deadCompanionHtml = `
+                        <div style="background: #2a1a1a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 1px solid #c62828;">
+                            <p style="color: #c62828; margin: 0; font-size: 0.9rem;">💀 Padlí společníci: ${deadNames}</p>
+                            <p style="color: #888; margin: 0.2rem 0 0 0; font-size: 0.75rem;">Oživit: Osada → 💀 Oživit společníka</p>
+                        </div>
+                    `;
+                }
+            } else {
+                // World Boss raid - zobraz přeživší společníky (pokud byli v boji)
+                const raidSurvivors = state.companions?.filter(c => !c.isDead && c.inCombat) || [];
+                if (raidSurvivors.length > 0) {
+                    const survivorNames = raidSurvivors.map(c => `${c.icon || '👤'} ${c.name}`).join(', ');
+                    deadCompanionHtml = `
+                        <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 8px; margin: 0.5rem 0; border: 1px solid #4caf50;">
+                            <p style="color: #8bc34a; margin: 0; font-size: 0.9rem;">💪 Přeživší společníci: ${survivorNames}</p>
+                        </div>
+                    `;
+                }
             }
             
             showModal('🏆 VÍTĚZSTVÍ!', `
@@ -96861,6 +96905,15 @@ function openFullscreenMap() {
                 const wasActive = worldBossRaidData?.active;
                 worldBossRaidData = data;
                 window.worldBossRaidData = data; // Sync globální reference
+                // Sync lastAttack cache z Firebase dat (přepíše lokální jen pokud je Firebase novější)
+                if (data && data.participants) {
+                    window._wbLastAttack = window._wbLastAttack || {};
+                    Object.keys(data.participants).forEach(pName => {
+                        const fbTs = data.participants[pName]?.lastAttack || 0;
+                        const localTs = window._wbLastAttack[pName] || 0;
+                        if (fbTs > localTs) window._wbLastAttack[pName] = fbTs;
+                    });
+                }
                 
                 // Aktualizuj event bannery nahoře
                 if (typeof updateEventBanners === 'function') updateEventBanners();
@@ -97088,12 +97141,14 @@ function openFullscreenMap() {
             const totalDmgByPlayers = sorted.reduce((s, p) => s + p.damage, 0);
             const killedBy = wb.killingBlow ? wb.killingBlow.replace(/_/g, ' ') : null;
             
-            // Cooldown info
+            // Cooldown info - kombinuj lokální cache + Firebase data
             const myNameSafe = myName.replace(/[\/\.#$\[\]]/g, '_');
             const myParticipant = participants[myNameSafe];
-            const lastAttackTs = myParticipant?.lastAttack || 0;
+            const fbLastAttackTs = myParticipant?.lastAttack || 0;
+            const localLastAttackTs = window._wbLastAttack?.[myNameSafe] || 0;
+            const lastAttackTs = Math.max(fbLastAttackTs, localLastAttackTs); // Nejnovější
             const cooldownMs = 3 * 60 * 60 * 1000;
-            const cooldownLeft = lastAttackTs ? Math.max(0, cooldownMs - (Date.now() - lastAttackTs)) : 0;
+            const cooldownLeft = lastAttackTs > 0 ? Math.max(0, cooldownMs - (Date.now() - lastAttackTs)) : 0;
             const cdH = Math.floor(cooldownLeft / 3600000);
             const cdM = Math.floor((cooldownLeft % 3600000) / 60000);
             const canAttack = !isDefeated && cooldownLeft === 0;
@@ -97246,15 +97301,18 @@ function openFullscreenMap() {
             }
             
             // Cooldown mezi útoky (3 hodiny)
-            const myName = getPlayerName().replace(/[\\/\\.#$\\[\\]]/g, '_');
-            const lastAttack = raidData.participants?.[myName]?.lastAttack || 0;
+            const myName = getPlayerName().replace(/[\\/\.#$\[\]]/g, '_');
+            // Použij lokální cache jako primární zdroj - je vždy aktuální i když Firebase listener ještě neodpověděl
+            const _localLastAttack = window._wbLastAttack?.[myName] || 0;
+            const _fbLastAttack = raidData.participants?.[myName]?.lastAttack || 0;
+            const lastAttack = Math.max(_localLastAttack, _fbLastAttack);
             const cooldownMs = 3 * 60 * 60 * 1000; // 3 hodiny
-            if (Date.now() - lastAttack < cooldownMs) {
+            if (lastAttack > 0 && Date.now() - lastAttack < cooldownMs) {
                 const secsLeft = Math.ceil((cooldownMs - (Date.now() - lastAttack)) / 1000);
                 const minsLeft = Math.floor(secsLeft / 60);
                 const hoursLeft = Math.floor(minsLeft / 60);
                 const mLeft = minsLeft % 60;
-                notifyWarning('Cooldown', `Počkej ${hoursLeft > 0 ? hoursLeft + 'h ' : ''}${mLeft}m před dalším útokem.`);
+                notifyWarning('⏳ Cooldown', `Počkej ${hoursLeft > 0 ? hoursLeft + 'h ' : ''}${mLeft}m před dalším útokem na World Bosse.`);
                 return;
             }
             
@@ -97277,13 +97335,19 @@ function openFullscreenMap() {
             
             closeModal();
             
+            // Uložit kteří společníci byli PŘED bojem mrtví (abychom po boji mohli správně obnovit ty co zemřeli v tomto boji)
+            const preRaidDeadCompanions = new Set(
+                (state.companions || []).filter(c => c.isDead).map(c => c.uniqueId || c.id)
+            );
+            
             // Označ raid boj
             state.activeWorldBoss = {
                 bossId: boss.id,
                 isRaid: true,
                 raidHpBefore: currentHp, // Boss HP před naším bojem
                 playerHpBefore: state.char.hp, // Hráč HP před bojem
-                summonedBy: raidData.summonedBy
+                summonedBy: raidData.summonedBy,
+                preRaidDeadCompanions: [...preRaidDeadCompanions] // IDs společníků mrtvých PŘED bojem
             };
             
             // Vytvoř enemy s AKTUÁLNÍM HP z Firebase
@@ -97342,6 +97406,15 @@ function openFullscreenMap() {
             
             const myName = getPlayerName().replace(/[\\/\\.#$\\[\\]]/g, '_');
             const now = Date.now();
+
+            // OKAMŽITĚ ulož lastAttack lokálně - zabrání dvojímu útoku než Firebase listener odpoví
+            window._wbLastAttack = window._wbLastAttack || {};
+            window._wbLastAttack[myName] = now;
+            // Aktualizuj i window.worldBossRaidData okamžitě
+            if (window.worldBossRaidData?.participants) {
+                if (!window.worldBossRaidData.participants[myName]) window.worldBossRaidData.participants[myName] = {};
+                window.worldBossRaidData.participants[myName].lastAttack = now;
+            }
             
             try {
                 // Atomicky aktualizuj HP a přidej damage
@@ -97616,6 +97689,24 @@ function openFullscreenMap() {
                             system: true
                         });
                     } catch(e) { console.error('Chat announce error:', e); }
+                    
+                    // === ZÁPIS DO WORLD BOSS HISTORICKÉHO LOGU ===
+                    try {
+                        await firebaseDB.ref('worldBossLog').push({
+                            bossId: raidData.bossId,
+                            bossName: raidData.bossName || boss.name,
+                            bossIcon: raidData.bossIcon || boss.icon,
+                            maxHp: raidData.maxHp || boss.hp,
+                            killingBlow: raidData.killingBlow || null,
+                            summonedBy: raidData.summonedBy || null,
+                            startedAt: raidData.startedAt || raidData.summonedAt || null,
+                            defeatedAt: raidData.defeatedAt || Date.now(),
+                            locationId: raidData.locationId || null,
+                            locationName: raidData.locationName || null,
+                            participants: raidData.participants || {}
+                        });
+                        console.log('🐉 World Boss zapsán do historického logu');
+                    } catch(e) { console.error('WorldBossLog write error:', e); }
                     
                     // Zapiš odměny pro offline hráče po 5s (aby online hráči stihli claimnout)
                     setTimeout(async () => {
@@ -98502,12 +98593,13 @@ function openFullscreenMap() {
             showModal('📜 Historie', '<div style="text-align: center;"><div class="loading-spinner"></div><p>Načítám historii...</p></div>');
             
             try {
-                const [decisionsSnap, electionsSnap, treasuryLogSnap, currentMayorSnap, publicMoneySnap] = await Promise.all([
+                const [decisionsSnap, electionsSnap, treasuryLogSnap, currentMayorSnap, publicMoneySnap, worldBossLogSnap] = await Promise.all([
                     firebaseDB.ref('politics/decisions/history').orderByChild('timestamp').limitToLast(20).once('value'),
                     firebaseDB.ref('politics/electionHistory').once('value'),
                     firebaseDB.ref('politics/treasuryLog').orderByChild('timestamp').limitToLast(200).once('value'),
                     firebaseDB.ref('politics/mayor').once('value'),
-                    firebaseDB.ref('politics/publicMoney').once('value')
+                    firebaseDB.ref('politics/publicMoney').once('value'),
+                    firebaseDB.ref('worldBossLog').orderByChild('defeatedAt').limitToLast(30).once('value')
                 ]);
                 
                 const decisions = decisionsSnap.val() ? Object.values(decisionsSnap.val()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)) : [];
@@ -98515,6 +98607,7 @@ function openFullscreenMap() {
                 const treasuryLog = treasuryLogSnap.val() ? Object.values(treasuryLogSnap.val()) : [];
                 const currentMayor = currentMayorSnap.val();
                 const publicMoney = publicMoneySnap.val() || 0;
+                const worldBossLog = worldBossLogSnap.val() ? Object.values(worldBossLogSnap.val()).sort((a, b) => (b.defeatedAt || 0) - (a.defeatedAt || 0)) : [];
                 
                 // Přiřaď finanční data k volebním obdobím
                 function getTermFinancials(electedAt, endedAt) {
@@ -98546,10 +98639,26 @@ function openFullscreenMap() {
                 const sourceLabels = { shop_sale: '🏪 Obchod', marketplace_fee: '🛒 Tržiště', daily_tax: '📊 Daně', npc_shop: '🏪 NPC', decision: '📜 Rozhodnutí', admin_set: '🔧 Admin', other: '❓ Ostatní' };
                 const expenseLabels = { mayor_event: '🎉 Eventy', grant: '💰 Granty', bounty: '🎯 Lov', crisis: '🚨 Krize', other: '❓ Ostatní' };
                 
+                const switchHistoryTab = (tabId) => {
+                    ['mayorsList','decisionsList','bossList'].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.style.display = 'none';
+                    });
+                    ['tabMayors','tabDecisions','tabBoss'].forEach(id => {
+                        const btn = document.getElementById(id);
+                        if (btn) btn.style.background = '#333';
+                    });
+                    const target = document.getElementById(tabId === 'tabMayors' ? 'mayorsList' : tabId === 'tabDecisions' ? 'decisionsList' : 'bossList');
+                    const btn = document.getElementById(tabId);
+                    if (target) target.style.display = 'block';
+                    if (btn) btn.style.background = tabId === 'tabMayors' ? '#9c27b0' : tabId === 'tabDecisions' ? '#ff9800' : '#c62828';
+                };
+                
                 let html = `
                     <div style="display: flex; gap: 0.3rem; margin-bottom: 1rem;">
-                        <button id="tabMayors" class="btn" onclick="document.getElementById('mayorsList').style.display='block'; document.getElementById('decisionsList').style.display='none'; document.getElementById('tabMayors').style.background='#9c27b0'; document.getElementById('tabDecisions').style.background='#333';" style="flex: 1; background: #9c27b0; padding: 0.5rem; font-size: 0.85rem;">👑 Šéfové</button>
-                        <button id="tabDecisions" class="btn" onclick="document.getElementById('decisionsList').style.display='block'; document.getElementById('mayorsList').style.display='none'; document.getElementById('tabDecisions').style.background='#ff9800'; document.getElementById('tabMayors').style.background='#333';" style="flex: 1; background: #333; padding: 0.5rem; font-size: 0.85rem;">📜 Rozhodnutí</button>
+                        <button id="tabMayors" class="btn" onclick="switchHistoryTab('tabMayors')" style="flex: 1; background: #9c27b0; padding: 0.5rem; font-size: 0.8rem;">👑 Šéfové</button>
+                        <button id="tabDecisions" class="btn" onclick="switchHistoryTab('tabDecisions')" style="flex: 1; background: #333; padding: 0.5rem; font-size: 0.8rem;">📜 Rozhodnutí</button>
+                        <button id="tabBoss" class="btn" onclick="switchHistoryTab('tabBoss')" style="flex: 1; background: #333; padding: 0.5rem; font-size: 0.8rem;">🐉 World Bossové</button>
                     </div>
                 `;
                 
@@ -98707,6 +98816,68 @@ function openFullscreenMap() {
                     });
                 } else {
                     html += `<p style="color: #666; text-align: center; padding: 0.75rem;">Zatím žádná rozhodnutí</p>`;
+                }
+                html += '</div>';
+                
+                // ========== TAB: WORLD BOSSOVÉ ==========
+                html += '<div id="bossList" style="display: none; max-height: 65vh; overflow-y: auto;">';
+                if (worldBossLog.length > 0) {
+                    worldBossLog.forEach((raid, idx) => {
+                        const dateStr = raid.defeatedAt ? new Date(raid.defeatedAt).toLocaleDateString('cs-CZ', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '???';
+                        const duration = raid.startedAt && raid.defeatedAt ? Math.round((raid.defeatedAt - raid.startedAt) / 60000) : null;
+                        const participants = raid.participants || {};
+                        const sortedParts = Object.entries(participants)
+                            .map(([name, p]) => ({ name: name.replace(/_/g, ' '), damage: p.damage || 0, attacks: p.attacks || 0 }))
+                            .sort((a, b) => b.damage - a.damage);
+                        const totalDmg = sortedParts.reduce((s, p) => s + p.damage, 0);
+                        const detailId = 'boss-detail-' + idx;
+                        const medals = ['🥇','🥈','🥉'];
+                        const partRows = sortedParts.map((p, i) => {
+                            const pct = totalDmg > 0 ? (p.damage / totalDmg * 100).toFixed(1) : '0';
+                            const hpPct = raid.maxHp > 0 ? (p.damage / raid.maxHp * 100).toFixed(1) : '?';
+                            return `<div style="display:flex;justify-content:space-between;padding:0.2rem 0;border-bottom:1px solid #1a1a1a;font-size:0.78rem;">
+                                <span style="color:#ccc;">${medals[i] || (i+1+'.')} ${p.name}</span>
+                                <span style="color:#ff6b6b;font-weight:bold;">${formatNumber(p.damage)} DMG</span>
+                                <span style="color:#ff9800;">${hpPct}% HP</span>
+                                <span style="color:#666;">${pct}% share</span>
+                                <span style="color:#555;">⚔️${p.attacks}</span>
+                            </div>`;
+                        }).join('');
+                        
+                        html += `
+                            <div style="background:#1a1a1a;padding:0.75rem;border-radius:8px;margin-bottom:0.5rem;border-left:3px solid #c62828;cursor:pointer;"
+                                 onclick="(function(){var el=document.getElementById('${detailId}');el.style.display=el.style.display==='none'?'block':'none'})()">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                                    <div style="display:flex;align-items:center;gap:0.4rem;">
+                                        <span style="font-size:1.2rem;">${raid.bossIcon || '🐉'}</span>
+                                        <span style="color:#f44336;font-weight:bold;font-size:0.95rem;">${raid.bossName || raid.bossId || 'World Boss'}</span>
+                                    </div>
+                                    <span style="color:#666;font-size:0.7rem;">${dateStr} ▾</span>
+                                </div>
+                                <div style="display:flex;gap:0.8rem;flex-wrap:wrap;font-size:0.75rem;color:#888;">
+                                    <span>💀 killing blow: <span style="color:#ffd700;">${(raid.killingBlow||'?').replace(/_/g,' ')}</span></span>
+                                    <span>👥 ${sortedParts.length} hráčů</span>
+                                    ${duration ? `<span>⏱️ ${duration} min</span>` : ''}
+                                    <span>☢️ ${raid.summonedBy ? 'Vyvolal: <span style="color:#ce93d8;">'+raid.summonedBy.replace(/_/g,' ')+'</span>' : ''}</span>
+                                </div>
+                                
+                                <div id="${detailId}" style="display:none;margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #333;">
+                                    <div style="font-size:0.72rem;color:#888;margin-bottom:0.3rem;">
+                                        Celkový DMG: <span style="color:#ff6b6b;font-weight:bold;">${formatNumber(totalDmg)}</span>
+                                        ${raid.maxHp ? ` | Boss HP: ${formatNumber(raid.maxHp)}` : ''}
+                                    </div>
+                                    <div style="background:#0d0d0d;padding:0.5rem;border-radius:6px;">
+                                        ${partRows || '<div style="color:#555;text-align:center;">Žádná data</div>'}
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                } else {
+                    html += `<div style="text-align:center;padding:2rem;">
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">🐉</div>
+                        <p style="color:#666;">Zatím žádný World Boss nebyl poražen</p>
+                    </div>`;
                 }
                 html += '</div>';
                 
