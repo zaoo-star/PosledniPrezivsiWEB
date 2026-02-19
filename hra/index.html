@@ -37,12 +37,18 @@
             if (storedVersion !== FORCE_UPDATE_VERSION) {
                 console.log('🔄 Nová verze! Mažu cache...');
                 
-                // Odregistruj všechny service workery
+                // Odregistruj staré service workery (ale NE notifikační sw.js!)
                 if ('serviceWorker' in navigator) {
                     navigator.serviceWorker.getRegistrations().then(function(registrations) {
                         for (let registration of registrations) {
+                            var scriptURL = '';
+                            try { scriptURL = (registration.active || registration.installing || registration.waiting || {}).scriptURL || ''; } catch(e) {}
+                            if (scriptURL.includes('sw.js')) {
+                                console.log('🔔 Zachovávám notifikační SW');
+                                continue;
+                            }
                             registration.unregister();
-                            console.log('🗑️ SW odregistrován');
+                            console.log('🗑️ SW odregistrován:', scriptURL);
                         }
                     });
                 }
@@ -3266,38 +3272,14 @@
                 
                 // Registrace Service Worker pro PWA notifikace
                 if ('serviceWorker' in navigator) {
-                    // Vytvoř inline service worker
-                    const swCode = `
-                        self.addEventListener('push', function(event) {
-                            const data = event.data ? event.data.json() : {};
-                            const title = data.title || 'Survival Hero';
-                            const options = {
-                                body: data.body || '',
-                                icon: '/icon-192.png',
-                                badge: '/icon-192.png',
-                                tag: data.tag || 'survival-game',
-                                renotify: true,
-                                vibrate: [200, 100, 200]
-                            };
-                            event.waitUntil(self.registration.showNotification(title, options));
-                        });
-                        
-                        self.addEventListener('notificationclick', function(event) {
-                            event.notification.close();
-                            event.waitUntil(clients.openWindow('/'));
-                        });
-                    `;
-                    
-                    const blob = new Blob([swCode], { type: 'application/javascript' });
-                    const swUrl = URL.createObjectURL(blob);
-                    
-                    navigator.serviceWorker.register(swUrl, { scope: '/' })
+                    // Registrace externího sw.js (musí být ve stejné složce jako index.html!)
+                    navigator.serviceWorker.register('./sw.js', { scope: './' })
                         .then(function(reg) {
                             self.swRegistration = reg;
-                            console.log('Service Worker registered for notifications');
+                            console.log('✅ Notifikační SW zaregistrován');
                         })
                         .catch(function(err) {
-                            console.log('SW registration failed:', err);
+                            console.warn('⚠️ SW registrace selhala - sw.js chybí na serveru?', err.message);
                         });
                 }
                 
@@ -3334,50 +3316,66 @@
             
             send: function(title, options) {
                 options = options || {};
+                if (!this.enabled) return;
                 
-                // Posílej i když je viditelná - pro testování
-                // V produkci: if (!this.enabled || document.visibilityState === 'visible') return;
-                if (!this.enabled) {
-                    console.log('Notifications not enabled');
-                    return;
-                }
+                var ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">☢️</text></svg>');
+                var notifOpts = {
+                    body: options.body || '',
+                    icon: ICON,
+                    badge: ICON,
+                    tag: options.tag || 'pustina',
+                    renotify: options.renotify !== false,
+                    silent: options.silent || false,
+                    vibrate: [200, 100, 200]
+                };
                 
-                console.log('Sending notification:', title);
+                var tryDirectNotification = function() {
+                    try {
+                        var n = new Notification(title, notifOpts);
+                        n.onclick = function() { window.focus(); n.close(); };
+                        setTimeout(function() { n.close(); }, 8000);
+                    } catch(e) { console.warn('Notifikace fallback error:', e); }
+                };
                 
                 try {
-                    // Zkus Service Worker notifikaci (funguje lépe na mobilu)
-                    if (this.swRegistration) {
-                        this.swRegistration.showNotification(title, {
-                            body: options.body || '',
-                            icon: '☢️',
-                            tag: options.tag || 'survival-game',
-                            renotify: options.renotify || true,
-                            silent: options.silent || false,
-                            vibrate: [200, 100, 200]
+                    // Metoda 1: Service Worker showNotification (funguje i na pozadí/mobilu)
+                    if (this.swRegistration && this.swRegistration.active) {
+                        this.swRegistration.showNotification(title, notifOpts);
+                        return;
+                    }
+                    
+                    // Metoda 2: Najdi aktivní SW controller (i po reloadu)
+                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'SHOW_NOTIFICATION',
+                            title: title,
+                            body: notifOpts.body,
+                            tag: notifOpts.tag,
+                            silent: notifOpts.silent
                         });
                         return;
                     }
                     
-                    // Fallback na klasické notifikace
-                    var notification = new Notification(title, {
-                        icon: '☢️',
-                        badge: '☢️',
-                        tag: options.tag || 'survival-game',
-                        renotify: options.renotify || false,
-                        silent: options.silent || false,
-                        body: options.body || ''
-                    });
+                    // Metoda 3: Načti registraci přímo
+                    if (navigator.serviceWorker) {
+                        var self2 = this;
+                        navigator.serviceWorker.getRegistration('./').then(function(reg) {
+                            if (reg && reg.active) {
+                                self2.swRegistration = reg;
+                                reg.showNotification(title, notifOpts);
+                            } else {
+                                tryDirectNotification();
+                            }
+                        }).catch(tryDirectNotification);
+                        return;
+                    }
                     
-                    notification.onclick = function() {
-                        window.focus();
-                        notification.close();
-                    };
+                    // Fallback: přímé Notification API
+                    tryDirectNotification();
                     
-                    setTimeout(function() { notification.close(); }, 5000);
-                    
-                    return notification;
                 } catch (e) {
-                    console.log('Notification error:', e);
+                    console.warn('Notifikace error:', e);
+                    tryDirectNotification();
                 }
             },
             
@@ -34691,13 +34689,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const bossLocId = raidInfo.locationId || '';
                 const isAtBoss = bossLocId && state.world.currentLocation === bossLocId;
                 const travelAction = bossLocId ? `showLocationPreview('${bossLocId}')` : '';
-                html += `<div onclick="${isAtBoss ? '' : travelAction}" style="cursor: ${isAtBoss ? 'default' : 'pointer'}; margin-top: 0.5rem; background: #111; border: 1px solid #444; border-radius: 6px; padding: 0.4rem 0.6rem; display: flex; align-items: center; justify-content: space-between;">`;
-                html += `<div style="display: flex; align-items: center; gap: 0.4rem;">`;
-                html += `<span style="font-size: 1.2rem;">${bossIcon}</span>`;
-                html += `<div><span style="color: #f44336; font-weight: bold; font-size: 0.75rem;">${bossName}</span>`;
-                html += `<span style="color: #888; font-size: 0.65rem; margin-left: 0.3rem;">📍${locName} • HP: ${hpPct}% • ${pCount} hráčů</span></div>`;
+                const hpDealtPctMap = 100 - hpPct;
+                html += `<div onclick="showWorldBossPanel();" style="cursor: pointer; margin-top: 0.5rem; background: linear-gradient(135deg, #1a0800, #110500); border: 1px solid #ff9800; border-radius: 6px; padding: 0.4rem 0.6rem;">`;
+                html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.2rem;">`;
+                html += `<div style="display: flex; align-items: center; gap: 0.3rem;"><span style="font-size: 1rem;">${bossIcon}</span><span style="color: #ff9800; font-weight: bold; font-size: 0.75rem;">${bossName}</span><span style="color: #555; font-size: 0.6rem; background: #1a1a1a; padding: 0.05rem 0.3rem; border-radius: 3px;">👥 ${pCount}</span></div>`;
+                html += `<span style="color: #ff6b6b; font-size: 0.65rem; font-weight: bold;">💥 ${hpDealtPctMap}% ubráno</span>`;
                 html += `</div>`;
-                html += `<span style="color: ${isAtBoss ? '#4caf50' : '#f44336'}; font-size: 0.65rem; font-weight: bold;">${isAtBoss ? '✅ Jsi zde' : '🚶 Jít tam →'}</span>`;
+                html += `<div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.2rem;"><div style="flex: 1; background: #0a0a0a; height: 5px; border-radius: 3px; overflow: hidden;"><div style="height: 100%; width: ${hpPct}%; background: ${hpPct > 50 ? '#4caf50' : hpPct > 25 ? '#ff9800' : '#f44336'}; transition: width 0.3s;"></div></div><span style="color: ${hpPct > 50 ? '#4caf50' : hpPct > 25 ? '#ff9800' : '#f44336'}; font-size: 0.65rem; font-weight: bold;">${hpPct}% HP</span></div>`;
+                html += `<div style="display: flex; justify-content: space-between; align-items: center;"><span style="color: #555; font-size: 0.6rem;">📍 ${locName}</span><span style="color: ${isAtBoss ? '#4caf50' : '#ff9800'}; font-size: 0.6rem; font-weight: bold;">${isAtBoss ? '✅ Jsi zde — 🔍 Detail' : '🔍 Detail →'}</span></div>`;
                 html += `</div>`;
             }
             
@@ -48292,6 +48291,7 @@ function openFullscreenMap() {
             
             // Systémová notifikace
             sendSystemNotification('⚔️ NÁJEZD!', 'Tvá osada je napadena! Braň se!', '⚔️');
+            MobileNotifications.notifyRaid();
             
             // === ŠKÁLOVÁNÍ PODLE LEVELU OSADY ===
             const settlementLevel = state.settlement?.level || 1;
@@ -73906,6 +73906,10 @@ function openFullscreenMap() {
                             <div>🐕 Hladoví společníci</div>
                             <div>⚔️ Nájezdy na osadu</div>
                             <div>🌅 Nový den</div>
+                            <div>🗺️ Dorazil jsi na lokaci</div>
+                            <div>⚔️ Souboj začal</div>
+                            <div>🐪 Karavana dorazila</div>
+                            <div>🎁 Loot nalezen</div>
                         </div>
                         <button class="btn" onclick="MobileNotifications.test(); notifySuccess('Notifikace odeslána!', 'Zkontroluj notifikační centrum')" style="width: 100%; margin-top: 1rem; background: #2196f3;">🧪 Testovat notifikaci</button>
                         <p style="color: #666; font-size: 0.8rem; margin-top: 1rem;">Pro vypnutí jdi do nastavení prohlížeče/aplikace.</p>
@@ -74797,6 +74801,7 @@ function openFullscreenMap() {
                         activateCaravan(300000); // 5 minut
                         notifyInfo('🐪 Karavana dorazila!', 'Obchodníci jsou v oblasti na 5 minut');
                         sendSystemNotification('Karavana dorazila!', 'Obchodníci jsou v oblasti na 5 minut', '🐪');
+                        MobileNotifications.notifyCaravan();
                         addLog('Karavana obchodníků dorazila!', '🐪');
                     }
                 }
@@ -81237,23 +81242,32 @@ function openFullscreenMap() {
                     const wb = window.worldBossRaidData;
                     if (!wb || !wb.active || wb.defeated) return '';
                     const hpPct = wb.maxHp > 0 ? Math.round((wb.currentHp / wb.maxHp) * 100) : 0;
+                    const hpDealtPct = 100 - hpPct;
                     const hpColor = hpPct > 50 ? '#4caf50' : hpPct > 25 ? '#ff9800' : '#f44336';
                     const pCount = wb.participants ? Object.keys(wb.participants).length : 0;
+                    // Můj DMG
+                    const _myN = getPlayerName().replace(/[\/\.#$[\]]/g, '_');
+                    const _myDmg = wb.participants?.[_myN]?.damage || 0;
+                    const _myPct = wb.maxHp > 0 && _myDmg > 0 ? (_myDmg / wb.maxHp * 100).toFixed(1) : null;
                     return `
-                    <div onclick="closeModal(); if(typeof showWorldBossPanel==='function') showWorldBossPanel(); else renderFull();" style="background: linear-gradient(135deg, #2a1500, #1a0a00); padding: 0.3rem 0.5rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid #ff9800; cursor: pointer;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div onclick="showWorldBossPanel();" style="background: linear-gradient(135deg, #2a1500, #1a0a00); padding: 0.4rem 0.6rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid #ff9800; cursor: pointer;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.2rem;">
                             <div style="display: flex; align-items: center; gap: 0.3rem;">
                                 <span style="font-size: 0.9rem;">${wb.bossIcon || '🐉'}</span>
-                                <span style="color: #ff9800; font-weight: bold; font-size: 0.75rem;">${wb.bossName || 'World Boss'}</span>
+                                <span style="color: #ff9800; font-weight: bold; font-size: 0.78rem;">${wb.bossName || 'World Boss'}</span>
+                                <span style="color: #555; font-size: 0.6rem; background: #1a1a1a; padding: 0.05rem 0.3rem; border-radius: 3px;">👥 ${pCount}</span>
                             </div>
-                            <span style="color: #888; font-size: 0.6rem;">📍 ${wb.locationName || '???'}</span>
+                            <span style="color: #ff6b6b; font-size: 0.65rem; font-weight: bold;">💥 ${hpDealtPct}% ubráno</span>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 0.4rem; margin-top: 0.2rem;">
-                            <div style="flex: 1; background: #0a0a0a; height: 5px; border-radius: 3px; overflow: hidden;">
+                        <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.2rem;">
+                            <div style="flex: 1; background: #0a0a0a; height: 6px; border-radius: 3px; overflow: hidden;">
                                 <div style="height: 100%; width: ${hpPct}%; background: ${hpColor}; transition: width 0.3s;"></div>
                             </div>
-                            <span style="color: ${hpColor}; font-size: 0.65rem; font-weight: bold; white-space: nowrap;">${formatNumber(Math.max(0, wb.currentHp))}/${formatNumber(wb.maxHp)} (${hpPct}%)</span>
-                            <span style="color: #aaa; font-size: 0.6rem; white-space: nowrap;">👥${pCount}</span>
+                            <span style="color: ${hpColor}; font-size: 0.65rem; font-weight: bold; white-space: nowrap;">${hpPct}% HP</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            ${_myPct ? `<span style="color: #8bc34a; font-size: 0.62rem;">★ Tvůj DMG: ${formatNumber(_myDmg)} (${_myPct}% HP)</span>` : `<span style="color: #555; font-size: 0.62rem;">📍 ${wb.locationName || '???'}</span>`}
+                            <span style="color: #ff9800; font-size: 0.6rem;">🔍 Detail →</span>
                         </div>
                     </div>`;
                 })()}
@@ -97039,7 +97053,162 @@ function openFullscreenMap() {
             }
         }
         
-        function renderWorldBossRaidBanner() {
+        function showWorldBossPanel() {
+            const wb = window.worldBossRaidData;
+            if (!wb) {
+                notifyWarning('Raid', 'Žádná data o World Boss raidu.');
+                return;
+            }
+            
+            const boss = WORLD_BOSSES.find(b => b.id === wb.bossId) || {};
+            const bossIcon = wb.bossIcon || boss.icon || '🐉';
+            const bossName = wb.bossName || boss.name || 'World Boss';
+            const maxHp = wb.maxHp || boss.hp || 1;
+            const currentHp = Math.max(0, wb.currentHp || 0);
+            const hpPct = Math.round((currentHp / maxHp) * 100);
+            const hpDealt = maxHp - currentHp;
+            const hpColor = hpPct > 50 ? '#4caf50' : hpPct > 25 ? '#ff9800' : '#f44336';
+            const isDefeated = wb.defeated || currentHp <= 0;
+            const myName = getPlayerName();
+            
+            // Seřaď hráče podle poškození sestupně
+            const participants = wb.participants || {};
+            const sorted = Object.entries(participants)
+                .map(([name, p]) => ({
+                    name: name.replace(/_/g, ' '),
+                    rawName: name,
+                    damage: p.damage || 0,
+                    attacks: p.attacks || 0,
+                    level: p.level || 1,
+                    lastAttack: p.lastAttack || 0,
+                    isMe: name.replace(/[\/.#$[\]]/g, '_') === myName.replace(/[\/.#$[\]]/g, '_')
+                }))
+                .sort((a, b) => b.damage - a.damage);
+            
+            const totalDmgByPlayers = sorted.reduce((s, p) => s + p.damage, 0);
+            const killedBy = wb.killingBlow ? wb.killingBlow.replace(/_/g, ' ') : null;
+            
+            // Cooldown info
+            const myNameSafe = myName.replace(/[\/\.#$\[\]]/g, '_');
+            const myParticipant = participants[myNameSafe];
+            const lastAttackTs = myParticipant?.lastAttack || 0;
+            const cooldownMs = 3 * 60 * 60 * 1000;
+            const cooldownLeft = lastAttackTs ? Math.max(0, cooldownMs - (Date.now() - lastAttackTs)) : 0;
+            const cdH = Math.floor(cooldownLeft / 3600000);
+            const cdM = Math.floor((cooldownLeft % 3600000) / 60000);
+            const canAttack = !isDefeated && cooldownLeft === 0;
+            
+            // Čas zbývající do konce raidu
+            let timeLeftStr = '';
+            if (wb.endsAt && !isDefeated) {
+                const tl = Math.max(0, wb.endsAt - Date.now());
+                const tlH = Math.floor(tl / 3600000);
+                const tlM = Math.floor((tl % 3600000) / 60000);
+                timeLeftStr = `${tlH}h ${tlM}m`;
+            }
+            
+            // Tabulka hráčů
+            let tableRows = '';
+            sorted.forEach((p, idx) => {
+                const sharePct = totalDmgByPlayers > 0 ? (p.damage / totalDmgByPlayers * 100).toFixed(1) : '0.0';
+                const hpSharePct = (p.damage / maxHp * 100).toFixed(1);
+                const barWidth = totalDmgByPlayers > 0 ? Math.round(p.damage / sorted[0].damage * 100) : 0;
+                const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx+1}.`;
+                const isKiller = killedBy && p.name === killedBy;
+                const lastAttackStr = p.lastAttack ? new Date(p.lastAttack).toLocaleTimeString('cs-CZ', {hour: '2-digit', minute: '2-digit'}) : '-';
+                tableRows += `
+                <div style="background: ${p.isMe ? '#1a2a1a' : (idx % 2 === 0 ? '#111' : '#0d0d0d')}; padding: 0.5rem 0.6rem; border-radius: 6px; margin-bottom: 0.3rem; border-left: 3px solid ${p.isMe ? '#4caf50' : '#333'};">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.2rem;">
+                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                            <span style="font-size: 0.9rem; min-width: 1.5rem;">${medal}</span>
+                            <div>
+                                <span style="font-weight: bold; color: ${p.isMe ? '#8bc34a' : '#fff'}; font-size: 0.85rem;">${p.name}</span>
+                                ${isKiller ? ' <span style="color: #f44336; font-size: 0.7rem;">💀 killing blow</span>' : ''}
+                                <span style="color: #555; font-size: 0.65rem; margin-left: 0.3rem;">Lv.${p.level}</span>
+                            </div>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="color: #ff6b6b; font-weight: bold; font-size: 0.85rem;">${formatNumber(p.damage)}</span>
+                            <span style="color: #555; font-size: 0.65rem;"> DMG</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <div style="flex: 1; background: #0a0a0a; height: 4px; border-radius: 2px; overflow: hidden;">
+                            <div style="height: 100%; width: ${barWidth}%; background: ${p.isMe ? '#4caf50' : '#e53935'}; transition: width 0.3s;"></div>
+                        </div>
+                        <span style="color: #ff9800; font-size: 0.65rem; min-width: 3.5rem; text-align: right;">${hpSharePct}% HP bosse</span>
+                        <span style="color: #666; font-size: 0.6rem; min-width: 2.5rem; text-align: right;">${sharePct}% share</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 0.2rem;">
+                        <span style="color: #555; font-size: 0.6rem;">⚔️ ${p.attacks} útoků</span>
+                        <span style="color: #555; font-size: 0.6rem;">🕐 ${lastAttackStr}</span>
+                    </div>
+                </div>`;
+            });
+            
+            if (sorted.length === 0) {
+                tableRows = '<div style="text-align: center; color: #555; padding: 1rem;">Zatím nikdo neútočil</div>';
+            }
+            
+            // Akční tlačítko
+            let actionBtn = '';
+            if (isDefeated) {
+                actionBtn = `<div style="text-align: center; padding: 0.8rem; background: #1a1a1a; border-radius: 8px; color: #888; font-size: 0.85rem;">💀 Boss byl poražen${killedBy ? ' hráčem ' + killedBy : ''}</div>`;
+            } else if (cooldownLeft > 0) {
+                actionBtn = `<div style="text-align: center; padding: 0.8rem; background: #1a1a1a; border-radius: 8px; color: #888; font-size: 0.85rem;">⏳ Cooldown: ${cdH > 0 ? cdH + 'h ' : ''}${cdM}m do dalšího útoku</div>`;
+            } else {
+                const bossLocId = wb.locationId || '';
+                const isAtBoss = bossLocId && state.world.currentLocation === bossLocId;
+                if (isAtBoss) {
+                    actionBtn = `<button class="btn" onclick="closeModal(); joinWorldBossRaid();" style="width: 100%; background: linear-gradient(135deg, #b71c1c, #d32f2f); padding: 0.9rem; font-size: 1rem; font-weight: bold;">⚔️ ZAÚTOČIT NA BOSSE!</button>`;
+                } else {
+                    const bossLoc = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === bossLocId) : null;
+                    actionBtn = `<button class="btn" onclick="closeModal(); ${bossLocId ? "showLocationPreview('" + bossLocId + "')" : ''};" style="width: 100%; background: #333; padding: 0.9rem; font-size: 0.95rem;">🚶 Jít na ${bossLoc ? bossLoc.icon + ' ' + bossLoc.name : 'lokaci bosse'}</button>`;
+                }
+            }
+            
+            showModal(`${bossIcon} ${bossName} — Raid`, `
+                <div>
+                    <!-- HP Bar -->
+                    <div style="background: #1a0a00; padding: 0.8rem; border-radius: 8px; border: 1px solid #f44336; margin-bottom: 0.8rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                            <span style="color: #f44336; font-weight: bold; font-size: 1rem;">${bossIcon} ${bossName}</span>
+                            <span style="color: ${hpColor}; font-weight: bold;">${hpPct}% HP</span>
+                        </div>
+                        <div style="background: #0a0a0a; height: 12px; border-radius: 6px; overflow: hidden; margin-bottom: 0.4rem;">
+                            <div style="height: 100%; width: ${hpPct}%; background: linear-gradient(90deg, ${hpColor}, ${hpColor}88); transition: width 0.5s;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #888;">
+                            <span>❤️ ${formatNumber(currentHp)} / ${formatNumber(maxHp)} HP</span>
+                            <span style="color: #ff6b6b;">💥 Ubráno: ${formatNumber(hpDealt)} (${100 - hpPct}%)</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 0.4rem; font-size: 0.7rem; color: #888;">
+                            <span>👥 ${sorted.length} hráčů</span>
+                            <span>📍 ${wb.locationName || '???'}</span>
+                            ${timeLeftStr ? `<span>⏱️ ${timeLeftStr}</span>` : ''}
+                            ${wb.difficulty ? `<span>${wb.difficulty}</span>` : ''}
+                        </div>
+                    </div>
+                    
+                    <!-- Damage tabulka -->
+                    <div style="margin-bottom: 0.6rem; display: flex; justify-content: space-between; align-items: center;">
+                        <h4 style="margin: 0; color: #ffd700; font-size: 0.9rem;">⚔️ Poškození hráčů</h4>
+                        <span style="color: #555; font-size: 0.65rem;">Celkem: ${formatNumber(totalDmgByPlayers)} DMG</span>
+                    </div>
+                    <div style="max-height: 45vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+                        ${tableRows}
+                    </div>
+                    
+                    <!-- Akce -->
+                    <div style="margin-top: 0.8rem;">
+                        ${actionBtn}
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #222;">✕ Zavřít</button>
+                </div>
+            `);
+        }
+        
+                function renderWorldBossRaidBanner() {
             // Banner odstraněn - boss se zobrazuje pouze na mapě jako akční tlačítko na lokaci
             const existing = document.getElementById('world-boss-raid-banner');
             if (existing) existing.remove();
