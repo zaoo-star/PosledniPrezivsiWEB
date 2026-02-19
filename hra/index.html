@@ -47238,6 +47238,7 @@ function openFullscreenMap() {
                     checkDailyQuests();
                 }
                 checkAchievements();
+                saveGame(true);
                 renderFull();
                 return;
             } else if (recipe.result.type === 'consumable') {
@@ -47296,6 +47297,7 @@ function openFullscreenMap() {
                 state.settlement.defense = (state.settlement.defense || 0) + (recipe.result.value || 0);
                 showModal('Vyrobeno!', `${recipe.icon} ${recipe.name} postaven! +${recipe.result.value} obrana osady.`);
                 checkAchievements();
+                saveGame(true);
                 renderFull();
                 return; // Exit early - don't add to inventory
             } else {
@@ -47375,6 +47377,7 @@ function openFullscreenMap() {
             const doubleCraftText = isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : '';
             showModal('Vyrobeno!', `${recipe.icon} ${recipe.name} byl vyroben!${engineerText}${doubleCraftText}`);
             checkAchievements();
+            saveGame(true);
             renderFull();
         }
         
@@ -77606,8 +77609,12 @@ function openFullscreenMap() {
                     
                     console.log('🔄 Re-registered in factionMembers:', playerName, 'contribution:', safeContribution);
                 } else {
-                    // Existuje - jen aktualizuj lastActive
+                    // Existuje - aktualizuj lastActive a synchronizuj contribution z Firebase
                     await firebaseDB.ref('factionMembers/' + sanitizedName + '/lastActive').set(Date.now());
+                    // Sync contribution z Firebase → lokální stav (Firebase je zdroj pravdy)
+                    if (typeof existingData.contribution === 'number') {
+                        state.pvpFactionContribution = existingData.contribution;
+                    }
                 }
             } catch(e) {
                 console.log('Update faction activity error:', e);
@@ -80830,6 +80837,23 @@ function openFullscreenMap() {
                             </div>
                             <span style="color: ${hpColor}; font-size: 0.65rem; font-weight: bold; white-space: nowrap;">${formatNumber(Math.max(0, wb.currentHp))}/${formatNumber(wb.maxHp)} (${hpPct}%)</span>
                             <span style="color: #aaa; font-size: 0.6rem; white-space: nowrap;">👥${pCount}</span>
+                        </div>
+                    </div>`;
+                })()}
+                
+                ${(() => {
+                    const tom = window.currentTombola;
+                    if (!tom || tom.status !== 'active') return '';
+                    const participants = tom.tickets ? Object.keys(tom.tickets).filter(k => tom.tickets[k]?.count > 0).length : 0;
+                    return `
+                    <div onclick="closeModal(); showTombola();" style="background: linear-gradient(135deg, #2a2a05, #1a1a02); padding: 0.3rem 0.5rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid #ffd700; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="display: flex; align-items: center; gap: 0.3rem;">
+                            <span style="font-size: 0.9rem;">🎰</span>
+                            <span style="color: #ffd700; font-weight: bold; font-size: 0.75rem;">${tom.name || 'Tombola'}</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                            <span style="color: #aa8800; font-size: 0.6rem;">🎟️${tom.ticketPrice}💰</span>
+                            <span style="color: #aaa; font-size: 0.6rem;">👥${participants}</span>
                         </div>
                     </div>`;
                 })()}
@@ -89736,10 +89760,27 @@ function openFullscreenMap() {
             }
             
             // Najdi předměty které odpovídají poptávce (pro předvýběr)
-            const matchingIdx = combinedItems.findIndex(i => 
-                i.name?.toLowerCase().includes(itemName.toLowerCase()) ||
-                itemName.toLowerCase().includes(i.name?.toLowerCase() || '')
-            );
+            // OPRAVA: Prioritizuj přesnou shodu jména, pak přesnou shodu slov (ne substring I→III)
+            const wantedLower = itemName.toLowerCase().trim();
+            let matchingIdx = combinedItems.findIndex(i => i.name?.toLowerCase().trim() === wantedLower);
+            if (matchingIdx === -1) {
+                // Zkus shodu celých slov (ne substring - "I" nesmí matchnout "III")
+                matchingIdx = combinedItems.findIndex(i => {
+                    const n = i.name?.toLowerCase().trim() || '';
+                    // Rozdělíme na slova a porovnáme
+                    const wantedWords = wantedLower.split(/\s+/);
+                    const itemWords = n.split(/\s+/);
+                    // Všechna slova itemu musí být obsažena v poptávce JAKO CELÁ SLOVA
+                    return itemWords.every(w => wantedWords.includes(w));
+                });
+            }
+            if (matchingIdx === -1) {
+                // Fallback: volná shoda ale jen pokud jméno itemu obsahuje celou poptávku nebo naopak
+                matchingIdx = combinedItems.findIndex(i => 
+                    i.name?.toLowerCase().includes(wantedLower) ||
+                    wantedLower.includes(i.name?.toLowerCase() || '')
+                );
+            }
             
             showModal(`💰 Nabídka pro: ${escapeHtml(itemName)}`, `
                 <div style="padding: 0.5rem;">
@@ -89752,7 +89793,13 @@ function openFullscreenMap() {
                     <select id="offerItemSelect" style="width: 100%; padding: 0.6rem; border-radius: 6px; background: #2a2a2a; border: 1px solid #4caf50; color: #fff; margin-bottom: 0.8rem;" onchange="updateOfferCountMax()">
                         <option value="">-- Vyber předmět --</option>
                         ${combinedItems.map((item, idx) => {
-                            const isMatch = item.name?.toLowerCase().includes(itemName.toLowerCase()) || itemName.toLowerCase().includes(item.name?.toLowerCase() || '');
+                            const iNameLower = (item.name || '').toLowerCase().trim();
+                            // Přesná shoda jména, nebo shoda celých slov
+                            const isExact = iNameLower === wantedLower;
+                            const iWords = iNameLower.split(/\s+/);
+                            const wWords = wantedLower.split(/\s+/);
+                            const isWordMatch = iWords.every(w => wWords.includes(w));
+                            const isMatch = isExact || isWordMatch;
                             const resLabel = item._isResource ? ' [surovina]' : '';
                             return `<option value="${idx}" data-max="${item.count || 1}" ${idx === matchingIdx ? 'selected' : ''} style="${isMatch ? 'background: #1a3a1a;' : ''}">${item.icon} ${item.name}${resLabel} ${item.count > 1 ? '(x' + item.count + ')' : ''} ${isMatch ? '✓' : ''}</option>`;
                         }).join('')}
@@ -96647,7 +96694,7 @@ function openFullscreenMap() {
                         
                         await firebaseDB.ref('chat/messages').push({
                             author: '🐉 RAID',
-                            text: `🏆 ${boss.icon} ${boss.name} BYL PORAŽEN! Killing blow: ${(raidData.killingBlow || '?').replace(/_/g, ' ')} | Top DPS: ${sortedParticipants} | ${boss.globalRewardDesc || ''}`,
+                            text: `🏆 ${boss.icon} ${boss.name} BYL PORAŽEN! Killing blow: ${(raidData.killingBlow || '?').replace(/_/g, ' ')} | Top DPS: ${sortedParticipants} | ${boss.globalRewardDesc ? '🌍 ' + boss.globalRewardDesc : ''}`,
                             timestamp: firebase.database.ServerValue.TIMESTAMP,
                             system: true
                         });
@@ -97111,12 +97158,7 @@ function openFullscreenMap() {
                     }
                 });
                 
-                await firebaseDB.ref('chat/messages').push({
-                    author: '🏛️ WORLD BOSS',
-                    text: `🏆 ${boss.icon} ${boss.name} BYL PORAŽEN! 🏆\n\n⚔️ Hrdina: ${getPlayerName()}\n🌍 Globální bonus aktivován: ${boss.globalRewardDesc}\n\nSláva hrdinovi Pustiny! 🎉`,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    system: true
-                });
+                // Chat zpráva se posílá z RAID sekce (syncRaidBossDamage) - ne duplikovat
                 
             } catch(e) {
                 console.error('World boss reward error:', e);
