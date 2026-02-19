@@ -62186,6 +62186,14 @@ function openFullscreenMap() {
         
         // Process daily faction/territory income for PvP faction members
         async function processFactionTerritoryIncome() {
+            // Ochrana: max 1x za 23 hodin
+            const _now = Date.now();
+            if (state._lastFactionIncomeAt && (_now - state._lastFactionIncomeAt) < 23 * 60 * 60 * 1000) {
+                console.log('💰 processFactionTerritoryIncome přeskočeno');
+                return;
+            }
+            state._lastFactionIncomeAt = _now;
+            
             // Kontrola jestli je hráč ve frakci
             if (!state.pvpFaction || !multiplayerEnabled || !firebaseDB) return;
             
@@ -62343,6 +62351,15 @@ function openFullscreenMap() {
         
         // Process daily settlement finances (called in daily update)
         function processSettlementFinances() {
+            // Ochrana: max 1x za 23 hodin reálného času (zabrání double-triggeru po cloud sync)
+            const now = Date.now();
+            const FINANCES_INTERVAL = 23 * 60 * 60 * 1000; // 23 hodin
+            if (state.settlement._lastFinancesAt && (now - state.settlement._lastFinancesAt) < FINANCES_INTERVAL) {
+                console.log('💰 processSettlementFinances přeskočeno - příliš brzy (', Math.round((now - state.settlement._lastFinancesAt) / 3600000), 'h ago)');
+                return;
+            }
+            state.settlement._lastFinancesAt = now;
+            
             const maintenance = calculateDailyMaintenance();
             const income = calculateDailyIncome();
             const balance = income - maintenance;
@@ -77636,8 +77653,26 @@ function openFullscreenMap() {
                     // Zachovej některá lokální nastavení
                     loadedState.settings = state.settings;
                     
+                    // Zachovej časové pojistky příjmů - nesmí se přepsat starším cloud savem!
+                    const _keepFinancesAt = state.settlement?._lastFinancesAt || 0;
+                    const _keepFactionAt = state._lastFactionIncomeAt || 0;
+                    const _keepUpdateDay = state.settlement?.lastUpdateDay || 0;
+                    
                     // Nastav state
                     Object.assign(state, loadedState);
+                    
+                    // Obnov pojistky pokud jsou lokální novější
+                    if (state.settlement) {
+                        if (_keepFinancesAt > (state.settlement._lastFinancesAt || 0)) {
+                            state.settlement._lastFinancesAt = _keepFinancesAt;
+                        }
+                        if (_keepUpdateDay > (state.settlement.lastUpdateDay || 0)) {
+                            state.settlement.lastUpdateDay = _keepUpdateDay;
+                        }
+                    }
+                    if (_keepFactionAt > (state._lastFactionIncomeAt || 0)) {
+                        state._lastFactionIncomeAt = _keepFactionAt;
+                    }
                     
                     // CRITICAL: Zajisti že inv je pole (Firebase může vrátit objekt)
                     if (state.inv && !Array.isArray(state.inv)) {
