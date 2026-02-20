@@ -49897,8 +49897,8 @@ function openFullscreenMap() {
             
             window.isDungeonCombat = false;
             
-            // Ulož hru po vyčištění patra (tiše - nezobrazuj modal)
-            saveGame(true);
+            // Ulož hru po vyčištění patra
+            saveGame();
             
             // Zavři combat modal a zobraz dungeon UI
             closeModal();
@@ -50211,7 +50211,7 @@ function openFullscreenMap() {
                 state.dungeon.active = null;
                 state.dungeon.floor = 0;
                 state.dungeon.loot = [];
-                saveGame(true);
+                saveGame();
                 renderFull();
                 
                 // Show summary AFTER renderFull
@@ -50222,7 +50222,7 @@ function openFullscreenMap() {
                 state.dungeon.loot = [];
                 closeModal();
                 renderFull();
-                saveGame(true);
+                saveGame();
             }
         }
         
@@ -66730,6 +66730,12 @@ function openFullscreenMap() {
             const cs = window.combatState;
             const unit = cs.selectedUnit;
             
+            // GUARD: Zabraň útoku pokud jednotka nemá akce (ochrana proti double-clicku a restore bugům)
+            if (!unit || unit.actionsLeft <= 0) {
+                console.warn('⚔️ playerAttackTarget blocked - no actions left');
+                return;
+            }
+            
             // Nano armor regenerace na začátku tahu hráče
             if (!unit.isCompanion && unit.isPlayer) {
                 const armorEffects = getArmorSpecialEffects();
@@ -67924,7 +67930,15 @@ function openFullscreenMap() {
                 if (state.activeCombat) {
                     console.log('⚔️ Obnovuji combatState z activeCombat...');
                     window.combatState = state.activeCombat;
+                    // FIX: Znovu propoj selectedUnit s objektem v turnOrder
+                    const _rcs = window.combatState;
+                    if (_rcs.turnOrder && _rcs.currentTurnIndex !== undefined) {
+                        const _ru = _rcs.turnOrder[_rcs.currentTurnIndex];
+                        if (_ru) _rcs.selectedUnit = _ru;
+                    }
                     renderHeroesCombatUI(); // Rekurzivní pokus
+                    // FIX: Spusť správný tah po obnovení
+                    setTimeout(() => { if (window.combatState) startNextTurn(); }, 200);
                     return;
                 }
                 // Žádný stav k obnově - vyčisti a nabídni restart
@@ -67942,7 +67956,7 @@ function openFullscreenMap() {
             
             // UKLÁDÁNÍ BOJE - průběžné ukládání při každé změně (debounced - ne každý render)
             state.activeCombat = cs;
-            if (typeof saveGameDebounced === 'function') saveGameDebounced(true); else saveGame(true);
+            if (typeof saveGameDebounced === 'function') saveGameDebounced(); else saveGame();
             
             const currentUnit = cs.selectedUnit;
             // Hráčův tah = hráč NEBO společník při manuálním ovládání
@@ -68253,7 +68267,7 @@ function openFullscreenMap() {
         function endCombat() {
             window.combatState = null;
             delete state.activeCombat;
-            saveGame(true); // Uložit že boj skončil (tiše)
+            saveGame(); // Uložit že boj skončil
             // Po skončení boje zkontroluj nevyzvednuté raid odměny
             setTimeout(() => {
                 if (typeof checkRaidVictoryFallback === 'function' && !state._raidVictoryHandled) {
@@ -72972,10 +72986,25 @@ function openFullscreenMap() {
                     if (state.activeCombat) {
                         window.combatState = state.activeCombat;
                         console.log('⚔️ Combat state obnoven po refreshi');
+                        
+                        // FIX: Znovu propoj selectedUnit s objektem v turnOrder (JSON roundtrip je odpojil)
+                        const _cs = window.combatState;
+                        if (_cs.turnOrder && _cs.currentTurnIndex !== undefined) {
+                            const _restoredUnit = _cs.turnOrder[_cs.currentTurnIndex];
+                            if (_restoredUnit) {
+                                _cs.selectedUnit = _restoredUnit;
+                                console.log('⚔️ selectedUnit re-linked na turnOrder[' + _cs.currentTurnIndex + ']:', _restoredUnit.name);
+                            }
+                        }
+                        
                         // Zobraz boj místo běžného UI
                         setTimeout(() => {
                             document.getElementById('modal').classList.add('show');
                             renderHeroesCombatUI();
+                            // FIX: Spusť správný tah (nepřítel dostane svůj tah, hráč dostane správné akce)
+                            if (window.combatState) {
+                                setTimeout(() => startNextTurn(), 200);
+                            }
                         }, 100);
                     }
                     
