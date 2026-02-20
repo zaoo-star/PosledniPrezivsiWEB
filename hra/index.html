@@ -32715,7 +32715,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const notes = document.getElementById('diaryNotes');
             if (notes) {
                 state.diary = notes.value;
-                notifySuccess('💾 Uloženo', 'Tvoje poznámky byly uloženy!');
+                showModal('💾 Uloženo', 'Tvoje poznámky byly uloženy!');
             }
         }
         
@@ -33031,6 +33031,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function showModal(title, message, persistent = false) {
+            // === BLOKOVÁNÍ "ULOŽENO!" MODALU BĚHEM BOJE ===
+            // saveGame() (bez silent) by jinak zobrazil "Uloženo!" přes bojový UI
+            try {
+                if (title === 'Uloženo!' && window.combatState && !window.combatState.ended) {
+                    console.log('⚠️ showModal blocked - "Uloženo!" modal during combat');
+                    return;
+                }
+            } catch(e) { /* ignore */ }
+            
             // Pokud je aktivní PvP výzva, nepovolit jiné modaly (kromě PvP souvisejících)
             try {
                 if (window.pvpChallengeOverlayActive === true) {
@@ -43113,33 +43122,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const price = itemData.price || item.price;
                 if (!price) return;
                 
-                let sellPrice = Math.floor(price * 0.35);
-                
-                if (state.char.gender === 'female') {
-                    sellPrice = Math.floor(sellPrice * 1.1);
-                }
-                
-                const traderSellBonus = getClassPassiveValue('sellBonus');
-                if (traderSellBonus) {
-                    sellPrice = Math.floor(sellPrice * (1 + traderSellBonus));
-                }
-                
-                const tradeMultiplier = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
-                if (tradeMultiplier > 1.0) {
-                    sellPrice = Math.floor(sellPrice * tradeMultiplier);
-                }
-                
-                // 🏗️ Bonus z Tržiště (+20%)
-                const bonuses = getBuildingBonuses();
-                if (bonuses.tradingBonus > 0) {
-                    sellPrice = Math.floor(sellPrice * (1 + bonuses.tradingBonus));
-                }
-                
-                // 🤝 Companion sellBonus
-                const compSellDisplay = getAllCompanionBonuses();
-                if (compSellDisplay.sellBonus > 0) {
-                    sellPrice = Math.floor(sellPrice * (1 + compSellDisplay.sellBonus));
-                }
+                // Sdílený výpočet - stejný jako skutečný prodej (konzistentní zobrazení)
+                let sellPrice = calculateNpcSellPrice(price);
                 
                 const countText = item.count ? ' (' + item.count + 'x)' : '';
                 
@@ -43165,18 +43149,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const itemData = ITEMS.find(function(i) { return i.id === resId; });
                 if (!itemData || !itemData.price) return;
                 
-                let sellPrice = Math.floor(itemData.price * 0.35);
-                
-                const tradeMultiplierRes = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
-                if (tradeMultiplierRes > 1.0) {
-                    sellPrice = Math.floor(sellPrice * tradeMultiplierRes);
-                }
-                
-                // 🏗️ Bonus z Tržiště (+20%)
-                const bonuses = getBuildingBonuses();
-                if (bonuses.tradingBonus > 0) {
-                    sellPrice = Math.floor(sellPrice * (1 + bonuses.tradingBonus));
-                }
+                // Sdílený výpočet - konzistentní se zbytkem
+                let sellPrice = calculateNpcSellPrice(itemData.price);
                 
                 html += '<div style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
                 html += '<div style="display: flex; align-items: center; gap: 0.5rem;">';
@@ -43751,6 +43725,43 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateBuyDialog();
         }
         
+        // === SDÍLENÝ VÝPOČET PRODEJNÍ CENY PRO NPC ===
+        // Tato funkce je použita ВЕЗДЕ (zobrazení i skutečný prodej) - zajišťuje konzistenci
+        function calculateNpcSellPrice(basePrice) {
+            // 1. Základní výkupní cena 35%
+            let sellPrice = Math.floor(basePrice * 0.35);
+            
+            // 2. Pohlavní bonus (+10% pro ženy)
+            if (state.char.gender === 'female') sellPrice = Math.floor(sellPrice * 1.1);
+            
+            // 3. Třídní bonus obchodníka (set efekty nebo třída)
+            const setEffects = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+            if (setEffects.barterImproved) {
+                // Trader set (3/3): 75% základní ceny - přepíše base výpočet
+                sellPrice = Math.floor(basePrice * 0.75);
+                // Stále aplikuj pohlavní bonus
+                if (state.char.gender === 'female') sellPrice = Math.floor(sellPrice * 1.1);
+            } else {
+                // CLASS_PASSIVES sellBonus (trader class = +50%, ostatní = 0%)
+                const classSellBonus = typeof getClassPassiveValue === 'function' ? getClassPassiveValue('sellBonus') : null;
+                if (classSellBonus) sellPrice = Math.floor(sellPrice * (1 + classSellBonus));
+            }
+            
+            // 4. Bonus od obchodníků v osadě (settlement trade multiplier)
+            const settlementBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
+            if (settlementBonus > 1.0) sellPrice = Math.floor(sellPrice * settlementBonus);
+            
+            // 5. Bonus z budov (Tržiště +20%)
+            const buildingBonuses = typeof getBuildingBonuses === 'function' ? getBuildingBonuses() : {};
+            if (buildingBonuses.tradingBonus > 0) sellPrice = Math.floor(sellPrice * (1 + buildingBonuses.tradingBonus));
+            
+            // 6. Bonus od společníků
+            const compBonuses = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+            if (compBonuses.sellBonus > 0) sellPrice = Math.floor(sellPrice * (1 + compBonuses.sellBonus));
+            
+            return sellPrice;
+        }
+        
         function sellItem(itemId, amount = 1) {
             // 🦠 KARANTÉNA - blokace prodeje
             if (typeof areShopsClosed === 'function') {
@@ -43800,18 +43811,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            let sellPrice = Math.floor(itemData.price * 0.35); // Sníženo na 35% - crafting se musí vyplatit!
-            
-            // Apply gender bonus (female gets 10% better selling prices)
-            if (state.char.gender === 'female') {
-                sellPrice = Math.floor(sellPrice * 1.1);
-            }
-            
-            // Bonus od obchodníka v osadě - použij dynamický bonus podle levelu obchodníka
-            const settlementTradeBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
-            if (settlementTradeBonus > 1.0) {
-                sellPrice = Math.floor(sellPrice * settlementTradeBonus);
-            }
+            let sellPrice = calculateNpcSellPrice(itemData.price);
             
             const totalPrice = sellPrice * amount;
             
@@ -43897,10 +43897,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            let sellPrice = Math.floor((itemData.price || item.price) * 0.35);
-            if (state.char.gender === 'female') sellPrice = Math.floor(sellPrice * 1.1);
-            const tradeB = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
-            if (tradeB > 1.0) sellPrice = Math.floor(sellPrice * tradeB);
+            let sellPrice = calculateNpcSellPrice(itemData.price || item.price);
             
             window.currentSellIndex = itemIndex;
             window.currentSellPrice = sellPrice;
@@ -43995,26 +43992,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            let sellPrice = Math.floor(price * 0.35);
-            
-            // Apply gender bonus (female gets 10% better selling prices)
-            if (state.char.gender === 'female') {
-                sellPrice = Math.floor(sellPrice * 1.1);
-            }
-            
-            // Bonus od obchodníka v osadě
-            const hasTrader = state.settlement?.settlers?.some(s => s.type === 'trader');
-            if (hasTrader) {
-                sellPrice = Math.floor(sellPrice * 1.25);
-            }
-            
-            // Trader set (3) - barterImproved +75% prodejní cena (místo 50%)
-            const setEffectsSell = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-            if (setEffectsSell.barterImproved) {
-                sellPrice = Math.floor(price * 0.75); // 75% místo 35%
-            } else if (state.char.classId === 'trader') {
-                sellPrice = Math.floor(price * 0.50); // Trader class base 50%
-            }
+            let sellPrice = calculateNpcSellPrice(price);
             
             const totalPrice = sellPrice * amount;
             
@@ -44108,13 +44086,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Omez na dostupné množství
             amount = Math.min(amount, state.resources[resId]);
             
-            let sellPrice = Math.floor(itemData.price * 0.35);
-            
-            // Bonus od obchodníka v osadě
-            const hasTrader = state.settlement?.settlers?.some(s => s.type === 'trader');
-            if (hasTrader) {
-                sellPrice = Math.floor(sellPrice * 1.25);
-            }
+            let sellPrice = calculateNpcSellPrice(itemData.price);
             
             const totalPrice = sellPrice * amount;
             addMoney(totalPrice);
@@ -44137,9 +44109,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            let sellPrice = Math.floor(itemData.price * 0.35);
-            const hasTrader = state.settlement?.settlers?.some(s => s.type === 'trader');
-            if (hasTrader) sellPrice = Math.floor(sellPrice * 1.25);
+            let sellPrice = calculateNpcSellPrice(itemData.price);
             
             window.currentSellResId = resId;
             window.currentSellResPrice = sellPrice;
@@ -59233,7 +59203,7 @@ function openFullscreenMap() {
                 notifySuccess('🏘️ Produkce osadníků', `Do skladu: ${summary.join(', ')}`);
             }
             
-            saveGame();
+            saveGame(true); // OPRAVA: Tiché uložení - jinak modal "Uloženo!" překreje boj
         }
         
         function updateSettlementDaily() {
@@ -67957,7 +67927,7 @@ function openFullscreenMap() {
             // Ulož do nastavení
             if (!state.settings) state.settings = {};
             state.settings.manualCompanions = cs.manualCompanions;
-            saveGame();
+            saveGame(true); // OPRAVA: Tiché uložení - nesmí zobrazovat modal přes boj
             
             cs.log.push(`🐕 Společníci: ${cs.manualCompanions ? 'Manuální ovládání' : 'AI ovládání'}`);
             renderHeroesCombatUI();
@@ -72753,7 +72723,7 @@ function openFullscreenMap() {
             } catch (e) {
                 console.error('Chyba při serializaci state:', e);
                 if (!silent) {
-                    notifyWarning('Chyba', 'Nelze uložit - data obsahují neserializovatelné hodnoty.');
+                    showModal('Chyba', 'Nelze uložit - data obsahují neserializovatelné hodnoty.');
                 }
                 return;
             }
@@ -72764,7 +72734,7 @@ function openFullscreenMap() {
             } catch(e) {
                 console.error('Chyba při ukládání do localStorage:', e);
                 if (!silent) {
-                    notifyWarning('Chyba', 'Nelze uložit - úložiště je plné nebo blokované.');
+                    showModal('Chyba', 'Nelze uložit - úložiště je plné nebo blokované.');
                 }
                 return;
             }
@@ -72797,7 +72767,7 @@ function openFullscreenMap() {
             }
             
             if (!silent) {
-                notifySuccess('💾 Uloženo!', 'Hra byla úspěšně uložena.' + (currentUser && !currentUser.isAnonymous ? ' ☁️ Cloud' : ''));
+                showModal('Uloženo!', 'Hra byla úspěšně uložena.' + (currentUser && !currentUser.isAnonymous ? '<br><span style="color: #4CAF50;">☁️ Také uloženo do cloudu</span>' : ''));
             }
         }
         
