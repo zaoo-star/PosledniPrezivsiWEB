@@ -28,10 +28,17 @@
         // DŮLEŽITÉ: Hosté jsou povoleni - nastavit IHNED
         window.guestsDisabled = false;
         
-        (function() {
+        (async function() {
             // Verze pro kontrolu aktualizace
             const FORCE_UPDATE_VERSION = '3.6.0';
-            const storedVersion = localStorage.getItem('appVersion');
+            let storedVersion;
+            try {
+                storedVersion = localStorage.getItem('appVersion');
+            } catch(e) {
+                // localStorage blokován (privátní režim) - přeskoč update check aby nevznikl infinite loop
+                console.warn('🔄 localStorage nedostupný, přeskakuji update check');
+                return;
+            }
             
             // Pokud je nová verze, vymaž všechny cache a SW
             if (storedVersion !== FORCE_UPDATE_VERSION) {
@@ -39,7 +46,8 @@
                 
                 // Odregistruj staré service workery (ale NE notifikační sw.js!)
                 if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                    try {
+                        const registrations = await navigator.serviceWorker.getRegistrations();
                         for (let registration of registrations) {
                             var scriptURL = '';
                             try { scriptURL = (registration.active || registration.installing || registration.waiting || {}).scriptURL || ''; } catch(e) {}
@@ -47,28 +55,34 @@
                                 console.log('🔔 Zachovávám notifikační SW');
                                 continue;
                             }
-                            registration.unregister();
+                            await registration.unregister();
                             console.log('🗑️ SW odregistrován:', scriptURL);
                         }
-                    });
+                    } catch(e) { console.warn('SW unregister selhal:', e); }
                 }
                 
-                // Vymaž všechny cache
+                // Vymaž všechny cache (await = reload se spustí až po skutečném smazání)
                 if ('caches' in window) {
-                    caches.keys().then(function(names) {
-                        for (let name of names) {
-                            caches.delete(name);
+                    try {
+                        const names = await caches.keys();
+                        await Promise.all(names.map(name => {
                             console.log('🗑️ Cache smazána:', name);
-                        }
-                    });
+                            return caches.delete(name);
+                        }));
+                    } catch(e) { console.warn('Cache delete selhal:', e); }
                 }
                 
-                // Ulož novou verzi
-                localStorage.setItem('appVersion', FORCE_UPDATE_VERSION);
+                // Ulož novou verzi až po úspěšném smazání (před reloadem)
+                try {
+                    localStorage.setItem('appVersion', FORCE_UPDATE_VERSION);
+                } catch(e) {
+                    console.warn('🔄 Nelze uložit appVersion, přeskakuji reload');
+                    return;
+                }
                 
-                // Reload po krátké pauze (aby se stihly smazat cache)
+                // Reload - cache jsou nyní skutečně smazány
                 setTimeout(function() {
-                    location.reload(true);
+                    location.reload();
                 }, 500);
             }
         })();
@@ -2039,8 +2053,8 @@
                 await userCredential.user.updateProfile({ displayName: nick });
                 
                 document.getElementById('modal').classList.remove('show');
-                alert('✅ Registrace úspěšná! Vítej, ' + nick);
-                location.reload();
+                notifySuccess('✅ Registrace úspěšná!', 'Vítej, ' + nick);
+                setTimeout(() => location.reload(), 1200);
                 
             } catch (error) {
                 console.error('Register error:', error);
@@ -2069,8 +2083,8 @@
                 await firebaseAuth.signInWithEmailAndPassword(email, password);
                 
                 document.getElementById('modal').classList.remove('show');
-                alert('✅ Přihlášení úspěšné!');
-                location.reload();
+                notifySuccess('✅ Přihlášení úspěšné!', 'Vítej zpět!');
+                setTimeout(() => location.reload(), 1200);
                 
             } catch (error) {
                 console.error('Login error:', error);
@@ -10063,7 +10077,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     showModal('🐺 Útok zvířat!', 
                         ('<p style="color: #ff9800;">Divoká zvířata tě napadla!</p>') +
                         '<p>' + animal.icon + ' ' + animal.name + ' útočí!</p>' +
-                        '<button class="btn" onclick="startCombat({id: \'' + animal.id + '\'});" style="width: 100%; margin-top: 1rem;">⚔️ ' + ('Bojovat!') + '</button>'
+                        '<button class="btn" onclick="closeModal(); startCombat({id: \'' + animal.id + '\'});" style="width: 100%; margin-top: 1rem;">⚔️ ' + ('Bojovat!') + '</button>'
                     );
                 }
             },
@@ -12493,7 +12507,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     caches.keys().then(names => names.forEach(name => caches.delete(name)));
                 }
                 // Force reload
-                location.reload(true);
+                location.reload();
                 return;
             }
             localStorage.setItem('gameVersion', GAME_VERSION);
@@ -30536,8 +30550,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Sniž zásoby karavany
             state.caravanStock.items[itemId]--;
             
-            // Zjisti jestli jsme v osadě
-            const inSettlement = state.currentTab === 'settlement' ||
+            // Zjisti jestli jsme v osadě - stejná logika jako v openCaravanShop
+            const _currentLoc = state.world?.currentLocation || '';
+            const inSettlement = _currentLoc === 'shelter' || _currentLoc === 'settlement' ||
                                  (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until);
             
             if (inSettlement) {
@@ -50435,7 +50450,7 @@ function openFullscreenMap() {
             const normalCount = isBossFloor ? enemyCount - 1 : enemyCount;
             for (let i = 0; i < normalCount; i++) {
                 const enemyId = enemyPool[Math.floor(Math.random() * enemyPool.length)];
-                const enemyData = Object.values(ENEMIES).flat().find(e => e.id === enemyId) || 
+                const enemyData = ENEMIES.find(e => e.id === enemyId) || 
                     { id: enemyId, name: 'Nepřítel', icon: '👤', hp: 50, damage: 7, defense: 5, xp: 20, loot: ['money'] };
                 
                 const isElite = hasEliteOnly || Math.random() < 0.15;
@@ -68879,7 +68894,7 @@ function openFullscreenMap() {
         
         // Zobrazí info o nepříteli během boje
         function showEnemyInfo(enemyId) {
-            const enemy = Object.values(ENEMIES).flat().find(e => e.id === enemyId);
+            const enemy = ENEMIES.find(e => e.id === enemyId);
             if (!enemy) return;
             
             const cs = window.combatState;
@@ -72689,8 +72704,12 @@ function openFullscreenMap() {
             }
             
             try {
+                // Přesun starého save do zálohy PŘED přepsáním (skutečná záloha předchozího stavu)
+                const prevSave = localStorage.getItem('survival_hero_save');
+                if (prevSave) {
+                    localStorage.setItem('survival_hero_backup', prevSave);
+                }
                 localStorage.setItem('survival_hero_save', jsonData);
-                localStorage.setItem('survival_hero_backup', jsonData);
             } catch(e) {
                 console.error('Chyba při ukládání do localStorage:', e);
                 if (!silent) {
@@ -72855,7 +72874,7 @@ function openFullscreenMap() {
                 console.warn('validateSaveData: Neplatné HP');
                 return false;
             }
-            if (data.char.hp < 0 || data.char.hp > 99999) {
+            if (data.char.hp < 0 || data.char.hp > (GAME_CONSTANTS?.MAX_HP ?? 9999) * 10) {
                 console.warn('validateSaveData: HP mimo rozumný rozsah');
                 return false;
             }
@@ -75517,7 +75536,7 @@ function openFullscreenMap() {
                             '</div>' +
                         '</div>' +
                         '<p style="color: #ff9800; font-size: 0.85rem;">⚠️ Klikni na tlačítko pro dokončení importu!</p>' +
-                        '<button class="btn" onclick="location.reload(true)" style="width: 100%; background: var(--rust); margin-top: 0.5rem;">🔄 Načíst hru</button>' +
+                        '<button class="btn" onclick="location.reload()" style="width: 100%; background: var(--rust); margin-top: 0.5rem;">🔄 Načíst hru</button>' +
                     '</div>'
                 );
             } catch (e) {
@@ -100052,7 +100071,7 @@ function openFullscreenMap() {
                 const sourceLabels = { shop_sale: '🏪 Obchod', marketplace_fee: '🛒 Tržiště', daily_tax: '📊 Daně', npc_shop: '🏪 NPC', decision: '📜 Rozhodnutí', admin_set: '🔧 Admin', other: '❓ Ostatní' };
                 const expenseLabels = { mayor_event: '🎉 Eventy', grant: '💰 Granty', bounty: '🎯 Lov', crisis: '🚨 Krize', other: '❓ Ostatní' };
                 
-                const switchHistoryTab = (tabId) => {
+                window.switchHistoryTab = (tabId) => {
                     ['mayorsList','decisionsList','bossList'].forEach(id => {
                         const el = document.getElementById(id);
                         if (el) el.style.display = 'none';
@@ -103552,8 +103571,11 @@ function openFullscreenMap() {
             
             const until = duration > 0 ? Date.now() + duration : 0; // 0 = navždy
             
+            // Sanitizace jména pro Firebase klíč (stejně jako v adminBanPlayer)
+            const safeKey = name.replace(/[\/\.#$\[\]]/g, '_');
+            
             try {
-                await firebaseDB.ref('mutedPlayers/' + name).set({
+                await firebaseDB.ref('mutedPlayers/' + safeKey).set({
                     name: name,
                     reason: reason || '',
                     until: until,
