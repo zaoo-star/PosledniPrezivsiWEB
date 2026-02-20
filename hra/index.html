@@ -22438,6 +22438,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!accessory) return;
             
             state.equippedAccessory = accId;
+            // Sync do nového systému state.equipped (aby fungoval HP regen a stat check)
+            state.equipped = state.equipped || {};
+            if (!state.equipped.accessory) {
+                state.equipped.accessory = accessory;
+            } else if (state.equipped.accessory.id !== accId) {
+                // Slot 1 obsazen jiným - přesuň do slotu 2
+                if (!state.equipped.accessory2 || state.equipped.accessory2.id === accId) {
+                    state.equipped.accessory = accessory;
+                } else {
+                    state.equipped.accessory2 = accessory;
+                }
+            }
             addLog('Nasazen doplněk: ' + accessory.name, accessory.icon);
             notifySuccess('Nasazeno!', accessory.name);
             showAccessoryModal();
@@ -40800,17 +40812,29 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (obj.completed) return;
                     
                     const chapterObj = chapter.objectives[i];
+                    const currentLoc = state.world?.currentLocation;
+                    const visitedLocs = state.world?.visitedLocations || [];
                     
                     // Kontrola podle typu cíle
-                    if (chapterObj.type === 'location' && action === 'location' && target === chapterObj.target) {
+                    if (chapterObj.type === 'location' && (
+                        (action === 'location' && target === chapterObj.target) ||
+                        currentLoc === chapterObj.target // Auto: hráč je teď na lokaci
+                    )) {
                         obj.completed = true;
                         addLog(`💝 ${comp.name}: Cíl splněn!`, '📋');
                     }
-                    if (chapterObj.type === 'explore' && action === 'explore' && target === chapterObj.target) {
+                    if (chapterObj.type === 'explore' && (
+                        (action === 'explore' && target === chapterObj.target) ||
+                        visitedLocs.includes(chapterObj.target) || // Auto: lokace byla navštívena
+                        currentLoc === chapterObj.target // Auto: hráč je teď tam
+                    )) {
                         obj.completed = true;
                         addLog(`💝 ${comp.name}: Cíl splněn!`, '📋');
                     }
-                    if (chapterObj.type === 'item' && action === 'item' && state.inv.some(i => i.id === chapterObj.target)) {
+                    if (chapterObj.type === 'item' && (
+                        (action === 'item' && state.inv.some(i => i.id === chapterObj.target)) ||
+                        state.inv.some(i => i.id === chapterObj.target) // Auto: item je v inv
+                    )) {
                         obj.completed = true;
                         addLog(`💝 ${comp.name}: Cíl splněn!`, '📋');
                     }
@@ -40822,10 +40846,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!obj.completed) allComplete = false;
                 });
                 
-                // Všechny cíle splněny?
+                // Všechny cíle splněny? → dokončení bez čekání
                 if (allComplete) {
                     completeCompanionQuest(comp.id);
                 }
+            });
+        }
+        
+        // Auto-check companion quest objectives každých 10s (detekuje splněné podmínky bez akce)
+        function autoCheckCompanionQuestObjectives() {
+            if (!state.companions) return;
+            state.companions.forEach(comp => {
+                if (!comp.activeQuest) return;
+                // Zavolej check pro aktuální stav bez konkrétní akce - zachytí splněné podmínky
+                checkCompanionQuestObjectives('_auto', null);
             });
         }
         
@@ -41179,6 +41213,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
             if (!comp) return;
             
+            // OCHRANA: Nepřidávej quest znovu pokud je stejný quest již aktivní
+            if (comp.activeQuest && comp.activeQuest.id === chapter.id) return;
+            
             comp.activeQuest = {
                 id: chapter.id,
                 objectives: chapter.objectives.map(o => ({...o, completed: false})),
@@ -41227,6 +41264,39 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
+            // Okamžitě zkontroluj auto-splnitelné objectives (pokud hráč splnil podmínky dříve)
+            const currentLoc = state.world?.currentLocation;
+            const visitedLocs = state.world?.visitedLocations || [];
+            let preCompleted = 0;
+            comp.activeQuest.objectives.forEach((obj, i) => {
+                const chapterObj = chapter.objectives[i];
+                if (chapterObj.type === 'explore' && (visitedLocs.includes(chapterObj.target) || currentLoc === chapterObj.target)) {
+                    obj.completed = true; preCompleted++;
+                }
+                if (chapterObj.type === 'location' && currentLoc === chapterObj.target) {
+                    obj.completed = true; preCompleted++;
+                }
+                if (chapterObj.type === 'item' && state.inv.some(i => i.id === chapterObj.target)) {
+                    obj.completed = true; preCompleted++;
+                }
+            });
+            
+            // Jsou všechny objectives splněné okamžitě? → tiché dokončení, žádný modal
+            const allPreComplete = comp.activeQuest.objectives.every(o => o.completed);
+            if (allPreComplete) {
+                completeCompanionQuest(companionId);
+                return;
+            }
+            
+            // Jinak zobraz quest modal pouze jednou
+            // Sestav objectives HTML bez nested template literals (kvůli kompatibilitě)
+            const objHtml = chapter.objectives.map((o, i) => {
+                const done = comp.activeQuest.objectives[i]?.completed;
+                const color = done ? '#4caf50' : '#ccc';
+                const prefix = done ? '✓ ' : '';
+                return '<li style="color: ' + color + '">' + prefix + o.text + '</li>';
+            }).join('');
+            
             showModal(`${questData.icon} ${questData.name}`, `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <div style="font-size: 3rem;">${comp.icon}</div>
@@ -41237,9 +41307,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <p style="color: #888; margin-bottom: 1rem;">${chapter.description}</p>
                 <h4 style="color: #ff9800;">Cíle:</h4>
-                <ul style="color: #ccc; margin: 0.5rem 0;">
-                    ${chapter.objectives.map(o => `<li>${o.text}</li>`).join('')}
-                </ul>
+                <ul style="color: #ccc; margin: 0.5rem 0;">${objHtml}</ul>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">🐾 Pomůžu ti!</button>
             `);
             
@@ -41440,6 +41508,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         setInterval(() => {
             updateTimedQuests();
             checkCompanionQuests();
+            autoCheckCompanionQuestObjectives(); // Auto-splnění objectives pokud podmínky jsou naplněny
         }, 10000); // Každých 10 sekund
         
         // Fronta pro level up zprávy během boje
@@ -59421,18 +59490,42 @@ function openFullscreenMap() {
                     break;
                     
                 case 'fire':
+                    // Ochrana: Studna snižuje šanci na zničení budovy o 60%
+                    const hasWell = state.settlement.buildings?.includes('well');
+                    // Ochrana: Strážce snižuje šanci na zničení budovy o 30%
+                    const hasGuardFire = state.settlement.settlers?.some(s => s.type === 'guard');
+                    // Kombinovaná ochrana
+                    let fireDestroyChance = 0.3;
+                    if (hasWell) fireDestroyChance *= 0.4; // -60%
+                    if (hasGuardFire) fireDestroyChance *= 0.7; // -30%
+                    
                     const damageRoll = Math.random();
-                    if (damageRoll < 0.3 && state.settlement.buildings.length > 0) {
+                    if (damageRoll < fireDestroyChance && state.settlement.buildings.length > 0) {
                         const idx = Math.floor(Math.random() * state.settlement.buildings.length);
                         const destroyed = state.settlement.buildings.splice(idx, 1)[0];
                         const building = BUILDINGS.find(b => b.id === destroyed);
                         message += `<p style="color: #c62828;">🔥 ${building?.name || destroyed} shořela!</p>`;
                         eventDetails = `Shořela: ${building?.name || destroyed}`;
+                        if (hasWell || hasGuardFire) {
+                            message += `<p style="color: #888; font-size: 0.8rem;">⚠️ Ochrana snížila škody, ale nezabránila požáru.</p>`;
+                        }
                     } else {
-                        const lostFood = Math.floor(state.settlement.resources.food * 0.2);
+                        const fireDmgMult = (hasWell && hasGuardFire) ? 0.05 : hasWell ? 0.1 : hasGuardFire ? 0.15 : 0.2;
+                        const lostFood = Math.floor(state.settlement.resources.food * fireDmgMult);
                         state.settlement.resources.food = Math.max(0, state.settlement.resources.food - lostFood);
-                        message += `<p style="color: #ff9800;">Zásoby poškozeny: -${lostFood} 🍖</p>`;
-                        eventDetails = `-${lostFood} 🍖`;
+                        if (hasWell || hasGuardFire) {
+                            message += `<p style="color: var(--toxic-green);">✅ Požár uhašen díky ${hasWell ? '🚰 Studně' : ''}${hasWell && hasGuardFire ? ' a ' : ''}${hasGuardFire ? '💂 Strážci' : ''}!</p>`;
+                            if (lostFood > 0) {
+                                message += `<p style="color: #ff9800;">Malá škoda: -${lostFood} 🍖</p>`;
+                            } else {
+                                message += `<p style="color: var(--toxic-green);">Žádné zásoby nebyly ztraceny!</p>`;
+                            }
+                            eventDetails = hasWell || hasGuardFire ? `Oheň uhašen! -${lostFood} 🍖` : `-${lostFood} 🍖`;
+                        } else {
+                            message += `<p style="color: #ff9800;">Zásoby poškozeny: -${lostFood} 🍖</p>`;
+                            message += `<p style="color: #888; font-size: 0.8rem;">💡 <strong>Studna</strong> nebo <strong>Strážce</strong> by snížili škody!</p>`;
+                            eventDetails = `-${lostFood} 🍖`;
+                        }
                     }
                     break;
                     
@@ -74538,28 +74631,55 @@ function openFullscreenMap() {
                     // 📿 Accessory hp_regen bonus (Amulet mutantího srdce +3 HP/min)
                     if (state.char.hp < state.char.maxHp) {
                         let accRegenTotal = 0;
+                        const countedIds = new Set();
                         
-                        // Starý systém: state.equippedAccessory
+                        // Pomocná funkce - přidej regen z accessory objektu
+                        const addAccRegen = (acc) => {
+                            if (!acc || countedIds.has(acc.id)) return;
+                            countedIds.add(acc.id);
+                            if (acc.bonus === 'hp_regen' && acc.value > 0) {
+                                accRegenTotal += acc.value;
+                            }
+                            // Také zkontroluj inv verzi (může mít novější data)
+                            const invAcc = state.inv.find(i => i.id === acc.id);
+                            if (invAcc && invAcc !== acc && invAcc.bonus === 'hp_regen' && invAcc.value > 0 && !countedIds.has('inv_' + acc.id)) {
+                                countedIds.add('inv_' + acc.id);
+                                // Nepočítej znovu - už přidáno výše přes acc
+                            }
+                        };
+                        
+                        // Starý systém: state.equippedAccessory → lookup v inv
                         if (state.equippedAccessory) {
                             const accRegen = state.inv.find(i => i.id === state.equippedAccessory);
                             if (accRegen && accRegen.bonus === 'hp_regen' && accRegen.value > 0) {
                                 accRegenTotal += accRegen.value;
+                                countedIds.add(accRegen.id);
                             }
                         }
                         
-                        // OPRAVA: Nový systém state.equipped.accessory / accessory2
+                        // Nový systém: state.equipped.accessory / accessory2
                         ['accessory', 'accessory2'].forEach(slot => {
                             const acc = state.equipped?.[slot];
-                            if (acc && acc.bonus === 'hp_regen' && acc.value > 0) {
-                                // Nepočítej dvakrát pokud je totožný s equippedAccessory
-                                if (!(state.equippedAccessory && acc.id === state.equippedAccessory)) {
+                            if (acc && !countedIds.has(acc.id)) {
+                                countedIds.add(acc.id);
+                                if (acc.bonus === 'hp_regen' && acc.value > 0) {
                                     accRegenTotal += acc.value;
+                                }
+                                // Zkus také najít čerstvou verzi v inv (může mít aktuálnější data)
+                                const invVersion = state.inv.find(i => i.id === acc.id);
+                                if (invVersion && invVersion.bonus === 'hp_regen' && invVersion.value > 0 && !countedIds.has('chk_' + acc.id)) {
+                                    countedIds.add('chk_' + acc.id);
+                                    // Pokud inv verze má regen ale acc objekt ne → použij inv verzi
+                                    if (!(acc.bonus === 'hp_regen')) {
+                                        accRegenTotal += invVersion.value;
+                                    }
                                 }
                             }
                         });
                         
                         if (accRegenTotal > 0) {
                             state.char.hp = Math.min(state.char.maxHp, state.char.hp + accRegenTotal);
+                            if (Math.random() < 0.05) addLog(`💜 Amulet regenerace: +${accRegenTotal} HP`, '💜');
                         }
                     }
                     
@@ -81288,7 +81408,7 @@ function openFullscreenMap() {
                         const isWarZone = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
                         const isPustina = msg.author === '🌍 Pustina';
                         const clickAction = isWarZone ? 'showFactionTab()' : 'showTombola()';
-                        const msgColor = isWarZone ? '#f44336' : isPustina ? '#8bc34a' : '#e91e63';
+                        const msgColor = isWarZone ? '#f44336' : isPustina ? '#8bc34a' : '#ffd700';
                         authorHtml = isPustina
                             ? `<span style="color: ${msgColor}; font-weight: bold;">${escapeHtml(msg.author)}</span>`
                             : `<span onclick="event.stopPropagation(); ${clickAction};" style="color: ${msgColor}; font-weight: bold; cursor: pointer; text-decoration: underline;">${escapeHtml(msg.author)}</span>`;
@@ -81302,9 +81422,9 @@ function openFullscreenMap() {
                     // Barva systémové zprávy podle typu
                     const isWarZoneMsg = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
                     const isPustinaMsg = msg.author === '🌍 Pustina';
-                    const systemMsgColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#8bc34a' : '#e91e63';
-                    const systemBgColor = isWarZoneMsg ? '#2a1515' : isPustinaMsg ? '#1a2a1a' : '#2a1a2a';
-                    const systemBorderColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#4caf50' : '#e91e63';
+                    const systemMsgColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#8bc34a' : '#ffd700';
+                    const systemBgColor = isWarZoneMsg ? '#2a1515' : isPustinaMsg ? '#1a2a1a' : '#1a1a05';
+                    const systemBorderColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#4caf50' : '#ffd700';
                     
                     messagesHtml += `
                         <div style="margin-bottom: 0.5rem; ${isMe ? 'text-align: right;' : ''}">
