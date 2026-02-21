@@ -40292,41 +40292,65 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // === COMPANION QUEST ITEMS ===
             // Kontrola companion quest itemů spawnovaných na této lokaci
+            
+            // Retroaktivní oprava: pokud má companion aktivní quest s item objektívem
+            // ale questItemSpawn chybí (quest začal dříve), vytvoř spawn teď
+            if (state.companions) {
+                state.companions.forEach(comp => {
+                    if (!comp.activeQuest) return;
+                    const questData = COMPANION_QUESTS[comp.id];
+                    const chapter = questData?.chapters.find(c => c.id === comp.activeQuest.id);
+                    if (!chapter) return;
+                    chapter.objectives.forEach((obj, i) => {
+                        if (obj.type === 'item' && !comp.activeQuest.objectives[i]?.completed) {
+                            const spawnLoc = QUEST_ITEM_LOCATIONS[obj.target] || 'shelter';
+                            if (!state.world.questItemSpawns) state.world.questItemSpawns = {};
+                            if (!state.world.questItemSpawns[obj.target]) {
+                                // Spawn chyběl - oprav ho
+                                state.world.questItemSpawns[obj.target] = {
+                                    location: spawnLoc,
+                                    companion: comp.id,
+                                    questId: chapter.id
+                                };
+                            }
+                        }
+                    });
+                });
+            }
+            
             if (state.world.questItemSpawns) {
                 for (const [itemId, spawnData] of Object.entries(state.world.questItemSpawns)) {
                     if (spawnData.location === loc.id) {
                         const questItem = QUEST_ITEMS.find(i => i.id === itemId);
                         if (questItem && !state.inv.some(i => i.id === itemId)) {
-                            // 50% šance najít companion quest item
-                            if (Math.random() < 0.5) {
-                                // Nalezen!
-                                delete state.world.questItemSpawns[itemId];
-                                const questItemCopy = {...questItem, count: 1, weight: 0};
-                                state.inv.push(questItemCopy);
-                                
-                                // Update companion quest objective
-                                const comp = state.companions?.find(c => c.id === spawnData.companion);
-                                if (comp?.activeQuest) {
-                                    comp.activeQuest.objectives.forEach(obj => {
-                                        if (obj.target === itemId) {
-                                            obj.completed = true;
-                                        }
-                                    });
-                                }
-                                
-                                showModal('💝 Companion Quest Item!', `
-                                    <div style="text-align: center;">
-                                        <div style="font-size: 4rem; margin-bottom: 1rem;">${questItem.icon}</div>
-                                        <h3 style="color: #e91e63;">${questItem.name}</h3>
-                                        <p style="color: #888;">${questItem.desc || ''}</p>
-                                        <p style="color: #8bc34a; margin-top: 1rem;">Pro quest společníka!</p>
-                                    </div>
-                                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #e91e63;">✓ Výborně!</button>
-                                `);
-                                addLog('Nalezen předmět pro společníka: ' + questItem.name, '💝');
-                                renderFull();
-                                return;
+                            // 100% šance najít quest item - quest itemy jsou vždy zaručené
+                            // Nalezen!
+                            delete state.world.questItemSpawns[itemId];
+                            const questItemCopy = {...questItem, count: 1, weight: 0};
+                            state.inv.push(questItemCopy);
+                            
+                            // Update companion quest objective
+                            const comp = state.companions?.find(c => c.id === spawnData.companion);
+                            if (comp?.activeQuest) {
+                                comp.activeQuest.objectives.forEach(obj => {
+                                    if (obj.target === itemId) {
+                                        obj.completed = true;
+                                    }
+                                });
                             }
+                            
+                            showModal('💝 Companion Quest Item!', `
+                                <div style="text-align: center;">
+                                    <div style="font-size: 4rem; margin-bottom: 1rem;">${questItem.icon}</div>
+                                    <h3 style="color: #e91e63;">${questItem.name}</h3>
+                                    <p style="color: #888;">${questItem.desc || ''}</p>
+                                    <p style="color: #8bc34a; margin-top: 1rem;">Pro quest společníka!</p>
+                                </div>
+                                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #e91e63;">✓ Výborně!</button>
+                            `);
+                            addLog('Nalezen quest předmět: ' + questItem.name, '📜');
+                            renderFull();
+                            return;
                         }
                     }
                 }
@@ -41911,6 +41935,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 comp.activeQuest.objectives.forEach((obj, i) => {
                     if (obj.completed) return;
                     
+                    // OPRAVA: Kontrola pořadí — nesplněný předchozí cíl blokuje tento
+                    // Výjimka: první cíl nemá předchůdce
+                    if (i > 0 && !comp.activeQuest.objectives[i - 1]?.completed) {
+                        allComplete = false;
+                        return; // Přeskoč, předchozí cíl ještě nesplněn
+                    }
+                    
                     const chapterObj = chapter.objectives[i];
                     const currentLoc = state.world?.currentLocation;
                     const visitedLocs = state.world?.visitedLocations || [];
@@ -41956,6 +41987,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Auto-check companion quest objectives každých 10s (detekuje splněné podmínky bez akce)
         function autoCheckCompanionQuestObjectives() {
             if (!state.companions) return;
+            
+            // OPRAVA: Resetuj nesprávně splněné cíle (splněné bez splněného předchůdce)
+            state.companions.forEach(comp => {
+                if (!comp.activeQuest) return;
+                const questData = COMPANION_QUESTS[comp.id];
+                const chapter = questData?.chapters.find(c => c.id === comp.activeQuest.id);
+                if (!chapter) return;
+                
+                // Projdi všechny cíle - pokud je splněný ale předchůdce ne, resetuj ho
+                comp.activeQuest.objectives.forEach((obj, i) => {
+                    if (!obj.completed || i === 0) return;
+                    const prevCompleted = comp.activeQuest.objectives[i - 1]?.completed;
+                    if (!prevCompleted) {
+                        // Předchůdce nesplněn - tento cíl byl splněn chybně, resetuj
+                        obj.completed = false;
+                    }
+                });
+            });
+            
             state.companions.forEach(comp => {
                 if (!comp.activeQuest) return;
                 // Zavolej check pro aktuální stav bez konkrétní akce - zachytí splněné podmínky
