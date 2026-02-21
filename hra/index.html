@@ -32738,7 +32738,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <button class="btn" onclick="filterCraft('tool')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; ${state.craftFilter === 'tool' ? 'background: #2a2a20; color: #8a8a6a;' : 'background: #1a1a1a; border: 1px solid #333; color: #666;'}">🔧 ${'Nástroje'}</button>
                         <button class="btn" onclick="filterCraft('ammo')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; ${state.craftFilter === 'ammo' ? 'background: #3a3a20; color: #9a9a6a;' : 'background: #1a1a1a; border: 1px solid #333; color: #666;'}">💣 ${'Munice'}</button>
                         <button class="btn" onclick="filterCraft('special')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; ${state.craftFilter === 'special' ? 'background: #3a2a3a; color: #9a7a9a;' : 'background: #1a1a1a; border: 1px solid #333; color: #666;'}">✨ ${'Speciální'}</button>
-                        ${getSkillLevel('legendary_smith') > 0 ? `<button class="btn" onclick="filterCraft('legendary')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; ${state.craftFilter === 'legendary' ? 'background: #3a3a20; color: #9a9a6a; border: 1px solid #5a5a30;' : 'background: #1a1a1a; border: 1px solid #333; color: #666;'}">⭐ Legendární</button>` : ''}
+                        ${(getSkillLevel('legendary_smith') > 0 || getAllCompanionBonuses().allRecipes) ? `<button class="btn" onclick="filterCraft('legendary')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; ${state.craftFilter === 'legendary' ? 'background: #3a3a20; color: #9a9a6a; border: 1px solid #5a5a30;' : 'background: #1a1a1a; border: 1px solid #333; color: #666;'}">⭐ Legendární</button>` : ''}
                     </div>
                     
                     ${hasClassPassive('craftCostReduction') ? `
@@ -47938,12 +47938,15 @@ function openFullscreenMap() {
             const craftCompBonuses = getAllCompanionBonuses();
             const craftBonusStats = craftCompBonuses.craftBonusStats || 0;
             
+            // Továrna (T5 skill technika) - odemkne všechny recepty včetně legendárních
+            const hasAllRecipes = craftCompBonuses.allRecipes || false;
+            
             // Filtruj recepty - legendární jen pokud má skill
             const filteredRecipes = CRAFTING.filter(r => {
                 // Filtr podle kategorie
                 if (state.craftFilter && state.craftFilter !== 'all' && r.category !== state.craftFilter) return false;
-                // Legendární recepty jen se skillem Legendární kovář
-                if (r.legendaryRequired && !hasLegendarySmith) return false;
+                // Legendární recepty: stačí Legendární kovář NEBO Továrna (allRecipes)
+                if (r.legendaryRequired && !hasLegendarySmith && !hasAllRecipes) return false;
                 return true;
             });
             
@@ -65825,8 +65828,15 @@ function openFullscreenMap() {
                     }
                     // Společník - AI nebo manuální ovládání
                     else if (unit.isCompanion) {
+                        // Omráčený společník přeskočí tah
+                        if (unit.stunned) {
+                            cs.log.push(`💫 ${unit.name} je omráčený a nemůže jednat!`);
+                            unit.stunned = false; // Vymaž stun PO přeskočení (ne na začátku kola)
+                            unit.actionsLeft = 0;
+                            useAction(unit, 0);
+                            return;
+                        }
                         if (cs.manualCompanions) {
-                            // Manuální ovládání - hráč ovládá společníka
                             renderHeroesCombatUI();
                         } else {
                             cs._turnLocked = true;
@@ -65834,6 +65844,24 @@ function openFullscreenMap() {
                                 if (window.combatState) window.combatState._turnLocked = false;
                                 performCompanionAITurn(unit);
                             }, 400);
+                        }
+                    }
+                    // Hráč - zkontroluj stun/zmaten před čekáním na input
+                    else if (unit.isPlayer) {
+                        // 💫 Omráčení - hráč přeskočí celý tah
+                        if (unit.stunned) {
+                            cs.log.push(`💫 Jsi omráčený a nemůžeš jednat! (přeskočení tahu)`);
+                            unit.stunned = false; // Vymaž stun PO přeskočení
+                            state.char.stunned = false;
+                            state.char.stunnedRounds = 0;
+                            unit.actionsLeft = 0;
+                            renderHeroesCombatUI();
+                            setTimeout(() => useAction(unit, 0), 600);
+                            return;
+                        }
+                        // 🔮 Zmatení - hráč má 40% šanci minout při útoku (zpracováno v playerAttackTarget)
+                        if (unit.confused) {
+                            cs.log.push(`🔮 Jsi zmatený! (${unit.confused} kol zbývá - útok může minout)`);
                         }
                     }
                     // Hráč - čeká na input
@@ -66208,8 +66236,16 @@ function openFullscreenMap() {
                         cs.log.push(`💀 ${u.name} shořel!`);
                     }
                 }
-                // 💫 Stunned - odeber omráčení (unit přeskočil akci v minulém kole)
-                if (u.stunned) u.stunned = false;
+                // 💫 Stunned - NEMAZAT zde! Stun se maže v startNextTurn po přeskočení tahu
+                // (pokud unit nedostal tah v minulém kole, stun zůstane pro toto kolo)
+                // Výjimka: confuse (zmatení) se decrementuje každé kolo
+                if (u.confused && u.confused > 0) {
+                    u.confused = Math.max(0, u.confused - 1);
+                    if (u.confused === 0 && u.isPlayer) {
+                        state.char.confused = 0;
+                        cs.log.push(`🔮 Zmatení odeznělo!`);
+                    }
+                }
                 
                 // === WORLD BOSS REGEN - VYPNUTO pro raid bossy ===
                 // Raid boss se neregeneruje v boji (regen je jen pro solo bossy)
@@ -66883,6 +66919,24 @@ function openFullscreenMap() {
                 }
             }
             
+            // 🔮 canConfuse - přízrak/psychický nepřítel může zmást hráče
+            if (attacker.canConfuse && target.alive !== false && target.hp > 0) {
+                const confuseChance = attacker.isBoss ? 0.25 : 0.15;
+                if (Math.random() < confuseChance) {
+                    const setFxC = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                    if (setFxC.unstoppable) {
+                        cs.log.push(`💪 NEZASTAVITELNÝ! Odolal jsi zmatení!`);
+                    } else {
+                        const confuseDuration = attacker.isBoss ? 3 : 2;
+                        target.confused = Math.max(target.confused || 0, confuseDuration);
+                        if (target.isPlayer || target.team === 'player') {
+                            state.char.confused = Math.max(state.char.confused || 0, confuseDuration);
+                        }
+                        cs.log.push(`🔮 ${attacker.name} ZMÁTL ${target.name}! Útok může minout (${confuseDuration} kola)!`);
+                    }
+                }
+            }
+            
             // 🧟 canInfect - zombie/ghoul boss může nakazit nemocí
             if (attacker.canInfect && !attacker.isWorldBoss && target.alive !== false && target.hp > 0) {
                 if (Math.random() < 0.15 && typeof tryInfectDisease === 'function') {
@@ -67329,6 +67383,17 @@ function openFullscreenMap() {
             if (!unit || unit.actionsLeft <= 0) {
                 console.warn('⚔️ playerAttackTarget blocked - no actions left');
                 return;
+            }
+            
+            // 🔮 Zmatení hráče - 40% šance na minout (jako ve starém systému)
+            if (!unit.isCompanion && unit.confused && unit.confused > 0) {
+                if (Math.random() < 0.4) {
+                    cs.log.push(`🔮 Jsi zmatený! Útok minul! (${unit.confused} kol zbývá)`);
+                    useAction(unit, 1);
+                    renderHeroesCombatUI();
+                    return;
+                }
+                cs.log.push(`🔮 Zmatení (${unit.confused} kol zbývá) - útok prošel`);
             }
             
             // Nano armor regenerace na začátku tahu hráče
@@ -68890,6 +68955,11 @@ function openFullscreenMap() {
             
             // Zvuk prohry
             if (typeof playCombatSound === 'function') playCombatSound('defeat');
+            
+            // Resetuj bojové stavy (stun, zmatení) - aby hráče neomezovaly po boji
+            state.char.stunned = false;
+            state.char.stunnedRounds = 0;
+            state.char.confused = 0;
             
             // === WORLD BOSS RAID - hráč prohrál ale damage se počítá! ===
             // GUARD: Ověř že aktuální boj opravdu obsahuje raid bosse (ne jen stale state)
