@@ -12657,15 +12657,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // Zpracování overfed debuffů v herní smyčce
-        function processOverfedDebuffs() {
+        function processOverfedDebuffs(delta) {
             if (!state.overfed) return;
             const now = Date.now();
+            const dt = delta || 1; // seconds, default 1 if not passed
             
             // Rychlé vytrácení žízně při přepití (ledviny jedou naplno)
             if (state.overfed.thirstFlush && now < state.overfed.thirstFlush) {
-                // Ledviny pracují naplno — extra úbytek žízně
                 if (state.status.thirst > 0 && !state.map.inBase) {
-                    state.status.thirst = Math.max(0, state.status.thirst - 0.04); // +extra 2.4%/min na vrcholu přepití
+                    state.status.thirst = Math.max(0, state.status.thirst - 0.04 * dt); // delta-scaled
                 }
             } else if (state.overfed.thirstFlush && now >= state.overfed.thirstFlush) {
                 delete state.overfed.thirstFlush;
@@ -12675,13 +12675,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.hunger && now >= state.overfed.hunger) delete state.overfed.hunger;
             if (state.overfed.thirst && now >= state.overfed.thirst) delete state.overfed.thirst;
             
-            // Postupné snižování excess (hunger/thirst se vrátí na 100)
-            // 0.05/sec = 3%/min → 30% excess zmizí za ~10 minut
+            // Postupné snižování excess — OPRAVA: scale by delta, jinak offline = věčné přejedení
+            // 0.5/sec = 30%/min → excess 30 zmizí za 1 minutu
             if (state.status.hunger > 100) {
-                state.status.hunger = Math.max(100, state.status.hunger - 0.05);
+                state.status.hunger = Math.max(100, state.status.hunger - 0.5 * dt);
             }
             if (state.status.thirst > 100) {
-                state.status.thirst = Math.max(100, state.status.thirst - 0.08); // voda odchází trochu rychleji
+                state.status.thirst = Math.max(100, state.status.thirst - 0.8 * dt); // voda odchází rychleji
             }
         }
         
@@ -77629,7 +77629,7 @@ function openFullscreenMap() {
             // Process building queue
             if (state.confirmed) {
                 processBuildQueue();
-            if (typeof processOverfedDebuffs === 'function') processOverfedDebuffs();
+            if (typeof processOverfedDebuffs === 'function') processOverfedDebuffs(delta);
             }
             
             // 🏛️ DENNÍ DAŇ + PLAT ŠÉFA - nezávisle na settlement, na reálném čase
@@ -109345,6 +109345,9 @@ function openFullscreenMap() {
         window.confirmJoinClan = confirmJoinClan;
         window.buildClanBuilding = buildClanBuilding;
         window.confirmBuildClanBuilding = confirmBuildClanBuilding;
+        window.showClanBuildingFunding = showClanBuildingFunding;
+        window.contributeToBuildFunding = contributeToBuildFunding;
+        window.launchClanBuilding = launchClanBuilding;
         window.showClanVault = showClanVault;
         // ============================================
         // KLANOVY DUNGEON
@@ -110027,6 +110030,12 @@ function openFullscreenMap() {
                 clanBuildQueue = bqSnap.val() || {};
             } catch(e) {}
             
+            let clanBuildFunding = {};
+            try {
+                const bfSnap = await firebaseDB.ref(`clans/${locationId}/buildFunding`).once('value');
+                clanBuildFunding = bfSnap.val() || {};
+            } catch(e) {}
+            
             const nowTs = Date.now();
             
             const buildingsHtml = Object.entries(CLAN_CONFIG.buildings).map(([bId, b]) => {
@@ -110078,7 +110087,20 @@ function openFullscreenMap() {
                         </div>
                     </div>`;
                 } else if (isLeader || isOfficer) {
-                    const costStr = Object.entries(b.cost).map(([r,v]) => `${v} ${r==='money'?'💰':r}`).join(', ');
+                    // Výpočet příspěvků na budovu ze sbírky (crowdfunding)
+                    const _fundData = clanBuildFunding?.[bId] || {};
+                    const _resNm = {money:'💰',metal:'⚙️',wood:'🌲',stone:'🗿',cloth:'🧵',electronics:'💾',chemicals:'🧪'};
+                    const _costParts = Object.entries(b.cost).map(([r,v]) => {
+                        const contributed = Object.values(_fundData[r]?.contributors || {}).reduce((s,x) => s+x, 0);
+                        const pct = Math.min(100, Math.round(contributed/v*100));
+                        return `<span style="color:${pct>=100?'#8bc34a':pct>0?'#ff9800':'#666'}">${_resNm[r]||r}${pct>0?` ${pct}%`:` ${v}`}</span>`;
+                    });
+                    const _allFunded = Object.entries(b.cost).every(([r,v]) => {
+                        const c = Object.values(_fundData[r]?.contributors || {}).reduce((s,x)=>s+x, 0);
+                        return c >= v;
+                    });
+                    const costStr = _costParts.join(' ');
+                    const _canAfford = _allFunded;
                     const timeStr = b.buildTime ? (b.buildTime >= 60 ? `⏱️ ${Math.round(b.buildTime/60*10)/10}h` : `⏱️ ${b.buildTime}min`) : '';
                     const effectStr = b.effects ? Object.entries(b.effects).map(([k,v]) => {
                         if (k === 'damage') return `⚔️ +${Math.round(v*100)}% damage`;
@@ -110095,9 +110117,9 @@ function openFullscreenMap() {
                             <div style="font-size:0.6rem;color:#888;margin:0.1rem 0;">${b.desc}</div>
                             ${b.warProtection ? `<div style="font-size:0.58rem;color:#ff6f00;margin:0.1rem 0;">⚠️ Bez trezoru → kasa nezchráněna při nájezdu!</div>` : ''}
                             ${effectStr ? `<div style="font-size:0.6rem;color:#ffd700;">★ ${effectStr}</div>` : ''}
-                            <div style="font-size:0.6rem;color:#555;">💸 ${costStr} ${timeStr ? '· ' + timeStr : ''}</div>
+                            <div style="font-size:0.6rem;color:#555;margin-top:0.1rem;">👥 Crowdfunding: ${costStr} ${timeStr ? '· ' + timeStr : ''}</div>
                         </div>
-                        ${reqMet ? `<button onclick="buildClanBuilding('${locationId}','${bId}')" style="background:#7B1FA2;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:3px;cursor:pointer;font-size:0.65rem;flex-shrink:0;">Postavit</button>` : `<span style="color:#555;font-size:0.6rem;flex-shrink:0;">🔒 ${reqName}</span>`}
+                        ${reqMet ? `<button onclick="buildClanBuilding('${locationId}','${bId}')" style="background:${_allFunded?'#4CAF50':'#7B1FA2'};border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:3px;cursor:pointer;font-size:0.65rem;flex-shrink:0;">${_allFunded?'🏗️ Zahájit':'💰 Přispět'}</button>` : `<span style="color:#555;font-size:0.6rem;flex-shrink:0;">🔒 ${reqName}</span>`}
                     </div>`;
                 }
                 return '';
@@ -110151,125 +110173,246 @@ function openFullscreenMap() {
         }
         
         // === STAVBA BUDOV KLANU ===
+        // Zobrazí panel příspěvků na klanovou budovu (crowdfunding model)
         async function buildClanBuilding(locationId, buildingId) {
             if (!multiplayerEnabled || !firebaseDB) return;
             
-            // Hráč musí být fyzicky na místě klanu
             if (state.world.currentLocation !== locationId) {
                 const clanLoc = WORLD_LOCATIONS.find(l => l.id === locationId);
-                notifyWarning('Nejsi na místě', `Musíš být na klanové půdě (${clanLoc?.name || locationId}), abys mohl stavět!`);
+                notifyWarning('Nejsi na místě', `Musíš být na klanové půdě (${clanLoc?.name || locationId})!`);
                 return;
             }
             
             await loadClanData();
             const clan = getClanData(locationId);
             const myName = getPlayerName();
-            
             if (!clan) return;
-            const isLeader = clan.leader === myName;
-            const isOfficer = Object.values(clan.officers || {}).some(o => o.name === myName);
-            if (!isLeader && !isOfficer) {
-                notifyWarning('Nemáš oprávnění', 'Budovat může jen vůdce nebo důstojník!');
-                return;
-            }
             
-            if (clan.buildings?.[buildingId]) {
-                notifyWarning('Již postaveno', 'Tato budova již stojí!');
-                return;
-            }
+            const isMember = clan.leader === myName ||
+                Object.values(clan.officers || {}).some(o => o.name === myName) ||
+                Object.values(clan.members  || {}).some(m => m.name === myName);
+            if (!isMember) { notifyWarning('Nejsi člen', 'Příspívat mohou jen členové klanu!'); return; }
             
-            // Zkontroluj buildQueue
-            try {
-                const qSnap = await firebaseDB.ref(`clans/${locationId}/buildQueue/${buildingId}`).once('value');
-                if (qSnap.val()) {
-                    notifyWarning('Stavba probíhá', 'Tato budova se právě staví!');
-                    return;
-                }
-            } catch(e) {}
+            if (clan.buildings?.[buildingId]) { notifyWarning('Již postaveno', 'Tato budova již stojí!'); return; }
             
             const building = CLAN_CONFIG.buildings[buildingId];
             if (!building) return;
             
-            // Kontrola prerequisites
             if (building.requires && !clan.buildings?.[building.requires]) {
-                const reqBuilding = CLAN_CONFIG.buildings[building.requires];
-                notifyWarning('Chybí prerekvizita', `Nejdřív postav: ${reqBuilding?.name || building.requires}`);
+                const reqB = CLAN_CONFIG.buildings[building.requires];
+                notifyWarning('Chybí prerekvizita', `Nejdřív postav: ${reqB?.name || building.requires}`);
                 return;
             }
             
-            // Kontrola nákladů
-            if ((state.money || 0) < (building.cost.money || 0)) {
-                notifyWarning('Nedostatek peněz', `Potřebuješ ${building.cost.money} 💰`);
-                return;
-            }
-            for (const [res, amount] of Object.entries(building.cost)) {
-                if (res === 'money') continue;
-                if ((state.resources?.[res] || 0) < amount) {
-                    const resNames = {metal:'kov',wood:'dřevo',stone:'kámen',cloth:'látka',electronics:'elektronika',chemicals:'chemikálie'};
-                    notifyWarning('Nedostatek surovin', `Potřebuješ ${amount}x ${resNames[res]||res}`);
-                    return;
-                }
-            }
-            
-            // Potvrzovací modal
-            const costStr = Object.entries(building.cost).map(([r,v]) => `${v} ${r==='money'?'💰':r}`).join(' + ');
-            showModal(`🏗️ Postavit ${building.name}`, `
-                <div style="text-align:center;margin-bottom:1rem;">
-                    <div style="font-size:3rem;">${building.icon}</div>
-                    <h3>${building.name}</h3>
-                    <p style="color:#888;font-size:0.8rem;">${building.desc}</p>
-                </div>
-                <div style="background:#1a1a0a;padding:0.7rem;border-radius:8px;margin-bottom:1rem;text-align:center;">
-                    <div style="color:#ffd700;font-weight:bold;">Cena: ${costStr}</div>
-                </div>
-                <div style="display:grid;gap:0.5rem;">
-                    <button class="btn" onclick="confirmBuildClanBuilding('${locationId}','${buildingId}')" style="background:#7B1FA2;width:100%;">🏗️ Postavit</button>
-                    <button class="btn" onclick="showClanPanel('${locationId}')" style="background:#333;width:100%;">← Zpět</button>
-                </div>
-            `);
+            await showClanBuildingFunding(locationId, buildingId);
         }
         
-        async function confirmBuildClanBuilding(locationId, buildingId) {
+        // Zobrazí funding panel pro konkrétní budovu
+        async function showClanBuildingFunding(locationId, buildingId) {
             await loadClanData();
             const clan = getClanData(locationId);
             const building = CLAN_CONFIG.buildings[buildingId];
             if (!clan || !building) return;
             
+            // Načti aktuální příspěvky z Firebase
+            let funding = {};
             try {
-                state.money -= (building.cost.money || 0);
-                for (const [res, amount] of Object.entries(building.cost)) {
-                    if (res === 'money') continue;
-                    state.resources[res] = (state.resources[res] || 0) - amount;
+                const snap = await firebaseDB.ref(`clans/${locationId}/buildFunding/${buildingId}`).once('value');
+                funding = snap.val() || {};
+            } catch(e) {}
+            
+            const myName = getPlayerName();
+            const resLabels = { money: '💰 Peníze', metal: '⚙️ Kov', wood: '🌲 Dřevo', stone: '🗿 Kámen', cloth: '🧵 Látka', electronics: '💾 Elektronika', chemicals: '🧪 Chemikálie' };
+            
+            // Spočítej celkové příspěvky a kdo přispěl
+            let allFunded = true;
+            let rowsHtml = '';
+            const myContributions = {};
+            
+            for (const [res, needed] of Object.entries(building.cost)) {
+                const contributed = Object.values(funding[res]?.contributors || {}).reduce((s, v) => s + v, 0);
+                const remaining = Math.max(0, needed - contributed);
+                const pct = Math.min(100, Math.round((contributed / needed) * 100));
+                const myContrib = funding[res]?.contributors?.[myName] || 0;
+                myContributions[res] = myContrib;
+                if (remaining > 0) allFunded = false;
+                
+                // Co mám k dispozici
+                const iHave = res === 'money' ? (state.money || 0) : (state.resources?.[res] || 0);
+                const canGive = Math.min(iHave, remaining);
+                
+                // Kdo přispěl?
+                const contribList = Object.entries(funding[res]?.contributors || {})
+                    .filter(([,v]) => v > 0)
+                    .map(([name, val]) => `<span style="color:#888;font-size:0.6rem;">${name}: ${val}</span>`)
+                    .join(' ');
+                
+                rowsHtml += `<div style="background:#0d0d1a;padding:0.5rem;border-radius:6px;margin-bottom:0.4rem;border:1px solid ${remaining===0?'#2a5a2a':'#1a1a3a'};">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">
+                        <span style="font-size:0.78rem;color:${remaining===0?'#8bc34a':'#ccc'};">${resLabels[res]||res}</span>
+                        <span style="font-size:0.72rem;color:${remaining===0?'#8bc34a':'#ff9800'};">${contributed}/${needed} ${remaining===0?'✓':'(zbývá '+remaining+')'}</span>
+                    </div>
+                    <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;margin-bottom:0.3rem;">
+                        <div style="height:100%;width:${pct}%;background:${remaining===0?'linear-gradient(90deg,#33691e,#8bc34a)':'linear-gradient(90deg,#1a237e,#7B1FA2)'};transition:width 0.5s;"></div>
+                    </div>
+                    ${contribList ? `<div style="margin-bottom:0.3rem;display:flex;flex-wrap:wrap;gap:0.2rem;">${contribList}</div>` : ''}
+                    ${remaining > 0 && canGive > 0 ? `
+                    <div style="display:flex;gap:0.3rem;align-items:center;flex-wrap:wrap;">
+                        <input type="number" id="contrib_${res}" min="1" max="${canGive}" value="${Math.min(canGive, remaining)}" 
+                            style="width:70px;background:#0a0a0a;border:1px solid #333;color:#fff;padding:0.2rem 0.3rem;border-radius:4px;font-size:0.75rem;">
+                        <span style="color:#555;font-size:0.65rem;">/ ${iHave} u tebe</span>
+                        <button onclick="contributeToBuildFunding('${locationId}','${buildingId}','${res}')" 
+                            style="background:#7B1FA2;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;flex-shrink:0;">
+                            Přispět ↑
+                        </button>
+                    </div>` : (remaining === 0 ? '' : `<div style="color:#555;font-size:0.65rem;">Nemáš ${resLabels[res]||res} k přispění</div>`)}
+                </div>`;
+            }
+            
+            const timeDisplay = building.buildTime >= 60 ? (Math.round(building.buildTime / 60 * 10) / 10) + ' hod' : building.buildTime + ' min';
+            const isLeader = clan.leader === myName;
+            const isOfficer = Object.values(clan.officers || {}).some(o => o.name === myName);
+            
+            showModal(`🏗️ ${building.icon} ${building.name}`, `
+                <div style="text-align:center;margin-bottom:0.8rem;">
+                    <p style="color:#888;font-size:0.8rem;margin:0;">${building.desc}</p>
+                    <div style="color:#ce93d8;font-size:0.75rem;margin-top:0.3rem;">⏱️ Čas stavby po sběru zdrojů: <strong>${timeDisplay}</strong></div>
+                </div>
+                <div style="background:#0a0a1a;border:1px solid #7B1FA2;border-radius:8px;padding:0.6rem;margin-bottom:0.6rem;">
+                    <div style="color:#ce93d8;font-size:0.72rem;font-weight:bold;margin-bottom:0.5rem;">📦 Potřebné zdroje — přispěj co máš:</div>
+                    ${rowsHtml}
+                </div>
+                ${allFunded ? `
+                <div style="background:#0d1a0d;border:1px solid #4caf50;border-radius:6px;padding:0.5rem;margin-bottom:0.6rem;text-align:center;">
+                    <div style="color:#8bc34a;font-weight:bold;">✅ Všechny zdroje vybrány! Stavba může začít.</div>
+                </div>
+                ${(isLeader || isOfficer) ? `<button onclick="launchClanBuilding('${locationId}','${buildingId}')" style="width:100%;background:linear-gradient(135deg,#33691e,#7B1FA2);border:none;color:#fff;padding:0.6rem;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:bold;margin-bottom:0.4rem;">🏗️ Zahájit stavbu!</button>` : `<div style="color:#888;font-size:0.75rem;text-align:center;">Počkej až vůdce nebo důstojník zahájí stavbu.</div>`}
+                ` : `<div style="color:#555;font-size:0.72rem;text-align:center;padding:0.3rem;">Vyber dostatek zdrojů od členů klanu a pak zahaj stavbu.</div>`}
+                <button onclick="showClanPanel('${locationId}')" style="width:100%;background:#333;border:none;color:#aaa;padding:0.4rem;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-top:0.3rem;">← Zpět</button>
+            `);
+        }
+        
+        // Přispěje hráč ke sběru zdrojů na budovu
+        async function contributeToBuildFunding(locationId, buildingId, resource) {
+            const input = document.getElementById(`contrib_${resource}`);
+            const amount = parseInt(input?.value) || 0;
+            if (amount <= 0) { notifyWarning('Zadej množství', 'Musíš zadat kladné číslo!'); return; }
+            
+            const building = CLAN_CONFIG.buildings[buildingId];
+            if (!building || !building.cost[resource]) return;
+            
+            // Zkontroluj že hráč má dost
+            const iHave = resource === 'money' ? (state.money || 0) : (state.resources?.[resource] || 0);
+            if (iHave < amount) { notifyWarning('Nestačí', `Máš jen ${iHave}`); return; }
+            
+            // Zkontroluj kolik ještě chybí
+            let fundingSnap;
+            try { fundingSnap = await firebaseDB.ref(`clans/${locationId}/buildFunding/${buildingId}/${resource}`).once('value'); }
+            catch(e) { notifyWarning('Chyba', 'Nelze načíst data'); return; }
+            
+            const resData = fundingSnap.val() || { contributed: 0, contributors: {} };
+            const alreadyContributed = Object.values(resData.contributors || {}).reduce((s, v) => s + v, 0);
+            const stillNeeded = building.cost[resource] - alreadyContributed;
+            if (stillNeeded <= 0) { notifyWarning('Již splněno', 'Tato surovina je již vybrána!'); return; }
+            
+            const actualAmount = Math.min(amount, stillNeeded);
+            
+            // Odečti od hráče
+            if (resource === 'money') {
+                state.money -= actualAmount;
+            } else {
+                state.resources[resource] = (state.resources[resource] || 0) - actualAmount;
+            }
+            saveGame();
+            
+            // Přidej do Firebase funding
+            const myName = getPlayerName();
+            const myPrevious = resData.contributors?.[myName] || 0;
+            try {
+                await firebaseDB.ref(`clans/${locationId}/buildFunding/${buildingId}/${resource}`).set({
+                    contributed: alreadyContributed + actualAmount,
+                    contributors: { ...(resData.contributors || {}), [myName]: myPrevious + actualAmount }
+                });
+                const resLabels = { money: '💰', metal: '⚙️', wood: '🌲', stone: '🗿', cloth: '🧵', electronics: '💾', chemicals: '🧪' };
+                notifySuccess('Příspěvek přijat!', `${resLabels[resource]||resource} ${actualAmount}x přidáno ke stavbě ${building.name}`);
+                addLog(`🏗️ Přispěl jsi ${actualAmount}x ${resource} na stavbu ${building.icon} ${building.name}`, '🏗️');
+            } catch(e) {
+                // Vrať hráči zdroje při chybě
+                if (resource === 'money') state.money += actualAmount;
+                else state.resources[resource] = (state.resources[resource] || 0) + actualAmount;
+                saveGame();
+                notifyWarning('Chyba', 'Nepodařilo se uložit příspěvek');
+                return;
+            }
+            
+            // Obnov panel
+            await showClanBuildingFunding(locationId, buildingId);
+        }
+        
+        // Vůdce/důstojník zahájí stavbu po úplném financování
+        async function launchClanBuilding(locationId, buildingId) {
+            await loadClanData();
+            const clan = getClanData(locationId);
+            const building = CLAN_CONFIG.buildings[buildingId];
+            if (!clan || !building) return;
+            const myName = getPlayerName();
+            const isLeader = clan.leader === myName;
+            const isOfficer = Object.values(clan.officers || {}).some(o => o.name === myName);
+            if (!isLeader && !isOfficer) { notifyWarning('Nemáš oprávnění', 'Stavbu může zahájit jen vůdce nebo důstojník!'); return; }
+            
+            // Ověř že vše je financováno
+            let snap;
+            try { snap = await firebaseDB.ref(`clans/${locationId}/buildFunding/${buildingId}`).once('value'); }
+            catch(e) { notifyWarning('Chyba', 'Nelze ověřit financování'); return; }
+            
+            const funding = snap.val() || {};
+            for (const [res, needed] of Object.entries(building.cost)) {
+                const contributed = Object.values(funding[res]?.contributors || {}).reduce((s, v) => s + v, 0);
+                if (contributed < needed) {
+                    const resLabels = { money: 'peníze', metal: 'kov', wood: 'dřevo', stone: 'kámen', cloth: 'látka', electronics: 'elektronika', chemicals: 'chemikálie' };
+                    notifyWarning('Nedostatek zdrojů', `${resLabels[res]||res}: ${contributed}/${needed}`);
+                    return;
                 }
-                
-                const buildTimeMs = (building.buildTime || 60) * 60 * 1000; // min → ms
+            }
+            
+            // Zkontroluj buildQueue
+            try {
+                const qSnap = await firebaseDB.ref(`clans/${locationId}/buildQueue/${buildingId}`).once('value');
+                if (qSnap.val()) { notifyWarning('Stavba probíhá', 'Tato budova se již staví!'); return; }
+            } catch(e) {}
+            
+            // Zahaj stavbu
+            try {
+                const buildTimeMs = (building.buildTime || 60) * 60 * 1000;
                 const now = Date.now();
-                
-                // Uložíme do buildQueue místo okamžitého postavení
                 await firebaseDB.ref(`clans/${locationId}/buildQueue/${buildingId}`).set({
                     startedAt: now,
                     finishAt: now + buildTimeMs,
                     duration: buildTimeMs,
-                    startedBy: getPlayerName()
+                    startedBy: myName,
+                    fundedBy: 'crowdfunding'
                 });
+                // Vymaž funding data (zdroje jsou spotřebovány)
+                await firebaseDB.ref(`clans/${locationId}/buildFunding/${buildingId}`).remove();
                 
                 window.clanOwnershipCacheTime = 0;
                 await loadClanData();
                 
                 const timeDisplay = building.buildTime >= 60 ? (Math.round(building.buildTime / 60 * 10) / 10) + ' hodin' : building.buildTime + ' minut';
-                notifySuccess(`🏗️ ${building.name} — stavba zahájena!`, `Dokončení za ${timeDisplay}`);
-                addLog(`🏗️ Clan: Zahájil stavbu ${building.icon} ${building.name} v klanu [${clan.name}] (${timeDisplay})`, '🏗️');
+                notifySuccess(`🏗️ ${building.name} — stavba zahájena!`, `Dokončení za ${timeDisplay} — díky všem přispěvatelům!`);
+                addLog(`🏗️ Clan: Zahájil stavbu ${building.icon} ${building.name} v klanu [${clan.name}] (crowdfunding, ${timeDisplay})`, '🏗️');
                 saveGame();
                 closeModal();
                 setTimeout(() => showClanPanel(locationId), 300);
             } catch(e) {
-                state.money += (building.cost.money || 0);
-                for (const [res, amount] of Object.entries(building.cost)) {
-                    if (res === 'money') continue;
-                    state.resources[res] = (state.resources[res] || 0) + amount;
-                }
-                notifyWarning('Chyba', 'Nepodařilo se zahájit stavbu');
+                console.error('launchClanBuilding error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zahájit stavbu: ' + e.message);
             }
+        }
+        
+        // Stará funkce - zachována pro kompatibilitu, přesměruje na nový model
+        async function confirmBuildClanBuilding(locationId, buildingId) {
+            await showClanBuildingFunding(locationId, buildingId);
         }
         
         // Zkontroluj a dokonči hotové budovy v buildQueue klanu
