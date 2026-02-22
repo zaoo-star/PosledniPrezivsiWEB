@@ -11744,8 +11744,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 skills: [
                     { id: 'tough_skin', name: 'Tvrdá kůže', icon: '🦎', desc: '+5 obrany', maxLevel: 5, effect: { defense: 5 }, requires: null, tier: 1 },
                     { id: 'block', name: 'Blokování', icon: '🛡️', desc: '10% šance blokovat útok', maxLevel: 5, effect: { blockChance: 0.1 }, requires: 'tough_skin', tier: 2 },
-                    { id: 'regeneration', name: 'Regenerace', icon: '💚', desc: '+1 HP/min', maxLevel: 5, effect: { hpRegen: 1 }, requires: 'tough_skin', tier: 2 },
-                    { id: 'last_stand', name: 'Poslední výdrž', icon: '💪', desc: '20% šance přežít smrtelný úder s 1 HP', maxLevel: 3, effect: { lastStand: 0.2 }, requires: 'block', tier: 3 },
+                    { id: 'regeneration', name: 'Regenerace', icon: '💚', desc: '+1 HP/min', maxLevel: 5, effect: { regenPerMin: 1 }, requires: 'tough_skin', tier: 2 },
+                    { id: 'last_stand', name: 'Poslední výdrž', icon: '💪', desc: '20% šance přežít smrtelný úder s 1 HP', maxLevel: 3, effect: { surviveChance: 0.2 }, requires: 'block', tier: 3 },
                     { id: 'fortress', name: 'Pevnost', icon: '🏰', desc: '+20% max HP', maxLevel: 1, effect: { maxHpBonus: 0.2 }, requires: 'last_stand', tier: 4 }
                 ]
             },
@@ -14883,8 +14883,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Automatické konzumování když hráč umírá (pokud má perk)
         function autoConsumeIfDying() {
-            // Zkontroluj jestli má hráč perk "Pud sebezáchovy"
-            const hasAutoConsume = getSkillLevel('auto_consume') > 0;
+            // Zkontroluj jestli má hráč perk "Pud sebezáchovy" (player skill tree)
+            // NEBO companion skill 'auto_consume' (Survivor companion)
+            const hasAutoConsume = getSkillLevel('auto_consume') > 0 ||
+                (typeof getAllCompanionBonuses === 'function' && getAllCompanionBonuses().autoConsume);
             if (!hasAutoConsume) return;
             
             // Práh pro automatické konzumování
@@ -19744,7 +19746,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         
                         // Použij item.price, ne item.value
                         const basePrice = item.price || Math.abs(item.value) || 20;
-                        const sellPrice = Math.max(1, Math.floor(basePrice * 0.35)); // 35% hodnoty, min 1
+                        const sellPrice = Math.max(1, Math.floor(basePrice * 0.50)); // 35% hodnoty, min 1
                         const count = item.count || 1;
                         
                         contentHtml += `
@@ -19919,7 +19921,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!resDef || available <= 0) return;
             
             const toSell = Math.min(amount, available);
-            const actualPrice = Math.max(1, Math.floor((resDef.price || 5) * 0.35)) * toSell;
+            const actualPrice = Math.max(1, Math.floor((resDef.price || 5) * 0.50)) * toSell;
             
             addMoney(actualPrice);
             state.resources[resourceId] = available - toSell;
@@ -24026,7 +24028,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!basePrice) return '';
             const traderBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.0;
             const sellBonus = 1 + (compBonuses.sellBonus || 0);
-            const sellPrice = Math.floor(basePrice * 0.35 * traderBonus * sellBonus);
+            const sellPrice = Math.floor(basePrice * 0.50 * traderBonus * sellBonus);
             const buyPrice = typeof calculateItemPrice === 'function' ? calculateItemPrice(basePrice, item.rarity) : basePrice;
             return '<div style="background: #1a1a0a; border: 1px solid #ffd700; border-radius: 6px; padding: 0.5rem; margin: 0.5rem 0; display: flex; justify-content: space-around; align-items: center;">' +
                 '<div style="text-align: center;"><div style="font-size: 0.6rem; color: #888;">🏷️ Odhad Obchodníka</div></div>' +
@@ -24060,6 +24062,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 trapAvoidance: 0,
                 legendaryChance: 0,
                 // Boolean efekty
+                autoConsume: false,
                 fetchLoot: false,
                 surviveChance: 0,
                 resurrectChance: 0,
@@ -24102,6 +24105,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Survivor efekty
                 consumptionReduction: 0,
                 loyalty: 0,
+                maxHpBonus: 0,      // Pevnost: +% max HP
+                hpRegen: 0,         // legacy compat (normální klíč: regenPerMin)
                 // === NOVÉ Tier 4+5 efekty ===
                 playerDefense: 0,          // Medik: +X obrana hráči
                 regenPerMin: 0,            // Medik/Scout: HP regenerace /min
@@ -24205,12 +24210,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     'lootChance', 'xpBonus', 'priceBonus', 'ambushReduction', 'travelSpeed', 'healingBonus',
                     'rareChance', 'doubleLoot', 'healPlayerAfterCombat', 'regenAfterCombat', 'regenPerMin',
                     'hiddenChance', 'partyDamage', 'herbBonus', 'radReduction', 'buyDiscount', 'sellBonus',
-                    'caravanChance', 'repBonus', 'moneyBonus', 'legendaryChance', 'stealChance', 'enemyAccuracy'];
+                    'caravanChance', 'repBonus', 'moneyBonus', 'legendaryChance', 'stealChance', 'enemyAccuracy',
+                    'consumptionReduction', 'surviveChance', 'resurrectChance'];
                 _numericKeys.forEach(k => {
                     if (bonuses[k] && typeof bonuses[k] === 'number' && bonuses[k] !== 0) {
                         bonuses[k] = bonuses[k] * 1.5;
                     }
                 });
+                // Re-cap consumptionReduction po enlightenmentBoost (max 90%)
+                bonuses.consumptionReduction = Math.min(0.90, bonuses.consumptionReduction || 0);
             }
             
             return bonuses;
@@ -30886,7 +30894,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (!basePrice) return;
                         
                         // Karavana kupuje vše - i poškozené, za upravenou cenu
-                        let sellPrice = Math.floor(basePrice * 0.35 * traderBonus);
+                        let sellPrice = Math.floor(basePrice * 0.50 * traderBonus);
                         
                         // Snížení ceny za poškození
                         if (item.durability !== undefined && item.maxDurability) {
@@ -30961,7 +30969,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const basePrice = itemData.price || item.price;
                         if (!basePrice) return;
                         
-                        let sellPrice = Math.floor(basePrice * 0.35 * traderBonus);
+                        let sellPrice = Math.floor(basePrice * 0.50 * traderBonus);
                         
                         // Snížení ceny za poškození
                         if (item.durability !== undefined && item.maxDurability) {
@@ -31173,7 +31181,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             const traderBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.25; // +25% ceny při prodeji karavanám
-            let sellPrice = Math.floor(basePrice * 0.35 * traderBonus);
+            let sellPrice = Math.floor(basePrice * 0.50 * traderBonus);
             
             // Snížení ceny za poškození
             if (item.durability !== undefined && item.maxDurability) {
@@ -44665,7 +44673,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Tato funkce je použita ВЕЗДЕ (zobrazení i skutečný prodej) - zajišťuje konzistenci
         function calculateNpcSellPrice(basePrice) {
             // 1. Základní výkupní cena 35%
-            let sellPrice = Math.floor(basePrice * 0.35);
+            let sellPrice = Math.floor(basePrice * 0.50);
             
             // 2. Pohlavní bonus (+10% pro ženy)
             if (state.char.gender === 'female') sellPrice = Math.floor(sellPrice * 1.1);
@@ -63013,7 +63021,7 @@ function openFullscreenMap() {
                 html += `<p style="color: #666; text-align: center;">${isInShelter ? 'Nemáš nic na prodej.' : 'Sklad osady je prázdný.'}</p>`;
             } else {
                 sellableItems.forEach((item) => {
-                    let sellPrice = Math.floor(getItemPrice(item) * 0.35 * traderBonus);
+                    let sellPrice = Math.floor(getItemPrice(item) * 0.50 * traderBonus);
                     
                     if (item.durability !== undefined && item.maxDurability) {
                         const durabilityRatio = item.durability / item.maxDurability;
@@ -63215,7 +63223,7 @@ function openFullscreenMap() {
             // Získej cenu z itemu nebo z ITEMS definice
             const itemDef = ITEMS.find(i => i.id === item.id);
             const basePrice = item.price || itemDef?.price || 10;
-            let sellPrice = Math.floor(basePrice * 0.35 * traderBonus);
+            let sellPrice = Math.floor(basePrice * 0.50 * traderBonus);
             
             // Snížení ceny za poškození
             if (item.durability !== undefined && item.maxDurability) {
@@ -72378,6 +72386,14 @@ function openFullscreenMap() {
             // Level bonus (+1 HP per level) - sníženo z +2
             maxHp += (state.char.level - 1) * 1;
             
+            // 🤝 Companion maxHpBonus (Survivor - Pevnost: +20% max HP)
+            if (typeof getAllCompanionBonuses === 'function') {
+                const _compMaxHp = getAllCompanionBonuses();
+                if (_compMaxHp.maxHpBonus > 0) {
+                    maxHp = Math.floor(maxHp * (1 + _compMaxHp.maxHpBonus));
+                }
+            }
+            
             // Genetické vylepšení od Vědců (+5 HP za každé, max 2)
             const geneticUpgrades = state.geneticUpgrades || 0;
             if (geneticUpgrades > 0) {
@@ -73341,8 +73357,18 @@ function openFullscreenMap() {
                 document.getElementById('playerHp').textContent = Math.max(0, Math.round(state.char.hp));
                 
                 if (state.char.hp <= 0) {
+                    // Last Stand check (Survivor) + companion surviveChance
+                    const _dotLastStand = typeof getClassPassive === 'function' && getClassPassive('onDamage', 0);
+                    const _dotCompBon = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+                    const _dotSurvive = _dotLastStand ? 0.20 : 0;
+                    const _dotSurviveFinal = Math.max(_dotSurvive, _dotCompBon.surviveChance || 0);
+                    if (_dotSurviveFinal > 0 && Math.random() < _dotSurviveFinal) {
+                        state.char.hp = 1;
+                        log.innerHTML += `<div style="color: #ffd700;">💪 POSLEDNÍ VZDOR! Přežil jsi DOT s 1 HP!</div>`;
+                        document.getElementById('playerHp').textContent = 1;
+                    }
                     // 🔥 Fénixův elixír check
-                    if (state.buffs?.phoenix?.active) {
+                    else if (state.buffs?.phoenix?.active) {
                         state.char.hp = Math.floor(state.char.maxHp * 0.5);
                         delete state.buffs.phoenix;
                         log.innerHTML += `<div style="color: #ff5722; font-weight: bold;">🔥 FÉNIXŮV ELIXÍR! Vzkříšen na 50% HP!</div>`;
@@ -78895,8 +78921,12 @@ function openFullscreenMap() {
                     const thirstRate = (100 / 86400) * 1.8; // ~13.3 hours to deplete
                     const energyRate = (100 / 86400) * 1.2; // ~20 hours to deplete
                     
-                    state.status.hunger = Math.max(0, state.status.hunger - hungerRate * offlineTime);
-                    state.status.thirst = Math.max(0, state.status.thirst - thirstRate * offlineTime);
+                    // Aplikuj consumptionReduction (class + companion) i při offline (FIX: dříve ignorováno)
+                    const _offlineClassCR = typeof getClassPassiveValue === 'function' ? (getClassPassiveValue('consumptionReduction') || 0) : 0;
+                    const _offlineCompCR = typeof getAllCompanionBonuses === 'function' ? Math.min(0.90, getAllCompanionBonuses().consumptionReduction || 0) : 0;
+                    const _offlineCRMod = Math.max(0.05, (1 - _offlineClassCR) * (1 - _offlineCompCR));
+                    state.status.hunger = Math.max(0, state.status.hunger - hungerRate * offlineTime * _offlineCRMod);
+                    state.status.thirst = Math.max(0, state.status.thirst - thirstRate * offlineTime * _offlineCRMod);
                     state.status.energy = Math.max(0, state.status.energy - energyRate * offlineTime);
                     
                     // Automatické konzumování pokud má hráč perk
@@ -100522,6 +100552,13 @@ function openFullscreenMap() {
                     system: true
                 });
                 
+                // 📩 Soukromá zpráva všem hráčům
+                await notifyAllPlayersPrivate(
+                    '🐉 World Boss',
+                    `⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: ${getPlayerName()}\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`,
+                    '🐉'
+                );
+                
                 closeModal();
                 notifySuccess('🐉 RAID!', `${boss.icon} ${boss.name} byl vyvolán! Všichni se mohou připojit!`);
                 
@@ -104886,6 +104923,40 @@ function openFullscreenMap() {
         }
         
         // Vytvořit tombolu
+        // === BROADCAST SOUKROMÉ ZPRÁVY VŠEM HRÁČŮM ===
+        // Používá leaderboard jako zdroj všech hráčů
+        async function notifyAllPlayersPrivate(from, text, icon) {
+            if (!firebaseDB) return;
+            try {
+                const snap = await firebaseDB.ref('leaderboard').once('value');
+                const allPlayers = snap.val() || {};
+                const myName = getPlayerName();
+                const now = Date.now();
+                const updates = {};
+                
+                Object.values(allPlayers).forEach(p => {
+                    if (!p.name) return;
+                    const safeName = p.name.replace(/[.#$\[\]]/g, '_');
+                    const msgKey = firebaseDB.ref('chat/private/' + safeName).push().key;
+                    updates[`chat/private/${safeName}/${msgKey}`] = {
+                        from: from,
+                        to: p.name,
+                        text: text,
+                        timestamp: now,
+                        system: true,
+                        read: false
+                    };
+                });
+                
+                if (Object.keys(updates).length > 0) {
+                    await firebaseDB.ref().update(updates);
+                    console.log(`✉️ Broadcast zpráva odeslána ${Object.keys(updates).length} hráčům`);
+                }
+            } catch(e) {
+                console.error('notifyAllPlayersPrivate error:', e);
+            }
+        }
+        
         async function createTombola() {
             if (!hasPermission('tombola')) return;
             
@@ -104944,6 +105015,13 @@ function openFullscreenMap() {
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
+                
+                // 📩 Soukromá zpráva všem hráčům
+                await notifyAllPlayersPrivate(
+                    '🎟️ Tombola',
+                    `🎰 NOVÁ TOMBOLA: "${name}"!\n🎁 Výhra: ${getPrizeDescription(prize)}\n💰 Lístek: ${ticketPrice} 💰 | Max ${maxTickets}ks\n⏰ Trvá: ${durationStr} (do ${endDateStr} ${endTimeStr})\n\n👆 Otevři Online → Tombola a kup si lístek!`,
+                    '🎟️'
+                );
                 
                 showAdminTombola();
             } catch (e) {
@@ -106407,6 +106485,13 @@ function openFullscreenMap() {
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
+                
+                // 📩 Soukromá zpráva všem hráčům
+                await notifyAllPlayersPrivate(
+                    '🐉 World Boss',
+                    `⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: Admin\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`,
+                    '🐉'
+                );
                 
                 startWorldBossRaidListeners();
                 closeModal();
