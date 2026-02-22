@@ -83952,17 +83952,75 @@ function openFullscreenMap() {
                     </div>`;
                 })()}
                 
-                <!-- ZÁLOŽKY: Globální / Klan -->
+                <!-- ZÁLOŽKY: Globální / Klan / Admin klan chaty -->
                 <div style="display: flex; gap: 0; margin-bottom: 0.4rem; background: #0a0a0a; border-radius: 8px; overflow: hidden; border: 1px solid #1a1a1a;">
                     <button onclick="window._activeChatTab='global'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='global'?'#1a3a1a':'transparent'}; color: ${_activeChatTab==='global'?'#8bc34a':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='global'?'bold':'normal'}; border-right: 1px solid #1a1a1a; font-size: 0.85rem;">
                         🌍 Globální
                     </button>
-                    <button onclick="window._activeChatTab='clan'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='clan'?'#1a0a2a':'transparent'}; color: ${_activeChatTab==='clan'?'#ce93d8':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='clan'?'bold':'normal'}; font-size: 0.85rem; position: relative;">
+                    <button onclick="window._activeChatTab='clan'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='clan'?'#1a0a2a':'transparent'}; color: ${_activeChatTab==='clan'?'#ce93d8':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='clan'?'bold':'normal'}; font-size: 0.85rem; position: relative; ${isStaff()?'border-right:1px solid #1a1a1a;':''}">
                         ⚔️ Klan ${clanChatUnread > 0 && _activeChatTab !== 'clan' ? `<span style="position:absolute; top:4px; right:8px; background:#e91e63; color:#fff; border-radius:50%; width:16px; height:16px; font-size:0.6rem; display:flex; align-items:center; justify-content:center;">${clanChatUnread}</span>` : ''}
                     </button>
+                    ${isStaff() ? `
+                    <button onclick="window._activeChatTab='admin_clans'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='admin_clans'?'#1a0005':'transparent'}; color: ${_activeChatTab==='admin_clans'?'#f48fb1':'#555'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='admin_clans'?'bold':'normal'}; font-size: 0.82rem;">
+                        🔍 Admin
+                    </button>` : ''}
                 </div>
                 
-                ${_activeChatTab === 'clan' ? `
+                ${_activeChatTab === 'admin_clans' && isStaff() ? `
+                    <!-- ADMIN: výběr klan chatu -->
+                    <div style="margin-bottom:0.5rem;">
+                        <div style="color:#f48fb1;font-size:0.75rem;font-weight:bold;margin-bottom:0.4rem;">🔍 Klan chaty — moderátorský přehled</div>
+                        ${(() => {
+                            const allClans = window.clanOwnershipCache || {};
+                            const entries = Object.entries(allClans).filter(([,c])=>c);
+                            if (entries.length === 0) return '<div style="color:#555;text-align:center;padding:1rem;font-size:0.8rem;">Žádné klany</div>';
+                            const selClan = window._adminSelectedClan || null;
+                            return entries.map(([locId, clan]) => {
+                                const isSelected = selClan === locId;
+                                return '<div onclick="window._adminSelectedClan=\'' + locId + '\'; showChatModal();" style="background:' + (isSelected?'#2a0a1a':'#1a0a2a') + ';border:1px solid ' + (isSelected?'#e91e63':'#4a1a6a') + ';border-radius:6px;padding:0.4rem 0.6rem;margin-bottom:0.3rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">' +
+                                    '<span style="color:#ce93d8;font-size:0.82rem;">⚔️ ' + escapeHtml(clan.name) + '</span>' +
+                                    '<span style="color:#555;font-size:0.7rem;">👑 ' + escapeHtml(clan.leader) + '</span>' +
+                                    '</div>';
+                            }).join('');
+                        })()}
+                    </div>
+                    ${(() => {
+                        const selClanId = window._adminSelectedClan;
+                        if (!selClanId) return '<div style="color:#555;text-align:center;padding:1rem;font-size:0.8rem;">← Vyber klan výše</div>';
+                        const selClan = (window.clanOwnershipCache||{})[selClanId];
+                        const msgs = window._adminClanChatMsgs || [];
+                        // Načti zprávy pokud ještě nejsou nebo se klan změnil
+                        if (window._adminClanChatLoaded !== selClanId) {
+                            window._adminClanChatLoaded = null;
+                            if (typeof firebaseDB !== 'undefined') {
+                                firebaseDB.ref('clanChat/' + selClanId + '/messages').orderByChild('timestamp').limitToLast(80).once('value').then(snap => {
+                                    const data = snap.val() || {};
+                                    window._adminClanChatMsgs = Object.entries(data).map(([k,v])=>({id:k,...v})).sort((a,b)=>a.timestamp-b.timestamp);
+                                    window._adminClanChatLoaded = selClanId;
+                                    showChatModal();
+                                });
+                            }
+                            return '<div style="text-align:center;padding:1rem;color:#555;font-size:0.8rem;">⏳ Načítám...</div>';
+                        }
+                        if (msgs.length === 0) return '<div style="color:#555;text-align:center;padding:1rem;font-size:0.8rem;">Žádné zprávy v tomto klanu</div>';
+                        const myName = getPlayerName();
+                        return '<div id="adminClanChatContainer" style="max-height:35vh;min-height:120px;overflow-y:auto;background:#0a0a0a;border-radius:8px;padding:0.6rem;border:1px solid #2a1a3a;margin-bottom:0.4rem;">' +
+                            msgs.slice(-50).map(msg => {
+                                const t = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'}) : '';
+                                return '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.35rem;gap:0.4rem;">' +
+                                    '<div style="flex:1;">' +
+                                    '<span style="color:#b39ddb;font-size:0.72rem;font-weight:bold;">' + escapeHtml(msg.author) + '</span>' +
+                                    '<span style="color:#444;font-size:0.65rem;margin-left:0.3rem;">' + t + '</span>' +
+                                    '<div style="color:#ccc;font-size:0.82rem;margin-top:0.1rem;">' + escapeHtml(msg.text||'') + '</div></div>' +
+                                    '<button onclick="adminDeleteClanChatMsg(\'' + selClanId + '\',\'' + msg.id + '\',\'' + escapeHtml((selClan?.name||'')).replace(/\'/g,"\'\'") + '\')" style="background:#c62828;border:none;color:#fff;padding:0.15rem 0.35rem;border-radius:3px;cursor:pointer;font-size:0.65rem;flex-shrink:0;">🗑️</button>' +
+                                    '</div>';
+                            }).join('') +
+                            '</div>' +
+                            '<div style="display:flex;justify-content:flex-end;">' +
+                            '<button onclick="if(confirm(\'Smazat celý chat klanu ' + escapeHtml((selClan?.name||'')) + '?\')) adminClearClanChat(\'' + selClanId + '\',\'' + escapeHtml((selClan?.name||'')).replace(/\'/g,"\'\'") + '\')" style="background:#c62828;border:none;color:#fff;padding:0.25rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.75rem;">🗑️ Smazat vše</button>' +
+                            '</div>';
+                    })()}
+                ` : _activeChatTab === 'clan' ? `
                     <!-- KLAN CHAT -->
                     ${!_chatMyClan ? `
                     <div style="background: #1a1a0a; border: 1px solid #333; border-radius: 8px; padding: 2rem; text-align: center; margin-bottom: 0.5rem;">
@@ -93976,6 +94034,13 @@ function openFullscreenMap() {
                             <div style="font-size: 0.75rem; opacity: 0.8;">Mazat zprávy všech hráčů</div>
                         </div>
                     </button>
+                    <button class="btn" onclick="adminManageClanChats()" style="background: linear-gradient(135deg, #7b1fa2 0%, #4a148c 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">⚔️</span>
+                        <div>
+                            <div style="font-weight: bold;">Klan chaty</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Přečíst a moderovat klan chaty</div>
+                        </div>
+                    </button>
                 `;
             }
             
@@ -94889,6 +94954,113 @@ function openFullscreenMap() {
                 notifySuccess('Chat smazán', 'Všechny zprávy byly odstraněny');
                 adminManageChat();
             } catch (e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
+        // === SPRÁVA KLAN CHATŮ (Admin) ===
+        async function adminManageClanChats() {
+            if (!hasPermission('chat')) return;
+            
+            showModal('⚔️ Klan chaty', '<div style="text-align:center;"><div class="loading-spinner"></div><p>Načítám klany...</p></div>');
+            
+            try {
+                await loadClanData();
+                const allClans = window.clanOwnershipCache || {};
+                const clanEntries = Object.entries(allClans).filter(([,c]) => c);
+                
+                if (clanEntries.length === 0) {
+                    showModal('⚔️ Klan chaty', `
+                        <p style="color:#666;text-align:center;padding:2rem;">Žádné klany neexistují</p>
+                        <button class="btn" onclick="showAdminPanel()" style="width:100%;background:#333;">← Zpět</button>
+                    `);
+                    return;
+                }
+                
+                let html = '<div style="display:grid;gap:0.4rem;max-height:400px;overflow-y:auto;margin-bottom:1rem;">';
+                clanEntries.forEach(([locId, clan]) => {
+                    const loc = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === locId) : null;
+                    const memberCount = 1 + Object.keys(clan.members || {}).length + Object.keys(clan.officers || {}).length;
+                    html += `
+                        <div style="background:#1a0a2a;border:1px solid #4a1a6a;border-radius:8px;padding:0.6rem 0.8rem;display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <div style="color:#ce93d8;font-weight:bold;">⚔️ ${escapeHtml(clan.name)}</div>
+                                <div style="color:#888;font-size:0.72rem;">👑 ${escapeHtml(clan.leader)} · 👥 ${memberCount} členů · 📍 ${escapeHtml(loc?.name || locId)}</div>
+                            </div>
+                            <button onclick="adminViewClanChat('${locId}','${escapeHtml(clan.name).replace(/'/g,"\'")}')" 
+                                style="background:#7b1fa2;border:none;color:#fff;padding:0.35rem 0.7rem;border-radius:5px;cursor:pointer;font-size:0.8rem;white-space:nowrap;">
+                                💬 Chat
+                            </button>
+                        </div>`;
+                });
+                html += '</div>';
+                html += `<button class="btn" onclick="showAdminPanel()" style="width:100%;background:#333;">← Zpět</button>`;
+                
+                showModal('⚔️ Klan chaty', html);
+            } catch(e) {
+                showModal('⚔️ Klan chaty', `<p style="color:#f44336;">Chyba: ${e.message}</p><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:1rem;">← Zpět</button>`);
+            }
+        }
+        
+        async function adminViewClanChat(clanId, clanName) {
+            if (!hasPermission('chat')) return;
+            
+            showModal(`⚔️ ${clanName}`, '<div style="text-align:center;"><div class="loading-spinner"></div><p>Načítám zprávy...</p></div>');
+            
+            try {
+                const snap = await firebaseDB.ref(`clanChat/${clanId}/messages`).orderByChild('timestamp').limitToLast(100).once('value');
+                const messages = [];
+                snap.forEach(child => messages.push({ id: child.key, ...child.val() }));
+                messages.reverse();
+                
+                let html = `<div style="max-height:400px;overflow-y:auto;-webkit-overflow-scrolling:touch;">`;
+                if (messages.length === 0) {
+                    html += '<p style="color:#666;text-align:center;padding:2rem;">Žádné zprávy</p>';
+                } else {
+                    messages.forEach(msg => {
+                        const time = msg.timestamp ? new Date(msg.timestamp).toLocaleString('cs-CZ') : '?';
+                        html += `
+                            <div style="display:flex;align-items:center;gap:0.5rem;background:#1a0a2a;padding:0.5rem;border-radius:6px;margin-bottom:0.3rem;border-left:3px solid #7b1fa2;">
+                                <div style="flex:1;">
+                                    <div style="color:#ce93d8;font-size:0.8rem;">${escapeHtml(msg.author)} <span style="color:#555;">${time}</span></div>
+                                    <div style="color:#ccc;font-size:0.9rem;">${escapeHtml(msg.text?.substring(0,80))}${(msg.text?.length||0)>80?'...':''}</div>
+                                </div>
+                                <button onclick="adminDeleteClanChatMsg('${clanId}','${msg.id}','${escapeHtml(clanName).replace(/'/g,"\'")}')" 
+                                    style="background:#c62828;border:none;color:#fff;padding:0.3rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.75rem;flex-shrink:0;">🗑️</button>
+                            </div>`;
+                    });
+                }
+                html += `</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:1rem;">
+                        <button class="btn" onclick="adminClearClanChat('${clanId}','${escapeHtml(clanName).replace(/'/g,"\'")}')" style="background:#c62828;">🗑️ Smazat vše</button>
+                        <button class="btn" onclick="adminManageClanChats()" style="background:#333;">← Zpět</button>
+                    </div>`;
+                
+                showModal(`💬 Klan: ${clanName}`, html);
+            } catch(e) {
+                showModal('Chyba', `<p style="color:#f44336;">${e.message}</p><button class="btn" onclick="adminManageClanChats()" style="width:100%;margin-top:1rem;">← Zpět</button>`);
+            }
+        }
+        
+        async function adminDeleteClanChatMsg(clanId, msgId, clanName) {
+            if (!hasPermission('chat')) return;
+            try {
+                await firebaseDB.ref(`clanChat/${clanId}/messages/${msgId}`).remove();
+                notifySuccess('Smazáno', 'Zpráva odstraněna');
+                adminViewClanChat(clanId, clanName);
+            } catch(e) {
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        
+        async function adminClearClanChat(clanId, clanName) {
+            if (!isAdmin()) return;
+            if (!confirm(`Opravdu smazat VŠECHNY zprávy v chatu klanu "${clanName}"?`)) return;
+            try {
+                await firebaseDB.ref(`clanChat/${clanId}/messages`).remove();
+                notifySuccess('Chat smazán', `Všechny zprávy klanu ${clanName} odstraněny`);
+                adminViewClanChat(clanId, clanName);
+            } catch(e) {
                 notifyWarning('Chyba', e.message);
             }
         }
