@@ -4819,7 +4819,7 @@
                         bonusDesc: '-10% přijatý damage, +2 Výdrž'
                     }
                 },
-                setBonus2: { damageReduction: 0.15, maxHp: 30, desc: '-15% přijatý damage, +30 HP' },
+                setBonus2: { damageReduction: 0.15, maxHp: 30, thorns: 0.15, desc: '-15% přijatý damage, +30 HP, +15% damage zpět' },
                 setBonus3: { fortressImproved: true, maxHp: 50, desc: '-25% přijatý damage celkem, +50 HP' }
             },
             
@@ -5388,8 +5388,8 @@
                         bonusDesc: '+15% krit, +2 Inteligence'
                     }
                 },
-                setBonus2: { lootBonus: 0.25, critChance: 0.10, desc: '+25% loot, +10% kritická šance' },
-                setBonus3: { dodgeChance: 0.15, critDamage: 0.50, desc: '+15% úhyb, +50% crit damage' }
+                setBonus2: { lootBonus: 0.25, critChance: 0.10, psychicVision: true, desc: '+25% loot, +10% kritická šance, Psychická vize' },
+                setBonus3: { dodgeChance: 0.15, critDamage: 0.50, mindShield: true, mindControlImproved: true, desc: '+15% úhyb, +50% crit damage, Mind Shield, Mind Control 30%' }
             }
         };
         
@@ -17964,11 +17964,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 rareFind: 0,                 // scavenger
                 tracking: false,             // hunter
                 repairBonus: 0,              // engineer
+                robotDamage: 0,              // engineer - set weapon +75% na roboty
+                craftBonus: 0,               // engineer - set armor +35% craft stats
                 chainExplosion: false,       // demolitionist
                 haggle: false,               // trader
                 desertWalker: false,         // nomad
                 radAura: false,              // mutant
                 psychicVision: false,        // psychic
+                mindShield: false,           // psychic - set3, 30% ignorovat damage
                 
                 // Set (3) bonuses
                 rageImproved: false,         // raider - rage od 50% HP
@@ -18017,6 +18020,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (pb.lowHpDamage) effects.lowHpDamage = (effects.lowHpDamage || 0) + pb.lowHpDamage;
                 if (pb.critOnAnimals) effects.critOnAnimals = (effects.critOnAnimals || 0) + pb.critOnAnimals;
                 if (pb.radHeal) effects.radHeal = true;
+                // Engineer set piece bonusy (Fix: chyběly v pieceBonuses loopě)
+                if (pb.craftBonus) effects.craftBonus = (effects.craftBonus || 0) + pb.craftBonus;
+                if (pb.repairBonus) effects.repairBonus = (effects.repairBonus || 0) + pb.repairBonus;
+                if (pb.robotDamage) effects.robotDamage = (effects.robotDamage || 0) + pb.robotDamage;
             });
             
             // Aplikuj set (2) bonusy
@@ -18095,6 +18102,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (sb3.npcTrust) effects.npcTrust = sb3.npcTrust;
                 if (sb3.radRegenImproved) effects.radRegenImproved = true;
                 if (sb3.mindControlImproved) effects.mindControlImproved = true;
+                if (sb3.mindShield) effects.mindShield = true;
                 if (sb3.lowHpDamage) effects.lowHpDamage = (effects.lowHpDamage || 0) + sb3.lowHpDamage;
             }
             
@@ -30513,11 +30521,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     showModal(ability.icon + ' ' + ability.name, '+35% damage na příští boj!');
                     break;
                     
-                case 'quickHeal':
-                    // Medik - rychlé léčení
-                    state.char.hp = Math.min(state.char.maxHp, state.char.hp + 40);
-                    showModal(ability.icon + ' ' + ability.name, '+40 HP!');
+                case 'quickHeal': {
+                    // Medik - rychlé léčení (Fix: respektuje set healBonus)
+                    let _qhAmount = 40;
+                    const _qhSetFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                    if (_qhSetFx.healBonus > 0) _qhAmount = Math.floor(_qhAmount * (1 + _qhSetFx.healBonus));
+                    const _qhOldHp = state.char.hp;
+                    state.char.hp = Math.min(state.char.maxHp, state.char.hp + _qhAmount);
+                    const _qhActual = Math.round(state.char.hp - _qhOldHp);
+                    showModal(ability.icon + ' ' + ability.name, `+${_qhActual} HP!`);
                     break;
+                }
                     
                 case 'emergencyRepair':
                     // Mechanik - oprava (Fix: opravuje i nasazené vybavení, nejen inventář)
@@ -35985,11 +35999,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             html += '</div></div>';
             
             // Vykreslení lokací
+            // 🔮 Psychik: revealHiddenLocations — zobrazí všechny lokace na mapě
+            const _isPsychic = hasClassPassive('revealHiddenLocations');
+            
             WORLD_LOCATIONS.forEach(loc => {
                 const isHere = loc.id === state.world.currentLocation;
                 const isVisited = state.world.visitedLocations.includes(loc.id);
                 const isRevealed = state.world.revealedLocations?.includes(loc.id);
-                const isKnown = isVisited || isRevealed; // Lokace je známá pokud navštívena NEBO odhalena
+                const isKnown = isVisited || isRevealed || _isPsychic; // Lokace je známá pokud navštívena NEBO odhalena
                 const left = (loc.x - minX) * cellSize;
                 const top = (loc.y - minY) * cellSize;
                 
@@ -38019,6 +38036,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (hasClassPassive('travelSpeedBonus')) {
                 const nomadSpeedBonus = getClassPassiveValue('travelSpeedBonus') || 0;
                 travelBonus -= nomadSpeedBonus;
+            }
+            
+            // Tank: -15% rychlost (těžká výstroj) — Fix: chybělo
+            if (state.char.classId === 'tank') {
+                travelBonus = Math.min(1.15, travelBonus + 0.15);
             }
             
             // AGILITY BONUS
@@ -47367,6 +47389,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (item.effect === 'health') {
                 let healAmount = item.value;
                 
+                // 💉 Medik třída: +50% efektivita léčiv (Fix: chybělo)
+                if (state.char.classId === 'medic') {
+                    healAmount = Math.floor(healAmount * 1.50);
+                }
+                
+                // ❤️ Set healBonus (medic/survivor set) — Fix: přesunuto PŘED aplikaci na HP
+                const setEffectsHeal = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                if (setEffectsHeal.healBonus > 0) {
+                    healAmount = Math.floor(healAmount * (1 + setEffectsHeal.healBonus));
+                }
+                
                 // Bonus z vybavení (medic_vest, surgeon_gloves)
                 const equipEffects = getArmorSpecialEffects();
                 if (equipEffects.healBonus > 0) {
@@ -47399,7 +47432,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // GROUP HEAL - Medic set (2) - léčiva léčí i společníky
                 let groupHealText = '';
-                const setEffectsHeal = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                
                 if (setEffectsHeal.groupHeal && state.companions?.length > 0) {
                     const companionHeal = Math.floor(healAmount * 0.5); // 50% z heal
                     state.companions.filter(c => !c.isDead).forEach(comp => {
@@ -49431,6 +49464,14 @@ function openFullscreenMap() {
                 
                 // 🔬 Scientists frakce - craftBonus (+5% stats)
                 const factionBonuses = getFactionBonuses();
+                // ⚙️ Engineer set armor - craftBonus (+35% stats)
+                const _setFxCraft = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                const _setCraftBonus = _setFxCraft.craftBonus || 0;
+                if (_setCraftBonus > 0) {
+                    if (craftedItem.damage) craftedItem.damage = Math.ceil(craftedItem.damage * (1 + _setCraftBonus));
+                    if (craftedItem.defense) craftedItem.defense = Math.ceil(craftedItem.defense * (1 + _setCraftBonus));
+                    if (!craftedItem.name.includes('⚙️')) craftedItem.name += ' ⚙️';
+                }
                 if (factionBonuses.craftBonus > 0) {
                     if (craftedItem.damage) {
                         const bonus = Math.ceil(craftedItem.damage * factionBonuses.craftBonus);
@@ -66587,6 +66628,19 @@ function openFullscreenMap() {
                     window.combatState.turretDamage = 0;
                 }
                 
+                // 🔮 Psychic: onCombatStart - šance že nepřítel uteče před bojem
+                const _psychicGridPassive = getClassPassive('onCombatStart');
+                if (_psychicGridPassive && _psychicGridPassive.flee) {
+                    window.combatState.log.push('🔮 MIND CONTROL! Nepřátelé utekli v hrůze!');
+                    // Ukonči boj jako vítězství bez boje
+                    setTimeout(() => {
+                        const fleeEnemies = units.filter(u => u.team === 'enemy');
+                        fleeEnemies.forEach(e => { e.alive = false; });
+                        handleCombatVictory();
+                    }, 500);
+                    return;
+                }
+                
                 // Nastav 2 akce každé jednotce
                 units.forEach(u => {
                     u.actionsLeft = 2;
@@ -67684,11 +67738,18 @@ function openFullscreenMap() {
             
             // === CLASS PASSIVES - OBRANA ===
             if (target.isPlayer) {
-                // Tank: Fortress - Blokuje 30% příchozího damage
+                // Tank: Fortress - Blokuje 25% příchozího damage (Fix: bylo 30%)
                 if (state.char.classId === 'tank') {
-                    const reduced = Math.floor(damage * 0.3);
+                    const reduced = Math.floor(damage * 0.25);
                     damage = damage - reduced;
                     cs.log.push(`🏰 Blokováno ${reduced} damage`);
+                }
+                
+                // 🛡️ ironSkin (Tank ability) — blokuje veškerý damage na 1 kolo
+                if (state.combatBonuses?.ironSkin && Date.now() < (state.combatBonuses.expires || 0)) {
+                    cs.log.push(`🛡️ ŽELEZNÁ KŮŽE! Blokováno ${damage} DMG!`);
+                    damage = 0;
+                    state.combatBonuses.ironSkin = false; // Jednorázové
                 }
                 
                 // Mutant: +10 přirozená obrana a regenerace při zásahu
@@ -67910,6 +67971,19 @@ function openFullscreenMap() {
                 });
             }
             
+            // 🌵 Thorns (tank set 2) — v grid combatu (Fix: chybělo)
+            if (target.isPlayer && finalDamage > 0) {
+                const _thornsFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                if (_thornsFx.thorns > 0) {
+                    const thornsDmg = Math.floor(finalDamage * _thornsFx.thorns);
+                    if (thornsDmg > 0) {
+                        attacker.hp = Math.max(0, attacker.hp - thornsDmg);
+                        cs.log.push(`🌵 Thorns: ${thornsDmg} DMG zpět na ${attacker.name}!`);
+                        if (attacker.hp <= 0) attacker.alive = false;
+                    }
+                }
+            }
+            
             // Efekty (jed, krvácení)
             if (attacker.poisonChance && Math.random() < attacker.poisonChance) {
                 target.poisoned = Math.max(target.poisoned || 0, 5);
@@ -67920,7 +67994,10 @@ function openFullscreenMap() {
                 // Survivor: Last Stand - 25% šance přežít smrtelný úder
                 let lastStandChance = surviveChance;
                 if (target.isPlayer && state.char.classId === 'survivor') {
-                    lastStandChance = Math.max(lastStandChance, 0.20); // Fix: sjednoceno s popisem (20%)
+                    // Fix: respektuje lastStandImproved (set 3/3 = 35%)
+                    const _lsSetFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                    const _lsBase = _lsSetFx.lastStandImproved ? 0.35 : 0.20;
+                    lastStandChance = Math.max(lastStandChance, _lsBase);
                 }
                 // Fix BUG 3: surviveChance ze skill tree (Přeživší: Nositel smrti, Nezabitelný)
                 if (target.isPlayer && playerSkillEffects.surviveChance > 0) {
@@ -69280,11 +69357,27 @@ function openFullscreenMap() {
                     useAction(unit, 1);
                     return;
                 }
-                const healAmount = item.value || 30;
+                let healAmount = item.value || 30;
+                
+                // 💉 Medik třída: +50% efektivita léčiv (Fix: chybělo)
+                if (state.char.classId === 'medic') healAmount = Math.floor(healAmount * 1.50);
+                
+                // 💉 Medik passive: +10% heal v boji (Fix: chybělo)
+                const _medicPassive = CLASS_PASSIVES?.medic?.combatHealBonus || 0;
+                if (state.char.classId === 'medic' && _medicPassive > 0) healAmount = Math.floor(healAmount * (1 + _medicPassive));
+                
+                // Set healBonus (Fix: chybělo)
+                const _setFxCombat = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                if (_setFxCombat.healBonus > 0) healAmount = Math.floor(healAmount * (1 + _setFxCombat.healBonus));
+                
+                // Companion healing bonus (Fix: chybělo)
+                const _compBonCombat = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+                if (_compBonCombat.healingBonus > 0) healAmount = Math.floor(healAmount * (1 + _compBonCombat.healingBonus));
+                
                 const oldHp = unit.hp;
                 unit.hp = Math.min(unit.maxHp, unit.hp + healAmount);
                 const actualHeal = unit.hp - oldHp;
-                cs.log.push(`💚 +${actualHeal} HP [${unit.actionsLeft - 1} akce]`);
+                cs.log.push(`💚 +${actualHeal} HP [${unit.actionsLeft - 1} akce]${state.char.classId === 'medic' ? ' ⚕️' : ''}`);
                 
                 // Synchronizuj HP hráče
                 if (unit.isPlayer) state.char.hp = unit.hp;
@@ -72379,7 +72472,7 @@ function openFullscreenMap() {
             if (toughLevel > 0) maxHp += toughLevel * 10;
             
             // Class bonus - sníženo
-            if (state.char.classId === 'tank') maxHp += 30;
+            if (state.char.classId === 'tank') maxHp += 80; // Fix: bylo +30, popis třídy říká +80
             if (state.char.classId === 'mutant') maxHp += 15;
             if (state.char.classId === 'survivor') maxHp += 50; // Fix: bylo 20, má být 50 (popis třídy)
             
@@ -73141,6 +73234,7 @@ function openFullscreenMap() {
             
             // Podpůrné
             medic: {
+                combatHealBonus: 0.10, // +10% heal v boji
                 onTick: () => {
                     // Regeneration: +3 HP za minutu (nebo +6 s set bonusem)
                     const setFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
@@ -73234,8 +73328,8 @@ function openFullscreenMap() {
             },
             psychic: {
                 onCombatStart: () => {
-                    // Mind Control: 10% šance že nepřítel uteče
-                    if (Math.random() < 0.1) {
+                    // Mind Control: 15% šance že nepřítel uteče (Fix: bylo 10%)
+                    if (Math.random() < 0.15) {
                         return { flee: true, message: '🔮 MIND CONTROL! Nepřítel utekl!' };
                     }
                     return { flee: false };
@@ -73360,7 +73454,9 @@ function openFullscreenMap() {
                     // Last Stand check (Survivor) + companion surviveChance
                     const _dotLastStand = typeof getClassPassive === 'function' && getClassPassive('onDamage', 0);
                     const _dotCompBon = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
-                    const _dotSurvive = _dotLastStand ? 0.20 : 0;
+                    // Fix: respektuje lastStandImproved (set 3/3 = 35%)
+                    const _dotSetFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                    const _dotSurvive = _dotLastStand ? (_dotSetFx.lastStandImproved ? 0.35 : 0.20) : 0;
                     const _dotSurviveFinal = Math.max(_dotSurvive, _dotCompBon.surviveChance || 0);
                     if (_dotSurviveFinal > 0 && Math.random() < _dotSurviveFinal) {
                         state.char.hp = 1;
@@ -73450,6 +73546,16 @@ function openFullscreenMap() {
                 if (_craftedWeapons.includes(state.equipped.weapon.id)) {
                     playerDmg = Math.floor(playerDmg * 1.10);
                     log.innerHTML += `<div style="color: #8bc34a;">🔧 Craftěná zbraň: +10% DMG</div>`;
+                }
+                // Fix: robotDamage ze set weapon (Plazmový svářeč) v classic combatu
+                const _setFxRobotClassic = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                if (_setFxRobotClassic.robotDamage > 0) {
+                    const _tName = (targetEnemy.name || '').toLowerCase();
+                    const _tId = (targetEnemy.id || '').toLowerCase();
+                    if (_tName.includes('robot') || _tId.includes('robot') || _tName.includes('mechanický') || _tId.includes('mech')) {
+                        playerDmg = Math.floor(playerDmg * (1 + _setFxRobotClassic.robotDamage));
+                        log.innerHTML += `<div style="color: #4fc3f7;">🤖 Robot slabina! +${Math.round(_setFxRobotClassic.robotDamage * 100)}% DMG</div>`;
+                    }
                 }
             }
             
@@ -74132,6 +74238,13 @@ function openFullscreenMap() {
                 const _dMinDmg = Math.floor((enemy.damage || 1) * 0.10);
                 enemyDmg = Math.max(_dMinDmg, enemyDmg - totalDefense);
                 
+                // 🔮 mindBlast (Psychic ability) — nepřítel přeskočí tah
+                if (state.combatBonuses?.mindBlast) {
+                    log.innerHTML += `<div style="color: #aa00ff; font-weight: bold;">🔮 MENTÁLNÍ ÚTOK! ${enemy.icon || '👾'} ${enemy.name} přeskočil tah!</div>`;
+                    state.combatBonuses.mindBlast = false;
+                    return; // Skip this enemy's attack (forEach callback return)
+                }
+                
                 // Apply class passive onDamage
                 const damagePassive = getClassPassive('onDamage', enemyDmg);
                 if (damagePassive) {
@@ -74139,6 +74252,13 @@ function openFullscreenMap() {
                     if (damagePassive.message) {
                         log.innerHTML += `<div style="color: #4caf50;">${damagePassive.message}</div>`;
                     }
+                }
+                
+                // 🛡️ ironSkin (Tank ability) — blokuje veškerý damage na 1 kolo
+                if (state.combatBonuses?.ironSkin && Date.now() < (state.combatBonuses.expires || 0)) {
+                    log.innerHTML += `<div style="color: #2196f3; font-weight: bold;">🛡️ ŽELEZNÁ KŮŽE! Blokováno ${enemyDmg} DMG!</div>`;
+                    enemyDmg = 0;
+                    state.combatBonuses.ironSkin = false; // Jednorázové
                 }
                 
                 // === SET BONUSY - OBRANA ===
