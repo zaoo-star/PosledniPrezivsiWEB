@@ -12565,7 +12565,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
 
-        // === PŘEJEDENÍ / PŘEPITÍ SYSTÉM ===
+        // === PŘEJEDENÍ / PŘEPITÍ SYSTÉM — real-time timestamps ===
+        // Princip: ukládáme timestampy "kdy přejedení skončí" pro hunger/thirst
+        // a "výchozí excess" — pak kdykoli (i po offline) spočítáme zbývající excess lineárně.
+        // Stejný přístup jako zbytek hry (travel, sleep, build atd.)
+        
         function checkOverfedPenalty() {
             const hunger = state.status.hunger || 0;
             const thirst = state.status.thirst || 0;
@@ -12576,11 +12580,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (!state.overfed) state.overfed = {};
             
-            // Cooldown guard — neaplikuj postihy opakovaně pokud flag již běží
             const now = Date.now();
-            const hungerAlreadyActive = state.overfed.hunger && now < state.overfed.hunger;
-            const thirstAlreadyActive = state.overfed.thirst && now < state.overfed.thirst;
-            if ((!overfedHunger || hungerAlreadyActive) && (!overfedThirst || thirstAlreadyActive)) return;
+            // Cooldown: nespouštěj znovu pokud debuff ještě běží
+            const hungerActive = state.overfed.hungerEnd && now < state.overfed.hungerEnd;
+            const thirstActive = state.overfed.thirstEnd && now < state.overfed.thirstEnd;
+            if ((!overfedHunger || hungerActive) && (!overfedThirst || thirstActive)) return;
             
             const messages = {
                 hunger: [
@@ -12598,50 +12602,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             };
             
             let penaltyText = '';
+            const OVERFED_DURATION_SEC = 10 * 60; // 10 minut v reálném čase
             
-            if (overfedHunger) {
+            if (overfedHunger && !hungerActive) {
                 const excess = Math.floor(hunger - 100);
                 const severity = excess >= 20 ? 'severe' : 'mild';
                 
-                // Postih: zpomalení, únava energie, možná nevolnost
                 const energyPenalty = severity === 'severe' ? 20 : 10;
                 state.status.energy = Math.max(0, (state.status.energy || 100) - energyPenalty);
                 
-                // Těžké přejedení dá i nevolnost (buff s penalty)
                 if (severity === 'severe' && !state.buffs?.nausea) {
                     if (!state.buffs) state.buffs = {};
-                    state.buffs.nausea = { value: -0.15, until: Date.now() + 15 * 60 * 1000, type: 'damage_debuff' };
+                    state.buffs.nausea = { value: -0.15, until: now + 15 * 60 * 1000, type: 'damage_debuff' };
                     penaltyText += '<br><span style="color:#ff9800;">🤢 Nevolnost! -15% damage na 15 min</span>';
                 }
                 
-                penaltyText += `<br><span style="color:#ff9800;">⚡ -${energyPenalty}% energie (těžký žaludek)</span>`;
-                state.overfed.hunger = Date.now() + 10 * 60 * 1000; // 10 min debuff flag
+                penaltyText += '<br><span style="color:#ff9800;">⚡ -' + energyPenalty + '% energie (těžký žaludek)</span>';
+                
+                // Real-time: uložíme start, end a výchozí excess
+                state.overfed.hungerStart   = now;
+                state.overfed.hungerEnd     = now + OVERFED_DURATION_SEC * 1000;
+                state.overfed.hungerInitial = hunger - 100; // kolik bylo nad 100 při začátku
                 
                 const msg = messages.hunger[Math.floor(Math.random() * messages.hunger.length)];
-                addLog(`🍖😩 ${msg}`, '🤢');
+                addLog('🍖😩 ' + msg, '🤢');
             }
             
-            if (overfedThirst) {
+            if (overfedThirst && !thirstActive) {
                 const excess = Math.floor(thirst - 100);
                 const severity = excess >= 20 ? 'severe' : 'mild';
                 
-                // Postih: ztráta energie, zrychlené metabolizmy (rychleji se ztrácí žízeň - paradox!)
                 const energyPenalty = severity === 'severe' ? 15 : 8;
                 state.status.energy = Math.max(0, (state.status.energy || 100) - energyPenalty);
                 
-                // Přepití zrychlí ztrátu žízně v dalším cyklu (močení :D)
-                if (!state.overfed.thirstFlush) {
-                    state.overfed.thirstFlush = Date.now() + 5 * 60 * 1000;
-                }
-                
-                penaltyText += `<br><span style="color:#2196f3;">⚡ -${energyPenalty}% energie (přeplněný žaludek)</span>`;
+                penaltyText += '<br><span style="color:#2196f3;">⚡ -' + energyPenalty + '% energie (přeplněný žaludek)</span>';
                 if (severity === 'severe') {
                     penaltyText += '<br><span style="color:#2196f3;">🚿 Žízeň se bude ztrácet rychleji (ledviny jedou naplno)</span>';
                 }
-                state.overfed.thirst = Date.now() + 8 * 60 * 1000;
+                
+                // Real-time timestamps
+                state.overfed.thirstStart       = now;
+                state.overfed.thirstEnd         = now + OVERFED_DURATION_SEC * 1000;
+                state.overfed.thirstInitial     = thirst - 100;
+                // thirstFlush: extra ztráta žízně po dobu 5 minut
+                state.overfed.thirstFlushEnd    = now + 5 * 60 * 1000;
                 
                 const msg = messages.thirst[Math.floor(Math.random() * messages.thirst.length)];
-                addLog(`💧😵 ${msg}`, '🚿');
+                addLog('💧😵 ' + msg, '🚿');
             }
             
             if (penaltyText) {
@@ -12656,33 +12663,73 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
-        // Zpracování overfed debuffů v herní smyčce
+        // Zpracování přejedení — real-time výpočet (funguje offline i online stejně)
         function processOverfedDebuffs(delta) {
             if (!state.overfed) return;
             const now = Date.now();
-            const dt = delta || 1; // seconds, default 1 if not passed
+            const OVERFED_DURATION_MS = 10 * 60 * 1000;
             
-            // Rychlé vytrácení žízně při přepití (ledviny jedou naplno)
-            if (state.overfed.thirstFlush && now < state.overfed.thirstFlush) {
-                if (state.status.thirst > 0 && !state.map.inBase) {
-                    state.status.thirst = Math.max(0, state.status.thirst - 0.04 * dt); // delta-scaled
-                }
-            } else if (state.overfed.thirstFlush && now >= state.overfed.thirstFlush) {
-                delete state.overfed.thirstFlush;
-            }
-            
-            // Vymazání starých flagů
-            if (state.overfed.hunger && now >= state.overfed.hunger) delete state.overfed.hunger;
-            if (state.overfed.thirst && now >= state.overfed.thirst) delete state.overfed.thirst;
-            
-            // Postupné snižování excess — OPRAVA: scale by delta, jinak offline = věčné přejedení
-            // 0.5/sec = 30%/min → excess 30 zmizí za 1 minutu
+            // === HUNGER EXCESS ===
             if (state.status.hunger > 100) {
-                state.status.hunger = Math.max(100, state.status.hunger - 0.5 * dt);
+                if (state.overfed.hungerEnd) {
+                    const elapsed   = now - (state.overfed.hungerStart || now);
+                    const total     = state.overfed.hungerEnd - (state.overfed.hungerStart || state.overfed.hungerEnd - OVERFED_DURATION_MS);
+                    const progress  = Math.min(1, elapsed / total); // 0..1
+                    const initial   = state.overfed.hungerInitial || (state.status.hunger - 100);
+                    const remaining = initial * (1 - progress);
+                    
+                    if (remaining <= 0 || now >= state.overfed.hungerEnd) {
+                        // Přejedení skončilo
+                        state.status.hunger = 100;
+                        delete state.overfed.hungerStart;
+                        delete state.overfed.hungerEnd;
+                        delete state.overfed.hungerInitial;
+                    } else {
+                        state.status.hunger = 100 + remaining;
+                    }
+                } else {
+                    // Staré uložené hry bez nového formátu — okamžitě resetuj
+                    state.status.hunger = 100;
+                }
             }
+            
+            // === THIRST EXCESS ===
             if (state.status.thirst > 100) {
-                state.status.thirst = Math.max(100, state.status.thirst - 0.8 * dt); // voda odchází rychleji
+                if (state.overfed.thirstEnd) {
+                    const elapsed   = now - (state.overfed.thirstStart || now);
+                    const total     = state.overfed.thirstEnd - (state.overfed.thirstStart || state.overfed.thirstEnd - OVERFED_DURATION_MS);
+                    const progress  = Math.min(1, elapsed / total);
+                    const initial   = state.overfed.thirstInitial || (state.status.thirst - 100);
+                    const remaining = initial * (1 - progress);
+                    
+                    if (remaining <= 0 || now >= state.overfed.thirstEnd) {
+                        state.status.thirst = 100;
+                        delete state.overfed.thirstStart;
+                        delete state.overfed.thirstEnd;
+                        delete state.overfed.thirstInitial;
+                    } else {
+                        state.status.thirst = 100 + remaining;
+                    }
+                } else {
+                    state.status.thirst = 100;
+                }
             }
+            
+            // === THIRST FLUSH (ledviny jedou naplno) ===
+            if (state.overfed.thirstFlushEnd) {
+                if (now < state.overfed.thirstFlushEnd) {
+                    if (state.status.thirst > 0 && !state.map.inBase) {
+                        state.status.thirst = Math.max(0, state.status.thirst - 0.04 * (delta || 1));
+                    }
+                } else {
+                    delete state.overfed.thirstFlushEnd;
+                }
+            }
+            
+            // Smaž starý formát (migrace)
+            if (state.overfed.hunger  && typeof state.overfed.hunger  === 'number') delete state.overfed.hunger;
+            if (state.overfed.thirst  && typeof state.overfed.thirst  === 'number') delete state.overfed.thirst;
+            if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
         const GAME_VERSION = '3.5.7';
@@ -27518,7 +27565,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (type === 'hunger' || type === 'thirst') {
                 if (nomadBonus < 1) {
                     currentRate *= nomadBonus;
-                    rateModifiers.push({ text: statusTexts.nomadPassive, value: '-50%', color: '#8bc34a' });
+                    rateModifiers.push({ text: statusTexts.nomadPassive, value: `-${Math.round((1-nomadBonus)*100)}%`, color: '#8bc34a' });
+                }
+                // Společníci: consumptionReduction (cappováno na max 90%)
+                const _dispCompBon = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+                const _rawCR = _dispCompBon.consumptionReduction || 0;
+                const _cappedCR = Math.min(0.90, _rawCR);
+                if (_cappedCR > 0) {
+                    currentRate *= (1 - _cappedCR);
+                    const _capWarning = _rawCR > 0.90 ? ` (přetečení ${Math.round(_rawCR*100)}% → cappováno)` : '';
+                    rateModifiers.push({ text: `👥 Společníci${_capWarning}`, value: `-${Math.round(_cappedCR*100)}%`, color: '#8bc34a' });
                 }
             }
             
@@ -78068,8 +78124,11 @@ function openFullscreenMap() {
                 
                 // 🤝 Companion consumptionReduction (Survivor - Vynalézavost)
                 const compConsumptionBonuses = getAllCompanionBonuses();
-                const companionConsumptionMod = compConsumptionBonuses.consumptionReduction > 0 ? (1 - compConsumptionBonuses.consumptionReduction) : 1.0;
-                const finalConsumptionMod = consumptionMod * companionConsumptionMod;
+                // Fix: cap na max 90% — bez limitu může jít do záporných hodnot (hlad přibývá)
+                const _cappedCompCR = Math.min(0.90, compConsumptionBonuses.consumptionReduction || 0);
+                const companionConsumptionMod = _cappedCompCR > 0 ? (1 - _cappedCompCR) : 1.0;
+                // Celkový mod také cap — min 0.05 (vždy aspoň 5% spotřeba zůstane)
+                const finalConsumptionMod = Math.max(0.05, consumptionMod * companionConsumptionMod);
                 
                 // 🏛️ Politické efekty na spotřebu
                 let politicalConsumptionMod = 1.0;
