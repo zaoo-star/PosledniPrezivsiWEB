@@ -8687,8 +8687,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             'find_survivor': { 
                 name: 'Najdi přeživšího', 
                 desc: 'Můj bratr zmizel. Prohledej opuštěné budovy a vesnice, možná ho tam najdeš.', 
-                details: '👤 Prozkoumej opuštěné budovy, zřícené vesnice, staré farmy nebo motely. Máš 25% šanci ho tam najít. Vrať se až ho najdeš.',
-                requirement: { find_npc: true }, 
+                details: '👤 Jdi na přidělenou lokaci a prohledej ji. Vrať se až ho najdeš.',
+                requirement: { find_npc: true },
+                assignsLocation: true, // Konkrétní lokace se přidělí při zadání questu
                 reward: { trust: 30, companion: true } 
             },
             'gather_herbs': { 
@@ -12524,6 +12525,127 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return true;
         }
         
+
+        // === PŘEJEDENÍ / PŘEPITÍ SYSTÉM ===
+        function checkOverfedPenalty() {
+            const hunger = state.status.hunger || 0;
+            const thirst = state.status.thirst || 0;
+            const overfedHunger = hunger > 100;
+            const overfedThirst = thirst > 100;
+            
+            if (!overfedHunger && !overfedThirst) return;
+            
+            if (!state.overfed) state.overfed = {};
+            
+            // Cooldown guard — neaplikuj postihy opakovaně pokud flag již běží
+            const now = Date.now();
+            const hungerAlreadyActive = state.overfed.hunger && now < state.overfed.hunger;
+            const thirstAlreadyActive = state.overfed.thirst && now < state.overfed.thirst;
+            if ((!overfedHunger || hungerAlreadyActive) && (!overfedThirst || thirstAlreadyActive)) return;
+            
+            const messages = {
+                hunger: [
+                    'Snědl jsi toho příliš. Žaludek protestuje...',
+                    'Takhle moc toho nesmíš jíst najednou!',
+                    'Máš těžký žaludek. Pohybuješ se pomaleji.',
+                    'Přejezení je civilizační nemoc i v pustině.',
+                ],
+                thirst: [
+                    'Vypil jsi příliš mnoho. Cítíš, jak ti tekutiny šplouchají v žaludku.',
+                    'Přepil ses! Ledviny nestačí zpracovávat.',
+                    'Takhle moc pít najednou není zdravé.',
+                    'I voda může škodit, když jí je moc.',
+                ]
+            };
+            
+            let penaltyText = '';
+            
+            if (overfedHunger) {
+                const excess = Math.floor(hunger - 100);
+                const severity = excess >= 20 ? 'severe' : 'mild';
+                
+                // Postih: zpomalení, únava energie, možná nevolnost
+                const energyPenalty = severity === 'severe' ? 20 : 10;
+                state.status.energy = Math.max(0, (state.status.energy || 100) - energyPenalty);
+                
+                // Těžké přejedení dá i nevolnost (buff s penalty)
+                if (severity === 'severe' && !state.buffs?.nausea) {
+                    if (!state.buffs) state.buffs = {};
+                    state.buffs.nausea = { value: -0.15, until: Date.now() + 15 * 60 * 1000, type: 'damage_debuff' };
+                    penaltyText += '<br><span style="color:#ff9800;">🤢 Nevolnost! -15% damage na 15 min</span>';
+                }
+                
+                penaltyText += `<br><span style="color:#ff9800;">⚡ -${energyPenalty}% energie (těžký žaludek)</span>`;
+                state.overfed.hunger = Date.now() + 10 * 60 * 1000; // 10 min debuff flag
+                
+                const msg = messages.hunger[Math.floor(Math.random() * messages.hunger.length)];
+                addLog(`🍖😩 ${msg}`, '🤢');
+            }
+            
+            if (overfedThirst) {
+                const excess = Math.floor(thirst - 100);
+                const severity = excess >= 20 ? 'severe' : 'mild';
+                
+                // Postih: ztráta energie, zrychlené metabolizmy (rychleji se ztrácí žízeň - paradox!)
+                const energyPenalty = severity === 'severe' ? 15 : 8;
+                state.status.energy = Math.max(0, (state.status.energy || 100) - energyPenalty);
+                
+                // Přepití zrychlí ztrátu žízně v dalším cyklu (močení :D)
+                if (!state.overfed.thirstFlush) {
+                    state.overfed.thirstFlush = Date.now() + 5 * 60 * 1000;
+                }
+                
+                penaltyText += `<br><span style="color:#2196f3;">⚡ -${energyPenalty}% energie (přeplněný žaludek)</span>`;
+                if (severity === 'severe') {
+                    penaltyText += '<br><span style="color:#2196f3;">🚿 Žízeň se bude ztrácet rychleji (ledviny jedou naplno)</span>';
+                }
+                state.overfed.thirst = Date.now() + 8 * 60 * 1000;
+                
+                const msg = messages.thirst[Math.floor(Math.random() * messages.thirst.length)];
+                addLog(`💧😵 ${msg}`, '🚿');
+            }
+            
+            if (penaltyText) {
+                showModal('🤢 Přejedení!',
+                    '<div style="text-align:center; font-size:3rem; margin-bottom:0.5rem;">' + (overfedHunger && overfedThirst ? '🤢😵' : overfedHunger ? '🤢' : '😵') + '</div>' +
+                    '<p style="color:#ff9800; text-align:center;">' + (overfedHunger ? 'Přejezení!' : '') + (overfedHunger && overfedThirst ? ' & ' : '') + (overfedThirst ? 'Přepití!' : '') + '</p>' +
+                    penaltyText +
+                    '<button class="btn" onclick="closeModal()" style="width:100%; margin-top:1rem; background:#555;">OK, poučím se</button>'
+                );
+            }
+            
+            renderFull();
+        }
+        
+        // Zpracování overfed debuffů v herní smyčce
+        function processOverfedDebuffs() {
+            if (!state.overfed) return;
+            const now = Date.now();
+            
+            // Rychlé vytrácení žízně při přepití (ledviny jedou naplno)
+            if (state.overfed.thirstFlush && now < state.overfed.thirstFlush) {
+                // Ledviny pracují naplno — extra úbytek žízně
+                if (state.status.thirst > 0 && !state.map.inBase) {
+                    state.status.thirst = Math.max(0, state.status.thirst - 0.04); // +extra 2.4%/min na vrcholu přepití
+                }
+            } else if (state.overfed.thirstFlush && now >= state.overfed.thirstFlush) {
+                delete state.overfed.thirstFlush;
+            }
+            
+            // Vymazání starých flagů
+            if (state.overfed.hunger && now >= state.overfed.hunger) delete state.overfed.hunger;
+            if (state.overfed.thirst && now >= state.overfed.thirst) delete state.overfed.thirst;
+            
+            // Postupné snižování excess (hunger/thirst se vrátí na 100)
+            // 0.05/sec = 3%/min → 30% excess zmizí za ~10 minut
+            if (state.status.hunger > 100) {
+                state.status.hunger = Math.max(100, state.status.hunger - 0.05);
+            }
+            if (state.status.thirst > 100) {
+                state.status.thirst = Math.max(100, state.status.thirst - 0.08); // voda odchází trochu rychleji
+            }
+        }
+        
         const GAME_VERSION = '3.5.7';
         
         // Mapování quest itemů na lokace kde se vyskytují
@@ -14682,7 +14804,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (foodItems.length > 0) {
                     const food = foodItems[0];
                     const value = food.value || 30;
-                    state.status.hunger = Math.min(100, state.status.hunger + value);
+                    state.status.hunger = Math.min(100, state.status.hunger + value); // Auto-eat nikdy nepřejí
                     
                     // Odeber z inventáře
                     if (food.count && food.count > 1) {
@@ -14705,7 +14827,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (drinkItems.length > 0) {
                     const drink = drinkItems[0];
                     const value = drink.value || 30;
-                    state.status.thirst = Math.min(100, state.status.thirst + value);
+                    state.status.thirst = Math.min(100, state.status.thirst + value); // Auto-drink nikdy nepřepije
                     
                     // Odeber z inventáře
                     if (drink.count && drink.count > 1) {
@@ -21294,6 +21416,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 percentBonuses.push({ name: '🍺 Alkohol', percent: state.buffs.alcoholDamage.value });
             }
             
+            // 🤢 Nevolnost z přejedení
+            if (state.buffs?.nausea && state.buffs.nausea.until > Date.now()) {
+                percentBonuses.push({ name: '🤢 Nevolnost', percent: Math.round((state.buffs.nausea.value) * 100) });
+            }
+            
             // Set bonusy
             if (typeof getActiveSetEffects === 'function') {
                 const setEffects = getActiveSetEffects();
@@ -27303,7 +27430,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             };
             
             const info = baseConsumption[type];
-            const currentValue = Math.round(status[type]);
+            const rawValue = Math.round(status[type]);
+            const currentValue = (type === 'hunger' || type === 'thirst') ? Math.min(100, rawValue) : rawValue;
+            const isOverfed = (type === 'hunger' || type === 'thirst') && rawValue > 100;
+            const overfedExcess = isOverfed ? rawValue - 100 : 0;
             
             // Výpočet aktuální spotřeby
             let currentRate = state.map.traveling ? info.travel : info.base;
@@ -27341,6 +27471,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 } else if (currentValue <= 40) {
                     warningText = statusTexts.refillSoon;
                     warningColor = '#ffd700';
+                } else if (isOverfed) {
+                    const severity = overfedExcess >= 20 ? 'těžké' : 'mírné';
+                    warningText = `🤢 PŘEJEDENÍ! (${severity}) +${overfedExcess}% nad maximum`;
+                    warningColor = '#ff9800';
+                    if (type === 'thirst') {
+                        warningText = `😵 PŘEPITÍ! (${severity}) +${overfedExcess}% nad maximum`;
+                        warningColor = '#00e5ff';
+                    }
                 } else {
                     warningText = statusTexts.ok;
                     warningColor = '#8bc34a';
@@ -27395,18 +27533,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal(`${info.icon} ${info.name}`, `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <div style="font-size: 3rem; margin-bottom: 0.5rem;">${info.icon}</div>
-                    <div style="font-size: 2rem; font-weight: bold; color: ${warningColor};">${currentValue}%</div>
+                    <div style="font-size: 2rem; font-weight: bold; color: ${warningColor};">${isOverfed ? rawValue : currentValue}%</div>
                     <div style="color: ${warningColor}; font-size: 0.9rem;">${warningText}</div>
                     ${humorText ? `<div style="color: #888; font-style: italic; font-size: 0.8rem; margin-top: 0.3rem;">${humorText}</div>` : ''}
                     ${timeToEmpty && type !== 'radiation' ? `<div style="color: #999; font-size: 0.85rem; margin-top: 0.3rem;">⏱️ ${statusTexts.timeLeft}: ${timeToEmpty}</div>` : ''}
                 </div>
                 
                 <!-- Progress bar -->
-                <div style="background: #1a1a1a; height: 20px; border-radius: 10px; overflow: hidden; margin-bottom: 1rem;">
-                    <div style="height: 100%; width: ${currentValue}%; background: ${type === 'radiation' ? 
+                <div style="background: #1a1a1a; height: 20px; border-radius: 10px; overflow: hidden; margin-bottom: 0.3rem;">
+                    <div style="height: 100%; width: ${Math.min(100, currentValue)}%; background: ${isOverfed ? (type === 'hunger' ? '#ffd700' : '#00e5ff') : type === 'radiation' ? 
                         (currentValue > 50 ? '#c62828' : currentValue > 25 ? '#ff9800' : '#8bc34a') : 
                         (currentValue < 20 ? '#c62828' : currentValue < 40 ? '#ff9800' : '#8bc34a')}; transition: width 0.3s;"></div>
                 </div>
+                ${isOverfed ? `
+                <div style="background: #2a1500; border: 1px solid ${type === 'hunger' ? '#ffd700' : '#00e5ff'}; border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+                    <div style="color: ${type === 'hunger' ? '#ffd700' : '#00e5ff'}; font-weight: bold;">${type === 'hunger' ? '🤢 Přejedení!' : '😵 Přepití!'} +${overfedExcess}% nad limit</div>
+                    ${overfedExcess >= 20 ? `<div style="color: #ff9800; margin-top: 0.2rem;">⚡ Energie -20% · 🤢 Nevolnost -15% DMG (15 min)</div>` : `<div style="color: #ff9800; margin-top: 0.2rem;">⚡ Energie -10%</div>`}
+                    ${type === 'thirst' && overfedExcess >= 20 ? `<div style="color: #00e5ff; margin-top: 0.2rem;">🚿 Žízeň klesá rychleji (ledviny jedou naplno)</div>` : ''}
+                    <div style="color: #888; font-size: 0.75rem; margin-top: 0.2rem;">Vrátí se na 100% samo za chvíli</div>
+                </div>` : '<div style="margin-bottom: 1rem;"></div>'}
                 
                 <!-- Aktuální spotřeba -->
                 <div style="background: #2a2a2a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
@@ -27430,10 +27575,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="background: #1a3a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                     <h4 style="margin: 0 0 0.5rem 0; color: #8bc34a;">💡 ${type === 'radiation' ? statusTexts.howToReduce : statusTexts.howToRefill}</h4>
                     ${type === 'hunger' ? `
+                        ${isOverfed ? '<p style="margin: 0.3rem 0; font-size: 0.9rem; color: #ff9800;">⚠️ Přejedení — nejez! Počkej, až se hlad vrátí pod 100%</p>' : ''}
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">🥫 ${statusTexts.foodItems}</p>
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">🍳 ${statusTexts.cooking}</p>
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">🏡 ${statusTexts.farmInShelter}</p>
                     ` : type === 'thirst' ? `
+                        ${isOverfed ? '<p style="margin: 0.3rem 0; font-size: 0.9rem; color: #00e5ff;">⚠️ Přepití — nepij! Počkej, až se žízeň vrátí pod 100%</p>' : ''}
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">💧 ${statusTexts.water}</p>
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">💎 ${statusTexts.cleanWater}</p>
                         <p style="margin: 0.3rem 0; font-size: 0.9rem;">🚰 ${statusTexts.wellInShelter}</p>
@@ -31148,13 +31295,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <div onclick="showFactionsModal()" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a06; padding: 0.2rem; border-radius: 3px; border: 1px solid #2a2a18; cursor: pointer;">
                                 <span style="font-size: 0.6rem; font-weight: bold; color: #ffd700;">🏛️ Frakce</span>
                             </div>
-                            <div onclick="showStatusDetails('hunger')" style="background: #0a0a0a; padding: 0.2rem 0.3rem; border-radius: 3px; text-align: center; cursor: pointer; border: 1px solid ${hungerDanger ? '#ff4444' : '#1a1a1a'}; ${hungerDanger ? 'animation: pulse-glow 1s infinite;' : ''}">
-                                <div style="font-size: 0.6rem;">🍖 <span style="color: ${hungerDanger ? '#ff4444' : '#ff9900'};">${Math.round(state.status.hunger)}%</span></div>
-                                <div style="height: 2px; background: #222; border-radius: 1px; margin-top: 1px;"><div style="height: 100%; width: ${state.status.hunger}%; background: linear-gradient(90deg, #ff6600, #ff9900); border-radius: 1px;"></div></div>
+                            <div onclick="showStatusDetails('hunger')" style="background: ${state.status.hunger > 100 ? '#1a1200' : '#0a0a0a'}; padding: 0.2rem 0.3rem; border-radius: 3px; text-align: center; cursor: pointer; border: 1px solid ${hungerDanger ? '#ff4444' : state.status.hunger > 100 ? '#ffd700' : '#1a1a1a'}; ${hungerDanger ? 'animation: pulse-glow 1s infinite;' : state.status.hunger > 100 ? 'animation: pulse-glow 2s infinite;' : ''}">
+                                <div style="font-size: 0.6rem;">🍖 <span style="color: ${hungerDanger ? '#ff4444' : state.status.hunger > 100 ? '#ffd700' : '#ff9900'};">${state.status.hunger > 100 ? '🤢' : ''}${Math.min(100, Math.round(state.status.hunger))}%</span></div>
+                                <div style="height: 2px; background: #222; border-radius: 1px; margin-top: 1px;"><div style="height: 100%; width: ${Math.min(100, state.status.hunger)}%; background: ${state.status.hunger > 100 ? 'linear-gradient(90deg, #ffd700, #ff9800)' : 'linear-gradient(90deg, #ff6600, #ff9900)'}; border-radius: 1px;"></div></div>
                             </div>
-                            <div onclick="showStatusDetails('thirst')" style="background: #0a0a0a; padding: 0.2rem 0.3rem; border-radius: 3px; text-align: center; cursor: pointer; border: 1px solid ${thirstDanger ? '#ff4444' : '#1a1a1a'}; ${thirstDanger ? 'animation: pulse-glow 1s infinite;' : ''}">
-                                <div style="font-size: 0.6rem;">💧 <span style="color: ${thirstDanger ? '#ff4444' : '#00aaff'};">${Math.round(state.status.thirst)}%</span></div>
-                                <div style="height: 2px; background: #222; border-radius: 1px; margin-top: 1px;"><div style="height: 100%; width: ${state.status.thirst}%; background: linear-gradient(90deg, #0066ff, #00aaff); border-radius: 1px;"></div></div>
+                            <div onclick="showStatusDetails('thirst')" style="background: ${state.status.thirst > 100 ? '#001a1a' : '#0a0a0a'}; padding: 0.2rem 0.3rem; border-radius: 3px; text-align: center; cursor: pointer; border: 1px solid ${thirstDanger ? '#ff4444' : state.status.thirst > 100 ? '#00e5ff' : '#1a1a1a'}; ${thirstDanger ? 'animation: pulse-glow 1s infinite;' : state.status.thirst > 100 ? 'animation: pulse-glow 2s infinite;' : ''}">
+                                <div style="font-size: 0.6rem;">💧 <span style="color: ${thirstDanger ? '#ff4444' : state.status.thirst > 100 ? '#00e5ff' : '#00aaff'};">${state.status.thirst > 100 ? '😵' : ''}${Math.min(100, Math.round(state.status.thirst))}%</span></div>
+                                <div style="height: 2px; background: #222; border-radius: 1px; margin-top: 1px;"><div style="height: 100%; width: ${Math.min(100, state.status.thirst)}%; background: ${state.status.thirst > 100 ? 'linear-gradient(90deg, #00e5ff, #0066ff)' : 'linear-gradient(90deg, #0066ff, #00aaff)'}; border-radius: 1px;"></div></div>
                             </div>
                             <div onclick="showStatusDetails('energy')" style="background: #0a0a0a; padding: 0.2rem 0.3rem; border-radius: 3px; text-align: center; cursor: pointer; border: 1px solid ${energyDanger ? '#ff4444' : '#1a1a1a'}; ${energyDanger ? 'animation: pulse-glow 1s infinite;' : ''}">
                                 <div style="font-size: 0.6rem;">⚡ <span style="color: ${energyDanger ? '#ff4444' : '#99ff00'};">${Math.round(state.status.energy)}%</span></div>
@@ -31194,6 +31341,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             }
                             if (state.buffs?.phoenix) {
                                 activeBuffs.push({ icon: '🔥', name: 'Fénix', value: 'Vzkříšení', time: '∞', color: '#ff5722' });
+                            }
+                            if (state.buffs?.nausea && state.buffs.nausea.until > now) {
+                                activeBuffs.push({ icon: '🤢', name: 'Nevolnost', value: `${Math.round(state.buffs.nausea.value*100)}% DMG`, time: Math.ceil((state.buffs.nausea.until - now) / 60000), color: '#ff5722' });
                             }
                             if (state.buffs?.alcoholDamage && state.buffs.alcoholDamage.until > now) {
                                 activeBuffs.push({ icon: '🍺', name: 'DMG', value: `+${state.buffs.alcoholDamage.value}%`, time: Math.ceil((state.buffs.alcoholDamage.until - now) / 60000), color: '#ff9800' });
@@ -35162,16 +35312,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 });
             }
             
-            // NPC lokace s nepřáteli/radiací mohou být prohledávány (např. research_facility)
+            // NPC lokace s nepřáteli/radiací nebo quest itemem — zobraz Prohledat (jen jednou)
             if (location.type === 'npc' && (location.enemies?.length > 0 || location.radiation)) {
-                html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", 'var(--rust)');
-            }
-            
-            // === COMPANION QUEST ITEM SPAWN - vždy zobraz Prohledat pokud je zde quest item ===
-            const hasCompQuestItem = state.world?.questItemSpawns && Object.entries(state.world.questItemSpawns).some(([itemId, spawn]) => spawn.location === location.id && !state.inv?.some(i => i.id === itemId));
-            const hasLegacyQuestItem = state.world?.questItems?.[location.id];
-            if ((hasCompQuestItem || hasLegacyQuestItem) && location.type === 'npc') {
-                html += renderActionButton('🔍', 'Prohledat laboratoř', "showActionModal('explore')", '#e91e63');
+                const hasCompQuestItemHere = state.world?.questItemSpawns && Object.entries(state.world.questItemSpawns).some(([itemId, spawn]) => spawn.location === location.id && !state.inv?.some(i => i.id === itemId));
+                const hasLegacyQuestItemHere = state.world?.questItems?.[location.id];
+                if (hasCompQuestItemHere || hasLegacyQuestItemHere) {
+                    // Má quest item — zobraz speciální zvýrazněné tlačítko
+                    html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", '#e91e63');
+                } else {
+                    html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", 'var(--rust)');
+                }
             }
             
             // === OSADY ===
@@ -46437,9 +46587,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (item.effect === 'health') {
                 effectDesc = `❤️ Vyléčí <strong>+${item.value} HP</strong>`;
             } else if (item.effect === 'hunger') {
-                effectDesc = `🍖 Nasytí <strong>+${item.value}%</strong> hladu`;
+                const curHunger = state.status.hunger || 0;
+                const afterHunger = curHunger + item.value;
+                effectDesc = `🍖 Nasytí <strong>+${item.value}%</strong> hladu` + (afterHunger > 100 ? ` <span style="color:#ff9800;">(⚠️ přejedení! až ${Math.min(130,afterHunger)}%)</span>` : '');
             } else if (item.effect === 'thirst') {
-                effectDesc = `💧 Osvěží <strong>+${item.value}%</strong> žízně`;
+                const curThirst = state.status.thirst || 0;
+                const afterThirst = curThirst + item.value;
+                effectDesc = `💧 Osvěží <strong>+${item.value}%</strong> žízně` + (afterThirst > 100 ? ` <span style="color:#00e5ff;">(⚠️ přepití! až ${Math.min(130,afterThirst)}%)</span>` : '');
             } else if (item.effect === 'energy') {
                 effectDesc = `⚡ Dodá <strong>+${item.value}%</strong> energie`;
             } else if (item.effect === 'radiation') {
@@ -46554,7 +46708,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 
                 <div style="display: grid; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn" onclick="closeModal(); useItem('${item.id}', ${idx});" style="background: #4caf50;">✓ Použít</button>
+                    ${(item.effect === 'hunger' || item.effect === 'thirst') ? `
+                        <button class="btn" onclick="showPartialUseDialog(${idx})" style="background: #4caf50;">🍽️ Použít (výběr porce)</button>
+                        <button class="btn" onclick="closeModal(); useItem('${item.id}', ${idx});" style="background: #2a4a2a; font-size:0.85rem;">⚡ Sníst vše (${item.value}%)</button>
+                    ` : `
+                        <button class="btn" onclick="closeModal(); useItem('${item.id}', ${idx});" style="background: #4caf50;">✓ Použít</button>
+                    `}
                     ${item.count > 1 ? `<button class="btn" onclick="showSplitStackDialog(${idx})" style="background: #2196f3;">✂️ Rozdělit stack (${item.count}x)</button>` : ''}
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
                     <button class="btn" onclick="closeModal()" style="background: #555;">${'Zpět'}</button>
@@ -46574,6 +46733,136 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return ITEMS.find(i => i.id === item.id) 
                 || ITEMS.find(i => i.id === item.id?.replace('_craft', ''))
                 || null;
+        }
+        
+        // === ČÁSTEČNÉ POUŽITÍ JÍDLA/PITÍ ===
+        function showPartialUseDialog(idx) {
+            const item = state.inv[idx];
+            if (!item) return;
+            
+            const isFood = item.effect === 'hunger';
+            const isDrink = item.effect === 'thirst';
+            const fullValue = item.value || 30;
+            const curStatus = isFood ? (state.status.hunger || 0) : (state.status.thirst || 0);
+            const icon = isFood ? '🍖' : '💧';
+            const unit = '%';
+            
+            // Vypočti porce
+            const portions = [
+                { label: '¼ porce', pct: 25, value: Math.round(fullValue * 0.25) },
+                { label: '½ porce', pct: 50, value: Math.round(fullValue * 0.5) },
+                { label: '¾ porce', pct: 75, value: Math.round(fullValue * 0.75) },
+                { label: 'Vše', pct: 100, value: fullValue },
+            ];
+            
+            const portionButtons = portions.map(p => {
+                const afterVal = Math.min(130, curStatus + p.value);
+                const overfed = afterVal > 100;
+                const overText = overfed ? `<span style="color:${isFood?'#ff9800':'#00e5ff'};font-size:0.7rem;"> ⚠️${afterVal}%</span>` : `<span style="color:#8bc34a;font-size:0.7rem;"> →${Math.round(afterVal)}%</span>`;
+                return `<button class="btn" onclick="partialUseItem(${idx}, ${p.pct})" style="background:${overfed?'#3a2000':'#1a3a1a'};border:1px solid ${overfed?(isFood?'#ff9800':'#00e5ff'):'#4caf50'};padding:0.5rem;flex:1;min-width:60px;text-align:center;">
+                    <div style="font-weight:bold;font-size:0.9rem;">${p.label}</div>
+                    <div style="font-size:0.75rem;color:#aaa;">+${p.value}${unit}</div>
+                    ${overText}
+                </button>`;
+            }).join('');
+            
+            showModal(`${item.icon} ${item.name} — kolik sníst?`,
+                `<div style="text-align:center;margin-bottom:0.8rem;">
+                    <div style="font-size:3rem;">${item.icon}</div>
+                    <div style="color:#888;font-size:0.85rem;margin-top:0.3rem;">
+                        ${icon} Aktuálně: <strong style="color:${curStatus>100?'#ff9800':'#fff'};">${Math.min(100,Math.round(curStatus))}%</strong> · Plná hodnota: <strong>+${fullValue}%</strong>
+                    </div>
+                    ${curStatus > 80 ? `<div style="color:#ff9800;font-size:0.8rem;margin-top:0.3rem;">⚠️ Máš hodně — zvol menší porci!</div>` : ''}
+                </div>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:1rem;">
+                    ${portionButtons}
+                </div>
+                <button class="btn" onclick="closeModal()" style="width:100%;background:#333;">✕ Zpět</button>`
+            );
+        }
+        
+        function partialUseItem(idx, pct) {
+            const item = state.inv[idx];
+            if (!item) return;
+            
+            // Vypočítej částečnou hodnotu
+            const origValue = item.value || 30;
+            const partialValue = Math.max(1, Math.round(origValue * pct / 100));
+            const isFullUse = pct >= 100;
+            
+            if (isFullUse) {
+                // Plné použití - normální flow
+                closeModal();
+                useItem(item.id, idx);
+                return;
+            }
+            
+            // Částečné použití - neodstraní item, jen aplikuje část efektu
+            const isFood = item.effect === 'hunger';
+            const isDrink = item.effect === 'thirst';
+            
+            if (!isFood && !isDrink) {
+                // Fallback pro ostatní typy - přenesme na plné použití
+                closeModal();
+                useItem(item.id, idx);
+                return;
+            }
+            
+            const prevVal = isFood ? (state.status.hunger || 0) : (state.status.thirst || 0);
+            if (isFood) {
+                state.status.hunger = Math.min(130, prevVal + partialValue);
+                if (prevVal <= 100 && state.status.hunger > 100) checkOverfedPenalty();
+                else if (prevVal > 100) checkOverfedPenalty();
+            } else {
+                state.status.thirst = Math.min(130, prevVal + partialValue);
+                if (prevVal <= 100 && state.status.thirst > 100) checkOverfedPenalty();
+                else if (prevVal > 100) checkOverfedPenalty();
+            }
+            
+            // Aplikuj partial secondary efekty (zlomkově)
+            let secondary = item.secondary;
+            if (!secondary) {
+                const recipe = typeof CRAFTING !== 'undefined' ? CRAFTING.find(r => r.id === item.id) : null;
+                if (recipe?.result?.secondary) secondary = recipe.result.secondary;
+            }
+            if (secondary) {
+                if (secondary.hp) state.char.hp = Math.min(state.char.maxHp, state.char.hp + Math.round(secondary.hp * pct / 100));
+                if (secondary.energy) state.status.energy = Math.min(100, (state.status.energy||0) + Math.round(secondary.energy * pct / 100));
+                if (secondary.thirst && isFood) state.status.thirst = Math.min(130, (state.status.thirst||0) + Math.round(secondary.thirst * pct / 100));
+                if (secondary.mood) state.status.mood = Math.min(100, (state.status.mood||0) + Math.round(secondary.mood * pct / 100));
+            }
+            
+            // Sniž "zbytek" itemu - vytvoříme nový item s menší hodnotou nebo zbytkový stack
+            const remainingValue = origValue - partialValue;
+            if (remainingValue <= 0 || pct >= 100) {
+                // Spotřebuj celý item
+                removeItemFromInventory(item, 1);
+            } else {
+                // Sniž value - item "zůstane" ale s menší hodnotou (přejezel část)
+                // Strategie: jídlo se sníží o spotřebovanou část
+                if (item.count > 1) {
+                    // Stack - odeber jen 1 a vytvoř nový s partial hodnotou
+                    item.count--;
+                    const leftoverName = item.name.replace(' (zbytek)', '') + ' (zbytek)';
+                    const leftover = {...item, count: 1, value: remainingValue, _partial: true, _originalValue: origValue, name: leftoverName};
+                    leftover.count = 1;
+                    state.inv.push(leftover);
+                } else {
+                    // Jen 1 kus - uprav value
+                    item.value = remainingValue;
+                    item._partial = true;
+                    item._originalValue = origValue;
+                    item.name = item.name.replace(' (zbytek)', '') + ' (zbytek)';
+                    item.desc = `Zbývá ${Math.round(remainingValue * 100 / origValue)}% porce`;
+                }
+            }
+            
+            SoundSystem.play('pickup');
+            const pctName = pct === 25 ? 'čtvrtinu' : pct === 50 ? 'polovinu' : 'tři čtvrtiny';
+            addLog(`🍽️ Snědl jsi ${pctName} ${item.name.replace(' (zbytek)','')} (+${partialValue}% ${isFood?'hlad':'žízeň'})`, item.icon);
+            saveGame();
+            renderFull();
+            closeModal();
         }
         
         function useItem(itemId, specificIdx) {
@@ -47256,7 +47545,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (_dfBon.doubleFood) effectValue = Math.floor(effectValue * 2);
                 }
                 
-                state.status[item.effect] = Math.min(100, state.status[item.effect] + effectValue);
+                const prevVal = state.status[item.effect];
+                state.status[item.effect] = Math.min(130, state.status[item.effect] + effectValue);
+                // Přejezení / přepití - postihy při překročení 100
+                if ((item.effect === 'hunger' || item.effect === 'thirst') && prevVal <= 100 && state.status[item.effect] > 100) {
+                    checkOverfedPenalty();
+                } else if ((item.effect === 'hunger' || item.effect === 'thirst') && prevVal > 100) {
+                    checkOverfedPenalty();
+                }
                 SoundSystem.play('pickup');
                 const effectNames = { hunger: '🍖 Hlad', thirst: '💧 Žízeň', energy: '⚡ Energie' };
                 
@@ -47300,11 +47596,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         secondaryText += `<br><span style="color: #ffc107;">⚡ Energie +${secondary.energy}%</span>`;
                     }
                     if (secondary.thirst) {
-                        state.status.thirst = Math.min(100, state.status.thirst + secondary.thirst);
+                        const prevThirst = state.status.thirst || 0;
+                        state.status.thirst = Math.min(130, state.status.thirst + secondary.thirst);
+                        if (prevThirst <= 100 && state.status.thirst > 100) checkOverfedPenalty();
                         secondaryText += `<br><span style="color: #2196f3;">💧 Žízeň +${secondary.thirst}%</span>`;
                     }
                     if (secondary.hunger) {
-                        state.status.hunger = Math.min(100, state.status.hunger + secondary.hunger);
+                        const prevHunger2 = state.status.hunger || 0;
+                        state.status.hunger = Math.min(130, state.status.hunger + secondary.hunger);
+                        if (prevHunger2 <= 100 && state.status.hunger > 100) checkOverfedPenalty();
                         secondaryText += `<br><span style="color: #8bc34a;">🍖 Hlad +${secondary.hunger}%</span>`;
                     }
                     if (secondary.mood) {
@@ -58033,7 +58333,8 @@ function openFullscreenMap() {
             else if (req.find_npc) {
                 result.current = prog.npcFound ? 1 : 0;
                 result.required = 1;
-                result.label = '👤 Přeživší';
+                const targetName = prog.targetLocationName;
+                result.label = targetName ? `👤 Přeživší @ ${targetName}` : '👤 Hledej přeživšího (prohledej lokaci)';
             }
             else if (req.rescue) {
                 result.current = prog.rescued ? 1 : 0;
@@ -58069,13 +58370,26 @@ function openFullscreenMap() {
                 const quest = NPC_QUESTS[questData.id];
                 if (!quest) return;
                 
-                // Find NPC (najdi přeživšího) - v opuštěných budovách, ruinách, explore lokacích
+                // Find NPC (najdi přeživšího) - POUZE na přidělené lokaci (100% šance)
                 if (quest.requirement?.find_npc && !questData.progress.npcFound) {
-                    const validTypes = ['explore', 'npc', 'settlement', 'empty'];
-                    const validIds = ['ruined_village', 'abandoned_house', 'old_farm', 'motel', 'safehouse', 'old_church'];
-                    if ((validTypes.includes(loc.type) || validIds.includes(loc.id)) && Math.random() < 0.25) {
+                    // Přidel konkrétní lokaci pokud ještě nemáme
+                    if (!questData.progress.targetLocation) {
+                        const validFindIds = ['ruined_village', 'abandoned_house', 'old_farm', 'motel', 'safehouse', 'old_church', 'ruins_north', 'ruins_south', 'cemetery', 'playground', 'old_bunker', 'hospital', 'warehouse'];
+                        const validFindLocs = WORLD_LOCATIONS.filter(l => 
+                            validFindIds.includes(l.id) || l.type === 'explore'
+                        );
+                        if (validFindLocs.length > 0) {
+                            const picked = validFindLocs[Math.floor(Math.random() * validFindLocs.length)];
+                            questData.progress.targetLocation = picked.id;
+                            questData.progress.targetLocationName = picked.name;
+                            console.log(`👤 Find NPC quest: target assigned = ${picked.id}`);
+                        }
+                    }
+                    // Spusť POUZE na přidělené lokaci
+                    const targetLoc = questData.progress.targetLocation;
+                    if (targetLoc && loc.id === targetLoc) {
                         questData.progress.npcFound = true;
-                        console.log(`👤 Find NPC quest splněn na lokaci ${loc.id}`);
+                        console.log(`👤 Find NPC quest splněn na přidělené lokaci ${loc.id}`);
                         showModal('👤 Přeživší nalezen!', `
                             <div style="text-align: center;">
                                 <div style="font-size: 4rem;">👤</div>
@@ -76703,6 +77017,7 @@ function openFullscreenMap() {
             // Process building queue
             if (state.confirmed) {
                 processBuildQueue();
+            if (typeof processOverfedDebuffs === 'function') processOverfedDebuffs();
             }
             
             // 🏛️ DENNÍ DAŇ + PLAT ŠÉFA - nezávisle na settlement, na reálném čase
@@ -103670,7 +103985,7 @@ function openFullscreenMap() {
                             ${winnerTickets} lístků z ${ticketPool.length} celkem (${winChance}% šance)
                         </p>
                     </div>
-                    <button class="btn" onclick="showAdminPanel()" style="width: 100%; margin-top: 1rem; background: #4caf50;">✓ OK</button>
+                    <button class="btn" onclick="closeModal(); if(isStaff()) showAdminPanel(); else showTombola();" style="width: 100%; margin-top: 1rem; background: #4caf50;">✓ OK</button>
                 `);
                 
                 notifySuccess('🎉 Výherce vylosován!', winner);
@@ -103704,7 +104019,7 @@ function openFullscreenMap() {
                 await firebaseDB.ref('tombola/active').remove();
                 await firebaseDB.ref('tombola/reminders').remove();
                 notifySuccess('Tombola zrušena', 'Tombola byla zrušena');
-                showAdminPanel();
+                if (isStaff()) showAdminPanel(); else { closeModal(); showTombola(); }
             } catch (e) {
                 console.error('Cancel tombola error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se zrušit tombolu');
@@ -107749,6 +108064,8 @@ function openFullscreenMap() {
         window.confirmBuildClanBuilding = confirmBuildClanBuilding;
         window.showClanVault = showClanVault;
         window.processClanBuildQueue = processClanBuildQueue;
+        window.showPartialUseDialog = showPartialUseDialog;
+        window.partialUseItem = partialUseItem;
         window.clanVaultDeposit = clanVaultDeposit;
         window.clanVaultWithdraw = clanVaultWithdraw;
         window.clanHealPlayer = clanHealPlayer;
@@ -108276,6 +108593,13 @@ function openFullscreenMap() {
         // === STAVBA BUDOV KLANU ===
         async function buildClanBuilding(locationId, buildingId) {
             if (!multiplayerEnabled || !firebaseDB) return;
+            
+            // Hráč musí být fyzicky na místě klanu
+            if (state.world.currentLocation !== locationId) {
+                const clanLoc = WORLD_LOCATIONS.find(l => l.id === locationId);
+                notifyWarning('Nejsi na místě', `Musíš být na klanové půdě (${clanLoc?.name || locationId}), abys mohl stavět!`);
+                return;
+            }
             
             await loadClanData();
             const clan = getClanData(locationId);
