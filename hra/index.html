@@ -68929,9 +68929,9 @@ function openFullscreenMap() {
                     const raidEnemy = cs.units.find(u => u.team === 'enemy' && (u.isWorldBoss || u.isRaidBoss));
                     if (raidEnemy) {
                         const bossHpAfter = Math.max(0, raidEnemy.hp || 0);
-                        const damageDealt = Math.max(0, (state.activeWorldBoss.raidHpBefore || 0) - bossHpAfter);
+                        const damageDealt = Math.min(Math.max(0, (state.activeWorldBoss.raidHpBefore || 0) - bossHpAfter), Math.ceil((state.activeWorldBoss.raidHpBefore || 0) * 0.10));
                         syncRaidBossDamage(bossHpAfter);
-                        console.log(`🐉 FLEE: synced ${damageDealt} DMG`);
+                        console.log(`🐉 FLEE: synced ${damageDealt} DMG (capped at 10%)`);
                         
                         // Útěk = -25% HP penalizace (mírnější než prohra)
                         const hpBefore = state.char.hp;
@@ -69375,9 +69375,10 @@ function openFullscreenMap() {
                 // Zjisti aktuální HP bosse (včetně mrtvých - hp může být 0 nebo záporné)
                 const allEnemyUnits = cs.units ? cs.units.filter(u => u.team === 'enemy') : [];
                 const bossHpAfter = allEnemyUnits.length > 0 ? Math.max(0, Math.min(...allEnemyUnits.map(u => u.hp || 0))) : raidHpBefore;
-                const damageDealt = Math.max(0, raidHpBefore - bossHpAfter);
+                const _rawDamageDealt = Math.max(0, raidHpBefore - bossHpAfter);
+                const damageDealt = Math.min(_rawDamageDealt, Math.ceil(raidHpBefore * 0.10)); // max 10% cap
                 
-                console.log(`🐉 DEFEAT: raidHpBefore=${raidHpBefore}, bossHpAfter=${bossHpAfter}, damageDealt=${damageDealt}`);
+                console.log(`🐉 DEFEAT: raidHpBefore=${raidHpBefore}, bossHpAfter=${bossHpAfter}, damageDealt=${damageDealt}${_rawDamageDealt > damageDealt ? ' [CAPPED]' : ''}`);
                 
                 // Sync damage na Firebase
                 syncRaidBossDamage(bossHpAfter);
@@ -71535,9 +71536,10 @@ function openFullscreenMap() {
                 // Zjisti zbývající HP bosse po boji (včetně mrtvých)
                 const allEnemyUnits = cs.units ? cs.units.filter(u => u.team === 'enemy') : [];
                 const bossHpAfter = allEnemyUnits.length > 0 ? Math.max(0, Math.min(...allEnemyUnits.map(u => u.hp || 0))) : 0;
-                const damageDealt = Math.max(0, (state.activeWorldBoss.raidHpBefore || 0) - bossHpAfter);
+                const _rawVictoryDmg = Math.max(0, (state.activeWorldBoss.raidHpBefore || 0) - bossHpAfter);
+                const damageDealt = Math.min(_rawVictoryDmg, Math.ceil((state.activeWorldBoss.raidHpBefore || 0) * 0.10)); // max 10% cap
                 
-                console.log(`🐉 VICTORY: raidHpBefore=${state.activeWorldBoss.raidHpBefore}, bossHpAfter=${bossHpAfter}, damageDealt=${damageDealt}, enemyUnits=${allEnemyUnits.length}, enemyHps=${allEnemyUnits.map(u => u.hp).join(',')}`);
+                console.log(`🐉 VICTORY: raidHpBefore=${state.activeWorldBoss.raidHpBefore}, bossHpAfter=${bossHpAfter}, damageDealt=${damageDealt}${_rawVictoryDmg > damageDealt ? ' [CAPPED 10%]' : ''}, enemyUnits=${allEnemyUnits.length}, enemyHps=${allEnemyUnits.map(u => u.hp).join(',')}`);
                 
                 // Sync damage na Firebase (async)
                 syncRaidBossDamage(bossHpAfter);
@@ -71564,6 +71566,7 @@ function openFullscreenMap() {
                     <div style="background: linear-gradient(135deg, #1a0a2a, #2a1a3a); padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; border: 2px solid #9c27b0;">
                         <h4 style="margin: 0 0 0.5rem 0; color: #ce93d8;">🐉 World Boss Raid</h4>
                         <div style="color: #ff4444; font-size: 1.2rem; font-weight: bold;">⚔️ -${formatNumber(damageDealt)} DMG!</div>
+                        ${damageDealt >= Math.ceil((state.activeWorldBoss?.raidHpBefore || 0) * 0.10) ? `<div style="color: #ff9800; font-size: 0.78rem; margin-top: 0.2rem;">⚠️ Limit 10% HP bosse za boj (sdílený boss)</div>` : ''}
                         <div style="color: #8bc34a; font-size: 0.85rem; margin-top: 0.3rem;">❤️ HP: ${formatNumber(state.char.hp)} (výhra - žádná penalizace!)</div>
                         <div style="color: #888; font-size: 0.85rem; margin-top: 0.3rem;">Damage se sčítá se všemi hráči. Loot získáš po poražení bosse.</div>
                     </div>
@@ -79232,6 +79235,7 @@ function openFullscreenMap() {
                 
                 // Načti chat zprávy
                 listenToChat();
+            listenToClanChat();
                 
                 // Načti marketplace
                 listenToMarketplace();
@@ -83393,6 +83397,78 @@ function openFullscreenMap() {
                 });
         }
         
+        // === KLAN CHAT ===
+        let clanChatMessages = [];
+        let clanChatListener = null;
+        let clanChatUnread = 0;
+        let _lastClanChatSeen = 0;
+        
+        function getMyClanTag() {
+            const myName = getPlayerName();
+            const cache = window.clanOwnershipCache || {};
+            for (const locId in cache) {
+                const clan = cache[locId];
+                if (!clan) continue;
+                const isMem = clan.leader === myName ||
+                    Object.values(clan.members || {}).some(m => m.name === myName) ||
+                    Object.values(clan.officers || {}).some(o => o.name === myName);
+                if (isMem) return { tag: locId, name: clan.name, clan };
+            }
+            return null;
+        }
+        
+        function listenToClanChat() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            const myClan = getMyClanTag();
+            if (!myClan) return;
+            
+            // Odpoj starý listener pokud existuje
+            if (clanChatListener) {
+                firebaseDB.ref(`clanChat/${myClan.tag}/messages`).off('value', clanChatListener);
+                clanChatListener = null;
+            }
+            
+            clanChatListener = firebaseDB.ref(`clanChat/${myClan.tag}/messages`)
+                .orderByChild('timestamp')
+                .limitToLast(80)
+                .on('value', (snapshot) => {
+                    const data = snapshot.val() || {};
+                    clanChatMessages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
+                    // Spočítej nepřečtené (zprávy novější než poslední zobrazení)
+                    clanChatUnread = clanChatMessages.filter(m => m.timestamp > _lastClanChatSeen && m.author !== getPlayerName()).length;
+                });
+        }
+        
+        async function sendClanChatMessage(text) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            const myClan = getMyClanTag();
+            if (!myClan) { notifyWarning('Nejsi v klanu', 'Klan chat je pouze pro členy klanu.'); return; }
+            
+            text = text.trim();
+            if (!text || text.length > 200) return;
+            
+            const sanitized = typeof escapeHtml === 'function' ? text.replace(/<[^>]*>/g, '') : text;
+            
+            const msg = {
+                author: getPlayerName(),
+                text: sanitized,
+                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                level: state.char?.level || 1,
+            };
+            
+            try {
+                await firebaseDB.ref(`clanChat/${myClan.tag}/messages`).push(msg);
+                // Udržuj max 200 zpráv - starší maž
+                const snap = await firebaseDB.ref(`clanChat/${myClan.tag}/messages`).orderByChild('timestamp').limitToFirst(1).once('value');
+                const count = clanChatMessages.length;
+                if (count > 200) {
+                    snap.forEach(child => child.ref.remove());
+                }
+            } catch(e) {
+                notifyWarning('Chyba', 'Nepodařilo se odeslat zprávu do klan chatu');
+            }
+        }
+        
         // === CHAT HODNOSTI (podle počtu odeslaných zpráv) ===
         const CHAT_RANKS = [
             { min: 0, name: 'Tichý', nameEn: 'Silent', icon: '🔇', color: '#666' },
@@ -83796,6 +83872,19 @@ function openFullscreenMap() {
                 });
             }
             
+            // Zjisti klan pro clan tab
+            const _chatMyClan = getMyClanTag();
+            const _activeChatTab = window._activeChatTab || 'global';
+            // Označ clan zprávy jako přečtené při otevření clan tabu
+            if (_activeChatTab === 'clan') {
+                _lastClanChatSeen = Date.now();
+                clanChatUnread = 0;
+            }
+            // Pokud má hráč klan a listener ještě není aktivní, spusť ho
+            if (_chatMyClan && !clanChatListener) {
+                listenToClanChat();
+            }
+            
             showModal('💬 Chat přeživších', `
                 <!-- Moje hodnost (kompaktní) -->
                 <div style="background: linear-gradient(135deg, #1a1a2a, #0a0a1a); padding: 0.3rem 0.5rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid ${myRank.color}40; display: flex; align-items: center; justify-content: space-between; gap: 0.4rem;">
@@ -83863,6 +83952,61 @@ function openFullscreenMap() {
                     </div>`;
                 })()}
                 
+                <!-- ZÁLOŽKY: Globální / Klan -->
+                <div style="display: flex; gap: 0; margin-bottom: 0.4rem; background: #0a0a0a; border-radius: 8px; overflow: hidden; border: 1px solid #1a1a1a;">
+                    <button onclick="window._activeChatTab='global'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='global'?'#1a3a1a':'transparent'}; color: ${_activeChatTab==='global'?'#8bc34a':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='global'?'bold':'normal'}; border-right: 1px solid #1a1a1a; font-size: 0.85rem;">
+                        🌍 Globální
+                    </button>
+                    <button onclick="window._activeChatTab='clan'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='clan'?'#1a0a2a':'transparent'}; color: ${_activeChatTab==='clan'?'#ce93d8':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='clan'?'bold':'normal'}; font-size: 0.85rem; position: relative;">
+                        ⚔️ Klan ${clanChatUnread > 0 && _activeChatTab !== 'clan' ? `<span style="position:absolute; top:4px; right:8px; background:#e91e63; color:#fff; border-radius:50%; width:16px; height:16px; font-size:0.6rem; display:flex; align-items:center; justify-content:center;">${clanChatUnread}</span>` : ''}
+                    </button>
+                </div>
+                
+                ${_activeChatTab === 'clan' ? `
+                    <!-- KLAN CHAT -->
+                    ${!_chatMyClan ? `
+                    <div style="background: #1a1a0a; border: 1px solid #333; border-radius: 8px; padding: 2rem; text-align: center; margin-bottom: 0.5rem;">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">⚔️</div>
+                        <div style="color: #888; font-size: 0.9rem;">Nejsi členem žádného klanu</div>
+                        <div style="color: #666; font-size: 0.78rem; margin-top: 0.3rem;">Klan chat je dostupný pouze pro členy klanu.</div>
+                    </div>
+                    ` : `
+                    <div style="background: #1a0a2a; border: 1px solid #7b1fa2; border-radius: 6px; padding: 0.3rem 0.6rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem;">
+                        <span style="font-size: 0.85rem;">⚔️</span>
+                        <span style="color: #ce93d8; font-weight: bold; font-size: 0.82rem;">${_chatMyClan.name}</span>
+                        <span style="color: #555; font-size: 0.7rem;">— soukromý klan chat</span>
+                    </div>
+                    <div style="position: relative;">
+                        <div id="clanChatContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: #0a0a0a; border-radius: 8px; padding: 0.8rem; border: 1px solid #2a1a3a;">
+                            ${clanChatMessages.length === 0 ? '<div style="text-align:center;padding:2rem;color:#444;">Zatím žádné zprávy... Začni konverzaci!</div>' : 
+                                clanChatMessages.slice(-50).map(msg => {
+                                    const isMe = msg.author === getPlayerName();
+                                    const t = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'}) : '';
+                                    return '<div style="margin-bottom:0.5rem;' + (isMe?'text-align:right;':'') + '">' +
+                                        '<div style="display:inline-block;max-width:80%;background:' + (isMe?'#1a0a2a':'#2a1a3a') + ';padding:0.5rem 0.8rem;border-radius:12px;' + (isMe?'border-bottom-right-radius:4px;':'border-bottom-left-radius:4px;') + 'border:1px solid ' + (isMe?'#7b1fa2':'#4a1a6a') + ';">' +
+                                        '<div style="font-size:0.7rem;margin-bottom:0.2rem;">' +
+                                        '<span style="color:' + (isMe?'#ce93d8':'#b39ddb') + ';font-weight:bold;">' + (isMe?'★ Ty':escapeHtml(msg.author)) + '</span>' +
+                                        ' <span style="color:#444;font-size:0.65rem;">Lvl ' + (msg.level||'?') + '</span>' +
+                                        '<span style="color:#444;margin-left:0.4rem;">' + t + '</span></div>' +
+                                        '<div style="color:#ddd;">' + escapeHtml(msg.text) + '</div>' +
+                                        '</div></div>';
+                                }).join('')
+                            }
+                        </div>
+                        <div style="position:absolute;right:5px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:0.3rem;z-index:10;">
+                            <button onclick="document.getElementById('clanChatContainer').scrollTop -= 150;" style="width:44px;height:44px;border-radius:50%;background:rgba(156,39,176,0.9);border:none;color:white;font-size:1.2rem;cursor:pointer;">▲</button>
+                            <button onclick="document.getElementById('clanChatContainer').scrollTop += 150;" style="width:44px;height:44px;border-radius:50%;background:rgba(156,39,176,0.9);border:none;color:white;font-size:1.2rem;cursor:pointer;">▼</button>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+                        <input type="text" id="clanChatInput" placeholder="Napiš zprávu do klanu..." maxlength="200"
+                            style="flex:1;padding:0.6rem;background:#1a0a2a;border:1px solid #7b1fa2;border-radius:8px;color:#e1bee7;"
+                            onkeypress="if(event.key==='Enter') sendClanChatFromInput()">
+                        <button class="btn" onclick="sendClanChatFromInput()" style="background:#7b1fa2;padding:0.6rem 1rem;">📤</button>
+                    </div>
+                    `}
+                ` : `
+                <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
                     <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: #0a0a0a; border-radius: 8px; padding: 0.8rem; position: relative;">
                         ${messagesHtml}
@@ -83888,39 +84032,31 @@ function openFullscreenMap() {
                     <button class="btn" onclick="sendChatFromInput()" style="background: #4CAF50; padding: 0.6rem 1rem;">📤</button>
                 </div>
                 
-                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← ${'Zavřít'}</button>
+                `}
+                
+                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zavřít</button>
             `);
             
             // Scrollni dolů a nastav touch handler
             setTimeout(() => {
-                const container = document.getElementById('chatMessagesContainer');
-                if (container) {
+                const setupScroll = (containerId) => {
+                    const container = document.getElementById(containerId);
+                    if (!container) return;
                     container.scrollTop = container.scrollHeight;
-                    
-                    // Zabraň pull-to-refresh při scrollování v chatu
                     container.addEventListener('touchstart', function(e) {
                         this._startY = e.touches[0].pageY;
-                        this._startScrollTop = this.scrollTop;
                     }, { passive: true });
-                    
                     container.addEventListener('touchmove', function(e) {
-                        const scrollTop = this.scrollTop;
-                        const scrollHeight = this.scrollHeight;
-                        const clientHeight = this.clientHeight;
                         const deltaY = e.touches[0].pageY - this._startY;
-                        
-                        // Pokud jsme na vrchu a táhneme dolů (pull-to-refresh gesto)
-                        if (scrollTop <= 0 && deltaY > 0) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                        }
-                        // Pokud jsme na spodu a táhneme nahoru
-                        else if (scrollTop + clientHeight >= scrollHeight && deltaY < 0) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                        }
+                        if (this.scrollTop <= 0 && deltaY > 0) { e.preventDefault(); e.stopPropagation(); }
+                        else if (this.scrollTop + this.clientHeight >= this.scrollHeight && deltaY < 0) { e.preventDefault(); e.stopPropagation(); }
                     }, { passive: false });
-                }
+                };
+                setupScroll('chatMessagesContainer');
+                setupScroll('clanChatContainer');
+                // Focus na správný input
+                const activeInput = document.getElementById(window._activeChatTab === 'clan' ? 'clanChatInput' : 'chatInput');
+                // Neautofocusuj na mobilu (vyvolá klávesnici)
             }, 100);
         }
         
@@ -83929,8 +84065,16 @@ function openFullscreenMap() {
             if (input && input.value.trim()) {
                 sendChatMessage(input.value.trim());
                 input.value = '';
-                // Obnov chat po chvíli
                 setTimeout(() => showChatModal(), 500);
+            }
+        }
+        
+        function sendClanChatFromInput() {
+            const input = document.getElementById('clanChatInput');
+            if (input && input.value.trim()) {
+                sendClanChatMessage(input.value.trim());
+                input.value = '';
+                setTimeout(() => showChatModal(), 400);
             }
         }
         
@@ -86313,6 +86457,11 @@ function openFullscreenMap() {
         // Kontrola nových chat zpráv
         let lastChatMessageCount = 0;
         function checkNewChatMessages() {
+            // Klan chat unread badge refresh
+            if (typeof clanChatMessages !== 'undefined') {
+                const unread = clanChatMessages.filter(m => m.timestamp > _lastClanChatSeen && m.author !== getPlayerName()).length;
+                clanChatUnread = unread;
+            }
             const myName = getPlayerName();
             const newMessages = chatMessages.filter(m => m.author !== myName);
             
@@ -99768,7 +99917,8 @@ function openFullscreenMap() {
                 const bossLocId = wb.locationId || '';
                 const isAtBoss = bossLocId && state.world.currentLocation === bossLocId;
                 if (isAtBoss) {
-                    actionBtn = `<button class="btn" onclick="closeModal(); joinWorldBossRaid();" style="width: 100%; background: linear-gradient(135deg, #b71c1c, #d32f2f); padding: 0.9rem; font-size: 1rem; font-weight: bold;">⚔️ ZAÚTOČIT NA BOSSE!</button>`;
+                    actionBtn = `<button class="btn" onclick="closeModal(); joinWorldBossRaid();" style="width: 100%; background: linear-gradient(135deg, #b71c1c, #d32f2f); padding: 0.9rem; font-size: 1rem; font-weight: bold;">⚔️ ZAÚTOČIT NA BOSSE!</button>
+                    <div style="text-align:center; color:#888; font-size:0.72rem; margin-top:0.3rem;">⚠️ Max damage za boj: 10% zbývajícího HP bosse</div>`;
                 } else {
                     const bossLoc = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === bossLocId) : null;
                     actionBtn = `<button class="btn" onclick="closeModal(); ${bossLocId ? "showLocationPreview('" + bossLocId + "')" : ''};" style="width: 100%; background: #333; padding: 0.9rem; font-size: 0.95rem;">🚶 Jít na ${bossLoc ? bossLoc.icon + ' ' + bossLoc.name : 'lokaci bosse'}</button>`;
@@ -99962,9 +100112,19 @@ function openFullscreenMap() {
             }
             
             const raidHpBefore = state.activeWorldBoss.raidHpBefore || 0;
-            const damageDealt = Math.max(0, raidHpBefore - bossHpAfterCombat);
+            let damageDealt = Math.max(0, raidHpBefore - bossHpAfterCombat);
             
-            console.log(`🐉 syncRaidBossDamage: hpBefore=${raidHpBefore}, hpAfter=${bossHpAfterCombat}, damage=${damageDealt}`);
+            // === DMG CAP: max 10% z aktuálního HP bosse za jeden boj ===
+            const maxDamagePerFight = Math.ceil(raidHpBefore * 0.10);
+            let cappedByLimit = false;
+            if (damageDealt > maxDamagePerFight) {
+                console.log(`🐉 DMG CAP: dealt=${damageDealt}, max=${maxDamagePerFight} (10% of ${raidHpBefore}) — clamping`);
+                damageDealt = maxDamagePerFight;
+                bossHpAfterCombat = raidHpBefore - damageDealt;
+                cappedByLimit = true;
+            }
+            
+            console.log(`🐉 syncRaidBossDamage: hpBefore=${raidHpBefore}, hpAfter=${bossHpAfterCombat}, damage=${damageDealt}${cappedByLimit ? ' [CAPPED 10%]' : ''}`);
             
             if (damageDealt <= 0) {
                 console.log('🐉 syncRaidBossDamage: No damage dealt, skipping');
@@ -108178,12 +108338,12 @@ function openFullscreenMap() {
             const myName = getPlayerName();
             if (!myName) { notifyWarning('Chyba', 'Musíš mít jméno!'); return; }
             
-            // Kontrola: hráč nesmí být v jiném klanu jako leader
+            // Kontrola: hráč nesmí být v žádném klanu
             await loadClanData();
             const myClans = getMyClans();
-            const isLeader = myClans.some(c => c.leader === myName);
-            if (isLeader) {
-                notifyWarning('Již vůdce', 'Již vedeš jiný klan! Nejprve ho rozpusť.');
+            if (myClans.length > 0) {
+                const existingClan = myClans[0];
+                notifyWarning('Již v klanu', `Již jsi členem klanu [${existingClan.name}]! Nejprve klan opusť nebo ho rozpusť.`);
                 return;
             }
             
@@ -108333,10 +108493,17 @@ function openFullscreenMap() {
             const clan = getClanData(locationId);
             if (!clan) { notifyWarning('Klan neexistuje', 'Na tomto místě žádný klan není.'); return; }
             
-            const alreadyMember = clan.leader === myName ||
+            // Kontrola: hráč nesmí být v žádném jiném klanu
+            const myExistingClans = getMyClans();
+            const alreadyInThisClan = clan.leader === myName ||
                 Object.values(clan.members || {}).some(m => m.name === myName) ||
                 Object.values(clan.officers || {}).some(o => o.name === myName);
-            if (alreadyMember) { notifyWarning('Již člen', 'Již jsi členem tohoto klanu!'); return; }
+            if (alreadyInThisClan) { notifyWarning('Již člen', 'Již jsi členem tohoto klanu!'); return; }
+            if (myExistingClans.length > 0) {
+                const otherClan = myExistingClans[0];
+                notifyWarning('Již v jiném klanu', `Jsi členem klanu [${otherClan.name}]. Hráč může být pouze v jednom klanu najednou!`);
+                return;
+            }
             
             const memberCount = 1 + Object.keys(clan.members || {}).length + Object.keys(clan.officers || {}).length;
             if (memberCount >= CLAN_CONFIG.maxMembers) {
