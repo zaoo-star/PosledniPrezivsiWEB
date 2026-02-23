@@ -36806,14 +36806,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 explore: {
                     icon: '🔍',
                     name: 'Průzkum',
-                    desc: 'Prohledej lokaci a najdi skryté věci.',
-                    baseTime: 5, // 5 minut
-                    rewards: ['📦 Loot a předměty', '💰 Peníze', '🗝️ Klíče a vzácnosti'],
-                    risks: ['⚔️ Můžeš narazit na nepřátele', '⏱️ Zabere čas'],
-                    requirements: ['👁️ Vnímavost = více lootu', '🍀 Štěstí pomáhá'],
-                    tip: 'Každá lokace má omezenou zásobu lootu. Některé mají skryté místnosti!',
-                    action: "startTimedAction('explore')",
-                    btnText: '🔍 Prohledat',
+                    desc: 'Prohledej lokaci — vstup do opuštěných budov, chodeb a místností.',
+                    baseTime: 0, // Dungeon explore je okamžitý
+                    rewards: ['📦 Truhly, skříně, bedny', '💰 Peníze a suroviny', '⚔️ Předměty a vybavení'],
+                    risks: ['⚔️ Nepřátelé v místnostech', '⚠️ Pasti v chodbách', '❤️ Ztráta HP'],
+                    requirements: ['👁️ Vnímavost = více lootu', '💪 Síla v boji', '🗡️ Zbraň na nepřátele'],
+                    tip: 'Prozkoumej celou mapu pro nejlepší loot! Čím nebezpečnější lokace, tím větší dungeon a lepší nálezky. Najdi východ 🏁 a odejdi s kořistí.',
+                    action: "startDungeonExploration()",
+                    btnText: '🗺️ Vstoupit do průzkumu',
                     btnColor: 'var(--rust)'
                 },
                 gather: {
@@ -40855,6 +40855,642 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             addXP(5);
             renderFull();
         }
+
+        // ========================================================
+        // === 🗺️ DUNGEON EXPLORATION - Grid-based průzkum ===
+        // ========================================================
+        
+        let _dungeonExploreState = null;
+        
+        // Serializace dungeon state do/z state pro saveGame
+        function saveDungeonExploreState() {
+            if (!_dungeonExploreState) {
+                delete state.activeDungeonExplore;
+                return;
+            }
+            const ds = _dungeonExploreState;
+            state.activeDungeonExplore = {
+                grid: ds.grid, w: ds.w, h: ds.h,
+                px: ds.px, py: ds.py,
+                revealed: Array.from(ds.revealed),
+                loot: ds.loot, lootLog: ds.lootLog,
+                enemiesKilled: ds.enemiesKilled, roomsExplored: ds.roomsExplored,
+                steps: ds.steps, locId: ds.loc?.id,
+                danger: ds.danger, exitFound: ds.exitFound, active: ds.active
+            };
+        }
+        
+        function restoreDungeonExploreState() {
+            if (!state.activeDungeonExplore) return;
+            const saved = state.activeDungeonExplore;
+            const loc = WORLD_LOCATIONS.find(l => l.id === saved.locId);
+            if (!loc) { delete state.activeDungeonExplore; return; }
+            _dungeonExploreState = {
+                grid: saved.grid, w: saved.w, h: saved.h,
+                px: saved.px, py: saved.py,
+                revealed: new Set(saved.revealed || []),
+                loot: saved.loot || [], lootLog: saved.lootLog || [],
+                enemiesKilled: saved.enemiesKilled || 0,
+                roomsExplored: saved.roomsExplored || 0,
+                steps: saved.steps || 0,
+                loc: loc, danger: saved.danger || 1,
+                exitFound: saved.exitFound || false,
+                active: saved.active !== false
+            };
+            // Zobraz dungeon UI po loadu - ale jen pokud neprobíhá boj
+            setTimeout(() => {
+                if (_dungeonExploreState && _dungeonExploreState.active && !window.combatState && !state.activeCombat) {
+                    renderExploreDungeonUI();
+                }
+            }, 600);
+        }
+        
+        function startDungeonExploration() {
+            const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
+            if (!loc) return;
+            
+            // Safety guardy
+            if (typeof isInCombat === 'function' && isInCombat()) { notifyWarning('Nelze', 'Probíhá boj!'); return; }
+            if (state.isDead) { notifyWarning('Nelze', 'Jsi mrtvý!'); return; }
+            if (state.world?.traveling) { notifyWarning('Nelze', 'Cestuješ!'); return; }
+            if (_dungeonExploreState) { renderExploreDungeonUI(); return; } // Už probíhá
+            
+            // Denní limit
+            const limit = checkDailyActionLimit('explore', loc.id);
+            if (!limit.canDo) {
+                const hours = Math.floor(limit.resetIn / 3600000);
+                const mins = Math.floor((limit.resetIn % 3600000) / 60000);
+                notifyWarning('Lokace vyčerpaná', `Už jsi prozkoumal 3x. Další za ${hours}h ${mins}m`);
+                return;
+            }
+            useActionLimit('explore', loc.id);
+            
+            const danger = loc.dangerLevel || 1;
+            const gridW = Math.min(16, 10 + danger * 2);
+            const gridH = Math.min(16, 10 + danger * 2);
+            
+            const dungeon = generateExploreDungeon(gridW, gridH, danger, loc);
+            
+            _dungeonExploreState = {
+                grid: dungeon.grid, w: gridW, h: gridH,
+                px: dungeon.startX, py: dungeon.startY,
+                revealed: new Set(), loot: [], lootLog: [],
+                enemiesKilled: 0, roomsExplored: 0, steps: 0,
+                loc: loc, danger: danger, exitFound: false, active: true
+            };
+            
+            revealExploreArea(_dungeonExploreState.px, _dungeonExploreState.py, 2);
+            renderExploreDungeonUI();
+        }
+        
+        function generateExploreDungeon(w, h, danger, loc) {
+            const grid = [];
+            for (let y = 0; y < h; y++) {
+                grid[y] = [];
+                for (let x = 0; x < w; x++) {
+                    grid[y][x] = { type: 'wall', icon: '', explored: false };
+                }
+            }
+            
+            const rooms = [];
+            const roomCount = 4 + Math.floor(Math.random() * (2 + danger));
+            
+            for (let i = 0; i < 80 && rooms.length < roomCount; i++) {
+                const rw = 3 + Math.floor(Math.random() * 3);
+                const rh = 3 + Math.floor(Math.random() * 3);
+                const rx = 1 + Math.floor(Math.random() * (w - rw - 2));
+                const ry = 1 + Math.floor(Math.random() * (h - rh - 2));
+                
+                let overlap = false;
+                for (const r of rooms) {
+                    if (rx - 1 < r.x + r.w && rx + rw + 1 > r.x && ry - 1 < r.y + r.h && ry + rh + 1 > r.y) {
+                        overlap = true; break;
+                    }
+                }
+                if (overlap) continue;
+                rooms.push({ x: rx, y: ry, w: rw, h: rh });
+                for (let y = ry; y < ry + rh; y++)
+                    for (let x = rx; x < rx + rw; x++)
+                        grid[y][x] = { type: 'floor', icon: '', explored: false };
+            }
+            
+            // Spoj místnosti chodbami (L-tvar)
+            for (let i = 1; i < rooms.length; i++) {
+                const a = rooms[i - 1], b = rooms[i];
+                let cx = Math.floor(a.x + a.w / 2), cy = Math.floor(a.y + a.h / 2);
+                const bx = Math.floor(b.x + b.w / 2), by = Math.floor(b.y + b.h / 2);
+                while (cx !== bx) {
+                    if (cy >= 0 && cy < h && cx >= 0 && cx < w && grid[cy][cx].type === 'wall')
+                        grid[cy][cx] = { type: 'corridor', icon: '', explored: false };
+                    cx += cx < bx ? 1 : -1;
+                }
+                while (cy !== by) {
+                    if (cy >= 0 && cy < h && cx >= 0 && cx < w && grid[cy][cx].type === 'wall')
+                        grid[cy][cx] = { type: 'corridor', icon: '', explored: false };
+                    cy += cy < by ? 1 : -1;
+                }
+            }
+            
+            // Extra chodby
+            if (rooms.length > 3 && Math.random() < 0.6) {
+                const ra = rooms[0], rb = rooms[rooms.length - 1];
+                let cx = Math.floor(ra.x + ra.w / 2), cy = Math.floor(ra.y + ra.h / 2);
+                const bx = Math.floor(rb.x + rb.w / 2), by = Math.floor(rb.y + rb.h / 2);
+                while (cy !== by) { if (cy>=0&&cy<h&&cx>=0&&cx<w&&grid[cy][cx].type==='wall') grid[cy][cx]={type:'corridor',icon:'',explored:false}; cy+=cy<by?1:-1; }
+                while (cx !== bx) { if (cy>=0&&cy<h&&cx>=0&&cx<w&&grid[cy][cx].type==='wall') grid[cy][cx]={type:'corridor',icon:'',explored:false}; cx+=cx<bx?1:-1; }
+            }
+            
+            // Start
+            const sr = rooms[0];
+            const startX = Math.floor(sr.x + sr.w / 2), startY = Math.floor(sr.y + sr.h / 2);
+            grid[startY][startX] = { type: 'start', icon: '🚪', explored: true };
+            
+            // Exit
+            const er = rooms[rooms.length - 1];
+            const exitX = Math.floor(er.x + er.w / 2), exitY = Math.floor(er.y + er.h / 2);
+            grid[exitY][exitX] = { type: 'exit', icon: '🏁', explored: false };
+            
+            // Objekty v místnostech
+            const objTypes = [
+                { type: 'chest', icon: '📦', label: 'Truhla' },
+                { type: 'cabinet', icon: '🗄️', label: 'Skříň' },
+                { type: 'barrel', icon: '🛢️', label: 'Sud' },
+                { type: 'skeleton', icon: '💀', label: 'Kostra' },
+                { type: 'crate', icon: '🧰', label: 'Bedna' },
+                { type: 'bookshelf', icon: '📚', label: 'Knihovna' },
+                { type: 'locker', icon: '🔒', label: 'Skříňka' },
+                { type: 'desk', icon: '🗃️', label: 'Stůl' },
+            ];
+            
+            const enemyPool = (loc.enemies && loc.enemies.length > 0) ? loc.enemies : ['rat', 'wild_dog', 'zombie'];
+            
+            for (let ri = 1; ri < rooms.length; ri++) {
+                const room = rooms[ri];
+                const isExit = (ri === rooms.length - 1);
+                const objCount = 1 + Math.floor(Math.random() * Math.min(3, Math.floor(room.w * room.h / 4)));
+                let placed = 0;
+                
+                for (let att = 0; att < 25 && placed < objCount; att++) {
+                    const ox = room.x + Math.floor(Math.random() * room.w);
+                    const oy = room.y + Math.floor(Math.random() * room.h);
+                    if (grid[oy][ox].type !== 'floor') continue;
+                    if (isExit && ox === exitX && oy === exitY) continue;
+                    
+                    if (Math.random() < 0.2 + danger * 0.05) {
+                        const eid = enemyPool[Math.floor(Math.random() * enemyPool.length)];
+                        const enemy = ENEMIES.find(e => e.id === eid);
+                        grid[oy][ox] = { type: 'enemy', icon: enemy?.icon || '👾', explored: false, enemyId: eid, label: enemy?.name || 'Nepřítel' };
+                    } else {
+                        const obj = objTypes[Math.floor(Math.random() * objTypes.length)];
+                        grid[oy][ox] = { type: obj.type, icon: obj.icon, explored: false, label: obj.label, looted: false };
+                    }
+                    placed++;
+                }
+                
+                // Pasti v chodbách
+                if (Math.random() < 0.12 + danger * 0.04) {
+                    for (let ty = room.y - 2; ty <= room.y + room.h + 1 && ty < h; ty++) {
+                        for (let tx = room.x - 2; tx <= room.x + room.w + 1 && tx < w; tx++) {
+                            if (ty < 0 || tx < 0 || ty >= h || tx >= w) continue;
+                            if (grid[ty][tx].type === 'corridor' && Math.random() < 0.12) {
+                                grid[ty][tx] = { type: 'trap', icon: '', explored: false, label: 'Past', triggered: false };
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return { grid, startX, startY, rooms };
+        }
+        
+        function revealExploreArea(px, py, radius) {
+            if (!_dungeonExploreState) return;
+            const { grid, w, h } = _dungeonExploreState;
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const nx = px + dx, ny = py + dy;
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        grid[ny][nx].explored = true;
+                        _dungeonExploreState.revealed.add(ny * w + nx);
+                    }
+                }
+            }
+        }
+        
+        function dungeonExploreMove(dx, dy) {
+            if (!_dungeonExploreState || !_dungeonExploreState.active) return;
+            const ds = _dungeonExploreState;
+            const nx = ds.px + dx, ny = ds.py + dy;
+            if (nx < 0 || nx >= ds.w || ny < 0 || ny >= ds.h) return;
+            const tile = ds.grid[ny][nx];
+            if (tile.type === 'wall') return;
+            
+            ds.px = nx; ds.py = ny; ds.steps++;
+            revealExploreArea(nx, ny, 1);
+            handleExploreTile(nx, ny, tile);
+        }
+        
+        function handleExploreTile(x, y, tile) {
+            const ds = _dungeonExploreState;
+            if (!ds) return;
+            
+            if (tile.type === 'enemy') {
+                const eid = tile.enemyId || 'rat';
+                const enemy = ENEMIES.find(e => e.id === eid);
+                ds.grid[y][x] = { type: 'floor', icon: '', explored: true };
+                ds.enemiesKilled++;
+                
+                if (enemy) {
+                    ds.active = false;
+                    const ce = {...enemy};
+                    const sc = 1 + (ds.danger * 0.15);
+                    ce.hp = Math.round(ce.hp * sc); ce.maxHp = ce.hp;
+                    ce.damage = Math.round(ce.damage * sc);
+                    ce.isPreScaled = true;
+                    startCombatWithGroup([ce], 'dungeon_explore');
+                } else {
+                    // Enemy nenalezen v ENEMIES - přeskoč
+                    ds.lootLog.push('⚔️ Porazil jsi neznámého nepřítele');
+                    renderExploreDungeonUI();
+                }
+                return;
+            }
+            
+            if (tile.type === 'trap' && !tile.triggered) {
+                tile.triggered = true; tile.icon = '⚠️';
+                const dmg = 5 + Math.floor(Math.random() * 10 * ds.danger);
+                state.char.hp = Math.max(1, (state.char.hp || state.char.maxHp) - dmg);
+                ds.lootLog.push(`⚠️ Past! -${dmg} HP`);
+                notifyWarning('⚠️ Past!', `Šlápnul jsi do pasti! -${dmg} HP`);
+                saveGame(true); // Ulož HP změnu
+                renderExploreDungeonUI(); return;
+            }
+            
+            if (tile.type === 'exit') {
+                ds.exitFound = true;
+                renderExploreDungeonUI(); return;
+            }
+            
+            const lootable = ['chest','cabinet','barrel','skeleton','crate','bookshelf','locker','desk'];
+            if (lootable.includes(tile.type) && !tile.looted) {
+                tile.looted = true;
+                const lootResult = generateExploreDungeonLoot(tile, ds);
+                if (lootResult.length > 0) {
+                    const names = lootResult.map(l => `${l.icon} ${l.name}${l.count > 1 ? ' ×'+l.count : ''}`);
+                    ds.lootLog.push(`${tile.icon} ${tile.label}: ${names.join(', ')}`);
+                    tile.icon = '✅';
+                    notifySuccess(tile.label, names.join(', '));
+                    saveGame(true); // Ulož loot okamžitě - přežije refresh
+                } else {
+                    ds.lootLog.push(`${tile.icon} ${tile.label}: Prázdné`);
+                    tile.icon = '❌';
+                }
+                ds.roomsExplored++;
+                renderExploreDungeonUI(); return;
+            }
+            
+            renderExploreDungeonUI();
+        }
+        
+        function generateExploreDungeonLoot(tile, ds) {
+            const results = [];
+            const loc = ds.loc;
+            const danger = ds.danger || 1;
+            
+            // === BONUSY HRÁČE ===
+            const setEffects = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+            const scoutLevel = state.skills?.['scout'] || 0;
+            const rareLootBonus = scoutLevel * 0.05; // +5% za level
+            const compBonuses = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+            const hiddenChanceBonus = compBonuses.hiddenChance || 0;
+            const luckBuff = (state.buffs?.luck && state.buffs.luck.until > Date.now()) ? (state.buffs.luck.value || 0) / 100 : 0;
+            const exoticLuck = state.exoticBonuses?.luck || 0;
+            const totalLuckBonus = luckBuff + exoticLuck; // 0.0 - 0.3 typicky
+            
+            // Šance na prázdno - snižuje se bonusy
+            let emptyChance = 0.18;
+            if (setEffects.psychicVision) emptyChance *= 0.75;
+            if (totalLuckBonus > 0) emptyChance *= (1 - totalLuckBonus * 0.5);
+            if (hiddenChanceBonus > 0) emptyChance *= 0.7;
+            if (Math.random() < emptyChance) return results;
+            
+            // === SUROVINY podle lokace ===
+            let resList = ['wood','metal','stone','cloth','scrap','electronics','chemicals','herbs'];
+            if (loc.type === 'gas_station' || loc.id?.includes('gas') || loc.id?.includes('fuel')) {
+                resList = ['fuel','scrap','metal','rope'];
+            } else if (loc.id?.includes('city') || loc.id?.includes('ruin') || loc.id?.includes('mall')) {
+                resList = ['scrap','glass','cloth','electronics','rope'];
+            } else if (loc.id?.includes('factory') || loc.id?.includes('plant')) {
+                resList = ['fuel','chemicals','scrap','metal','gunpowder'];
+            } else if (loc.id?.includes('hospital') || loc.id?.includes('lab') || loc.id?.includes('research')) {
+                resList = ['chemicals','glass','electronics','herbs'];
+            } else if (loc.id?.includes('military') || loc.id?.includes('bunker')) {
+                resList = ['metal','gunpowder','electronics','scrap'];
+            } else if (loc.type === 'forest' || loc.id?.includes('forest')) {
+                resList = ['wood','herbs','cloth','leather','rope'];
+            } else if (loc.id?.includes('mine') || loc.id?.includes('quarry') || loc.id?.includes('cave')) {
+                resList = ['stone','metal','copper','scrap'];
+            }
+            
+            const resIcons = {wood:'🌲',metal:'⚙️',stone:'🗿',cloth:'🧵',scrap:'🔩',electronics:'💾',chemicals:'🧪',herbs:'🌿',fuel:'⛽',glass:'🔮',gunpowder:'💥',rope:'➰',copper:'🟤',leather:'🦴'};
+            const resNms = {wood:'Dřevo',metal:'Kov',stone:'Kámen',cloth:'Látka',scrap:'Šrot',electronics:'Elektronika',chemicals:'Chemikálie',herbs:'Byliny',fuel:'Palivo',glass:'Sklo',gunpowder:'Střelný prach',rope:'Lano',copper:'Měď',leather:'Kůže'};
+            
+            let cnt = 1 + Math.floor(Math.random() * 2);
+            // Psychic Vision +20% surovin
+            if (setEffects.psychicVision) cnt = Math.ceil(cnt * 1.2);
+            // Luck bonus
+            if (totalLuckBonus > 0 && Math.random() < totalLuckBonus) cnt++;
+            
+            for (let i = 0; i < cnt; i++) {
+                const res = resList[Math.floor(Math.random() * resList.length)];
+                let amt = 1 + Math.floor(Math.random() * (2 + danger));
+                // Perception bonus
+                const perBonus = Math.max(0, ((state.char?.attrs?.per || 5) - 5) * 0.1);
+                if (perBonus > 0) amt = Math.ceil(amt * (1 + perBonus));
+                state.resources[res] = (state.resources[res] || 0) + amt;
+                results.push({ name: resNms[res]||res, icon: resIcons[res]||'📦', count: amt });
+                ds.loot.push({ type: 'resource', id: res, count: amt });
+            }
+            
+            // === PENÍZE ===
+            if (Math.random() < 0.4 + totalLuckBonus * 0.15) {
+                let money = 5 + Math.floor(Math.random() * 20 * danger);
+                if (totalLuckBonus > 0) money = Math.ceil(money * (1 + totalLuckBonus));
+                addMoney(money);
+                results.push({ name: 'Peníze', icon: '💰', count: money });
+                ds.loot.push({ type: 'money', count: money });
+            }
+            
+            // === ITEM LOOT - zone-based rarity ===
+            let itemChance = 0.12 + danger * 0.03;
+            if (rareLootBonus > 0) itemChance += rareLootBonus * 0.3;
+            if (setEffects.psychicVision) itemChance *= 1.25;
+            if (totalLuckBonus > 0) itemChance += totalLuckBonus * 0.1;
+            
+            if (Math.random() < itemChance) {
+                let maxRarity = 'uncommon';
+                if (loc.zone === 'medium') maxRarity = 'rare';
+                if (loc.zone === 'danger') maxRarity = 'epic';
+                if (loc.zone === 'deadly') maxRarity = 'legendary';
+                // Scout bonus zvyšuje rarity o 1 tier
+                if (rareLootBonus > 0 && Math.random() < rareLootBonus) {
+                    if (maxRarity === 'uncommon') maxRarity = 'rare';
+                    else if (maxRarity === 'rare') maxRarity = 'epic';
+                    else if (maxRarity === 'epic') maxRarity = 'legendary';
+                }
+                
+                const rarityOrder = ['common','uncommon','rare','epic','legendary'];
+                const maxIdx = rarityOrder.indexOf(maxRarity);
+                const pool = ITEMS.filter(i => 
+                    i.price && i.price > 0 && i.price < 300 * danger && 
+                    !i.cantBuy && i.type !== 'quest' &&
+                    rarityOrder.indexOf(i.rarity || 'common') <= maxIdx
+                );
+                if (pool.length > 0) {
+                    const item = pool[Math.floor(Math.random() * pool.length)];
+                    if (typeof addItemToInventory === 'function') {
+                        addItemToInventory(item, 1, true);
+                    } else {
+                        state.inv.push({...item, count: 1});
+                    }
+                    results.push({ name: item.name, icon: item.icon||'📦', count: 1 });
+                    ds.loot.push({ type: 'item', id: item.id });
+                }
+            }
+            
+            // === COMPANION HIDDEN LOOT ===
+            if (hiddenChanceBonus > 0 && Math.random() < hiddenChanceBonus) {
+                const bonusRes = resList[Math.floor(Math.random() * resList.length)];
+                const bonusAmt = 2 + Math.floor(Math.random() * 3);
+                state.resources[bonusRes] = (state.resources[bonusRes] || 0) + bonusAmt;
+                results.push({ name: '🐾 ' + (resNms[bonusRes]||bonusRes), icon: resIcons[bonusRes]||'📦', count: bonusAmt });
+                ds.loot.push({ type: 'resource', id: bonusRes, count: bonusAmt });
+            }
+            
+            // === LORE KNIHY ===
+            let loreChance = 0.02;
+            if (loc.id?.includes('ruin') || loc.id?.includes('city')) loreChance = 0.05;
+            if (loc.id?.includes('lab') || loc.id?.includes('research') || loc.id?.includes('hospital')) loreChance = 0.08;
+            if (loc.id?.includes('bunker') || loc.id?.includes('military')) loreChance = 0.06;
+            if (loc.zone === 'danger') loreChance += 0.02;
+            if (loc.zone === 'deadly') loreChance += 0.04;
+            if (setEffects.psychicVision) loreChance *= 1.25;
+            
+            if (Math.random() < loreChance) {
+                const ownedLore = state.inv.filter(i => i.id?.startsWith('lore_')).map(i => i.id);
+                const availableLore = ITEMS.filter(i => i.id?.startsWith('lore_') && !ownedLore.includes(i.id));
+                if (availableLore.length > 0) {
+                    availableLore.sort((a, b) => a.id.localeCompare(b.id));
+                    const loreBook = availableLore[0];
+                    if (typeof addItemToInventory === 'function') {
+                        addItemToInventory(loreBook, 1, true);
+                    } else {
+                        state.inv.push({...loreBook, count: 1});
+                    }
+                    results.push({ name: loreBook.name + ' (VZÁCNÉ!)', icon: loreBook.icon||'📕', count: 1 });
+                    ds.loot.push({ type: 'item', id: loreBook.id });
+                }
+            }
+            
+            return results;
+        }
+        
+        // Návrat po boji v dungeonu
+        function handleDungeonExploreVictory() {
+            if (_dungeonExploreState) {
+                _dungeonExploreState.active = true;
+                renderExploreDungeonUI();
+            } else {
+                // Reload fallback - dungeon state ztracen
+                renderFull();
+            }
+        }
+        function handleDungeonExploreDefeat() {
+            if (_dungeonExploreState) {
+                endDungeonExploration(true);
+            } else {
+                // Reload fallback
+                renderFull();
+            }
+        }
+        
+        function endDungeonExploration(fled) {
+            if (!_dungeonExploreState) return;
+            const ds = _dungeonExploreState;
+            
+            const totalMoney = ds.loot.filter(l => l.type === 'money').reduce((s, l) => s + l.count, 0);
+            const xpGain = 10 + ds.steps * 2 + ds.enemiesKilled * 15 + ds.roomsExplored * 5;
+            if (!fled) addXP(xpGain);
+            
+            if (typeof checkCompanionQuestObjectives === 'function') {
+                checkCompanionQuestObjectives('explore', ds.loc.id);
+            }
+            
+            const logHtml = ds.lootLog.length > 0
+                ? ds.lootLog.map(l => `<div style="font-size:0.75rem;color:#aaa;padding:0.15rem 0;border-bottom:1px solid #111;">${l}</div>`).join('')
+                : '<div style="color:#555;font-size:0.8rem;">Nic nenalezeno</div>';
+            
+            _dungeonExploreState = null;
+            delete state.activeDungeonExplore; // Vyčisti uloženou kopii
+            
+            showModal(fled ? '💀 Průzkum ukončen' : '🏁 Průzkum dokončen!', `
+                <div style="text-align:center;margin-bottom:0.8rem;">
+                    <div style="font-size:2.5rem;">${fled ? '💀' : '🎉'}</div>
+                    <h3 style="color:${fled ? '#f44336' : '#4caf50'};">${fled ? 'Ústup z průzkumu' : 'Úspěšný průzkum!'}</h3>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.4rem;margin-bottom:0.8rem;">
+                    <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
+                        <div style="color:#ffd700;font-size:1.1rem;">${ds.steps}</div><div style="color:#888;font-size:0.6rem;">Kroků</div>
+                    </div>
+                    <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
+                        <div style="color:#f44336;font-size:1.1rem;">${ds.enemiesKilled}</div><div style="color:#888;font-size:0.6rem;">Zabito</div>
+                    </div>
+                    <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
+                        <div style="color:#ce93d8;font-size:1.1rem;">${ds.roomsExplored}</div><div style="color:#888;font-size:0.6rem;">Nalezeno</div>
+                    </div>
+                    <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
+                        <div style="color:#4caf50;font-size:1.1rem;">${fled ? '—' : '+'+xpGain}</div><div style="color:#888;font-size:0.6rem;">XP</div>
+                    </div>
+                </div>
+                <details open style="margin-bottom:0.6rem;">
+                    <summary style="cursor:pointer;background:#0a1a0a;padding:0.4rem;border-radius:4px;color:#8bc34a;font-size:0.8rem;">📋 Nález (${ds.lootLog.length})</summary>
+                    <div style="max-height:150px;overflow-y:auto;padding:0.3rem;">${logHtml}</div>
+                </details>
+                <button class="btn" onclick="closeModal(); renderFull();" style="width:100%;background:${fled ? '#555' : '#4caf50'};">✓ OK</button>
+            `);
+            
+            addLog(`🗺️ Průzkum: ${ds.steps} kroků, ${ds.enemiesKilled} nepřátel, ${ds.roomsExplored} nálezů${fled ? ' (útěk)' : ', +'+xpGain+' XP'}`, '🔍');
+            saveGame();
+        }
+        
+        function renderExploreDungeonUI() {
+            if (!_dungeonExploreState) return;
+            const ds = _dungeonExploreState;
+            const { grid, w, h, px, py } = ds;
+            
+            const viewSize = 9;
+            const half = Math.floor(viewSize / 2);
+            const vx1 = Math.max(0, Math.min(w - viewSize, px - half));
+            const vy1 = Math.max(0, Math.min(h - viewSize, py - half));
+            const vx2 = Math.min(w, vx1 + viewSize);
+            const vy2 = Math.min(h, vy1 + viewSize);
+            
+            const cellPx = Math.floor(Math.min(window.innerWidth - 32, 340) / viewSize);
+            
+            let gridHtml = '';
+            for (let y = vy1; y < vy2; y++) {
+                for (let x = vx1; x < vx2; x++) {
+                    const tile = grid[y][x];
+                    const isP = (x === px && y === py);
+                    const isAdj = Math.abs(x-px)<=1 && Math.abs(y-py)<=1 && !isP;
+                    const canMove = isAdj && tile.type !== 'wall';
+                    
+                    let bg = '#0a0a0a', content = '', border = 'none';
+                    
+                    if (!tile.explored) { bg = '#0a0a0a'; content = ''; }
+                    else if (isP) { bg = '#1a3a1a'; content = '🧑'; border = '2px solid #4caf50'; }
+                    else {
+                        switch (tile.type) {
+                            case 'wall': bg='#151515'; break;
+                            case 'floor': bg='#2a2520'; break;
+                            case 'corridor': bg='#222018'; content=tile.icon||''; break;
+                            case 'start': bg='#1a2a3a'; content='🚪'; break;
+                            case 'exit': bg='#3a3a1a'; content='🏁'; border='1px solid #ffd700'; break;
+                            case 'enemy': bg='#2a1a1a'; content=tile.icon; border='1px solid #f44336'; break;
+                            case 'trap': bg=tile.triggered?'#1a1a0a':'#2a2520'; content=tile.triggered?'⚠️':''; break;
+                            default: bg=tile.looted?'#1a1a1a':'#2a2520'; content=tile.icon||''; border=(!tile.looted&&tile.icon)?'1px solid #888':''; break;
+                        }
+                    }
+                    
+                    const click = canMove ? ` onclick="dungeonExploreMove(${x-px},${y-py})"` : '';
+                    const cur = canMove ? 'pointer' : 'default';
+                    
+                    gridHtml += `<div${click} style="width:${cellPx}px;height:${cellPx}px;background:${bg};display:flex;align-items:center;justify-content:center;font-size:${Math.floor(cellPx*0.5)}px;cursor:${cur};border:${border};border-radius:2px;user-select:none;">${content}</div>`;
+                }
+            }
+            
+            // Minimap
+            const mc = Math.max(2, Math.floor(Math.min(90, window.innerWidth*0.22) / Math.max(w,h)));
+            let miniHtml = '';
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const t = grid[y][x];
+                    const isP = x===px && y===py;
+                    let c = '#080808';
+                    if (isP) c = '#4caf50';
+                    else if (!t.explored) c = '#080808';
+                    else if (t.type==='wall') c = '#151515';
+                    else if (t.type==='exit') c = '#ffd700';
+                    else if (t.type==='enemy') c = '#f44336';
+                    else if (['chest','cabinet','crate','barrel','skeleton','bookshelf','locker','desk'].includes(t.type)) c = t.looted ? '#222' : '#ce93d8';
+                    else c = '#33302a';
+                    miniHtml += `<div style="width:${mc}px;height:${mc}px;background:${c};"></div>`;
+                }
+            }
+            
+            const hp = state.char?.hp || state.char?.maxHp || 100;
+            const maxHp = state.char?.maxHp || 100;
+            const hpPct = Math.round((hp/maxHp)*100);
+            const hpCol = hpPct>50?'#4caf50':hpPct>25?'#ff9800':'#f44336';
+            
+            const recentLoot = ds.lootLog.slice(-3).reverse().map(l =>
+                `<div style="font-size:0.65rem;color:#aaa;padding:0.1rem 0;">${l}</div>`
+            ).join('');
+            
+            const exitBtn = ds.exitFound ? `
+                <button onclick="endDungeonExploration(false)" style="width:100%;background:linear-gradient(135deg,#33691e,#ffd700);border:none;color:#000;padding:0.6rem;border-radius:6px;cursor:pointer;font-size:0.9rem;font-weight:bold;margin-bottom:0.4rem;">
+                    🏁 Opustit s lootem!
+                </button>` : '';
+            
+            showModal('🗺️ Průzkum — ' + ds.loc.name, `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                    <div style="flex:1;">
+                        <div style="display:flex;align-items:center;gap:0.3rem;font-size:0.75rem;">
+                            <span style="color:#f44336;">❤️ ${hp}/${maxHp}</span>
+                            <div style="flex:1;background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
+                                <div style="height:100%;width:${hpPct}%;background:${hpCol};"></div>
+                            </div>
+                        </div>
+                        <div style="font-size:0.6rem;color:#888;margin-top:0.15rem;">👣${ds.steps} · 💀${ds.enemiesKilled} · 📦${ds.roomsExplored}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(${w},${mc}px);gap:0;margin-left:0.4rem;border:1px solid #333;border-radius:2px;overflow:hidden;">
+                        ${miniHtml}
+                    </div>
+                </div>
+                
+                <div style="display:grid;grid-template-columns:repeat(${vx2-vx1},${cellPx}px);gap:1px;justify-content:center;background:#000;border:2px solid #333;border-radius:6px;padding:2px;margin-bottom:0.4rem;">
+                    ${gridHtml}
+                </div>
+                
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;max-width:160px;margin:0 auto 0.4rem auto;">
+                    <div></div>
+                    <button onclick="dungeonExploreMove(0,-1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬆️</button>
+                    <div></div>
+                    <button onclick="dungeonExploreMove(-1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬅️</button>
+                    <button onclick="dungeonExploreMove(0,1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬇️</button>
+                    <button onclick="dungeonExploreMove(1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">➡️</button>
+                </div>
+                
+                ${recentLoot ? `<div style="background:#0a0a0a;padding:0.2rem 0.4rem;border-radius:4px;margin-bottom:0.3rem;">${recentLoot}</div>` : ''}
+                ${exitBtn}
+                <button onclick="endDungeonExploration(true)" style="width:100%;background:#444;border:none;color:#aaa;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">🚪 Utéct (bez XP bonusu)</button>
+            `);
+        }
+        
+        // Keyboard ovládání
+        document.addEventListener('keydown', function(e) {
+            if (!_dungeonExploreState || !_dungeonExploreState.active) return;
+            const keyMap = { ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0], w:[0,-1], s:[0,1], a:[-1,0], d:[1,0] };
+            const dir = keyMap[e.key];
+            if (dir) { e.preventDefault(); dungeonExploreMove(dir[0], dir[1]); }
+        });
+        
+        window.startDungeonExploration = startDungeonExploration;
+        window.dungeonExploreMove = dungeonExploreMove;
+        window.endDungeonExploration = endDungeonExploration;
+        window.handleDungeonExploreVictory = handleDungeonExploreVictory;
+        window.handleDungeonExploreDefeat = handleDungeonExploreDefeat;
 
         function exploreLocation(skipLimitCheck = false) {
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
@@ -69914,6 +70550,13 @@ function openFullscreenMap() {
                         exitAbyss();
                         return;
                     }
+                    // 🗺️ Dungeon explore: návrat do dungeonu po útěku z boje
+                    if (cs?.combatType === 'dungeon_explore' && _dungeonExploreState) {
+                        endCombat();
+                        _dungeonExploreState.active = true;
+                        renderExploreDungeonUI();
+                        return;
+                    }
                     endCombat();
                     closeModal();
                     notifyWarning('Uprchl jsi!', 'Boj ukončen bez odměny');
@@ -70433,6 +71076,16 @@ function openFullscreenMap() {
                 notifyWarning('💀 Prohra!', 'Strážci tě porazili. Utekl jsi s těžkými zraněními.');
                 renderFull();
                 saveGame(true);
+                return;
+            }
+            
+            // Speciální handling pro dungeon explore - nezemřeš, jen utečeš
+            if (cs?.combatType === 'dungeon_explore') {
+                endCombat();
+                state.char.hp = Math.max(1, Math.floor(state.char.maxHp * 0.15));
+                if (typeof handleDungeonExploreDefeat === 'function') {
+                    handleDungeonExploreDefeat();
+                }
                 return;
             }
             
@@ -72594,6 +73247,8 @@ function openFullscreenMap() {
             } else if (cs.combatType === 'dungeon' || cs.isDungeon) {
                 continueAction = "window.combatState = null; delete state.activeCombat; window.isDungeonCombat = false; handleDungeonVictory();";
                 console.log('🏰 Setting continueAction to handleDungeonVictory, combatType:', cs.combatType, 'isDungeon:', cs.isDungeon);
+            } else if (cs.combatType === 'dungeon_explore') {
+                continueAction = "window.combatState = null; delete state.activeCombat; handleDungeonExploreVictory();";
             } else if (cs.combatType === 'abyss') {
                 continueAction = "window.combatState = null; delete state.activeCombat; window.isAbyssCombat = false; handleAbyssVictory();"
             }
@@ -74872,6 +75527,11 @@ function openFullscreenMap() {
                 delete state.savedCombatState;
             }
             
+            // === ULOŽENÍ DUNGEON EXPLORE STATE ===
+            if (typeof saveDungeonExploreState === 'function') {
+                saveDungeonExploreState();
+            }
+            
             // Vyčisti staré logy před uložením (max 50 záznamů)
             if (state.log && state.log.length > 50) {
                 state.log = state.log.slice(-50);
@@ -75200,6 +75860,12 @@ function openFullscreenMap() {
                             renderHeroesCombatUI();
                             if (window.combatState) setTimeout(() => startNextTurn(), 200);
                         }, 100);
+                    }
+                    
+                    // === OBNOVENÍ DUNGEON EXPLORE STATE ===
+                    if (state.activeDungeonExplore && typeof restoreDungeonExploreState === 'function') {
+                        restoreDungeonExploreState();
+                        console.log('🗺️ Dungeon explore state obnoven po refreshi');
                     }
                     
                     // Po načtení vždy přepni na Online tab
@@ -109954,6 +110620,29 @@ function openFullscreenMap() {
                     </div>
                 </details>
                 
+                ${(() => {
+                    const resNames = { wood: '🌲 Dřevo', stone: '🗿 Kámen', metal: '⚙️ Kov', cloth: '🧵 Látka', chemicals: '🧪 Chemikálie', electronics: '💾 Elektronika' };
+                    const resEntries = Object.entries(resNames).filter(([id]) => (state.resources?.[id] || 0) > 0);
+                    if (resEntries.length === 0) return '';
+                    const resDepositHtml = resEntries.map(([id, label]) => {
+                        const cnt = state.resources[id];
+                        return '<div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border-bottom:1px solid #111;">' +
+                            '<span>' + label.split(' ')[0] + '</span>' +
+                            '<span style="flex:1;font-size:0.7rem;color:#aaa;">' + label.split(' ')[1] + '</span>' +
+                            '<span style="color:#888;font-size:0.7rem;">' + cnt + '×</span>' +
+                            (cnt > 1
+                                ? '<button onclick="showClanStorageResQtyPicker(\'' + locationId + '\',\'' + id + '\',' + cnt + ')" style="background:#1565C0;border:none;color:#fff;padding:0.15rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.65rem;">↓ Dát…</button>'
+                                : '<button onclick="depositResourceToClanStorage(\'' + locationId + '\',\'' + id + '\',1)" style="background:#1565C0;border:none;color:#fff;padding:0.15rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.65rem;">↓ Dát</button>'
+                            ) +
+                        '</div>';
+                    }).join('');
+                    return '<details open style="margin-bottom:0.6rem;">' +
+                        '<summary style="cursor:pointer;background:#0a0a1a;padding:0.4rem 0.6rem;border-radius:6px;border:1px solid #1565C0;font-size:0.8rem;color:#64b5f6;">⚙️ Vložit suroviny (' + resEntries.length + ')</summary>' +
+                        '<div style="background:#050510;padding:0.4rem;border-radius:0 0 6px 6px;border:1px solid #1565C0;border-top:none;max-height:180px;overflow-y:auto;">' +
+                            resDepositHtml +
+                        '</div></details>';
+                })()}
+                
                 <button class="btn" onclick="showClanPanel('${locationId}')" style="background:#333;width:100%;">← Zpět</button>
             `);
         }
@@ -110079,6 +110768,94 @@ function openFullscreenMap() {
                 console.error('depositToClanStorage error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se vložit předmět');
             }
+        }
+        
+        // Vložení SUROVIN (state.resources) do klanového skladu
+        async function depositResourceToClanStorage(locationId, resId, quantity) {
+            quantity = Math.max(1, quantity || 1);
+            const available = state.resources?.[resId] || 0;
+            if (available <= 0) { notifyWarning('Nemáš suroviny', 'Tuto surovinu nemáš!'); return; }
+            const transferCount = Math.min(quantity, available);
+            
+            await loadClanData();
+            const clan = getClanData(locationId);
+            if (!clan?.buildings?.clan_storage) { notifyWarning('Žádný sklad', 'Sklad nebyl postaven!'); return; }
+            
+            const storage = clan.clanStorage || {};
+            const maxSlots = CLAN_CONFIG.buildings.clan_storage.maxSlots;
+            const existingSlot = Object.entries(storage).find(([k,v]) => v && v.id === resId);
+            if (!existingSlot && Object.keys(storage).length >= maxSlots) {
+                notifyWarning('Sklad plný', `Max ${maxSlots} typů předmětů!`);
+                return;
+            }
+            
+            const resLabels = { wood: '🌲 Dřevo', stone: '🗿 Kámen', metal: '⚙️ Kov', cloth: '🧵 Látka', chemicals: '🧪 Chemikálie', electronics: '💾 Elektronika' };
+            const resIcons = { wood: '🌲', stone: '🗿', metal: '⚙️', cloth: '🧵', chemicals: '🧪', electronics: '💾' };
+            const label = resLabels[resId] || resId;
+            const icon = resIcons[resId] || '📦';
+            const itemData = ITEMS.find(i => i.id === resId);
+            
+            try {
+                const storageKey = existingSlot ? existingSlot[0] : resId;
+                const existingCount = existingSlot ? (existingSlot[1].count || 1) : 0;
+                const newCount = existingCount + transferCount;
+                
+                await firebaseDB.ref(`clans/${locationId}/clanStorage/${storageKey}`).set({
+                    id: resId,
+                    name: itemData?.name || label.split(' ')[1] || resId,
+                    icon: icon,
+                    type: 'resource',
+                    weight: itemData?.weight || 1,
+                    price: itemData?.price || 5,
+                    rarity: 'common',
+                    stackable: true,
+                    count: newCount,
+                    depositedBy: getPlayerName(),
+                    depositedAt: Date.now()
+                });
+                
+                state.resources[resId] -= transferCount;
+                window.clanOwnershipCacheTime = 0;
+                notifySuccess('📦 Vloženo', `${icon} ${label.split(' ')[1] || resId} ×${transferCount} → klanový sklad`);
+                saveGame();
+                showClanStorage(locationId);
+            } catch(e) {
+                console.error('depositResourceToClanStorage error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se vložit surovinu');
+            }
+        }
+        
+        // Qty picker pro suroviny
+        function showClanStorageResQtyPicker(locationId, resId, maxCount) {
+            maxCount = Math.max(1, maxCount || 1);
+            const resLabels = { wood: '🌲 Dřevo', stone: '🗿 Kámen', metal: '⚙️ Kov', cloth: '🧵 Látka', chemicals: '🧪 Chemikálie', electronics: '💾 Elektronika' };
+            const label = resLabels[resId] || resId;
+            const defaultQty = maxCount;
+            
+            showModal('📦 ↓ Vložit surovinu do skladu', `
+                <div style="text-align:center;margin-bottom:0.8rem;">
+                    <div style="font-size:1.5rem;">${label.split(' ')[0]}</div>
+                    <div style="color:#ccc;font-size:0.85rem;">${label}</div>
+                    <div style="color:#888;font-size:0.7rem;">Máš: ${maxCount}×</div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;margin:0.8rem 0;">
+                    <button onclick="clanStorageQtyChange(-10)" style="background:#333;border:1px solid #555;color:#fff;width:2.2rem;height:2.2rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">-10</button>
+                    <button onclick="clanStorageQtyChange(-1)" style="background:#333;border:1px solid #555;color:#fff;width:2.2rem;height:2.2rem;border-radius:4px;cursor:pointer;font-size:1rem;">−</button>
+                    <input type="number" id="clanStorageQtyInput" value="${defaultQty}" min="1" max="${maxCount}" 
+                        style="width:4rem;text-align:center;background:#111;border:1px solid #555;color:#ffd700;font-size:1.1rem;border-radius:4px;padding:0.3rem;">
+                    <button onclick="clanStorageQtyChange(1)" style="background:#333;border:1px solid #555;color:#fff;width:2.2rem;height:2.2rem;border-radius:4px;cursor:pointer;font-size:1rem;">+</button>
+                    <button onclick="clanStorageQtyChange(10)" style="background:#333;border:1px solid #555;color:#fff;width:2.2rem;height:2.2rem;border-radius:4px;cursor:pointer;font-size:0.8rem;">+10</button>
+                </div>
+                <div style="display:flex;justify-content:center;gap:0.3rem;margin-bottom:0.8rem;">
+                    <button onclick="document.getElementById('clanStorageQtyInput').value=1" style="background:#222;border:1px solid #444;color:#aaa;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">1</button>
+                    <button onclick="document.getElementById('clanStorageQtyInput').value=Math.min(10,${maxCount})" style="background:#222;border:1px solid #444;color:#aaa;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">10</button>
+                    <button onclick="document.getElementById('clanStorageQtyInput').value=Math.min(50,${maxCount})" style="background:#222;border:1px solid #444;color:#aaa;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">50</button>
+                    <button onclick="document.getElementById('clanStorageQtyInput').value=${maxCount}" style="background:#222;border:1px solid #444;color:#aaa;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">Vše</button>
+                </div>
+                <button onclick="depositResourceToClanStorage('${locationId}','${resId}',parseInt(document.getElementById('clanStorageQtyInput').value)||1)" 
+                    style="width:100%;background:#1565C0;border:none;color:#fff;padding:0.5rem;border-radius:6px;cursor:pointer;font-size:0.85rem;font-weight:bold;">↓ Vložit do skladu</button>
+                <button onclick="showClanStorage('${locationId}')" style="width:100%;background:#333;border:none;color:#aaa;padding:0.4rem;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-top:0.3rem;">← Zpět</button>
+            `);
         }
         
         async function withdrawFromClanStorage(locationId, itemKey, quantity) {
@@ -110436,8 +111213,10 @@ function openFullscreenMap() {
         window.loadClanData = loadClanData;
         window.showClanStorage = showClanStorage;
         window.depositToClanStorage = depositToClanStorage;
+        window.depositResourceToClanStorage = depositResourceToClanStorage;
         window.withdrawFromClanStorage = withdrawFromClanStorage;
         window.showClanStorageQtyPicker = showClanStorageQtyPicker;
+        window.showClanStorageResQtyPicker = showClanStorageResQtyPicker;
         window.clanStorageQtyChange = clanStorageQtyChange;
         window.confirmClanStorageTransfer = confirmClanStorageTransfer;
 
@@ -110899,15 +111678,12 @@ function openFullscreenMap() {
                     const _resCosts = Object.entries(b.cost || {}).filter(([k]) => k !== 'money');
                     const _resStr = _resCosts.map(([r, a]) => `${_resNames[r]||r}${a}`).join(' ');
                     const _clanStor = clan.clanStorage || {};
-                    const _isStorBuild = (bId === 'clan_storage');
                     let _canAffordRes = true;
                     _resCosts.forEach(([r, a]) => {
-                        if (_isStorBuild) {
-                            if ((state.resources?.[r] || 0) < a) _canAffordRes = false;
-                        } else {
-                            const _entry = Object.values(_clanStor).find(v => v && v.id === r);
-                            if ((_entry ? (_entry.count || 1) : 0) < a) _canAffordRes = false;
-                        }
+                        const _entry = Object.values(_clanStor).find(v => v && v.id === r);
+                        const _inStor = _entry ? (_entry.count || 1) : 0;
+                        const _inPlayer = state.resources?.[r] || 0;
+                        if (_inStor + _inPlayer < a) _canAffordRes = false;
                     });
                     const _canAffordAll = _canAffordVault && _canAffordRes;
                     const timeStr = b.buildTime ? (b.buildTime >= 60 ? `⏱️ ${Math.round(b.buildTime/60*10)/10}h` : `⏱️ ${b.buildTime}min`) : '';
@@ -111035,13 +111811,12 @@ function openFullscreenMap() {
                 ? (Math.round(building.buildTime / 60 * 10) / 10) + ' hod'
                 : building.buildTime + ' min';
             
-            // Suroviny - pro clan_storage z inventáře stavitele, jinak z KLANOVÉHO SKLADU
+            // Suroviny - kombinace klanového skladu + vlastních zdrojů hráče
             const resNames = { metal: '⚙️ Kov', wood: '🌲 Dřevo', stone: '🗿 Kámen', cloth: '🧵 Látka', chemicals: '🧪 Chemikálie', electronics: '💾 Elektronika' };
             const resCosts = Object.entries(building.cost || {}).filter(([k]) => k !== 'money');
             const clanStorage = clan.clanStorage || {};
-            const isStorageBuild = (buildingId === 'clan_storage');
             
-            // Pomocná funkce: kolik daného itemu je ve skladu klanu
+            // Kolik je v klanového skladu
             function getStorageCount(resId) {
                 const entry = Object.values(clanStorage).find(v => v && v.id === resId);
                 return entry ? (entry.count || 1) : 0;
@@ -111049,12 +111824,17 @@ function openFullscreenMap() {
             
             let canAffordRes = true;
             const resHtml = resCosts.map(([res, amount]) => {
-                const have = isStorageBuild ? (state.resources?.[res] || 0) : getStorageCount(res);
-                const enough = have >= amount;
+                const inStorage = getStorageCount(res);
+                const inPlayer = state.resources?.[res] || 0;
+                const total = inStorage + inPlayer;
+                const enough = total >= amount;
                 if (!enough) canAffordRes = false;
+                const storageStr = inStorage > 0 ? `📦${inStorage}` : '';
+                const playerStr = inPlayer > 0 ? `🎒${inPlayer}` : '';
+                const sourceStr = [storageStr, playerStr].filter(Boolean).join(' + ');
                 return `<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-top:0.2rem;">
                     <span style="color:#ccc;">${resNames[res] || res}:</span>
-                    <span style="color:${enough ? '#4caf50' : '#f44336'};">${have} / ${amount}</span>
+                    <span style="color:${enough ? '#4caf50' : '#f44336'};">${sourceStr} = ${total} / ${amount}</span>
                 </div>`;
             }).join('');
             
@@ -111067,12 +111847,11 @@ function openFullscreenMap() {
                 if (qSnap.val()) inQueue = true;
             } catch(e) {}
             
-            const resSourceLabel = isStorageBuild ? 'z tvého inventáře' : 'z klanového skladu';
-            const hasStorage = !!clan.buildings?.clan_storage;
-            const noStorageWarning = (!hasStorage && !isStorageBuild && resCosts.length > 0) ? `
-                <div style="background:#1a1505;border:1px solid #ff9800;border-radius:5px;padding:0.5rem;margin-top:0.6rem;text-align:center;">
-                    <div style="color:#ff9800;font-size:0.78rem;">⚠️ Nejdříve postav Klanový sklad!</div>
-                    <div style="color:#888;font-size:0.7rem;margin-top:0.2rem;">Suroviny se berou z klanového skladu. Členové musí vložit suroviny do skladu.</div>
+            const resSourceLabel = 'z klanového skladu + vlastních zdrojů';
+            const noResWarning = (!canAffordRes && resCosts.length > 0) ? `
+                <div style="background:#1a0505;border:1px solid #c62828;border-radius:5px;padding:0.4rem;margin-top:0.4rem;text-align:center;">
+                    <div style="color:#f44336;font-size:0.75rem;">❌ Nedostatek surovin!</div>
+                    <div style="color:#888;font-size:0.65rem;margin-top:0.2rem;">Vložte suroviny do klanového skladu nebo je mějte u sebe</div>
                 </div>` : '';
             
             showModal(`🏗️ ${building.icon} ${building.name}`, `
@@ -111106,12 +111885,7 @@ function openFullscreenMap() {
                     <div style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px solid #333;">
                         <div style="color:#ce93d8;font-size:0.78rem;font-weight:bold;margin-bottom:0.3rem;">📦 Suroviny ${resSourceLabel}</div>
                         ${resHtml}
-                        ${noStorageWarning}
-                        ${hasStorage && !canAffordRes ? `
-                        <div style="background:#1a0505;border:1px solid #c62828;border-radius:5px;padding:0.4rem;margin-top:0.4rem;text-align:center;">
-                            <div style="color:#f44336;font-size:0.75rem;">❌ Nedostatek surovin ve skladu!</div>
-                            <div style="color:#888;font-size:0.65rem;margin-top:0.2rem;">Členové musí vložit suroviny do klanového skladu</div>
-                        </div>` : ''}
+                        ${noResWarning}
                         ${canAffordRes ? `
                         <div style="background:#0d1a0d;border:1px solid #2a5a2a;border-radius:5px;padding:0.4rem;margin-top:0.4rem;text-align:center;">
                             <div style="color:#8bc34a;font-size:0.75rem;">✅ Suroviny v pořádku</div>
@@ -111171,30 +111945,22 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Kontrola surovin - pro clan_storage z inventáře stavitele, jinak z KLANOVÉHO SKLADU
+            // Kontrola surovin - kombinace klanového skladu + vlastních zdrojů
             const resNames = { metal: '⚙️ Kov', wood: '🌲 Dřevo', stone: '🗿 Kámen', cloth: '🧵 Látka', chemicals: '🧪 Chemikálie', electronics: '💾 Elektronika' };
             const resCosts = Object.entries(building.cost || {}).filter(([k]) => k !== 'money');
             const clanStorage = clan.clanStorage || {};
-            const isStorageBuild = (buildingId === 'clan_storage');
             
             function getStorageEntry(resId) {
                 return Object.entries(clanStorage).find(([k, v]) => v && v.id === resId);
             }
             
             for (const [res, amount] of resCosts) {
-                if (isStorageBuild) {
-                    // Sklad sám se staví z hráčova inventáře
-                    if ((state.resources?.[res] || 0) < amount) {
-                        notifyWarning('Nedostatek surovin', `Potřebuješ ${amount}× ${resNames[res] || res}, máš ${state.resources?.[res] || 0}`);
-                        return;
-                    }
-                } else {
-                    const entry = getStorageEntry(res);
-                    const have = entry ? (entry[1].count || 1) : 0;
-                    if (have < amount) {
-                        notifyWarning('Nedostatek surovin', `Ve skladu klanu chybí ${resNames[res] || res}: potřeba ${amount}, má ${have}`);
-                        return;
-                    }
+                const entry = getStorageEntry(res);
+                const inStorage = entry ? (entry[1].count || 1) : 0;
+                const inPlayer = state.resources?.[res] || 0;
+                if (inStorage + inPlayer < amount) {
+                    notifyWarning('Nedostatek surovin', `${resNames[res] || res}: potřeba ${amount}, sklad má ${inStorage}, ty máš ${inPlayer}`);
+                    return;
                 }
             }
             
@@ -111209,25 +111975,25 @@ function openFullscreenMap() {
                 const newVault = vault - cost;
                 await firebaseDB.ref(`clans/${locationId}/vault`).set(newVault);
                 
-                // Odečti suroviny
-                if (isStorageBuild) {
-                    // Sklad sám - odečti z hráčova inventáře
-                    for (const [res, amount] of resCosts) {
-                        state.resources[res] = (state.resources[res] || 0) - amount;
-                    }
-                } else {
-                    // Ostatní budovy - odečti z klanového skladu
-                    for (const [res, amount] of resCosts) {
-                        const entry = getStorageEntry(res);
-                        if (entry) {
-                            const [storageKey, storageItem] = entry;
-                            const newCount = (storageItem.count || 1) - amount;
-                            if (newCount <= 0) {
-                                await firebaseDB.ref(`clans/${locationId}/clanStorage/${storageKey}`).remove();
-                            } else {
-                                await firebaseDB.ref(`clans/${locationId}/clanStorage/${storageKey}/count`).set(newCount);
-                            }
+                // Odečti suroviny - nejdřív z klanového skladu, zbytek z hráče
+                for (const [res, amount] of resCosts) {
+                    let remaining = amount;
+                    const entry = getStorageEntry(res);
+                    if (entry) {
+                        const [storageKey, storageItem] = entry;
+                        const inStorage = storageItem.count || 1;
+                        const fromStorage = Math.min(remaining, inStorage);
+                        const newCount = inStorage - fromStorage;
+                        if (newCount <= 0) {
+                            await firebaseDB.ref(`clans/${locationId}/clanStorage/${storageKey}`).remove();
+                        } else {
+                            await firebaseDB.ref(`clans/${locationId}/clanStorage/${storageKey}/count`).set(newCount);
                         }
+                        remaining -= fromStorage;
+                    }
+                    // Zbytek z vlastních zdrojů hráče
+                    if (remaining > 0) {
+                        state.resources[res] = (state.resources[res] || 0) - remaining;
                     }
                 }
                 
