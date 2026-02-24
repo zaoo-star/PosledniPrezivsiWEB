@@ -35595,8 +35595,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 if (DUNGEON_FLOORS && DUNGEON_FLOORS[location.id]) {
                     console.log('🏰 Rendering ENTER button for dungeon:', location.id);
-                    const enterText = 'Vstoupit';
-                    html += renderActionButton('🏰', enterText, `enterDungeon('${location.id}')`, '#6A1B9A');
+                    const _dcLast = state.dungeonCooldowns?.[location.id] || 0;
+                    const _dcRemaining = (24 * 60 * 60 * 1000) - (Date.now() - _dcLast);
+                    if (_dcRemaining > 0) {
+                        const _dcH = Math.floor(_dcRemaining / 3600000);
+                        const _dcM = Math.ceil((_dcRemaining % 3600000) / 60000);
+                        html += renderActionButton('⏳', `Cooldown ${_dcH}h ${_dcM}m`, `enterDungeon('${location.id}')`, '#333');
+                    } else {
+                        const enterText = 'Vstoupit';
+                        html += renderActionButton('🏰', enterText, `enterDungeon('${location.id}')`, '#6A1B9A');
+                    }
                 } else {
                     console.warn('🏰 Dungeon without floors:', location.id);
                     // Fallback - zobraz alespoň prohledání
@@ -41272,6 +41280,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ds.lootLog.push(`${tile.icon} ${tile.label}: ${names.join(', ')}`);
                     tile.icon = '✅';
                     notifySuccess(tile.label, names.join(', '));
+                    // Quest progress - počítej nalezené věci
+                    if (state.dailyQuests?.progress) {
+                        state.dailyQuests.progress.itemsFound = (state.dailyQuests.progress.itemsFound || 0) + lootResult.length;
+                        if (typeof checkDailyQuests === 'function') checkDailyQuests();
+                    }
                     saveGame(true); // Ulož loot okamžitě - přežije refresh
                 } else {
                     ds.lootLog.push(`${tile.icon} ${tile.label}: Prázdné`);
@@ -41456,6 +41469,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (typeof checkCompanionQuestObjectives === 'function') {
                 checkCompanionQuestObjectives('explore', ds.loc.id);
+            }
+            
+            // Quest progress - průzkum dokončen
+            if (state.dailyQuests?.progress) {
+                state.dailyQuests.progress.explored = (state.dailyQuests.progress.explored || 0) + 1;
+                if (typeof checkDailyQuests === 'function') checkDailyQuests();
             }
             
             const logHtml = ds.lootLog.length > 0
@@ -51684,6 +51703,19 @@ function openFullscreenMap() {
                 return;
             }
             
+            // === COOLDOWN: 1x za 24 hodin per dungeon ===
+            if (!state.dungeonCooldowns) state.dungeonCooldowns = {};
+            const lastEntry = state.dungeonCooldowns[dungeonId] || 0;
+            const cooldownMs = 24 * 60 * 60 * 1000; // 24 hodin
+            const now = Date.now();
+            if (now - lastEntry < cooldownMs) {
+                const remaining = cooldownMs - (now - lastEntry);
+                const hours = Math.floor(remaining / 3600000);
+                const mins = Math.ceil((remaining % 3600000) / 60000);
+                notifyWarning('⏳ Cooldown', `${dungeonData.name} bude dostupný za ${hours}h ${mins}m`);
+                return;
+            }
+            
             // Vše OK - vstup do dungeonu
             console.log('🏰 Entering dungeon...');
             // Zajisti že state.dungeon má všechny potřebné properties
@@ -51698,6 +51730,7 @@ function openFullscreenMap() {
             state.dungeon.floor = 1;
             state.dungeon.loot = [];
             state.dungeon.newlyCleared = 0; // Reset počítadla nových pater
+            state.dungeonCooldowns[dungeonId] = Date.now(); // Nastav cooldown
             
             showDungeonUI();
         }
@@ -61505,6 +61538,7 @@ function openFullscreenMap() {
                 if (settlementMorale >= 70) workMultiplier += 0.15; // +15% produkce
                 else if (settlementMorale >= 50) workMultiplier += 0.05; // +5%
                 else if (settlementMorale < 30) workMultiplier -= 0.20; // -20% produkce!
+                const resMult = Math.max(1, Math.round(workMultiplier)); // Celočíselný násobek pro suroviny
                 if (settler.type === 'scavenger_s') {
                     const minRes = effect.minRes || 2;
                     const maxRes = effect.maxRes || 4;
