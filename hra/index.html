@@ -72378,6 +72378,7 @@ function openFullscreenMap() {
                             ` : ''}
                             <span style="color: #4ecdc4; font-size: 0.85rem;">👥 ${playerUnits.length}</span>
                             <span style="color: #ff6b6b; font-size: 0.85rem;">💀 ${enemyUnits.length}</span>
+                            <button onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){window.combatState=null;delete state.activeCombat;delete state.savedCombatState;window.isSettlementRaid=false;state._raidVictoryHandled=false;closeModal();renderFull();saveGame(true);}" style="background: #333; border: 1px solid #555; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #888;" title="Nouzový odchod z boje">✕</button>
                         </div>
                     </div>
                     </div>
@@ -77699,18 +77700,32 @@ function openFullscreenMap() {
                     
                     // === OBNOVENÍ COMBAT STATE ===
                     if (state.activeCombat) {
-                        window.combatState = state.activeCombat;
-                        console.log('⚔️ Combat state obnoven po refreshi');
-                        const _cs = window.combatState;
-                        if (_cs.turnOrder && _cs.currentTurnIndex !== undefined) {
-                            const _ru = _cs.turnOrder[_cs.currentTurnIndex];
-                            if (_ru) _cs.selectedUnit = _ru;
+                        // Validace - pokud je combat state starý nebo poškozený, zahoď ho
+                        const _csr = state.activeCombat;
+                        const combatValid = _csr.units && Array.isArray(_csr.units) && _csr.units.length > 0 &&
+                            _csr.units.some(u => u.team === 'player' && u.alive) &&
+                            _csr.units.some(u => u.team === 'enemy' && u.alive);
+                        
+                        if (!combatValid) {
+                            console.warn('⚠️ Combat state nevalidní - zahazuji');
+                            delete state.activeCombat;
+                            delete state.savedCombatState;
+                            window.combatState = null;
+                            window.isSettlementRaid = false;
+                        } else {
+                            window.combatState = state.activeCombat;
+                            console.log('⚔️ Combat state obnoven po refreshi');
+                            const _cs = window.combatState;
+                            if (_cs.turnOrder && _cs.currentTurnIndex !== undefined) {
+                                const _ru = _cs.turnOrder[_cs.currentTurnIndex];
+                                if (_ru) _cs.selectedUnit = _ru;
+                            }
+                            setTimeout(() => {
+                                document.getElementById('modal').classList.add('show');
+                                renderHeroesCombatUI();
+                                if (window.combatState) setTimeout(() => startNextTurn(), 700);
+                            }, 100);
                         }
-                        setTimeout(() => {
-                            document.getElementById('modal').classList.add('show');
-                            renderHeroesCombatUI();
-                            if (window.combatState) setTimeout(() => startNextTurn(), 700);
-                        }, 100);
                     }
                     
                     // === OBNOVENÍ DUNGEON EXPLORE STATE ===
@@ -81210,10 +81225,13 @@ function openFullscreenMap() {
                     if (state.status.hunger <= 20 && Math.floor(now / 1000) % 3 === 0) {
                         document.body.style.animation = 'flash-red 0.5s';
                         setTimeout(() => document.body.style.animation = '', 500);
+                        // Track damage source for death reason
+                        if (state.status.hunger <= 5) state.lastDamageSource = 'Hlad';
                     }
                     if (state.status.thirst <= 20 && Math.floor(now / 1000) % 3 === 0) {
                         document.body.style.animation = 'flash-red 0.5s';
                         setTimeout(() => document.body.style.animation = '', 500);
+                        if (state.status.thirst <= 5) state.lastDamageSource = 'Žízeň';
                     }
                 } else {
                     // Regeneration in base (per real second)
@@ -81369,11 +81387,17 @@ function openFullscreenMap() {
                     } else if (state.status.hunger < 20 || state.status.thirst < 20) {
                         deathReason = '😵 Zemřel jsi vyčerpáním';
                         deathDetails = `Hlad: ${state.status.hunger.toFixed(0)}%, Žízeň: ${state.status.thirst.toFixed(0)}%`;
+                    } else {
+                        deathReason = '💀 Zemřel jsi (neznámá příčina)';
+                        deathDetails = `HP: ${state.char.hp}, Hlad: ${state.status.hunger.toFixed(0)}%, Žízeň: ${state.status.thirst.toFixed(0)}%, RAD: ${state.status.radiation.toFixed(0)}%`;
                     }
                     
                     // Ulož příčinu smrti do statistik
                     state.stats.lastDeathReason = deathReason;
                     state.stats.lastDeathDetails = deathDetails;
+                    
+                    // Zapiš příčinu do logu aby hráč viděl proč umřel
+                    addLog(`💀 ${deathReason}. HP: 0/${state.char.maxHp}, Hlad: ${Math.floor(state.status.hunger)}%, Žízeň: ${Math.floor(state.status.thirst)}%, RAD: ${Math.floor(state.status.radiation)}%`, '💀');
                     
                     const deathTexts = {
                         title: '💀 SMRT',
@@ -113207,6 +113231,7 @@ function openFullscreenMap() {
         window.disbandClanConfirm = disbandClanConfirm;
         window.disbandClan = disbandClan;
         window.leaveClan = leaveClan;
+        window.confirmLeaveClan = confirmLeaveClan;
         window.promoteToOfficer = promoteToOfficer;
         window.demoteOfficer = demoteOfficer;
         window.showClanOverview = showClanOverview;
@@ -114542,6 +114567,27 @@ function openFullscreenMap() {
         
         // === ODCHOD Z KLANU ===
         async function leaveClan(locationId) {
+            const myName = getPlayerName();
+            await loadClanData();
+            const clan = getClanData(locationId);
+            if (!clan) return;
+            
+            // Potvrzovací dialog
+            showModal('🚪 Opustit klan?', `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">⚠️</div>
+                    <h3 style="color: #ff4444;">Opravdu chceš opustit klan [${clan.name}]?</h3>
+                    <p style="color: #888; margin: 1rem 0;">Ztratíš přístup ke klanovým budovám, skladu a chatu.</p>
+                    <p style="color: #ff9800; font-size: 0.85rem;">⚠️ Tato akce je nevratná!</p>
+                    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                        <button class="btn" onclick="confirmLeaveClan('${locationId}')" style="flex: 1; background: #c62828;">🚪 Ano, opustit</button>
+                        <button class="btn" onclick="closeModal()" style="flex: 1; background: #555;">✗ Zrušit</button>
+                    </div>
+                </div>
+            `);
+        }
+        
+        async function confirmLeaveClan(locationId) {
             const myName = getPlayerName();
             await loadClanData();
             const clan = getClanData(locationId);
