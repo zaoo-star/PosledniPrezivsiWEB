@@ -29186,7 +29186,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 if (obj.type === 'visit_locations') return state.world.visitedLocations.length >= obj.target;
                                 if (obj.type === 'location') return prog >= 1;
                                 if (obj.type === 'explore') return prog >= obj.target;
-                                if (obj.type === 'item') return state.inv.some(function(i) { return i.id === obj.target; });
+                                if (obj.type === 'item') return state.inv.some(function(i) { return i.id === obj.target || _questItemNameMatch(i, obj.target); }); // [FIX] alias
                                 if (obj.type === 'kill') return prog >= 1;
                                 return prog >= 1;
                             });
@@ -29240,7 +29240,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                             if (loc && !complete) locationName = ' <span style="color: #ff9800;">(📍' + loc.name + ')</span>';
                                         }
                                         else if (obj.type === 'explore') { complete = prog >= obj.target; displayProg = prog + '/' + obj.target; }
-                                        else if (obj.type === 'item') { complete = state.inv.some(function(i) { return i.id === obj.target; }); }
+                                        else if (obj.type === 'item') { complete = state.inv.some(function(i) { return i.id === obj.target || _questItemNameMatch(i, obj.target); }); } // [FIX] alias
                                         else if (obj.type === 'kill') { complete = prog >= 1; }
                                         else { complete = prog >= 1; }
                                         
@@ -29564,7 +29564,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     } else if (type === 'explore') {
                         state.mainQuest.questProgress[obj.id] = (state.mainQuest.questProgress[obj.id] || 0) + 1;
                     } else if (type === 'item') {
-                        if (state.inv.some(i => i.id === obj.target)) {
+                        if (state.inv.some(i => i.id === obj.target || _questItemNameMatch(i, obj.target))) { // [FIX] alias
                             state.mainQuest.questProgress[obj.id] = 1;
                         }
                     } else if (type === 'kill' && value === obj.target) {
@@ -29626,7 +29626,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (obj.type === 'location') return progress >= 1;
                 if (obj.type === 'visit_locations') return state.world.visitedLocations.length >= obj.target;
                 if (obj.type === 'explore') return progress >= obj.target;
-                if (obj.type === 'item') return state.inv.some(i => i.id === obj.target);
+                if (obj.type === 'item') return state.inv.some(i => i.id === obj.target || _questItemNameMatch(i, obj.target)); // [FIX] alias
                 if (obj.type === 'kill') return progress >= 1;
                 if (obj.type === 'choice') return progress >= 1;
                 if (obj.type === 'interact') return progress >= 1;
@@ -29656,7 +29656,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (obj.type === 'location') return progress >= 1;
                 if (obj.type === 'visit_locations') return state.world.visitedLocations.length >= obj.target;
                 if (obj.type === 'explore') return progress >= obj.target;
-                if (obj.type === 'item') return state.inv.some(i => i.id === obj.target);
+                if (obj.type === 'item') return state.inv.some(i => i.id === obj.target || _questItemNameMatch(i, obj.target)); // [FIX] alias
                 if (obj.type === 'kill') return progress >= 1;
                 if (obj.type === 'choice') return progress >= 1;
                 if (obj.type === 'interact') return progress >= 1;
@@ -42508,11 +42508,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             // Update companion quest objective
                             const comp = state.companions?.find(c => c.id === spawnData.companion);
                             if (comp?.activeQuest) {
-                                comp.activeQuest.objectives.forEach(obj => {
-                                    if (obj.target === itemId) {
-                                        obj.completed = true;
-                                    }
-                                });
+                                // [FIX] activeQuest.objectives nemá 'target' pole — cross-reference s chapter definicí
+                                const qData = COMPANION_QUESTS[comp.id];
+                                const ch = qData?.chapters.find(c => c.id === comp.activeQuest.id);
+                                if (ch) {
+                                    ch.objectives.forEach((chObj, idx) => {
+                                        if (chObj.type === 'item' && (chObj.target === itemId || _questItemNameMatch({id: itemId, name: questItem?.name}, chObj.target))) {
+                                            if (comp.activeQuest.objectives[idx]) {
+                                                comp.activeQuest.objectives[idx].completed = true;
+                                                comp.activeQuest.objectives[idx].manuallyCompleted = true; // prevent auto-reset
+                                            }
+                                        }
+                                    });
+                                }
                             }
                             
                             showModal('💝 Companion Quest Item!', `
@@ -44142,12 +44150,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     // OPRAVA: Kontrola pořadí — nesplněný předchozí cíl blokuje tento
                     // Výjimka: první cíl nemá předchůdce
-                    if (i > 0 && !comp.activeQuest.objectives[i - 1]?.completed) {
+                    // [FIX] Výjimka: item objectives mohou být splněny v libovolném pořadí
+                    const chapterObj = chapter.objectives[i];
+                    if (i > 0 && !comp.activeQuest.objectives[i - 1]?.completed && chapterObj.type !== 'item') {
                         allComplete = false;
                         return; // Přeskoč, předchozí cíl ještě nesplněn
                     }
-                    
-                    const chapterObj = chapter.objectives[i];
                     const currentLoc = state.world?.currentLocation;
                     const visitedLocs = state.world?.visitedLocations || [];
                     
@@ -44199,6 +44207,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.companions) return;
             
             // OPRAVA: Resetuj nesprávně splněné cíle (splněné bez splněného předchůdce)
+            // [FIX] ALE nikdy neresetuj item objectives — item byl odebrán z inventáře, reset by ho ztratil
             state.companions.forEach(comp => {
                 if (!comp.activeQuest) return;
                 const questData = COMPANION_QUESTS[comp.id];
@@ -44208,6 +44217,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Projdi všechny cíle - pokud je splněný ale předchůdce ne, resetuj ho
                 comp.activeQuest.objectives.forEach((obj, i) => {
                     if (!obj.completed || i === 0) return;
+                    // [FIX] Neresetuj item objectives ani manuálně splněné cíle
+                    const chapterObj = chapter.objectives[i];
+                    if (chapterObj?.type === 'item' || obj.manuallyCompleted) return;
+                    
                     const prevCompleted = comp.activeQuest.objectives[i - 1]?.completed;
                     if (!prevCompleted) {
                         // Předchůdce nesplněn - tento cíl byl splněn chybně, resetuj
@@ -44627,7 +44640,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (chapterObj.type === 'location' && currentLoc === chapterObj.target) {
                     obj.completed = true; preCompleted++;
                 }
-                if (chapterObj.type === 'item' && state.inv.some(i => i.id === chapterObj.target)) {
+                if (chapterObj.type === 'item' && state.inv.some(i => i.id === chapterObj.target || _questItemNameMatch(i, chapterObj.target))) { // [FIX] alias matching
                     obj.completed = true; preCompleted++;
                 }
             });
@@ -44720,8 +44733,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const itemObjective = chapter.objectives.find(o => o.type === 'item');
             if (!itemObjective) return;
             
-            // Kontrola jestli máš item
-            const item = state.inv.find(i => i.id === itemObjective.target);
+            // [FIX] Kontrola jestli máš item — hledej přes aliasy (secret_documents ↔ documents)
+            let item = state.inv.find(i => i.id === itemObjective.target);
+            if (!item && typeof _questItemNameMatch === 'function') {
+                item = state.inv.find(i => _questItemNameMatch(i, itemObjective.target));
+            }
             if (!item) {
                 notifyWarning('Chybí předmět', `Nemáš ${itemObjective.text}`);
                 return;
@@ -44735,7 +44751,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const chapterObj = chapter.objectives.find(co => co.text === o.text);
                 return chapterObj && chapterObj.type === 'item';
             });
-            if (questObj) questObj.completed = true;
+            if (questObj) {
+                questObj.completed = true;
+                questObj.manuallyCompleted = true; // [FIX] Zabraň autoChecku resetovat toto
+            }
             
             // Zkontroluj jestli jsou všechny cíle splněny
             const allComplete = comp.activeQuest.objectives.every(o => o.completed);
