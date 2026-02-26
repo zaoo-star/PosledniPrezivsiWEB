@@ -80576,9 +80576,11 @@ function openFullscreenMap() {
                                     
                                     '<div style="color: #00bcd4; font-size: 0.75rem; font-weight: bold; margin: 0.5rem 0 0.3rem 0;">STATISTIKY HRY</div>' +
                                     statLine('💀', 'Zabito nepřátel', state.stats?.kills || 0, '', '#f44336') +
-                                    statLine('🏰', 'Průzkumy', state.stats?.explored || 0, '', '#ff9800') +
-                                    statLine('📦', 'Craftů', state.stats?.crafted || 0, '', '#2196f3') +
-                                    statLine('💰', 'Celkem peněz', formatNumber(state.stats?.totalMoney || state.char?.money || 0), '', '#ffd700') +
+                                    statLine('🗺️', 'Navštívené lokace', state.world?.visitedLocations?.length || 0, '', '#ff9800') +
+                                    statLine('📦', 'Vyrobeno předmětů', state.stats?.itemsCrafted || 0, '', '#2196f3') +
+                                    statLine('💰', 'Celkem vyděláno', formatNumber(state.stats?.totalMoneyEarned || 0), ' 💰', '#ffd700') +
+                                    statLine('🏰', 'Dungeony', state.stats?.dungeonsCleared || 0, '', '#9c27b0') +
+                                    statLine('👹', 'Bossové zabiti', state.stats?.bossKills || 0, '', '#ff5722') +
                                     statLine('☠️', 'Úmrtí', state.stats?.deaths || 0, '', (state.stats?.deaths || 0) > 0 ? '#c62828' : '#4caf50') +
                                     statLine('📅', 'Dny přežití', state.time?.days || 0, '', '#ccc') +
                                 '</div>';
@@ -94678,6 +94680,7 @@ function openFullscreenMap() {
             // Poslouchej notifikace (žádosti o přátelství a přijetí)
             console.log('👥 Nastavuji listener na notifikace pro:', myName);
             const processedRewards = new Set(); // Ochrana proti duplicitnímu zpracování
+            window._processedAdminRewards = processedRewards; // [FIX] Sdílení s checkPendingRewards
             const rewardQueue = []; // Fronta odměn k zpracování
             let processingRewards = false;
             
@@ -94715,6 +94718,9 @@ function openFullscreenMap() {
                     }
                     // Zpracování výhry v tombole
                     if (v.type === 'tombola_win' && !v.processed) {
+                        // [FIX] Ochrana proti dvojímu zpracování
+                        if (processedRewards.has('tombola_' + k)) return;
+                        processedRewards.add('tombola_' + k);
                         console.log('🎉 Tombola výhra!', v);
                         processTombolaWin(v);
                         // Označ jako zpracované a smaž
@@ -102025,6 +102031,11 @@ function openFullscreenMap() {
                     
                     // Admin odměna
                     if (notif.type === 'admin_reward' && !notif.claimed) {
+                        // [FIX] Zkontroluj zda real-time listener už nezpracoval tuto odměnu
+                        if (window._processedAdminRewards && window._processedAdminRewards.has(key)) {
+                            console.log('⏭️ Admin reward already processed by real-time listener:', key);
+                            continue;
+                        }
                         // ATOMICKY označ jako claimed HNED - zabrání race condition
                         try {
                             await firebaseDB.ref(`notifications/${safeName}/${key}/claimed`).set(true);
@@ -102054,7 +102065,21 @@ function openFullscreenMap() {
                                 const count = Math.min(notif.item.count || 1, isResource ? 9999 : 99);
                                 const itemCopy = JSON.parse(JSON.stringify(itemDef));
                                 itemCopy.count = count;
-                                addItemToInventory(itemCopy, count);
+                                // [FIX] Admin reward: force add — obejdi unique/weight check
+                                const added = addItemToInventory(itemCopy, count, true);
+                                if (!added) {
+                                    // Unique item nebo přetížení — přidej přímo do inventáře
+                                    if (isResource) {
+                                        state.resources[itemDef.id] = (state.resources[itemDef.id] || 0) + count;
+                                    } else {
+                                        const forceItem = JSON.parse(JSON.stringify(itemDef));
+                                        forceItem.count = count;
+                                        forceItem.adminReward = true; // Flag pro identifikaci
+                                        state.inv.push(forceItem);
+                                        if (typeof updateCarryWeight === 'function') updateCarryWeight();
+                                    }
+                                    console.log('🎁 Admin reward FORCE add:', itemDef.name, 'x', count);
+                                }
                                 receivedItems.push(`${count}x ${itemDef.icon} ${itemDef.name}`);
                             }
                         }
@@ -102105,7 +102130,12 @@ function openFullscreenMap() {
                     
                     // Tombola výhra
                     if (notif.type === 'tombola_win' && !notif.processed) {
-                        processTombolaWin(notif);
+                        // [FIX] Ochrana proti dvojímu zpracování
+                        if (window._processedAdminRewards && window._processedAdminRewards.has('tombola_' + key)) {
+                            console.log('⏭️ Tombola already processed by real-time listener:', key);
+                        } else {
+                            processTombolaWin(notif);
+                        }
                         await firebaseDB.ref(`notifications/${safeName}/${key}`).remove();
                     }
                 }
@@ -102131,7 +102161,19 @@ function openFullscreenMap() {
                                 const count = Math.min(reward.item.count || 1, 10);
                                 const itemCopy = JSON.parse(JSON.stringify(itemDef));
                                 itemCopy.count = count;
-                                addItemToInventory(itemCopy, count);
+                                // [FIX] Force add — reward nesmí být tiše zahozena
+                                const added = addItemToInventory(itemCopy, count, true);
+                                if (!added) {
+                                    if (itemDef.type === 'resource') {
+                                        state.resources[itemDef.id] = (state.resources[itemDef.id] || 0) + count;
+                                    } else {
+                                        const forceItem = JSON.parse(JSON.stringify(itemDef));
+                                        forceItem.count = count;
+                                        state.inv.push(forceItem);
+                                        if (typeof updateCarryWeight === 'function') updateCarryWeight();
+                                    }
+                                    console.log('🎁 Reward FORCE add:', itemDef.name, 'x', count);
+                                }
                                 receivedItems.push(`${count}x ${itemDef.icon} ${itemDef.name}`);
                             }
                         }
@@ -102150,11 +102192,12 @@ function openFullscreenMap() {
                                     const itemCopy = JSON.parse(JSON.stringify(itemDef));
                                     if (itemCopy.effect === 'permanent_hp') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
                                     if (itemCopy.effect === 'permanent_all') { itemCopy.type = 'consumable'; itemCopy.stackable = false; }
-                                    if (canAddItem(itemCopy, 1)) {
-                                        addItemToInventory(itemCopy, 1, true);
-                                    } else {
+                                    // [FIX] Kontroluj návratovou hodnotu — bossStash jako fallback
+                                    const added = addItemToInventory(itemCopy, 1, true);
+                                    if (!added) {
                                         if (!state.bossStash) state.bossStash = [];
-                                        state.bossStash.push(itemCopy);
+                                        state.bossStash.push(JSON.parse(JSON.stringify(itemDef)));
+                                        console.log('🎁 Raid item → bossStash (unique/weight):', itemDef.name);
                                     }
                                     receivedItems.push(`${ri.icon || '🎁'} ${ri.name || itemDef.name}`);
                                 }
@@ -110065,7 +110108,20 @@ function openFullscreenMap() {
                     const count = Math.min(reward.item.count || 1, isResource ? 9999 : 99);
                     const itemCopy = JSON.parse(JSON.stringify(itemDef));
                     itemCopy.count = count;
-                    addItemToInventory(itemCopy, count);
+                    // [FIX] Admin reward: force add — obejdi unique/weight check
+                    const added = addItemToInventory(itemCopy, count, true);
+                    if (!added) {
+                        if (isResource) {
+                            state.resources[itemDef.id] = (state.resources[itemDef.id] || 0) + count;
+                        } else {
+                            const forceItem = JSON.parse(JSON.stringify(itemDef));
+                            forceItem.count = count;
+                            forceItem.adminReward = true;
+                            state.inv.push(forceItem);
+                            if (typeof updateCarryWeight === 'function') updateCarryWeight();
+                        }
+                        console.log('🎁 Admin reward FORCE add:', itemDef.name, 'x', count);
+                    }
                     receivedItems.push(`${count}x ${itemDef.icon} ${itemDef.name}`);
                     console.log('🎁 Přidán předmět:', itemDef.name, 'x', count);
                 }
@@ -110154,18 +110210,24 @@ function openFullscreenMap() {
                 if (itemId) {
                     const item = ITEMS.find(i => i.id === itemId);
                     if (item) {
-                        // Přidej předmět/y do inventáře s kontrolou místa
+                        // [FIX] Tombola výhra: force add — kontroluj návratovou hodnotu
                         const itemCopy = JSON.parse(JSON.stringify(item));
-                        if (typeof canAddItem === 'function' && canAddItem(itemCopy, amount)) {
-                            addItemToInventory(itemCopy, amount);
-                            console.log('🎉 Přidán předmět:', item.name, 'x', amount);
-                        } else if (typeof addToGroundLoot === 'function') {
-                            for (let gi = 0; gi < amount; gi++) addToGroundLoot({...item});
-                            console.log('🎉 Předmět na zemi (plný inventář):', item.name, 'x', amount);
-                            notifyWarning('📦 Plný inventář!', `${item.name} zůstal na zemi`);
+                        const added = addItemToInventory(itemCopy, amount, true); // silent=true
+                        if (!added) {
+                            // addItemToInventory selhalo (unique/weight) — force add
+                            if (item.type === 'resource') {
+                                state.resources[item.id] = (state.resources[item.id] || 0) + amount;
+                                console.log('🎉 Tombola FORCE resource:', item.name, 'x', amount);
+                            } else {
+                                const forceItem = JSON.parse(JSON.stringify(item));
+                                forceItem.count = amount;
+                                forceItem.tombolaWin = true;
+                                state.inv.push(forceItem);
+                                if (typeof updateCarryWeight === 'function') updateCarryWeight();
+                                console.log('🎉 Tombola FORCE add:', item.name, 'x', amount);
+                            }
                         } else {
-                            // Absolutní fallback
-                            addItemToInventory(itemCopy, amount);
+                            console.log('🎉 Přidán předmět:', item.name, 'x', amount);
                         }
                         notifySuccess('🎉 VÝHRA V TOMBOLE!', `${amount}x ${item.icon} ${item.name}`);
                     } else {
