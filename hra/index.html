@@ -6337,30 +6337,54 @@
             return `<img src="${src}" alt="${emoji}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML='${emoji}'">`;
         }
         
-        // Auto-patch: Po definici ITEMS automaticky nahradí ikony pro itemy v ITEM_CUSTOM_ICONS
-        // Spustí se jako self-executing na konci ITEMS bloku
+        // Auto-patch: Nahradí emoji ikony za custom obrázky ve VŠECH itemech
         function patchCustomIcons() {
             const iconStyle = 'width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover';
+            let total = 0;
+            
+            function patchItem(item) {
+                if (!item?.id || !ITEM_CUSTOM_ICONS[item.id]) return false;
+                if (item.icon && item.icon.includes && item.icon.includes('<img')) return false;
+                const emoji = item.icon || '📦';
+                item._originalIcon = emoji;
+                item.icon = `<img src="${ITEM_CUSTOM_ICONS[item.id]}" alt="${emoji}" style="${iconStyle}" onerror="this.outerHTML='${emoji}'">`;
+                return true;
+            }
+            
             function patchArray(arr, label) {
                 if (!Array.isArray(arr)) return 0;
                 let count = 0;
-                arr.forEach(item => {
-                    if (item?.id && ITEM_CUSTOM_ICONS[item.id] && item.icon) {
-                        const emoji = item.icon;
-                        item._originalIcon = emoji;
-                        item.icon = `<img src="${ITEM_CUSTOM_ICONS[item.id]}" alt="${emoji}" style="${iconStyle}" onerror="this.outerHTML='${emoji}'">`;
-                        count++;
-                    }
-                });
+                arr.forEach(item => { if (patchItem(item)) count++; });
                 if (count) console.log(`🖼️ Patchováno ${count} ikon v ${label}`);
                 return count;
             }
-            let total = 0;
+            
+            // Patch šablonové pole
             if (typeof ITEMS !== 'undefined') total += patchArray(ITEMS, 'ITEMS');
             if (typeof RECIPES !== 'undefined') total += patchArray(RECIPES, 'RECIPES');
-            // Patch i crafting recipes pokud existují
             if (typeof CRAFTING !== 'undefined') total += patchArray(CRAFTING, 'CRAFTING');
-            console.log(`🖼️ Custom ikony: celkem ${total} patchů pro ${Object.keys(ITEM_CUSTOM_ICONS).length} itemů`);
+            
+            // Patch hráčův inventář a equipped
+            if (typeof state !== 'undefined' && state) {
+                if (state.inv) total += patchArray(state.inv, 'state.inv');
+                if (state.equipped) {
+                    Object.values(state.equipped).forEach(item => {
+                        if (item && patchItem(item)) total++;
+                    });
+                }
+            }
+            
+            console.log(`🖼️ Custom ikony: celkem ${total} patchů`);
+        }
+        
+        // Patch jednoho itemu - volat při přidání do inventáře
+        function patchSingleItemIcon(item) {
+            if (!item?.id || !ITEM_CUSTOM_ICONS[item.id]) return;
+            if (item.icon && item.icon.includes && item.icon.includes('<img')) return;
+            const iconStyle = 'width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover';
+            const emoji = item.icon || '📦';
+            item._originalIcon = emoji;
+            item.icon = `<img src="${ITEM_CUSTOM_ICONS[item.id]}" alt="${emoji}" style="${iconStyle}" onerror="this.outerHTML='${emoji}'">`;
         }
         
         const ITEMS = [
@@ -16568,6 +16592,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             state.inv.push(newItem);
+            if (typeof patchSingleItemIcon === 'function') patchSingleItemIcon(newItem); // [FIX] Custom ikona
             SoundSystem.play('pickup');
             updateCarryWeight();
             
@@ -78784,6 +78809,9 @@ function openFullscreenMap() {
                     // Sync equipped → inventory reference
                     if (typeof syncEquippedReferences === 'function') syncEquippedReferences();
                     
+                    // [FIX] Patch custom ikon v inventáři po načtení
+                    if (typeof patchCustomIcons === 'function') patchCustomIcons();
+                    
                     // === OBNOVENÍ COMBAT STATE ===
                     if (state.activeCombat) {
                         // Validace - pokud je combat state starý nebo poškozený, zahoď ho
@@ -83374,6 +83402,9 @@ function openFullscreenMap() {
                 // Sync equipped → inventory reference (po save/load jsou různé objekty)
                 if (typeof syncEquippedReferences === 'function') syncEquippedReferences();
                 
+                // [FIX] Patch custom ikon v inventáři po načtení z Firebase
+                if (typeof patchCustomIcons === 'function') patchCustomIcons();
+                
                 // Obnov probíhající akci (lov, průzkum, těžba...)
                 resumeCurrentAction();
                 
@@ -85115,6 +85146,9 @@ function openFullscreenMap() {
                     
                     // Sync equipped → inventory reference
                     syncEquippedReferences();
+                    
+                    // [FIX] Patch custom ikon po načtení z Firebase (registrovaný hráč)
+                    if (typeof patchCustomIcons === 'function') patchCustomIcons();
                     
                     // Nastav nick z účtu
                     if (currentUser.displayName) {
