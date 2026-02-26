@@ -66472,7 +66472,7 @@ function openFullscreenMap() {
             if (state.settlement.specialization === 'trading') {
                 html += '<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #2a3a2a;">';
                 html += '<span>🏛️ ' + ('Obchodní specializace') + '</span>';
-                html += '<span style="color: #8bc34a;">+25 💰</span>';
+                html += '<span style="color: #8bc34a;">+50 💰</span>';
                 html += '</div>';
             }
             
@@ -80244,6 +80244,7 @@ function openFullscreenMap() {
                     // Obrana - použij calculateDefense() pro správný výpočet
                     let defense = typeof calculateDefense === 'function' ? calculateDefense() : 0;
                     const armor = state.equipped?.armor;
+                    const weapon = state.equipped?.weapon; // [FIX] chyběla definice → ReferenceError
                     
                     // Crit chance - použij calculateCritChance() pro správný výpočet
                     const critChance = typeof calculateCritChance === 'function' ? Math.round(calculateCritChance() * 100) : 5;
@@ -80393,6 +80394,195 @@ function openFullscreenMap() {
                                 ${state.companions?.length > 0 ? `<p style="color: #8bc34a; font-size: 0.85rem; margin: 0.3rem 0;">👥 ${state.companions.length} společníků</p>` : ''}
                                 ${state.settlement?.settlers?.some(s => s.type === 'builder') ? '<p style="color: #ffd700; font-size: 0.85rem; margin: 0.3rem 0;">🏗️ -50% cena budov (Stavitel)</p>' : ''}
                             </div>
+                            
+                            <!-- CELKOVÉ STATISTIKY -->
+                            ${(() => {
+                                // ====== RADIAČNÍ ODOLNOST — kombinuje addRadiation() + getArmorSpecialEffects() ======
+                                let totalRadResist = 0;
+                                // Buff (Rad-X apod.)
+                                if (state.buffs?.radResist && state.buffs.radResist.until > Date.now()) 
+                                    totalRadResist += (state.buffs.radResist.value || 0) / 100;
+                                // Armor special efekty (rad_resist, rad_immune, mutant, sandworm...) — JEDINÝ zdroj pro výbavu
+                                try { const _ase = getArmorSpecialEffects(); if (_ase.radResist > 0) totalRadResist += _ase.radResist; } catch(e) {
+                                    // Fallback pokud getArmorSpecialEffects není dostupné
+                                    const _sAr = state.equipped?.armor;
+                                    if (_sAr?.special === 'rad_resist') totalRadResist += 0.3;
+                                    else if (_sAr?.special === 'rad_immune') totalRadResist += 0.5;
+                                }
+                                // Set bonusy
+                                try { const _se = typeof getClassSetEffects === 'function' ? getClassSetEffects() : null; if (_se?.radResist > 0) totalRadResist += _se.radResist / 100; } catch(e) {}
+                                // Frakce (Mutanti)
+                                try { const _fb = getFactionBonuses(); if (_fb.radResist > 0) totalRadResist += _fb.radResist; } catch(e) {}
+                                // Exotic bonus (Radiační talisman)
+                                if (state.exoticBonuses?.radResistPermanent > 0) totalRadResist += state.exoticBonuses.radResistPermanent;
+                                // Mutace: Radiační adaptace
+                                if (state.mutations?.includes('radiation_adaptation')) totalRadResist += 0.7;
+                                // NPC bonus (Léčitelka Zora)
+                                try { const _nb = getNPCBonuses(); if (_nb.radResistBonus > 0) totalRadResist += _nb.radResistBonus; } catch(e) {}
+                                // Enchanty na výbavě
+                                if (state.equipped) {
+                                    ['armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
+                                        const eq = state.equipped[slot];
+                                        if (eq?.enchantment) {
+                                            try { const ench = ENCHANTMENTS.find(e => e.id === eq.enchantment); if (ench?.effect?.radResist) totalRadResist += ench.effect.radResist; } catch(e) {}
+                                        }
+                                    });
+                                }
+                                // Runeword bonusy
+                                try { const _rw = typeof getRunewordBonuses === 'function' ? getRunewordBonuses() : {}; if (_rw.radResist) totalRadResist += _rw.radResist; } catch(e) {}
+                                totalRadResist = Math.min(totalRadResist, 0.9); // max 90% jako v addRadiation()
+                                const radResistPct = Math.round(totalRadResist * 100);
+                                
+                                // ====== XP BONUS — kopíruje logiku z addXP() ======
+                                let xpMult = 1.0;
+                                const _pl = state.char?.level || 1;
+                                if (_pl > 5) xpMult *= 1 + Math.min(1.0, (_pl - 5) * 0.05);
+                                const _intB = Math.max(0, ((state.char?.attrs?.int || 5) - 5) * 0.1);
+                                xpMult *= (1 + _intB);
+                                try { const _cb = getAllCompanionBonuses(); if (_cb.xpBonus > 0) xpMult *= (1 + _cb.xpBonus); } catch(e) {}
+                                if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > Date.now()) xpMult *= 1.25;
+                                if (state.equippedAccessory) {
+                                    const _acc = state.inv?.find(i => i.id === state.equippedAccessory);
+                                    if (_acc?.bonus === 'xp' && _acc.value > 0) xpMult *= (1 + _acc.value / 100);
+                                }
+                                try { const _nb2 = getNPCBonuses(); if (_nb2.xpBonus > 0) xpMult *= (1 + _nb2.xpBonus); } catch(e) {}
+                                try { if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('holy')) xpMult *= 1.10; } catch(e) {}
+                                try { const _fxp = getFactionBonus(); if (_fxp.xp > 0) xpMult *= (1 + _fxp.xp); } catch(e) {}
+                                try { if (typeof getPoliticalXPBonus === 'function') { const _pxp = getPoliticalXPBonus(); if (_pxp > 0) xpMult *= (1 + _pxp); } } catch(e) {}
+                                try { if (typeof getClanBonuses === 'function') { const _cxp = getClanBonuses(); if (_cxp.xp > 0) xpMult *= (1 + _cxp.xp); } } catch(e) {}
+                                try { if (typeof getBuildingBonuses === 'function') { const _bxp = getBuildingBonuses(); if (_bxp.xpBonus > 0) xpMult *= (1 + _bxp.xpBonus); } } catch(e) {}
+                                const _mood = state.status?.mood || 50;
+                                if (_mood > 75) xpMult *= 1.10; else if (_mood > 50) xpMult *= 1.05; else if (_mood <= 10) xpMult *= 0.70; else if (_mood <= 25) xpMult *= 0.85;
+                                const xpBonusPct = Math.round((xpMult - 1) * 100);
+                                
+                                // ====== LOOT BONUS ======
+                                let lootBonus = 0;
+                                try { const _cl = getAllCompanionBonuses(); if (_cl.lootChance) lootBonus += Math.round(_cl.lootChance * 100); } catch(e) {}
+                                if (state.buffs?.luck && state.buffs.luck.until > Date.now()) lootBonus += state.buffs.luck.value || 0;
+                                const _lckVal = typeof getEffectiveAttr === 'function' ? getEffectiveAttr('lck') : (attrs.lck || 5);
+                                if (_lckVal > 5) lootBonus += (_lckVal - 5) * 3;
+                                try { const _rwb = typeof getRunewordBonuses === 'function' ? getRunewordBonuses() : {}; if (_rwb.lootBonus) lootBonus += Math.round(_rwb.lootBonus * 100); } catch(e) {}
+                                // Set efekty (set bonusy z vybavení)
+                                try { const _sef = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {}; if (_sef.lootBonus) lootBonus += Math.round(_sef.lootBonus * 100); } catch(e) {}
+                                // Armor special efekty (scavenger +25%, treasure +15%)
+                                try { const _aseLoot = typeof getArmorSpecialEffects === 'function' ? getArmorSpecialEffects() : {}; if (_aseLoot.lootBonus) lootBonus += Math.round(_aseLoot.lootBonus * 100); } catch(e) {}
+                                
+                                // ====== ŠANCE NA SETKÁNÍ S NEPŘÁTELI (encounter chance) ======
+                                // Replika logiky z checkForEncounter()
+                                let encounterBase = 50; // base 50%
+                                let encounterReductions = [];
+                                // Companion ambushReduction
+                                let _ambRed = 0;
+                                try { const _cae = getAllCompanionBonuses(); _ambRed += _cae.ambushReduction || 0; } catch(e) {}
+                                // Stealth skill
+                                const _stealthLvl = state.skills?.['stealth'] || 0;
+                                if (_stealthLvl > 0) { _ambRed += _stealthLvl * 0.15; encounterReductions.push('🥷 Stealth skill Lv.' + _stealthLvl + ' (-' + (_stealthLvl * 15) + '%)'); }
+                                // Skill tree
+                                try { const _stb = typeof getSkillTreeBonus === 'function' ? (getSkillTreeBonus('ambushReduction') || 0) : 0; _ambRed += _stb; } catch(e) {}
+                                // Armor set encounterReduction
+                                let _armorEncRed = 0;
+                                try { const _setEnc = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {}; _armorEncRed = _setEnc.encounterReduction || 0; } catch(e) {}
+                                // Formule: max(5%, (50% - ambRed) * (1 - armorEncRed))
+                                let encounterChance = Math.max(5, Math.round((0.5 - _ambRed) * (1 - _armorEncRed) * 100));
+                                // Item specials — camo a stealth_move (multiplicative)
+                                try { if (typeof hasEquippedSpecial === 'function') {
+                                    if (hasEquippedSpecial('camo')) encounterChance = Math.round(encounterChance * 0.7);
+                                    if (hasEquippedSpecial('stealth_move')) encounterChance = Math.round(encounterChance * 0.8);
+                                } } catch(e) {}
+                                encounterChance = Math.max(5, encounterChance);
+                                // Stalker class: 50% vyhnutí po setkání (info text)
+                                const _isStalker = state.char.classId === 'stalker';
+                                
+                                // ====== CESTOVNÍ RYCHLOST — replika z calculateTravelTime ======
+                                let travelSpeedBonus = 0; // v procentech
+                                let travelDetails = [];
+                                // Nomád class
+                                try { if (typeof hasClassPassive === 'function' && hasClassPassive('travelSpeedBonus')) { const _ns = typeof getClassPassiveValue === 'function' ? (getClassPassiveValue('travelSpeedBonus') || 0) : 0; travelSpeedBonus += Math.round(_ns * 100); if (_ns > 0) travelDetails.push('🏜️ Nomád'); } } catch(e) {}
+                                // AGI bonus
+                                const _agiB = Math.max(0, ((typeof getEffectiveAttr === 'function' ? getEffectiveAttr('agi') : (attrs.agi || 5)) - 5) * 2);
+                                travelSpeedBonus += _agiB;
+                                // Pathfinder + fast_travel skills
+                                const _pfLvl = state.skillTree?.exploration?.pathfinder || state.skills?.['pathfinder'] || 0;
+                                const _ftLvl = state.skillTree?.exploration?.fast_travel || state.skillTree?.survival?.fast_travel || state.skills?.['fast_travel'] || 0;
+                                travelSpeedBonus += _pfLvl + _ftLvl;
+                                // Kompas
+                                if (state.inv?.some(i => i.id === 'compass' || i.bonus === 'navigation')) travelSpeedBonus += 1.5;
+                                // Companions
+                                try { const _cts = typeof getCompanionTravelSpeedBonus === 'function' ? getCompanionTravelSpeedBonus() : 0; travelSpeedBonus += Math.round(_cts * 100); } catch(e) {}
+                                // Boots speed
+                                try { const _bts = typeof getArmorSpecialEffects === 'function' ? getArmorSpecialEffects() : {}; travelSpeedBonus += Math.round((_bts.speedBonus || 0) * 100); } catch(e) {}
+                                // Mutace
+                                try { const _mtS = getMutationBonuses(); if (_mtS.travelSpeed > 0) travelSpeedBonus += Math.round(_mtS.travelSpeed * 100); if (_mtS.speed < 0) travelSpeedBonus -= Math.round(Math.abs(_mtS.speed) * 100); } catch(e) {}
+                                // Jin NPC rychlé cesty
+                                if (state.secrets?.includes('jin_fast_routes')) travelSpeedBonus += 5;
+                                // Set efekty
+                                try { const _setSpd = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {}; if (_setSpd.travelSpeed) travelSpeedBonus += Math.round(_setSpd.travelSpeed * 100); } catch(e) {}
+                                const travelSpeed = Math.round(travelSpeedBonus);
+                                
+                                // ====== NOSNOST ======
+                                let maxWeight = typeof calculateMaxWeight === 'function' ? calculateMaxWeight() : 50;
+                                
+                                // ====== BLOKOVÁNÍ ======
+                                let blockChance = 0;
+                                try { const _pse = getPlayerCombatSkillEffects(); if (_pse.blockChance) blockChance = Math.round(_pse.blockChance * 100); } catch(e) {}
+                                
+                                // ====== HP REGEN (v základně) ======
+                                let hpRegenPerMin = 0;
+                                // Základna = +10 HP/h = ~0.17/min (vždy v base)
+                                hpRegenPerMin += 10 / 60;
+                                // Postel: +2 HP/min
+                                if (state.base?.includes('bed')) hpRegenPerMin += 2;
+                                // Medic class: +2 HP/min
+                                if (state.char.classId === 'medic') hpRegenPerMin += 2;
+                                // Mutace healRate
+                                try { const _cm = getMutationBonuses(); if (_cm.healRate) hpRegenPerMin += _cm.healRate; } catch(e) {}
+                                // Regeneration skill (+1 HP/min per level)
+                                try { const _rsl = typeof getSkillLevel === 'function' ? (getSkillLevel('regeneration') || 0) : 0; hpRegenPerMin += _rsl; } catch(e) {}
+                                // Survivor skill
+                                const _survLvl = state.skills?.['survivor'] || 0;
+                                if (_survLvl > 0) hpRegenPerMin += _survLvl;
+                                const hpRegen = Math.round(hpRegenPerMin * 10) / 10;
+                                
+                                // Zahrádka a studna
+                                let hungerRegen = state.base?.includes('garden') ? 4 : 0;
+                                let thirstRegen = state.base?.includes('water') ? 5 : 0;
+                                
+                                const statLine = (icon, label, value, unit, color) => 
+                                    '<div style="display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid #222;">' +
+                                    '<span style="color: #999;">' + icon + ' ' + label + '</span>' +
+                                    '<span style="color: ' + color + '; font-weight: bold;">' + value + unit + '</span></div>';
+                                
+                                return '<div style="background: #0d1520; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border-left: 3px solid #00bcd4;">' +
+                                    '<h4 style="margin: 0 0 0.8rem 0; color: #00bcd4;">📊 CELKOVÉ STATISTIKY</h4>' +
+                                    
+                                    '<div style="color: #00bcd4; font-size: 0.75rem; font-weight: bold; margin: 0.5rem 0 0.3rem 0;">ODOLNOSTI</div>' +
+                                    statLine('☢️', 'Odolnost radiaci', radResistPct, '%', radResistPct >= 70 ? '#4caf50' : radResistPct >= 30 ? '#ff9800' : '#f44336') +
+                                    statLine('🛡️', 'Blokování', blockChance, '%', blockChance > 0 ? '#2196f3' : '#666') +
+                                    statLine('💨', 'Úhyb', dodgeChance, '%', dodgeChance > 10 ? '#8bc34a' : '#ccc') +
+                                    
+                                    '<div style="color: #00bcd4; font-size: 0.75rem; font-weight: bold; margin: 0.5rem 0 0.3rem 0;">BONUSY</div>' +
+                                    statLine('⭐', 'XP bonus', (xpBonusPct >= 0 ? '+' : '') + xpBonusPct, '%', xpBonusPct > 0 ? '#ffd700' : xpBonusPct < 0 ? '#f44336' : '#666') +
+                                    statLine('🎁', 'Loot bonus', '+' + lootBonus, '%', lootBonus > 0 ? '#ff9800' : '#666') +
+                                    statLine('⚔️', 'Šance na nepřátele', encounterChance, '%', encounterChance < 30 ? '#4caf50' : encounterChance < 45 ? '#ff9800' : '#f44336') +
+                                    (_isStalker ? '<div style="font-size: 0.7rem; color: #5d4037; padding: 0.1rem 0 0.3rem 1.5rem;">👤 Stín: 50% šance vyhnout se po setkání</div>' : '') +
+                                    statLine('🏃', 'Rychlost cestování', '+' + travelSpeed, '%', travelSpeed > 0 ? '#2196f3' : '#666') +
+                                    
+                                    '<div style="color: #00bcd4; font-size: 0.75rem; font-weight: bold; margin: 0.5rem 0 0.3rem 0;">PŘEŽITÍ</div>' +
+                                    statLine('❤️', 'Max HP', state.char.maxHp, '', '#f44336') +
+                                    statLine('💚', 'HP regen (základna)', '+' + hpRegen, '/min', hpRegen > 0 ? '#4caf50' : '#666') +
+                                    statLine('🍖', 'Jídlo regen (zahrádka)', '+' + hungerRegen, '/h', hungerRegen > 0 ? '#ff9800' : '#666') +
+                                    statLine('💧', 'Voda regen (studna)', '+' + thirstRegen, '/h', thirstRegen > 0 ? '#2196f3' : '#666') +
+                                    statLine('🎒', 'Nosnost', maxWeight, ' kg', '#ccc') +
+                                    
+                                    '<div style="color: #00bcd4; font-size: 0.75rem; font-weight: bold; margin: 0.5rem 0 0.3rem 0;">STATISTIKY HRY</div>' +
+                                    statLine('💀', 'Zabito nepřátel', state.stats?.kills || 0, '', '#f44336') +
+                                    statLine('🏰', 'Průzkumy', state.stats?.explored || 0, '', '#ff9800') +
+                                    statLine('📦', 'Craftů', state.stats?.crafted || 0, '', '#2196f3') +
+                                    statLine('💰', 'Celkem peněz', formatNumber(state.stats?.totalMoney || state.char?.money || 0), '', '#ffd700') +
+                                    statLine('☠️', 'Úmrtí', state.stats?.deaths || 0, '', (state.stats?.deaths || 0) > 0 ? '#c62828' : '#4caf50') +
+                                    statLine('📅', 'Dny přežití', state.time?.days || 0, '', '#ccc') +
+                                '</div>';
+                            })()}
                         </div>
                     `;
                     break;
@@ -81396,9 +81586,16 @@ function openFullscreenMap() {
             
             // Filtruj pouze věci co nejsou vybavené
             const losableIndices = [];
+            // [FIX] Chráněné itemy — nikdy se neztrácí při smrti
+            const protectedIds = new Set([
+                'sleeping_bag', 'compass', 'binoculars', 'backpack', 'rune_decoder',
+                'cooking_pot', 'alchemy_set', 'pickaxe', 'radio'
+            ]);
             state.inv.forEach((item, idx) => {
                 if (!item) return;
                 if (item.type === 'quest') return; // Quest itemy nikdy
+                if (item.unique || protectedIds.has(item.id)) return; // [FIX] Unikátní a důležité nástroje nikdy
+                if (item.cantSell && item.cantBuy) return; // [FIX] Neprodejné/nekoupitelné (legendary drops) nikdy
                 const itemKey = item._uniqueId || (item.id + '_' + (item.name || ''));
                 if (equippedIds.has(itemKey)) return; // Vybavené nikdy
                 if (item.id === state.equippedAccessory) return; // Doplněk nikdy
