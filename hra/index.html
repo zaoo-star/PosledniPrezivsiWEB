@@ -107992,8 +107992,16 @@ function openFullscreenMap() {
                     const lastAnnounced = lastAnnouncedSnap.val();
                     
                     if (lastAnnounced !== phaseKey) {
+                        // [FIX] Použij transaction místo read+write — zabraní race condition (duplicitní zprávy)
+                        const transResult = await firebaseDB.ref('politics/lastAnnouncedPhase').transaction(current => {
+                            if (current === phaseKey) return; // Abort — jiný klient už ohlásil
+                            return phaseKey;
+                        });
+                        
+                        if (!transResult.committed) {
+                            console.log('🗳️ Phase announcement already sent by another client');
+                        } else {
                         // Nová fáze — ohlásit do chatu (jen jednou)
-                        await firebaseDB.ref('politics/lastAnnouncedPhase').set(phaseKey);
                         
                         const mayorName = currentMayor?.name || 'Nikdo';
                         
@@ -108038,7 +108046,8 @@ function openFullscreenMap() {
                             });
                         }
                         // governing announcement se řeší níže (vyhodnocení voleb)
-                    }
+                    } // konec else (transaction committed)
+                    } // konec if (lastAnnounced !== phaseKey)
                 }
                 
                 // === VYHODNOCENÍ VOLEB (pouze ve fázi governing) ===
@@ -108075,11 +108084,14 @@ function openFullscreenMap() {
                 const currentCycle = Math.floor(daysSinceStart / 7);
                 
                 // Zkontroluj jestli tento cyklus už byl vyhodnocen
-                const lastEvalSnap = await firebaseDB.ref('politics/lastEvaluatedCycle').once('value');
-                const lastEvaluatedCycle = lastEvalSnap.val();
+                // [FIX] Použij transaction aby jen jeden klient vyhodnotil volby
+                const evalTransResult = await firebaseDB.ref('politics/lastEvaluatedCycle').transaction(current => {
+                    if (current !== null && current >= currentCycle) return; // Abort — už vyhodnoceno
+                    return currentCycle;
+                });
                 
-                if (lastEvaluatedCycle !== null && lastEvaluatedCycle >= currentCycle) {
-                    return; // Už vyhodnoceno v tomto cyklu
+                if (!evalTransResult.committed) {
+                    return; // Jiný klient už vyhodnotil
                 }
                 
                 // Zamkni aby se nepouštělo vícekrát paralelně
@@ -108136,8 +108148,7 @@ function openFullscreenMap() {
                 }
                 
                 if (winner) {
-                    // Označ cyklus jako vyhodnocený (PRVNÍ - aby ostatní klienti neduplikovali)
-                    await firebaseDB.ref('politics/lastEvaluatedCycle').set(currentCycle);
+                    // Cyklus už oznčen jako vyhodnocený v transaction výše
                     
                     // Ulož předchozího šéfa do historie (pokud existoval)
                     if (currentMayor?.name && currentMayor.name !== winner) {
@@ -108180,8 +108191,7 @@ function openFullscreenMap() {
                     
                     console.log('🗳️ ✅ Volby vyhodnoceny! Vítěz:', winner, 'Hlasy:', maxVotes);
                 } else {
-                    // Žádný vítěz - označ cyklus jako vyhodnocený
-                    await firebaseDB.ref('politics/lastEvaluatedCycle').set(currentCycle);
+                    // Žádný vítěz - cyklus už označen v transaction výše
                     await firebaseDB.ref('politics/election/votes').remove();
                     await firebaseDB.ref('politics/election/candidates').remove();
                     
@@ -109395,9 +109405,12 @@ function openFullscreenMap() {
                 const myName = getPlayerName();
                 const now = Date.now();
                 const updates = {};
+                const sentToNames = new Set(); // [FIX] Deduplikace — hráč může mít 2 záznamy (name + user_UID)
                 
                 Object.values(allPlayers).forEach(p => {
                     if (!p.name) return;
+                    if (sentToNames.has(p.name)) return; // [FIX] Už posláno tomuto hráči
+                    sentToNames.add(p.name);
                     const safeName = p.name.replace(/[.#$\[\]]/g, '_');
                     const msgKey = firebaseDB.ref('chat/private/' + safeName).push().key;
                     updates[`chat/private/${safeName}/${msgKey}`] = {
