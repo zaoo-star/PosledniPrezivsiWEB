@@ -161,6 +161,17 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         
         /* Zakázání pull-to-refresh na mobilech */
+        /* Custom NPC ikony - větší v modálech */
+        #npcModalOverlay img[style*="object-fit"] {
+            width: 96px !important;
+            height: 96px !important;
+            border-radius: 8px !important;
+        }
+        #postApoModalOverlay img[style*="object-fit"] {
+            width: 80px !important;
+            height: 80px !important;
+            border-radius: 6px !important;
+        }
         html, body {
             overscroll-behavior-y: none;
             overscroll-behavior: none;
@@ -2228,6 +2239,20 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
+        }
+        
+        // Bezpečné renderování ikony - propustí custom <img> tagy, escapuje ostatní
+        // Volitelně přijme itemId pro lookup v ITEM_CUSTOM_ICONS
+        function renderIcon(icon, itemId) {
+            if (!icon) return '📦';
+            if (typeof icon === 'string' && icon.startsWith('<img src="img/')) return icon;
+            // Pokud máme itemId a existuje custom ikona, použij ji
+            if (itemId && typeof ITEM_CUSTOM_ICONS !== 'undefined' && ITEM_CUSTOM_ICONS[itemId]) {
+                const src = ITEM_CUSTOM_ICONS[itemId];
+                const emoji = escapeHtml(icon);
+                return `<img src="${src}" alt="${emoji}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML='${emoji}'">`;
+            }
+            return escapeHtml(icon);
         }
         
         // Sanitizace jména pro Firebase cesty (/ . # $ [ ] nejsou povoleny v klíčích)
@@ -26381,6 +26406,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     let healAmount = 20; // default
                     if (item.id === 'raw_meat') {
                         healAmount = 30; // Syrové maso - zvířata ho milují
+                    } else if (itemData?.effect === 'health' || item.effect === 'health') {
+                        // Léčivo - použij plnou hodnotu
+                        healAmount = item.value || itemData?.value || 40;
                     } else if (itemData?.result?.secondary?.hp) {
                         // Jídlo s HP bonusem (steak, guláš atd.) - použij HP bonus + extra
                         healAmount = itemData.result.secondary.hp + 15;
@@ -26488,7 +26516,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Vypočítej heal amount podle typu jídla
             let healAmount = 20; // default
             if (type === 'food') {
-                if (itemData?.result?.secondary?.hp) {
+                // Nejdřív zkontroluj jestli je to medical item (health effect)
+                const itemEffect = item.effect || itemData?.effect;
+                if (itemEffect === 'health') {
+                    // Léčivo - použij plnou hodnotu léčení
+                    healAmount = item.value || itemData?.value || 40;
+                } else if (itemData?.result?.secondary?.hp) {
                     // Jídlo s HP bonusem (steak, guláš atd.) - použij HP bonus + extra
                     healAmount = itemData.result.secondary.hp + 15;
                 } else if (itemData?.effect === 'hunger' || itemData?.result?.effect === 'hunger') {
@@ -65934,9 +65967,16 @@ function openFullscreenMap() {
                                     ${statsInfo}${specialInfo ? '<span style="color: #8bc34a;">' + specialInfo + '</span>' : ''}
                                 </div>
                             </div>
-                            <button class="btn" onclick="sellAtSettlement(${realIdx}, '${sourceType}')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #ff9800;">
-                                💰${sellPrice}
-                            </button>
+                            <div style="display: flex; gap: 0.3rem; align-items: center;">
+                                ${item.count > 1 ? `
+                                    <button class="btn" onclick="sellAtSettlement(${realIdx}, '${sourceType}', ${item.count})" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #d4722e;">
+                                        Vše 💰${sellPrice * (item.count || 1)}
+                                    </button>
+                                ` : ''}
+                                <button class="btn" onclick="sellAtSettlement(${realIdx}, '${sourceType}')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #ff9800;">
+                                    💰${sellPrice}
+                                </button>
+                            </div>
                         </div>
                     `;
                 });
@@ -66041,7 +66081,7 @@ function openFullscreenMap() {
             showSettlementShopBuy(); // Refresh
         }
         
-        function sellAtSettlement(itemIndex, sourceType = 'inv') {
+        function sellAtSettlement(itemIndex, sourceType = 'inv', amount = 1) {
             // Prodej funguje i vzdáleně - prodává ze skladu osady
             const isInShelter = state.world?.currentLocation === 'shelter' || state.map?.inBase;
             
@@ -66092,8 +66132,13 @@ function openFullscreenMap() {
             }
             
             // === KONTROLA PENĚZ OBCHODU ===
+            // Pro bulk prodej: kolik kusů si obchodník může dovolit
+            const actualCount = Math.min(amount, item.count || 1);
+            let totalSellPrice = sellPrice * actualCount;
             const shopMoney = getShopMoney();
-            if (shopMoney < sellPrice) {
+            
+            let sellCount = actualCount;
+            if (shopMoney < totalSellPrice) {
                 if (shopMoney <= 0) {
                     const resetTime = getShopResetTime();
                     const hours = Math.floor(resetTime / 3600000);
@@ -66101,28 +66146,34 @@ function openFullscreenMap() {
                     notifyWarning('Obchodník nemá peníze!', `Dnes už vyčerpal zásobu. Reset za ${hours}h ${mins}m`);
                     return;
                 }
-                notifyWarning('Obchodník nemá dost', `Má jen ${shopMoney} 💰, potřebuje ${sellPrice} 💰`);
-                return;
+                // Kolik kusů si může dovolit?
+                sellCount = Math.floor(shopMoney / sellPrice);
+                if (sellCount <= 0) {
+                    notifyWarning('Obchodník nemá dost', `Má jen ${shopMoney} 💰, potřebuje ${sellPrice} 💰`);
+                    return;
+                }
+                totalSellPrice = sellPrice * sellCount;
+                notifyWarning('Obchodník nemá dost', `Koupil jen ${sellCount}x (měl ${shopMoney} 💰)`);
             }
             
             // Odečti z peněz obchodu
-            reduceShopMoney(sellPrice);
+            reduceShopMoney(totalSellPrice);
             
-            addMoney(sellPrice);
+            addMoney(totalSellPrice);
             
-            if (item.count > 1) {
-                item.count--;
+            if (item.count && item.count > sellCount) {
+                item.count -= sellCount;
             } else {
                 sourceArray.splice(itemIndex, 1);
             }
             
-            state.stats.itemsSold = (state.stats.itemsSold || 0) + 1;
+            state.stats.itemsSold = (state.stats.itemsSold || 0) + sellCount;
             SoundSystem.play('pickup');
-            showFloatingNumber(sellPrice, 'money');
+            showFloatingNumber(totalSellPrice, 'money');
             
             // Daily quest progress - sold
             if (state.dailyQuests?.progress) {
-                state.dailyQuests.progress.sold = (state.dailyQuests.progress.sold || 0) + 1;
+                state.dailyQuests.progress.sold = (state.dailyQuests.progress.sold || 0) + sellCount;
                 checkDailyQuests();
             }
             
@@ -89584,7 +89635,7 @@ function openFullscreenMap() {
             
             showModal(`🛒 Koupit ${escapeHtml(offer.item.name)}`, `
                 <div style="text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem;">${escapeHtml(offer.item.icon)}</div>
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">${renderIcon(offer.item.icon, offer.item.id)}</div>
                     <div style="color: #888; margin-bottom: 0.5rem;">Prodává: ${escapeHtml(offer.seller)}</div>
                     <div style="color: #ffd700; margin-bottom: 1rem;">Cena: ${pricePerUnit} 💰/ks</div>
                     
@@ -90075,7 +90126,7 @@ function openFullscreenMap() {
                     
                     html += `
                         <div style="display: flex; align-items: center; gap: 0.5rem; background: ${mySpoiled ? '#1a0a0a' : '#0a1a0a'}; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.3rem; ${mySpoiled ? 'border: 1px solid #4a1a1a;' : ''}">
-                            <span style="font-size: 1.5rem;">${mySpoiled ? '🤢' : escapeHtml(offer.item.icon)}</span>
+                            <span style="font-size: 1.5rem;">${mySpoiled ? '🤢' : renderIcon(offer.item.icon, offer.item.id)}</span>
                             <div style="flex: 1;">
                                 <div style="${mySpoiled ? 'color: #666; text-decoration: line-through;' : 'color: #fff;'}">${escapeHtml(offer.item.name)} ${count > 1 ? `<span style="color: #8bc34a;">(${count}x)</span>` : ''}</div>
                                 <div style="color: #ffd700; font-size: 0.85rem;">${totalPrice} 💰 ${count > 1 ? `(${offer.price}/ks)` : ''}</div>
@@ -90162,7 +90213,7 @@ function openFullscreenMap() {
                     
                     html += `
                         <div style="display: flex; align-items: center; gap: 0.5rem; background: ${bgColor}; padding: 0.6rem; border-radius: 3px; margin-bottom: 0.3rem; border-left: 2px solid ${borderColor}; ${isSpoiled ? 'opacity: 0.6;' : ''}">
-                            <span onclick="showMarketItemDetail('${escapeHtml(offer.id)}')" style="font-size: 1.8rem; cursor: pointer;" title="Klikni pro detail">${isSpoiled ? '🤢' : escapeHtml(offer.item.icon)}</span>
+                            <span onclick="showMarketItemDetail('${escapeHtml(offer.id)}')" style="font-size: 1.8rem; cursor: pointer;" title="Klikni pro detail">${isSpoiled ? '🤢' : renderIcon(offer.item.icon, offer.item.id)}</span>
                             <div onclick="showMarketItemDetail('${escapeHtml(offer.id)}')" style="flex: 1; cursor: pointer;" title="Klikni pro detail">
                                 <div style="${nameStyle}">${escapeHtml(offer.item.name)} ${count > 1 ? `<span style="color: #8bc34a;">(${count}x)</span>` : ''}</div>
                                 <div style="font-size: 0.75rem; color: #888;">
@@ -90255,9 +90306,9 @@ function openFullscreenMap() {
                 }
             }
             
-            showModal(`${item.icon} ${item.name}`, `
+            showModal(`${renderIcon(item.icon, item.id)} ${item.name}`, `
                 <div style="text-align: center;">
-                    <div style="font-size: 4rem; margin-bottom: 0.5rem;">${item.icon}</div>
+                    <div style="font-size: 4rem; margin-bottom: 0.5rem;">${renderIcon(item.icon, item.id)}</div>
                     <h3 style="margin: 0; color: ${rarityColor};">${item.name}</h3>
                     <p style="color: ${rarityColor}; font-size: 0.8rem; margin: 0.3rem 0;">${rarityName}</p>
                     ${itemDesc ? `<p style="color: #888; font-size: 0.85rem; font-style: italic;">"${itemDesc}"</p>` : ''}
