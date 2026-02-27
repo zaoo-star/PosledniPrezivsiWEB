@@ -6429,6 +6429,12 @@
         };
         
         // Helper: vrátí <img> tag pro custom ikonu, nebo fallback emoji
+        // Helper: strip <img> tags to their alt emoji (for plain-text contexts like chat)
+        function stripToEmoji(text) {
+            if (typeof text !== 'string') return text || '';
+            return text.replace(/<img[^>]*alt="([^"]*)"[^>]*>/g, '$1');
+        }
+        
         function itemIcon(itemOrId, fallbackEmoji) {
             const id = typeof itemOrId === 'string' ? itemOrId : itemOrId?.id;
             const emoji = fallbackEmoji || (typeof itemOrId === 'object' ? itemOrId?.icon : '') || '📦';
@@ -6836,7 +6842,7 @@
             { id: 'documents', name: 'Tajné dokumenty', icon: '📜', type: 'quest', weight: 0.5, price: 500, rarity: 'rare', desc: 'Šifrované vojenské dokumenty. Správní lidé za ně zaplatí hodně.' },
             
             // === ABYSS (PROPAST) ITEMS ===
-            { id: 'abyss_crystal', name: 'Krystal Propasti', icon: '🔮', type: 'trophy', weight: 1, price: 3000, rarity: 'legendary', cantBuy: true, cantSell: true, desc: 'Temný krystal z hlubin Propasti. Pulzuje nadpřirozenou energií. Drop z boss pater Propasti.' },
+            { id: 'abyss_crystal', name: 'Krystal Propasti', icon: '🔮', type: 'consumable', effect: 'permanent_defense', value: 5, weight: 1, price: 3000, rarity: 'legendary', cantBuy: true, usable: true, useAction: 'useAbyssCrystal', desc: 'Temný krystal z hlubin Propasti. Pulzuje nadpřirozenou energií. Použij pro TRVALE +5 max obrana! Drop z boss pater Propasti.' },
             { id: 'abyss_shard', name: 'Střep Temnoty', icon: '💎', type: 'consumable', effect: 'weapon_upgrade_shard', weight: 0.5, price: 1500, rarity: 'epic', cantBuy: true, desc: 'Fragment temnoty z Propasti. Použij na vybavenou zbraň → trvale +5 DMG. Nebo prodej za 1500 💰.' },
             { id: 'abyss_elixir', name: 'Elixír Propasti', icon: '⚗️', type: 'consumable', effect: 'health', value: 100, weight: 0.5, price: 2000, rarity: 'epic', cantBuy: true, desc: 'Temný elixír. Obnoví 100 HP. Vzácný drop z Propasti.' },
             { id: 'abyss_rune', name: 'Runa Propasti', icon: '🪬', type: 'consumable', effect: 'permanent_hp', value: 25, weight: 0.5, price: 5000, rarity: 'legendary', cantBuy: true, desc: 'Prastará runa. Použij pro TRVALE +25 max HP! Extrémně vzácný drop z hlubin Propasti (patro 30+).' },
@@ -15883,7 +15889,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const isConsumableFood = itemData.type === 'consumable' && 
                 (itemData.effect === 'hunger' || itemData.effect === 'thirst' || itemData.effect === 'health' || 
                  itemData.effect === 'energy' || itemData.effect === 'radiation' || itemData.effect === 'buff' ||
-                 itemData.effect === 'permanent_hp' || itemData.effect === 'weapon_upgrade_shard');
+                 itemData.effect === 'permanent_hp' || itemData.effect === 'permanent_defense' || itemData.effect === 'weapon_upgrade_shard');
             if (isConsumableFood || itemData.type === 'ammo' || itemData.type === 'resource') {
                 notifyWarning('Nelze recyklovat', 'Tento předmět nelze rozebrat na materiály.');
                 return;
@@ -49856,6 +49862,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 `);
                 addLog(`🧬 Použil jsi ${item.name} - +${hpBoost} max HP trvale!`, '🧬');
                 renderFull();
+            } else if (item.effect === 'permanent_defense') {
+                // Trvalé zvýšení obrany - Krystal Propasti
+                const defBoost = item.value || 5;
+                
+                if (!state.usedPermanentItems) state.usedPermanentItems = [];
+                if (state.usedPermanentItems.includes(item.id)) {
+                    showModal('❌ Již použito', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem;">${item.icon}</div>
+                            <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
+                            <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                    `);
+                    return;
+                }
+                state.usedPermanentItems.push(item.id);
+                
+                state.permanentDefenseBonus = (state.permanentDefenseBonus || 0) + defBoost;
+                removeItemFromInventory(item, 1);
+                SoundSystem.play('pickup');
+                showModal('🔮 Krystal absorbován!', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem;">🔮</div>
+                        ${item.icon} <strong>${item.name}</strong><br><br>
+                        <span style="color: #b388ff; font-size: 1.2rem; text-shadow: 0 0 10px rgba(179,136,255,0.5);">+${defBoost} obrana trvale!</span><br>
+                        <span style="color: #8bc34a;">Celkový bonus: +${state.permanentDefenseBonus} 🛡️</span>
+                    </div>
+                `);
+                addLog(`🔮 Použil jsi ${item.name} - +${defBoost} obrana trvale!`, '🔮');
+                renderFull();
             } else if (item.effect === 'permanent_all') {
                 // Trvalé zvýšení VŠECH atributů - lze použít jen jednou per item
                 const boost = item.value || 1;
@@ -76968,6 +77005,9 @@ function openFullscreenMap() {
             // Bonusy z mutací (např. Tlustá kůže +8 DEF)
             const mutBonuses = getMutationBonuses();
             defense += mutBonuses.defense || 0;
+            
+            // 🔮 Permanentní bonus z Krystalu Propasti
+            defense += state.permanentDefenseBonus || 0;
             
             // Class bonuses
             if (state.char.classId === 'tank') defense = Math.floor(defense * 1.3);
@@ -104764,7 +104804,7 @@ function openFullscreenMap() {
                 
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `🎊 EVENT AKTIVOVÁN! 🎊\n\n${power.icon} ${power.name}\n\n${effectDesc}\n\n⏱️ Trvání: ${durationStr}\n👑 Aktivoval: ${getPlayerName()}\n\nUžijte si to, přeživší!`,
+                    text: stripToEmoji(`🎊 EVENT AKTIVOVÁN! 🎊\n\n${power.icon} ${power.name}\n\n${effectDesc}\n\n⏱️ Trvání: ${durationStr}\n👑 Aktivoval: ${getPlayerName()}\n\nUžijte si to, přeživší!`),
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -105433,7 +105473,7 @@ function openFullscreenMap() {
                 // Oznámení do chatu
                 await firebaseDB.ref('chat/messages').push({
                     author: '🐉 WORLD BOSS RAID',
-                    text: `🐉 RAID ZAHÁJEN! 🐉\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ⚔️ ${boss.damage} DMG | 🛡️ ${boss.defense} DEF\n${boss.difficulty} ${boss.difficultyName}\n\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: ${getPlayerName()}\n\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n🌍 Bonus: ${boss.globalRewardDesc}\n\n⚔️ Boss zůstává dokud není poražen! VŠICHNI HRÁČI SE MOHOU PŘIPOJIT!`,
+                    text: stripToEmoji(`🐉 RAID ZAHÁJEN! 🐉\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ⚔️ ${boss.damage} DMG | 🛡️ ${boss.defense} DEF\n${boss.difficulty} ${boss.difficultyName}\n\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: ${getPlayerName()}\n\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n🌍 Bonus: ${boss.globalRewardDesc}\n\n⚔️ Boss zůstává dokud není poražen! VŠICHNI HRÁČI SE MOHOU PŘIPOJIT!`),
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -105441,7 +105481,7 @@ function openFullscreenMap() {
                 // 📩 Soukromá zpráva všem hráčům
                 await notifyAllPlayersPrivate(
                     '🐉 World Boss',
-                    `⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: ${getPlayerName()}\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`,
+                    stripToEmoji(`⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: ${getPlayerName()}\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`),
                     '🐉'
                 );
                 
@@ -106291,7 +106331,7 @@ function openFullscreenMap() {
                         
                         await firebaseDB.ref('chat/messages').push({
                             author: '🐉 RAID',
-                            text: `🏆 ${boss.icon} ${boss.name} BYL PORAŽEN! Killing blow: ${(raidData.killingBlow || '?').replace(/_/g, ' ')} | Top DPS: ${sortedParticipants} | ${boss.globalRewardDesc ? '🌍 ' + boss.globalRewardDesc : ''}`,
+                            text: stripToEmoji(`🏆 ${boss.icon} ${boss.name} BYL PORAŽEN! Killing blow: ${(raidData.killingBlow || '?').replace(/_/g, ' ')} | Top DPS: ${sortedParticipants} | ${boss.globalRewardDesc ? '🌍 ' + boss.globalRewardDesc : ''}`),
                             timestamp: firebase.database.ServerValue.TIMESTAMP,
                             system: true
                         });
@@ -111352,7 +111392,7 @@ function openFullscreenMap() {
                 // Chat oznámení
                 await firebaseDB.ref('chat/messages').push({
                     author: '🐉 WORLD BOSS RAID',
-                    text: `🐉 RAID ZAHÁJEN! 🐉\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ⚔️ ${boss.damage} DMG | 🛡️ ${boss.defense} DEF\n${boss.difficulty} ${boss.difficultyName}\n\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: Admin\n\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n🌍 Bonus: ${boss.globalRewardDesc}\n\n⚔️ Boss zůstává dokud není poražen! VŠICHNI HRÁČI SE MOHOU PŘIPOJIT!`,
+                    text: stripToEmoji(`🐉 RAID ZAHÁJEN! 🐉\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ⚔️ ${boss.damage} DMG | 🛡️ ${boss.defense} DEF\n${boss.difficulty} ${boss.difficultyName}\n\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: Admin\n\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n🌍 Bonus: ${boss.globalRewardDesc}\n\n⚔️ Boss zůstává dokud není poražen! VŠICHNI HRÁČI SE MOHOU PŘIPOJIT!`),
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -111360,7 +111400,7 @@ function openFullscreenMap() {
                 // 📩 Soukromá zpráva všem hráčům
                 await notifyAllPlayersPrivate(
                     '🐉 World Boss',
-                    `⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: Admin\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`,
+                    stripToEmoji(`⚔️ WORLD BOSS RAID ZAHÁJEN!\n\n${boss.icon} ${boss.name}\n❤️ ${formatNumber(boss.hp)} HP | ${boss.difficulty}\n📍 Lokace: ${raidLocationName}\n👑 Vyvolal: Admin\n🎁 Loot: ${boss.uniqueLoot.map(l => l.icon + ' ' + l.name).join(', ')}\n\n⚔️ Jdi do mapy → ${raidLocationName} a připoj se k raidu!`),
                     '🐉'
                 );
                 
