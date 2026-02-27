@@ -36553,6 +36553,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // === DUNGEON S PATRY ===
             if (location.type === 'dungeon') {
+                // Safety: vyčisti stale dungeon stav (hráč opustil dungeon bez správného exitu)
+                if (state.dungeon?.active && state.dungeon.active !== location.id) {
+                    console.log('🏰 Cleanup: stale dungeon active:', state.dungeon.active, '→ clearing');
+                    state.dungeon.active = null;
+                    state.dungeon._cooldownPending = false;
+                }
+                // Safety: pokud _cooldownPending zůstal viset bez aktivního dungeonu
+                if (state.dungeon?._cooldownPending && !state.dungeon?.active) {
+                    state.dungeon._cooldownPending = false;
+                }
                 console.log('🏰 Location is dungeon:', location.id);
                 console.log('🏰 DUNGEON_FLOORS keys:', Object.keys(DUNGEON_FLOORS || {}));
                 console.log('🏰 Has floors:', !!DUNGEON_FLOORS?.[location.id]);
@@ -36564,7 +36574,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (_dcRemaining > 0) {
                         const _dcH = Math.floor(_dcRemaining / 3600000);
                         const _dcM = Math.ceil((_dcRemaining % 3600000) / 60000);
-                        html += renderActionButton('⏳', `Cooldown ${_dcH}h ${_dcM}m`, `enterDungeon('${location.id}')`, '#333');
+                        html += `<div style="display:flex;align-items:center;gap:0.5rem;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:0.6rem 0.8rem;opacity:0.5;cursor:not-allowed;">
+                            <span style="font-size:1.2rem;">⏳</span>
+                            <span style="color:#888;">Dungeon: Cooldown ${_dcH}h ${_dcM}m</span>
+                        </div>`;
                     } else {
                         const enterText = 'Vstoupit';
                         html += renderActionButton('🏰', enterText, `enterDungeon('${location.id}')`, '#6A1B9A');
@@ -53214,6 +53227,13 @@ function openFullscreenMap() {
                 state.dungeon._cooldownPending = false;
                 saveGame();
             }
+            // Klanový dungeon cooldown
+            if (state.dungeon._clanCooldownPending) {
+                if (!state.dungeon.clanDungeonLastRun) state.dungeon.clanDungeonLastRun = {};
+                state.dungeon.clanDungeonLastRun[state.dungeon._clanCooldownPending] = Date.now();
+                state.dungeon._clanCooldownPending = null;
+                saveGame();
+            }
             
             // Dungeon HP/DMG scaling per dungeon tier
             const DUNGEON_SCALING = {
@@ -53520,7 +53540,9 @@ function openFullscreenMap() {
             // Pokud hráč odejde bez průzkumu, cooldown se nenastaví
             if (state.dungeon._cooldownPending) {
                 state.dungeon._cooldownPending = false;
-                // Nezkoumal žádné patro → žádný cooldown
+            }
+            if (state.dungeon._clanCooldownPending) {
+                state.dungeon._clanCooldownPending = null;
             }
             
             const dungeonId = state.dungeon.active;
@@ -114946,10 +114968,17 @@ function openFullscreenMap() {
             state.dungeon.loot = [];
             state.dungeon.newlyCleared = 0;
             state.dungeon._clanLocationId = locationId;
-            state.dungeon.clanDungeonLastRun[locationId] = Date.now();
+            state.dungeon._clanCooldownPending = locationId; // Cooldown se nastaví až při průzkumu
             state.dungeon._restUsed = {}; // Reset rest floor usage tracker
             closeModal();
-            showDungeonUI();
+            try {
+                showDungeonUI();
+            } catch(e) {
+                console.error('🏰 Clan Dungeon UI error:', e);
+                state.dungeon.active = null;
+                state.dungeon._clanCooldownPending = null;
+                notifyWarning('Chyba', 'Nepodařilo se otevřít klanový dungeon.');
+            }
         }
         window.enterClanDungeon = enterClanDungeon;
         
