@@ -88191,13 +88191,11 @@ function openFullscreenMap() {
         
         // Aktualizuj body v otevřeném modalu v reálném čase
         function updateTerritoryPointsDisplay(points) {
-            const koryEl = document.getElementById('territory-points-kory');
-            const koudyEl = document.getElementById('territory-points-koudy');
-            const indepEl = document.getElementById('territory-points-independent');
-            
-            if (koryEl) koryEl.textContent = points.kory || 0;
-            if (koudyEl) koudyEl.textContent = points.koudy || 0;
-            if (indepEl) indepEl.textContent = points.independent || 0;
+            // Dynamické klany - aktualizuj všechny elementy
+            Object.entries(points || {}).forEach(([clanTag, pts]) => {
+                const el = document.getElementById('territory-points-' + clanTag);
+                if (el) el.textContent = pts || 0;
+            });
         }
         
         // Ruční refresh bodů území
@@ -88208,26 +88206,20 @@ function openFullscreenMap() {
             }
             
             try {
-                console.log('🏴 Manual refresh for:', locationId);
                 const snapshot = await firebaseDB.ref('territories/' + locationId + '/points').once('value');
-                const rawPoints = snapshot.val();
-                console.log('🏴 Manual refresh raw:', rawPoints);
-                console.log('🏴 Firebase path:', 'territories/' + locationId + '/points');
+                const rawPoints = snapshot.val() || {};
                 
-                const points = {
-                    kory: parseInt(rawPoints?.kory) || 0,
-                    koudy: parseInt(rawPoints?.koudy) || 0,
-                    independent: parseInt(rawPoints?.independent) || 0
-                };
-                console.log('🏴 Manual refresh parsed:', points);
+                updateTerritoryPointsDisplay(rawPoints);
                 
-                updateTerritoryPointsDisplay(points);
-                
-                // Pokud jsou všechny 0, zobraz upozornění
-                if (points.kory === 0 && points.koudy === 0 && points.independent === 0) {
-                    notifyWarning('🏴 Body = 0', `Firebase vrátilo: ${JSON.stringify(rawPoints || 'null')}. Zkontroluj konzoli (F12).`);
+                const totalPoints = Object.values(rawPoints).reduce((sum, p) => sum + (parseInt(p) || 0), 0);
+                if (totalPoints === 0) {
+                    notifyInfo('🔄 Obnoveno', 'Zatím žádné body na tomto území');
                 } else {
-                    notifyInfo('🔄 Obnoveno', `🔴 ${points.kory} | 🔵 ${points.koudy} | 🟢 ${points.independent}`);
+                    const summary = Object.entries(rawPoints)
+                        .filter(([_, p]) => (parseInt(p) || 0) > 0)
+                        .map(([cTag, p]) => `${getClanWarInfo(cTag)?.icon || '⚔️'} ${p}`)
+                        .join(' | ');
+                    notifyInfo('🔄 Obnoveno', summary);
                 }
             } catch(e) {
                 console.error('Refresh error:', e);
@@ -88253,6 +88245,7 @@ function openFullscreenMap() {
             // Zastav předchozí refresh interval
             stopTerritoryRefresh();
             
+            await loadClanData(); // Zajisti čerstvou cache
             const clanTag = getPlayerFaction();
             if (!clanTag) {
                 showFactionSelection();
@@ -88318,8 +88311,24 @@ function openFullscreenMap() {
                 }
                 territoryPointsListener = firebaseDB.ref('territories/' + locationId + '/points');
                 territoryPointsListener.on('value', (snapshot) => {
-                    const rawPoints = snapshot.val();
-                    console.log('🏴 Territory points update:', rawPoints);
+                    const rawPoints = snapshot.val() || {};
+                    // Aktualizuj zobrazení bodů v reálném čase
+                    const pointsContainer = document.getElementById('territory-points-live');
+                    if (pointsContainer) {
+                        const entries = Object.entries(rawPoints).filter(([_, p]) => (parseInt(p) || 0) > 0).sort((a, b) => (parseInt(b[1]) || 0) - (parseInt(a[1]) || 0));
+                        if (entries.length > 0) {
+                            pointsContainer.innerHTML = entries.map(([cTag, pts]) => {
+                                const ci = getClanWarInfo(cTag);
+                                const isMyTeam = cTag === clanTag;
+                                return `<div style="display: flex; justify-content: space-between; padding: 0.25rem 0.4rem; ${isMyTeam ? 'background: ' + (ci?.color || '#888') + '15; border-radius: 4px;' : ''}">
+                                    <span style="color: ${ci?.color || '#888'}; font-size: 0.85rem;">${ci?.icon || '⚔️'} [${ci?.name || cTag}]${isMyTeam ? ' ← ty' : ''}</span>
+                                    <span style="color: #ffd700; font-weight: bold; font-size: 0.85rem;">${pts}</span>
+                                </div>`;
+                            }).join('');
+                        } else {
+                            pointsContainer.innerHTML = '<p style="color: #555; font-size: 0.8rem; text-align: center; margin: 0;">Zatím žádné body</p>';
+                        }
+                    }
                 });
             }
             
@@ -88332,6 +88341,26 @@ function openFullscreenMap() {
                     return '<span style="color: ' + (pClan?.color || '#888') + ';">' + (pClan?.icon || '?') + ' ' + p.name + ' (' + remaining + 'min)</span>';
                 }).join(', ');
                 activePlayersHtml = '<div style="background: #2a2a1a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem;"><p style="color: #ffd700; margin: 0; font-size: 0.85rem;">⚔️ Právě dobývají: ' + playersList + '</p></div>';
+            }
+            
+            // Zobraz body klanů na území
+            let pointsHtml = '';
+            const pointEntries = Object.entries(territoryPoints).filter(([_, p]) => (parseInt(p) || 0) > 0).sort((a, b) => (parseInt(b[1]) || 0) - (parseInt(a[1]) || 0));
+            if (pointEntries.length > 0) {
+                pointsHtml = '<div style="background: #1a1a2a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #333;">';
+                pointsHtml += '<p style="color: #888; font-size: 0.75rem; margin: 0 0 0.3rem 0; text-align: center;">📊 Body na území:</p>';
+                pointsHtml += '<div id="territory-points-live">';
+                pointEntries.forEach(([cTag, pts]) => {
+                    const ci = getClanWarInfo(cTag);
+                    const isMyTeam = cTag === clanTag;
+                    pointsHtml += `<div style="display: flex; justify-content: space-between; padding: 0.25rem 0.4rem; ${isMyTeam ? 'background: ' + (ci?.color || '#888') + '15; border-radius: 4px;' : ''}">
+                        <span style="color: ${ci?.color || '#888'}; font-size: 0.85rem;">${ci?.icon || '⚔️'} [${ci?.name || cTag}]${isMyTeam ? ' ← ty' : ''}</span>
+                        <span style="color: #ffd700; font-weight: bold; font-size: 0.85rem;">${pts}</span>
+                    </div>`;
+                });
+                pointsHtml += '</div></div>';
+            } else {
+                pointsHtml = '<div style="background: #1a1a2a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #333;"><p style="color: #888; font-size: 0.75rem; margin: 0 0 0.3rem 0; text-align: center;">📊 Body na území:</p><div id="territory-points-live"><p style="color: #555; font-size: 0.8rem; text-align: center; margin: 0;">Zatím žádné body</p></div></div>';
             }
             
             let actionsHtml = '';
@@ -88374,12 +88403,13 @@ function openFullscreenMap() {
                 </div>
                 
                 ${activePlayersHtml}
+                ${pointsHtml}
                 ${actionsHtml}
                 ${captureButtonHtml}
                 
                 <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem;">
                     <p style="color: #666; font-size: 0.7rem; margin: 0; text-align: center;">
-                        💡 Jednou denně se sčítají body. Klan s nejvíce body získá území a rozdělí si 15 💰 za každé.
+                        💡 Jednou denně se sčítají body. Klan s nejvíce body získá území a 15 💰 jde do klanové kasy.
                     </p>
                 </div>
                 
@@ -88794,8 +88824,12 @@ function openFullscreenMap() {
         
         // Obsadit neutrální území
         async function claimNeutralTerritory(locationId) {
+            await loadClanData(); // Zajisti čerstvou cache
             const faction = getPlayerFaction();
-            if (!faction) return;
+            if (!faction) {
+                notifyWarning('Bez klanu', 'Pro dobývání území musíš být členem klanu!');
+                return;
+            }
             
             const myName = getPlayerName();
             console.log('🏴 claimNeutralTerritory:', locationId, 'faction:', faction);
@@ -88879,6 +88913,7 @@ function openFullscreenMap() {
         
         // RYCHLÉ dobývání - bez modalu, jen notifikace
         async function quickTerritoryCapture() {
+            await loadClanData(); // Zajisti čerstvou cache
             const faction = getPlayerFaction();
             if (!faction) {
                 showFactionSelection();
@@ -88935,8 +88970,12 @@ function openFullscreenMap() {
         
         // Začít obsazovat území bez strážce (30 min čekání)
         async function startTerritoryCapture(locationId) {
+            await loadClanData(); // Zajisti čerstvou cache
             const faction = getPlayerFaction();
-            if (!faction) return;
+            if (!faction) {
+                notifyWarning('Bez klanu', 'Pro dobývání území musíš být členem klanu!');
+                return;
+            }
             
             const myName = getPlayerName();
             const CAPTURE_DURATION = 15 * 60 * 1000; // 15 minut
@@ -89211,6 +89250,7 @@ function openFullscreenMap() {
         }
         
         async function completeTerritoryCapture(locationId) {
+            await loadClanData(); // Zajisti čerstvou cache
             const faction = getPlayerFaction();
             if (!faction) {
                 console.log('🏴 completeTerritoryCapture - no faction!');
