@@ -36910,10 +36910,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     window.territoryCache = snapshot.val() || {};
                     const ownedCount = Object.values(window.territoryCache).filter(t => t && t.owner).length;
                     console.log('🗺️ Territory cache loaded:', Object.keys(window.territoryCache).length, 'territories,', ownedCount, 'owned');
-                    // Debug: zobraz prvních pár území s vlastníkem
-                    Object.entries(window.territoryCache).slice(0, 5).forEach(([id, t]) => {
-                        if (t && t.owner) console.log('  🏴', id, '-> owner:', t.owner);
-                    });
+                    
+                    // Jednorázový cleanup starých frakčních dat
+                    const OLD_FACTIONS = ['kory', 'koudy', 'independent'];
+                    const cleanupDone = localStorage.getItem('oldFactionCleanup');
+                    if (!cleanupDone) {
+                        Object.entries(window.territoryCache).forEach(([locId, t]) => {
+                            if (t && t.owner && OLD_FACTIONS.includes(t.owner)) {
+                                console.log('🧹 Cleaning old faction territory:', locId, t.owner);
+                                firebaseDB.ref('territories/' + locId).remove().catch(e => {});
+                                delete window.territoryCache[locId];
+                            }
+                        });
+                        // Vyčisti i staré factionMembers záznamy
+                        firebaseDB.ref('factionMembers').once('value').then(snap => {
+                            const members = snap.val() || {};
+                            Object.entries(members).forEach(([key, m]) => {
+                                if (m && m.faction && OLD_FACTIONS.includes(m.faction)) {
+                                    console.log('🧹 Cleaning old faction member:', key);
+                                    firebaseDB.ref('factionMembers/' + key).remove().catch(e => {});
+                                }
+                            });
+                        }).catch(e => {});
+                        localStorage.setItem('oldFactionCleanup', '1');
+                        console.log('🧹 Old faction data cleanup completed');
+                    }
+                    
                     // VŽDY překresli mapu po načtení cache
                     if (state.activeTab === 'map') {
                         debouncedMapRender();
@@ -37440,7 +37462,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const mins = Math.floor(remainingSeconds / 60);
                     const secs = remainingSeconds % 60;
                     
-                    const factionData = typeof PVP_FACTIONS !== 'undefined' && capture.faction ? PVP_FACTIONS[capture.faction] : null;
+                    const factionData = capture.faction ? getClanWarInfo(capture.faction) : null;
                     const factionColor = factionData?.color || '#ff9800';
                     const factionName = factionData?.name || 'Tvá frakce';
                     
@@ -37961,10 +37983,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (location.id !== 'shelter') {
                 const playerFaction = getPlayerFaction();
                 if (playerFaction) {
-                    const factionData = PVP_FACTIONS[playerFaction];
-                    html += renderActionButton(factionData.icon, 'Dobývat', 'quickTerritoryCapture()', factionData.color);
+                    const _clanWI = getClanWarInfo(playerFaction);
+                    html += renderActionButton(_clanWI?.icon || '⚔️', 'Dobývat', 'quickTerritoryCapture()', _clanWI?.color || '#ce93d8');
                 } else {
-                    html += renderActionButton('🏴', 'Frakce', 'showFactionSelection()', '#ff9800');
+                    html += renderActionButton('⚔️', 'Klan', 'showFactionSelection()', '#ce93d8');
                 }
                 
                 // === VÁLEČNÁ ZÓNA - pokud je aktivní na této lokaci ===
@@ -38279,7 +38301,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 let territoryOwnerName = '';
                 try {
                     if (window.territoryCache && window.territoryCache[loc.id] && window.territoryCache[loc.id].owner) {
-                        const ownerFaction = PVP_FACTIONS[window.territoryCache[loc.id].owner];
+                        const ownerFaction = getClanWarInfo(window.territoryCache[loc.id].owner);
                         if (ownerFaction) {
                             factionBorderColor = ownerFaction.color;
                             factionBorderStyle = ` box-shadow: 0 0 5px ${ownerFaction.color}50;`;
@@ -68907,129 +68929,114 @@ function openFullscreenMap() {
         
         // [OPRAVENO] Duplicitní collectMayorTaxIncome odstraněn - používá se robustnější verze níže (~106400)
         
-        // Process daily faction/territory income for PvP faction members
+        // Process daily faction/territory income → do klanové kasy
         async function processFactionTerritoryIncome() {
-            // Ochrana: max 1x za 23 hodin
             const _now = Date.now();
             if (state._lastFactionIncomeAt && (_now - state._lastFactionIncomeAt) < 23 * 60 * 60 * 1000) {
-                console.log('💰 processFactionTerritoryIncome přeskočeno');
+                console.log('💰 processKlanTerritoryIncome přeskočeno');
                 return;
             }
             state._lastFactionIncomeAt = _now;
             
-            // Kontrola jestli je hráč ve frakci
-            if (!state.pvpFaction || !multiplayerEnabled || !firebaseDB) return;
+            const clanTag = getPlayerFaction();
+            if (!clanTag || !multiplayerEnabled || !firebaseDB) return;
             
-            const myFaction = state.pvpFaction;
-            const factionData = PVP_FACTIONS[myFaction];
-            if (!factionData) return;
+            const myClanInfo = getClanWarInfo(clanTag);
+            if (!myClanInfo) return;
             
             try {
-                // Načti vlastněná území
                 const terrSnapshot = await firebaseDB.ref('territories').once('value');
                 const territories = terrSnapshot.val() || {};
                 
-                // Spočítej území vlastněná mojí frakcí
                 let ownedCount = 0;
                 for (const [locId, terrData] of Object.entries(territories)) {
-                    if (terrData.owner === myFaction) {
-                        ownedCount++;
-                    }
+                    if (terrData.owner === clanTag) ownedCount++;
                 }
                 
-                // Základní denní příjem za členství ve frakci (sníženo)
-                let factionIncome = 5; // 5 💰 za být ve frakci
+                if (ownedCount <= 0) return;
                 
-                // Bonus za vlastněná území (2 💰 za území - sníženo z 5)
-                const territoryIncome = ownedCount * 2;
+                // Příjem: 1💰 za území → do klanové kasy
+                const territoryIncome = ownedCount * 1;
                 
-                // Bonus za contribution (1 💰 za každých 200 contribution - sníženo)
-                const contribution = state.pvpFactionContribution || 0;
-                const contributionBonus = Math.floor(contribution / 200);
+                // Přidej do klanové kasy přes Firebase transaction
+                await firebaseDB.ref('clans/' + clanTag + '/vault').transaction(v => (v || 0) + territoryIncome);
                 
-                const totalIncome = factionIncome + territoryIncome + contributionBonus;
+                // Zaloguj do klanového vault logu
+                await firebaseDB.ref('clans/' + clanTag + '/vaultLog').push({
+                    type: 'territory_income',
+                    amount: territoryIncome,
+                    by: '⚔️ Území',
+                    note: ownedCount + ' území × 1💰',
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                });
                 
-                if (totalIncome > 0) {
-                    addMoney(totalIncome);
-                    
-                    let incomeDetails = [];
-                    if (factionIncome > 0) incomeDetails.push(`členství: ${factionIncome}`);
-                    if (territoryIncome > 0) incomeDetails.push(`${ownedCount} území: ${territoryIncome}`);
-                    if (contributionBonus > 0) incomeDetails.push(`příspěvek: ${contributionBonus}`);
-                    
-                    addLog(`${factionData.icon} Frakční příjem: +${totalIncome} 💰 (${incomeDetails.join(', ')})`, '💰');
-                    
-                    // Notifikace
-                    if (totalIncome >= 20) {
-                        notifySuccess(`${factionData.icon} Frakční příjem`, `+${totalIncome} 💰 za ${factionData.name}`);
-                    }
-                }
+                addLog(myClanInfo.icon + ' Příjem z území: +' + territoryIncome + ' 💰 → klanová kasa (' + ownedCount + ' území)', '💰');
+                notifySuccess(myClanInfo.icon + ' Příjem z území', '+' + territoryIncome + ' 💰 → klanová kasa');
                 
-                console.log(`💰 Faction income for ${myFaction}: ${totalIncome} (territories: ${ownedCount})`);
-                
+                console.log('💰 Territory income → clan vault for ' + clanTag + ': ' + territoryIncome + ' (' + ownedCount + ' territories)');
             } catch (e) {
-                console.error('Faction income error:', e);
+                console.error('Clan territory income error:', e);
             }
         }
         
         // Denní sčítání bodů na územích a přiřazení vlastníků
         async function processTerritoryCounting() {
+            // Klanové války: denní sčítání bodů - dynamické klíče klanů
             if (!multiplayerEnabled || !firebaseDB) return;
             
             const myName = getPlayerName();
-            const myFaction = state.pvpFaction;
+            const myClanTag = getPlayerFaction();
             
             try {
                 const terrSnapshot = await firebaseDB.ref('territories').once('value');
                 const territories = terrSnapshot.val() || {};
                 
-                let myReward = 0;
                 let changedTerritories = [];
                 
                 for (const [locId, terrData] of Object.entries(territories)) {
-                    const points = terrData.points || { kory: 0, koudy: 0, independent: 0 };
+                    const points = terrData.points || {};
                     const contributors = terrData.contributors || {};
                     
-                    // Najdi frakci s nejvíce body
+                    // Najdi klan s nejvíce body
                     let maxPoints = 0;
-                    let winningFaction = null;
-                    for (const [faction, pts] of Object.entries(points)) {
-                        if (pts > maxPoints) {
-                            maxPoints = pts;
-                            winningFaction = faction;
+                    let winningClan = null;
+                    for (const [clanKey, pts] of Object.entries(points)) {
+                        const numPts = parseInt(pts) || 0;
+                        if (numPts > maxPoints) {
+                            maxPoints = numPts;
+                            winningClan = clanKey;
                         }
                     }
                     
-                    // Pokud jsou body, přiřaď vlastníka
-                    if (winningFaction && maxPoints > 0) {
+                    if (winningClan && maxPoints > 0) {
                         const oldOwner = terrData.owner;
                         
-                        // Update Firebase - nastav vlastníka
-                        if (oldOwner !== winningFaction) {
-                            await firebaseDB.ref('territories/' + locId + '/owner').set(winningFaction);
+                        if (oldOwner !== winningClan) {
+                            await firebaseDB.ref('territories/' + locId + '/owner').set(winningClan);
                             const loc = WORLD_LOCATIONS.find(l => l.id === locId);
-                            changedTerritories.push({ name: loc?.name || locId, faction: winningFaction });
+                            changedTerritories.push({ name: loc?.name || locId, clan: winningClan });
                         }
                         
-                        // Spočítej příspěvky hráčů vítězné frakce
-                        const factionContributors = Object.values(contributors).filter(c => c.faction === winningFaction);
+                        // Spočítej příspěvky hráčů vítězného klanu
+                        const clanContributors = Object.values(contributors).filter(c => c.faction === winningClan);
                         
-                        // Rozděl 15 💰 mezi přispěvatele
-                        if (factionContributors.length > 0) {
-                            const rewardPerPlayer = Math.floor(15 / factionContributors.length);
-                            
-                            // Pokud jsem já přispěl
-                            const myContrib = factionContributors.find(c => c.player === myName);
-                            if (myContrib) {
-                                myReward += rewardPerPlayer;
-                            }
+                        // Přidej 15💰 do klanové kasy vítězného klanu
+                        if (clanContributors.length > 0) {
+                            await firebaseDB.ref('clans/' + winningClan + '/vault').transaction(v => (v || 0) + 15);
+                            await firebaseDB.ref('clans/' + winningClan + '/vaultLog').push({
+                                type: 'territory_capture',
+                                amount: 15,
+                                by: '⚔️ Dobytí',
+                                note: (WORLD_LOCATIONS.find(l => l.id === locId)?.name || locId) + ' (' + clanContributors.length + ' přispěvatelů)',
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
                         }
                         
-                        // Vyčisti přispěvatele a body pro nový den
+                        // Vyčisti pro nový den
                         await firebaseDB.ref('territories/' + locId + '/contributors').remove();
-                        await firebaseDB.ref('territories/' + locId + '/points').set({ kory: 0, koudy: 0, independent: 0 });
+                        await firebaseDB.ref('territories/' + locId + '/points').remove();
                         
-                        // Vyčisti staré activeCaptures (starší než 20 min)
+                        // Vyčisti staré activeCaptures
                         if (terrData.activeCaptures) {
                             const now = Date.now();
                             for (const [playerKey, capture] of Object.entries(terrData.activeCaptures)) {
@@ -69039,34 +69046,57 @@ function openFullscreenMap() {
                             }
                         }
                         
-                        // Vyčisti staré guard data (už se nepoužívají)
                         if (terrData.guards) {
                             await firebaseDB.ref('territories/' + locId + '/guards').remove();
-                            console.log('🧹 Vyčištěny staré guards pro:', locId);
                         }
                     }
                 }
                 
-                // Přidej odměnu hráči
-                if (myReward > 0) {
-                    addMoney(myReward);
-                    notifySuccess('🏴 Územní odměna', `+${myReward} 💰 za dobývání`);
-                    addLog(`🏴 Územní odměna: +${myReward} 💰`, '💰');
-                }
-                
-                // Info o změnách území
-                if (changedTerritories.length > 0 && myFaction) {
-                    const myChanges = changedTerritories.filter(t => t.faction === myFaction);
+                if (changedTerritories.length > 0 && myClanTag) {
+                    const myChanges = changedTerritories.filter(t => t.clan === myClanTag);
                     if (myChanges.length > 0) {
-                        addLog(`🏴 Tvá frakce získala: ${myChanges.map(t => t.name).join(', ')}`, '🏴');
+                        notifySuccess('🏴 Klanová kasa', '+' + (myChanges.length * 15) + ' 💰 za dobytí území');
+                        addLog('🏴 Klanová kasa: +' + (myChanges.length * 15) + ' 💰 za dobytí: ' + myChanges.map(t => t.name).join(', '), '💰');
                     }
                 }
                 
-                // Invaliduj cache
+                // 🔔 Chat notifikace - denní sčítání (jen pokud se něco změnilo)
+                if (changedTerritories.length > 0 && multiplayerEnabled && firebaseDB) {
+                    try {
+                        // Seskup změny podle klanu
+                        const changesByClan = {};
+                        changedTerritories.forEach(t => {
+                            if (!changesByClan[t.clan]) changesByClan[t.clan] = [];
+                            changesByClan[t.clan].push(t.name);
+                        });
+                        
+                        let chatLines = Object.entries(changesByClan).map(([cTag, names]) => {
+                            const ci = getClanWarInfo(cTag);
+                            return `${ci?.icon || '⚔️'} [${ci?.name || cTag}] získal: ${names.join(', ')}`;
+                        }).join(' | ');
+                        
+                        // Spočítej celkový stav
+                        const terrSnap2 = await firebaseDB.ref('territories').once('value');
+                        const allTerr = terrSnap2.val() || {};
+                        const clanCounts = {};
+                        Object.values(allTerr).forEach(t => {
+                            if (t.owner) clanCounts[t.owner] = (clanCounts[t.owner] || 0) + 1;
+                        });
+                        const sorted = Object.entries(clanCounts).sort((a,b) => b[1] - a[1]);
+                        const leaderInfo = sorted.length > 0 ? getClanWarInfo(sorted[0][0]) : null;
+                        const leaderText = leaderInfo ? ` | 👑 Vede: [${leaderInfo.name}] s ${sorted[0][1]} územími` : '';
+                        
+                        await firebaseDB.ref('chat/messages').push({
+                            author: '⚔️ KLANOVÉ VÁLKY',
+                            text: `📊 Denní sčítání území! ${chatLines}${leaderText}`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            system: true
+                        });
+                    } catch(e) { console.error('Chat counting notify error:', e); }
+                }
+                
                 window.territoryCache = null;
-                
-                console.log('🏴 Territory counting completed');
-                
+                console.log('🏴 Territory counting completed (clan wars)');
             } catch (e) {
                 console.error('Territory counting error:', e);
             }
@@ -77628,7 +77658,7 @@ function openFullscreenMap() {
                 // Obnov původní HP (před bojem)
                 state.char.hp = warFight.savedHp || state.char.hp;
                 
-                const factionData = PVP_FACTIONS[warFight.faction];
+                const factionData = getClanWarInfo(warFight.faction) || { icon: '⚔️', color: '#888', name: warFight.faction };
                 
                 // Přidej body a nastav cooldown
                 if (multiplayerEnabled && firebaseDB) {
@@ -86417,9 +86447,6 @@ function openFullscreenMap() {
                 // Nastav online status
                 setupOnlineStatus();
                 
-                // Zkontroluj reset frakční sezóny
-                checkSeasonReset();
-                
                 // Načti VIP barvy
                 loadVIPColors();
                 
@@ -87726,7 +87753,9 @@ function openFullscreenMap() {
         
         // Získat frakci hráče
         function getPlayerFaction() {
-            return state.pvpFaction || null;
+            // Klanové války: vrací tag klanu hráče (nahrazuje pvpFaction)
+            const myClan = getMyClanTag();
+            return myClan ? myClan.tag : null;
         }
         
         // Definice strážců
@@ -87751,57 +87780,21 @@ function openFullscreenMap() {
                 const playerName = getPlayerName();
                 const sanitizedName = playerName.replace(/[\\/\\.#$\\[\\]]/g, '_');
                 
-                // Zkontroluj factionSeason
-                const seasonSnap = await firebaseDB.ref('factionSeason').once('value');
-                const seasonData = seasonSnap.val();
-                
-                if (!seasonData) {
-                    // factionSeason neexistuje - vytvoř ho (první inicializace)
-                    console.log('🏴 Creating initial factionSeason');
-                    await firebaseDB.ref('factionSeason').set({
-                        startTime: Date.now(),
-                        seasonNumber: 1,
-                        lastReset: null
-                    });
-                } else if (seasonData.lastReset) {
-                    // Byl proveden reset - zkontroluj jestli hráč vstoupil do frakce PŘED resetem
-                    const joinedAt = state.pvpFactionJoinedAt || 0;
-                    if (joinedAt < seasonData.lastReset) {
-                        // Hráč měl frakci před resetem - musí si vybrat znovu!
-                        console.log('🔄 Faction was reset after player joined, clearing local state');
-                        state.pvpFaction = null;
-                        state.pvpFactionJoinedAt = null;
-                        state.pvpFactionContribution = 0;
-                        saveGame();
-                        notifyInfo('🏴 Frakce resetovány', 'Vyber si novou frakci!');
-                        return;
-                    }
-                }
-                
                 // Zkontroluj jestli záznam hráče existuje v Firebase
                 const snap = await firebaseDB.ref('factionMembers/' + sanitizedName).once('value');
                 const existingData = snap.val();
                 
                 if (!existingData) {
-                    // Záznam neexistuje - vytvoř nový (ale bez starých bodů!)
-                    // Pokud hráč vstoupil po resetu, může mít contribution
-                    // Pokud vstoupil před a záznam chybí, něco je špatně - dej 0
-                    const safeContribution = (state.pvpFactionJoinedAt && seasonData?.lastReset && state.pvpFactionJoinedAt > seasonData.lastReset) 
-                        ? (state.pvpFactionContribution || 0) 
-                        : 0;
-                    
+                    // Záznam neexistuje - vytvoř nový
                     await firebaseDB.ref('factionMembers/' + sanitizedName).set({
                         name: playerName,
                         faction: faction,
                         joinedAt: state.pvpFactionJoinedAt || Date.now(),
-                        contribution: safeContribution,
+                        contribution: state.pvpFactionContribution || 0,
                         lastActive: Date.now()
                     });
                     
-                    // Synchronizuj lokální stav
-                    state.pvpFactionContribution = safeContribution;
-                    
-                    console.log('🔄 Re-registered in factionMembers:', playerName, 'contribution:', safeContribution);
+                    console.log('🔄 Re-registered in factionMembers:', playerName);
                 } else {
                     // Existuje - aktualizuj lastActive a synchronizuj contribution z Firebase
                     await firebaseDB.ref('factionMembers/' + sanitizedName + '/lastActive').set(Date.now());
@@ -87816,94 +87809,17 @@ function openFullscreenMap() {
         }
         
         async function joinFaction(factionId) {
-            if (!PVP_FACTIONS[factionId]) {
-                notifyError('Chyba', 'Neplatná frakce');
-                return false;
-            }
-            
-            // Pokud už má frakci, nelze změnit (změna jen po resetu sezóny)
-            if (state.pvpFaction) {
-                notifyWarning('Nelze změnit', 'Frakci můžeš změnit až po skončení sezóny!');
-                return false;
-            }
-            
-            // Kontrola počtu členů - max rozdíl mezi frakcemi je 3 hráči
-            if (multiplayerEnabled && firebaseDB) {
-                try {
-                    const membersSnap = await firebaseDB.ref('factionMembers').once('value');
-                    const members = membersSnap.val() || {};
-                    
-                    const factionCounts = { kory: 0, koudy: 0, independent: 0 };
-                    Object.values(members).forEach(m => {
-                        if (m.faction && factionCounts[m.faction] !== undefined) {
-                            factionCounts[m.faction]++;
-                        }
-                    });
-                    
-                    const minCount = Math.min(...Object.values(factionCounts));
-                    const targetCount = factionCounts[factionId];
-                    
-                    if (targetCount >= minCount + 3) {
-                        const smallest = Object.entries(factionCounts)
-                            .filter(([id, count]) => count === minCount)
-                            .map(([id]) => PVP_FACTIONS[id]);
-                        
-                        notifyWarning('Frakce je plná!', `Příliš mnoho členů. Zkus ${smallest.map(f => f.icon + ' ' + f.name).join(' nebo ')}`);
-                        return false;
-                    }
-                } catch(e) {
-                    console.error('Faction balance check error:', e);
-                }
-            }
-            
-            const now = Date.now();
-            state.pvpFaction = factionId;
-            state.pvpFactionJoinedAt = now;
-            state.pvpFactionContribution = 0;
-            
-            // Pozastav cloud sync aby se změna nepřepsala
-            if (typeof syncPaused !== 'undefined') {
-                syncPaused = true;
-                setTimeout(() => { syncPaused = false; }, 10000); // 10 sekund ochrana
-            }
-            
-            // Ulož do Firebase (factionMembers)
-            if (multiplayerEnabled && firebaseDB) {
-                const playerName = getPlayerName();
-                try {
-                    await firebaseDB.ref('factionMembers/' + playerName.replace(/[\/\.#$\[\]]/g, '_')).set({
-                        name: playerName,
-                        faction: factionId,
-                        joinedAt: now,
-                        contribution: 0,
-                        lastActive: now
-                    });
-                    console.log('🏴 Faction joined and saved to Firebase:', factionId);
-                } catch(e) {
-                    console.error('Faction join error:', e);
-                }
-            }
-            
-            // Ulož lokálně
-            saveGame();
-            
-            // Okamžitě ulož do cloudu (aby se to neztratilo)
-            if (typeof saveCloudSave === 'function') {
-                await saveCloudSave();
-                lastCloudSaveTime = Date.now(); // Nastav čas uložení aby se ignoroval příchozí sync
-                console.log('🏴 Cloud save completed after faction join');
-            }
-            
-            const faction = PVP_FACTIONS[factionId];
-            notifySuccess(`${faction.icon} ${faction.name}`, 'Vítej ve frakci!');
-            return true;
+            // Starý systém frakcí nahrazen klany
+            notifyInfo('⚔️ Klanové války', 'Přidej se ke klanu na klanových pozemcích!');
+            showFactionSelection();
+            return false;
         }
         
         // Přispět body pro frakci na aktuální lokaci
         async function contributeToTerritory(points) {
             const faction = getPlayerFaction();
             if (!faction) {
-                notifyWarning('Bez frakce', 'Musíš se nejdřív přidat k frakci!');
+                notifyWarning('Bez klanu', 'Musíš být členem klanu!');
                 return false;
             }
             
@@ -87955,7 +87871,7 @@ function openFullscreenMap() {
                 const territory = snapshot.val() || {};
                 const points = territory.points || {};
                 
-                // Najdi frakci s nejvíc body
+                // Najdi klan s nejvíc body
                 let maxPoints = 0;
                 let winner = null;
                 
@@ -87977,169 +87893,95 @@ function openFullscreenMap() {
         
         // Hlavní Faction Hub v Online sekci
         async function showFactionHub() {
-            const faction = getPlayerFaction();
+            // === KLANOVÉ VÁLKY HUB ===
+            const clanTag = getPlayerFaction();
             
-            if (!faction) {
-                // Pokud nemá frakci, zobraz výběr
+            if (!clanTag) {
                 showFactionSelection();
                 return;
             }
             
-            // Zajisti že hráč je zaregistrován v factionMembers
-            await updateFactionActivity();
-            
-            // Má frakci - zobraz info se statistikami všech frakcí
-            const factionData = PVP_FACTIONS[faction];
+            const myClanInfo = getClanWarInfo(clanTag);
+            const allClans = getAllClansForWar();
             
             // Načti statistiky z Firebase
-            let factionStats = { kory: { territories: 0, members: 0, topMembers: [] }, koudy: { territories: 0, members: 0, topMembers: [] }, independent: { territories: 0, members: 0, topMembers: [] } };
-            let myRank = '?';
+            let clanTerritories = {};
+            let totalTerritoriesOwned = 0;
             const totalLocations = WORLD_LOCATIONS.filter(l => l.type !== 'home').length;
             
             if (multiplayerEnabled && firebaseDB) {
                 try {
-                    // Teritoria
                     const terrSnapshot = await firebaseDB.ref('territories').once('value');
                     const territories = terrSnapshot.val() || {};
                     Object.values(territories).forEach(t => {
-                        if (t.owner && factionStats[t.owner]) factionStats[t.owner].territories++;
-                    });
-                    
-                    // Členové
-                    const membersSnapshot = await firebaseDB.ref('factionMembers').once('value');
-                    const members = membersSnapshot.val() || {};
-                    const myName = getPlayerName();
-                    
-                    Object.values(members).forEach(m => {
-                        if (m.faction && factionStats[m.faction]) {
-                            factionStats[m.faction].members++;
-                            factionStats[m.faction].topMembers.push({ name: m.name, contribution: m.contribution || 0 });
+                        if (t.owner) {
+                            clanTerritories[t.owner] = (clanTerritories[t.owner] || 0) + 1;
+                            totalTerritoriesOwned++;
                         }
-                    });
-                    
-                    // Seřaď a ořízni top členy, najdi moji pozici
-                    Object.entries(factionStats).forEach(([fid, fs]) => {
-                        fs.topMembers.sort((a, b) => b.contribution - a.contribution);
-                        if (fid === faction) {
-                            const myIdx = fs.topMembers.findIndex(m => m.name === myName);
-                            if (myIdx >= 0) myRank = myIdx + 1;
-                        }
-                        fs.topMembers = fs.topMembers.slice(0, 5);
                     });
                 } catch(e) {
-                    console.error('Faction stats error:', e);
+                    console.error('Territory stats error:', e);
                 }
             }
             
-            const canChange = !state.pvpFactionJoinedAt || (Date.now() - state.pvpFactionJoinedAt) >= (7 * 24 * 60 * 60 * 1000);
-            let daysLeft = 0;
-            if (!canChange) {
-                daysLeft = Math.ceil((7 * 24 * 60 * 60 * 1000 - (Date.now() - state.pvpFactionJoinedAt)) / (24 * 60 * 60 * 1000));
-            }
-            
-            // Najdi vedoucí frakci
-            let leadingFactionId = null;
-            let maxTerritories = 0;
-            Object.entries(factionStats).forEach(([id, stats]) => {
-                if (stats.territories > maxTerritories) {
-                    maxTerritories = stats.territories;
-                    leadingFactionId = id;
-                }
+            // Najdi vedoucí klan
+            let leadingClan = null;
+            let maxTerr = 0;
+            Object.entries(clanTerritories).forEach(([tag, count]) => {
+                if (count > maxTerr) { maxTerr = count; leadingClan = tag; }
             });
-            window.leadingFaction = leadingFactionId;
+            window.leadingFaction = leadingClan;
             
-            // Sesbírej všechny top hráče ze všech frakcí pro globální žebříček
-            const allTopPlayers = [];
-            Object.entries(factionStats).forEach(([fid, fs]) => {
-                fs.topMembers.forEach(m => {
-                    allTopPlayers.push({ ...m, faction: fid });
-                });
-            });
-            allTopPlayers.sort((a, b) => b.contribution - a.contribution);
-            const globalTop10 = allTopPlayers.slice(0, 10);
+            const myTerritoryCount = clanTerritories[clanTag] || 0;
+            const myPercent = totalLocations > 0 ? Math.round(myTerritoryCount / totalLocations * 100) : 0;
+            const isLeading = clanTag === leadingClan;
             
-            // HTML pro všechny frakce
-            const allFactionsHtml = Object.entries(PVP_FACTIONS).map(([id, f]) => {
-                const stats = factionStats[id];
-                const percent = totalLocations > 0 ? Math.round(stats.territories / totalLocations * 100) : 0;
-                const isMyFaction = id === faction;
-                const isLeading = id === leadingFactionId;
-                const topMembersHtml = stats.topMembers.length > 0 
-                    ? stats.topMembers.map((m, i) => `<span style="color: ${f.color};">${i === 0 ? '👑' : (i+1)+'.'} ${m.name} <span style="color: #888;">(${m.contribution})</span></span>`).join('<br>')
-                    : '<span style="color: #555;">žádní členové</span>';
-                
-                return `
-                    <div style="background: ${f.color}${isMyFaction ? '30' : '15'}; padding: 0.8rem; border-radius: 8px; border: ${isMyFaction ? '2px' : '1px'} solid ${isMyFaction ? f.color : f.color + '44'}; margin-bottom: 0.5rem; ${isLeading ? 'box-shadow: 0 0 10px ' + f.color + '50;' : ''}">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="color: ${f.color}; font-weight: bold; font-size: 1.1rem;">${f.icon} ${f.name} ${isMyFaction ? '(ty)' : ''} ${isLeading ? '👑' : ''}</span>
-                            <span style="color: #fff;">${stats.territories} území</span>
-                        </div>
-                        ${isLeading ? '<p style="color: #ffd700; font-size: 0.75rem; margin: 0.2rem 0 0 0;">⭐ Vedoucí frakce - aktivní bonus!</p>' : ''}
-                        <div style="background: #000; height: 6px; border-radius: 3px; margin: 0.5rem 0; overflow: hidden;">
-                            <div style="background: ${f.color}; height: 100%; width: ${percent}%;"></div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
-                            <span style="color: #888;">👥 ${stats.members} hráčů</span>
-                            <span style="color: #888;">${percent}% mapy</span>
-                        </div>
-                        <details style="margin-top: 0.5rem;">
-                            <summary style="color: #666; cursor: pointer; font-size: 0.8rem;">🏆 Top hráči frakce</summary>
-                            <div style="padding: 0.3rem; font-size: 0.75rem; margin-top: 0.3rem;">${topMembersHtml}</div>
-                        </details>
-                    </div>
-                `;
+            // HTML pro všechny klany seřazené podle území
+            const sortedClans = allClans.map(c => ({
+                ...c,
+                territories: clanTerritories[c.tag] || 0
+            })).sort((a,b) => b.territories - a.territories);
+            
+            const clansListHtml = sortedClans.map((c, i) => {
+                const isMine = c.tag === clanTag;
+                const percent = totalLocations > 0 ? Math.round(c.territories / totalLocations * 100) : 0;
+                const isTop = c.tag === leadingClan;
+                return '<div style="background: ' + c.color + (isMine ? '30' : '15') + '; padding: 0.6rem; border-radius: 8px; border: ' + (isMine ? '2px' : '1px') + ' solid ' + (isMine ? c.color : c.color + '44') + '; margin-bottom: 0.4rem;' + (isTop ? ' box-shadow: 0 0 10px ' + c.color + '50;' : '') + '">' +
+                    '<div style="display: flex; justify-content: space-between; align-items: center;">' +
+                    '<span style="color: ' + c.color + '; font-weight: bold;">' + (i+1) + '. ' + c.icon + ' [' + escapeHtml(c.name) + '] ' + (isMine ? '(ty)' : '') + (isTop ? ' 👑' : '') + '</span>' +
+                    '<span style="color: #fff;">' + c.territories + ' území</span>' +
+                    '</div>' +
+                    '<div style="background: #000; height: 6px; border-radius: 3px; margin: 0.4rem 0; overflow: hidden;">' +
+                    '<div style="background: ' + c.color + '; height: 100%; width: ' + percent + '%;"></div>' +
+                    '</div>' +
+                    '<div style="color: #888; font-size: 0.75rem;">👥 ' + (c.members||'?') + ' členů | ' + percent + '% mapy</div>' +
+                    '</div>';
             }).join('');
             
-            // HTML pro globální top 10
-            const globalTopHtml = globalTop10.length > 0 
-                ? globalTop10.map((m, i) => {
-                    const f = PVP_FACTIONS[m.faction];
-                    return `<div style="display: flex; justify-content: space-between; padding: 0.3rem; background: ${f.color}15; border-radius: 4px; margin-bottom: 0.2rem; border-left: 3px solid ${f.color};">
-                        <span style="color: ${f.color};">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i+1)+'.'} ${f.icon} ${m.name}</span>
-                        <span style="color: #ffd700;">${m.contribution}</span>
-                    </div>`;
-                }).join('')
-                : '<p style="color: #555; text-align: center;">Žádní hráči</p>';
-            
-            const isMyFactionLeading = faction === leadingFactionId;
-            const bonusText = factionData.bonus.damage ? '+4% DMG' : factionData.bonus.xp ? '+5% XP' : '+5% loot';
-            
-            // Předpočítej war zone info
+            // War Zone info
             const warZoneInfoHtml = await renderWarZoneInfo();
             
-            showModal(`${factionData.icon} Frakční válka`, `
-                <!-- Moje frakce info -->
-                <div style="background: ${factionData.color}20; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border-left: 4px solid ${factionData.color};">
+            showModal('⚔️ Klanové války', `
+                <!-- Můj klan info -->
+                <div style="background: ${myClanInfo.color}20; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border-left: 4px solid ${myClanInfo.color};">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="color: ${factionData.color}; font-weight: bold;">${factionData.icon} ${factionData.name}</span>
-                        <span style="color: #888; font-size: 0.85rem;">Pozice: #${myRank}</span>
+                        <span style="color: ${myClanInfo.color}; font-weight: bold;">${myClanInfo.icon} [${escapeHtml(myClanInfo.name)}]</span>
+                        <span style="color: #fff;">${myTerritoryCount} území (${myPercent}%)</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.85rem;">
-                        <span style="color: #ffd700;">Přispěno: ${state.pvpFactionContribution || 0} bodů</span>
-                        <span style="color: ${isMyFactionLeading ? '#4caf50' : '#666'};">Bonus: ${bonusText} ${isMyFactionLeading ? '✅' : '❌'}</span>
-                    </div>
-                    ${!isMyFactionLeading ? '<p style="color: #ff9800; font-size: 0.75rem; margin: 0.3rem 0 0 0;">⚠️ Bonus je aktivní jen pro vedoucí frakci!</p>' : ''}
+                    ${isLeading ? '<p style="color: #ffd700; font-size: 0.75rem; margin: 0.3rem 0 0 0;">⭐ Vedoucí klan!</p>' : ''}
                 </div>
                 
-                <!-- Globální top 10 -->
-                <details style="margin-bottom: 1rem;">
-                    <summary style="color: #ffd700; cursor: pointer; font-weight: bold;">🏆 Top 10 hráčů (všechny frakce)</summary>
-                    <div style="padding: 0.5rem; max-height: 200px; overflow-y: auto; margin-top: 0.5rem; background: #0a0a0a; border-radius: 6px;">
-                        ${globalTopHtml}
-                    </div>
-                </details>
-                
-                <!-- Přehled frakcí - rozklikávací -->
-                <details style="margin-bottom: 0.5rem;">
-                    <summary style="color: #888; cursor: pointer; font-weight: bold; padding: 0.5rem; background: #1a1a1a; border-radius: 6px;">
-                        📊 Přehled frakcí <span style="color: #555; font-weight: normal;">(klikni pro detail)</span>
+                <!-- Žebříček klanů -->
+                <details open style="margin-bottom: 0.5rem;">
+                    <summary style="color: #ce93d8; cursor: pointer; font-weight: bold; padding: 0.5rem; background: #1a0a2a; border-radius: 6px; border: 1px solid #7B1FA2;">
+                        🏆 Žebříček klanů (${sortedClans.length})
                     </summary>
-                    <div style="max-height: 220px; overflow-y: auto; margin-top: 0.3rem;">
-                        ${allFactionsHtml}
+                    <div style="max-height: 250px; overflow-y: auto; margin-top: 0.3rem;">
+                        ${clansListHtml || '<p style="color: #555; text-align: center; padding: 1rem;">Žádné klany</p>'}
                     </div>
                 </details>
                 
-                <!-- War Zone sekce - rozklikávací -->
+                <!-- War Zone sekce -->
                 <details style="margin-bottom: 0.5rem;">
                     <summary style="color: #f44336; cursor: pointer; font-weight: bold; padding: 0.5rem; background: linear-gradient(135deg, #2a1a1a 0%, #1a0a0a 100%); border-radius: 6px; border: 1px solid #f4433650;">
                         ⚔️ Válečná zóna ${window.activeWarZone ? '<span style="color: #4caf50;">● AKTIVNÍ</span>' : '<span style="color: #666;">○ Neaktivní</span>'}
@@ -88149,22 +87991,13 @@ function openFullscreenMap() {
                     </div>
                 </details>
                 
-                <!-- Sezóna info -->
-                <div style="background: linear-gradient(135deg, #1a1a2e 0%, #0a0a15 100%); padding: 0.6rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #ffd70050; display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <span style="color: #888; font-size: 0.8rem;">⏳ Do konce sezóny:</span>
-                        <span style="color: #ffd700; font-weight: bold; margin-left: 0.5rem;">${formatTimeRemaining(getSeasonEndTime() - Date.now())}</span>
-                    </div>
-                    <button class="btn" onclick="showSeasonInfo()" style="background: #ffd70030; border: 1px solid #ffd700; padding: 0.3rem 0.6rem; font-size: 0.8rem;">📅 Info</button>
-                </div>
-                
                 <button class="btn" onclick="showFactionHelp()" style="width: 100%; margin-top: 0.8rem; background: #2196f3;">❓ Jak to funguje</button>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">Zavřít</button>
             `);
         }
         
-        // Nápověda k frakčnímu systému
-        // Renderování War Zone info pro Frakční hub
+        // Nápověda ke klanovým válkám
+        // Renderování War Zone info pro Klanový hub
         async function renderWarZoneInfo() {
             let html = '';
             
@@ -88184,12 +88017,13 @@ function openFullscreenMap() {
                     try {
                         const snap = await firebaseDB.ref('warZone/factionPoints').once('value');
                         const pts = snap.val() || {};
-                        const sorted = Object.entries(PVP_FACTIONS)
-                            .map(([fid, f]) => ({ fid, f, pts: pts[fid] || 0 }))
+                        const sorted = Object.entries(pts)
+                            .map(([cid, p]) => ({ cid, info: getClanWarInfo(cid), pts: p || 0 }))
+                            .filter(x => x.pts > 0)
                             .sort((a, b) => b.pts - a.pts);
                         
-                        pointsHtml = sorted.map(({ fid, f, pts }) => 
-                            `<span style="color: ${f.color};">${f.icon} ${pts}</span>`
+                        pointsHtml = sorted.map(({ cid, info, pts }) => 
+                            `<span style="color: ${info?.color || '#888'};">${info?.icon || '?'} [${info?.name || cid}] ${pts}</span>`
                         ).join(' | ');
                     } catch(e) { console.error("Silent error:", e); }
                 }
@@ -88224,7 +88058,7 @@ function openFullscreenMap() {
                         const entries = Object.entries(history).sort((a, b) => b[1].endTime - a[1].endTime);
                         html += `<div style="max-height: 180px; overflow-y: auto;">`;
                         html += entries.map(([key, h]) => {
-                            const winnerF = PVP_FACTIONS[h.winner];
+                            const winnerF = getClanWarInfo(h.winner);
                             const loc = WORLD_LOCATIONS.find(l => l.id === h.locationId);
                             const date = new Date(h.endTime);
                             const dateStr = `${date.getDate()}.${date.getMonth()+1}. ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`;
@@ -88235,7 +88069,7 @@ function openFullscreenMap() {
                                 const pts = Object.entries(h.points)
                                     .filter(([_, p]) => p > 0)
                                     .sort((a, b) => b[1] - a[1])
-                                    .map(([fid, p]) => `${PVP_FACTIONS[fid]?.icon || '?'}${p}`)
+                                    .map(([fid, p]) => `${getClanWarInfo(fid)?.icon || '?'}${p}`)
                                     .join(' ');
                                 if (pts) pointsStr = ` (${pts})`;
                             }
@@ -88270,38 +88104,18 @@ function openFullscreenMap() {
         }
         
         function showFactionHelp() {
-            showModal('❓ Jak funguje frakční válka', `
+            showModal('❓ Jak fungují klanové války', `
                 <div style="max-height: 400px; overflow-y: auto; font-size: 0.9rem;">
-                    <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">🏴 Co je frakční válka?</h4>
-                    <p style="color: #ccc; margin-bottom: 1rem;">Tři frakce bojují o nadvládu nad pustinou. Vyber si stranu a pomoz jí ovládnout co nejvíc území!</p>
+                    <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">⚔️ Co jsou klanové války?</h4>
+                    <p style="color: #ccc; margin-bottom: 1rem;">Klany bojují o nadvládu nad pustinou. Přidej se ke klanu a pomoz mu ovládnout co nejvíc území!</p>
                     
                     <h4 style="color: #f44336; margin: 0 0 0.5rem 0;">⚔️ Válečná zóna (War Zone)</h4>
                     <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0;">
                         <li>Admin vyhlásí <strong>válečnou zónu</strong> na lokaci</li>
-                        <li>Lokace <strong>svítí červeně</strong> na mapě</li>
                         <li>Bojuješ s <strong>plným HP</strong> (po boji se vrátí původní)</li>
                         <li><strong>Nezemřeš</strong> - při prohře jen cooldown</li>
-                        <li>Cooldown <strong>10 minut</strong> mezi boji</li>
-                        <li>Výhra = <strong>body pro frakci</strong></li>
-                        <li>Žádné XP ani loot</li>
-                        <li>Vítězná frakce dostane <strong>odměnu</strong></li>
-                    </ul>
-                    
-                    <h4 style="color: #ff9800; margin: 0 0 0.5rem 0;">📅 Týdenní sezóny</h4>
-                    <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0;">
-                        <li>Každá sezóna trvá <strong>1 týden</strong></li>
-                        <li>Reset: <strong>Neděle 23:59</strong></li>
-                        <li>Vítězí frakce s <strong>nejvíce územími</strong></li>
-                        <li>Po resetu: všechna území neutrální, body na 0</li>
-                    </ul>
-                    
-                    <h4 style="color: #4caf50; margin: 0 0 0.5rem 0;">🏆 Odměny za sezónu</h4>
-                    <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0;">
-                        <li><strong>Vítězná frakce:</strong> 100💰 + 50 XP</li>
-                        <li><strong>🥇 1. místo:</strong> +200💰 navíc</li>
-                        <li><strong>🥈 2. místo:</strong> +150💰 navíc</li>
-                        <li><strong>🥉 3. místo:</strong> +100💰 navíc</li>
-                        <li><strong>Účast (ostatní):</strong> 25💰</li>
+                        <li>Výhra = <strong>body pro klan</strong></li>
+                        <li>Vítězný klan dostane <strong>odměnu</strong></li>
                     </ul>
                     
                     <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">🗺️ Jak dobývat území?</h4>
@@ -88314,19 +88128,15 @@ function openFullscreenMap() {
                     <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">📊 Body a vlastnictví</h4>
                     <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0;">
                         <li>Body se sčítají <strong>jednou denně</strong></li>
-                        <li>Frakce s nejvíce body <strong>získá území</strong></li>
+                        <li>Klan s nejvíce body <strong>získá území</strong></li>
                         <li>Přispěvatelé si rozdělí <strong>15💰 za území</strong></li>
                     </ul>
                     
-                    <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">💰 Daně z území</h4>
-                    <p style="color: #ccc; margin-bottom: 1rem;">5💰/hod za každé území, rozděleno mezi aktivní členy.</p>
+                    <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">💰 Příjem z území</h4>
+                    <p style="color: #ccc; margin-bottom: 1rem;">1💰 za každé území tvého klanu denně → přímo do klanové kasy. Vůdce klanu rozhoduje o výdajích.</p>
                     
-                    <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">🎁 Bonusy vedoucí frakce</h4>
-                    <ul style="color: #ccc; margin: 0 0 0.5rem 1rem; padding: 0;">
-                        <li>🔴 Kory: +4% damage</li>
-                        <li>🔵 Koudy: +5% XP</li>
-                        <li>🟣 Nezávislí: +5% loot</li>
-                    </ul>
+                    <h4 style="color: #ce93d8; margin: 0 0 0.5rem 0;">🏰 Jak se přidat ke klanu?</h4>
+                    <p style="color: #ccc;">Najdi klanový pozemek na mapě a fyzicky na něj přijď. Tam se můžeš přidat k existujícímu klanu nebo založit vlastní!</p>
                 </div>
                 <button class="btn" onclick="showFactionHub()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
             `);
@@ -88335,127 +88145,28 @@ function openFullscreenMap() {
         // Zobrazit info o frakci
         // Zobrazit výběr frakce
         function showFactionSelection() {
-            const currentFaction = getPlayerFaction();
-            const canChange = !state.pvpFactionJoinedAt || (Date.now() - state.pvpFactionJoinedAt) >= (7 * 24 * 60 * 60 * 1000);
-            
-            let daysLeft = 0;
-            if (state.pvpFactionJoinedAt && !canChange) {
-                daysLeft = Math.ceil((7 * 24 * 60 * 60 * 1000 - (Date.now() - state.pvpFactionJoinedAt)) / (24 * 60 * 60 * 1000));
-            }
-            
-            const factionsHtml = Object.values(PVP_FACTIONS).map(f => {
-                const isCurrentFaction = currentFaction === f.id;
-                const bonusText = f.bonus.damage ? '+4% damage' : f.bonus.xp ? '+5% XP' : '+5% loot';
-                return `
-                    <button class="btn" onclick="confirmJoinFaction('${f.id}')" 
-                        style="background: linear-gradient(135deg, ${f.color}40 0%, ${f.color}20 100%); 
-                               border: 2px solid ${isCurrentFaction ? f.color : '#333'}; 
-                               padding: 1rem; margin-bottom: 0.5rem; width: 100%;
-                               ${!canChange && !isCurrentFaction ? 'opacity: 0.5; cursor: not-allowed;' : ''}"
-                        ${!canChange && !isCurrentFaction ? 'disabled' : ''}>
-                        <div style="display: flex; align-items: center; gap: 1rem;">
-                            <div style="font-size: 2rem;">${f.icon}</div>
-                            <div style="text-align: left; flex: 1;">
-                                <div style="color: ${f.color}; font-weight: bold;">${f.name}</div>
-                                <div style="color: #888; font-size: 0.8rem;">${f.desc}</div>
-                                <div style="color: #ffd700; font-size: 0.75rem;">🎁 Bonus: ${bonusText}</div>
-                            </div>
-                            ${isCurrentFaction ? '<div style="color: #4caf50;">✓</div>' : ''}
-                        </div>
-                    </button>
-                `;
-            }).join('');
-            
-            showModal('🏴 Vyber si frakci', `
-                <div style="text-align: center; margin-bottom: 1rem;">
-                    <p style="color: #888;">Připoj se k frakci a bojuj o teritoria!</p>
-                    ${currentFaction ? `<p style="color: ${PVP_FACTIONS[currentFaction].color};">Aktuální: ${PVP_FACTIONS[currentFaction].icon} ${PVP_FACTIONS[currentFaction].name}</p>` : ''}
-                    ${!canChange ? `<p style="color: #ff9800; font-size: 0.85rem;">⏳ Změna možná za ${daysLeft} dní</p>` : ''}
+            // Klanové války: hráč musí být v klanu
+            showModal('⚔️ Klanové války', `
+                <div style="text-align: center; padding: 1rem;">
+                    <div style="font-size: 3rem;">⚔️</div>
+                    <h3 style="color: #ce93d8; margin: 0.5rem 0;">Potřebuješ klan!</h3>
+                    <p style="color: #888;">Pro účast v klanových válkách musíš být členem klanu.</p>
+                    <p style="color: #666; font-size: 0.85rem; margin-top: 0.5rem;">Klany se zakládají na speciálních pozemcích na mapě. Najdi klanový pozemek a založ nebo se přidej ke klanu!</p>
                 </div>
-                
-                <div style="max-height: 350px; overflow-y: auto;">
-                    ${factionsHtml}
-                </div>
-                
+                <button class="btn" onclick="showClanOverview()" style="width: 100%; background: #7B1FA2; margin-top: 0.5rem;">⚔️ Přehled klanů</button>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">Zavřít</button>
             `);
         }
         
         function confirmJoinFaction(factionId) {
-            const faction = PVP_FACTIONS[factionId];
-            const currentFaction = getPlayerFaction();
-            
-            if (currentFaction === factionId) {
-                notifyInfo('Už jsi členem', `Už jsi v ${faction.name}`);
-                return;
-            }
-            
-            showModal(`${faction.icon} Připojit se?`, `
-                <div style="text-align: center;">
-                    <div style="font-size: 4rem;">${faction.icon}</div>
-                    <h3 style="color: ${faction.color}; margin: 0.5rem 0;">${faction.name}</h3>
-                    <p style="color: #888;">${faction.desc}</p>
-                    
-                    <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
-                        <p style="color: #ffd700; margin: 0;">🎁 Bonus: ${faction.bonus.damage ? '+4% damage' : faction.bonus.xp ? '+5% XP' : '+5% loot chance'}</p>
-                    </div>
-                    
-                    <p style="color: #ff9800; font-size: 0.85rem;">⚠️ Frakci můžeš změnit až za 7 dní!</p>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn" onclick="showFactionSelection()" style="background: #555;">Zrušit</button>
-                    <button class="btn" onclick="joinFaction('${factionId}'); closeModal(); showFactionHub();" style="background: ${faction.color};">Připojit se!</button>
-                </div>
-            `);
+            // Klanové války: výběr frakce odstraněn, přesměruj na klany
+            showFactionSelection();
         }
         
         // Zobrazit statistiky všech frakcí
         async function showAllFactionStats() {
-            let totalTerritories = { kory: 0, koudy: 0, independent: 0 };
-            let totalPoints = { kory: 0, koudy: 0, independent: 0 };
-            
-            if (multiplayerEnabled && firebaseDB) {
-                try {
-                    const snapshot = await firebaseDB.ref('territories').once('value');
-                    const territories = snapshot.val() || {};
-                    Object.values(territories).forEach(t => {
-                        if (t.owner) totalTerritories[t.owner]++;
-                        if (t.points) {
-                            Object.entries(t.points).forEach(([f, p]) => {
-                                totalPoints[f] = (totalPoints[f] || 0) + p;
-                            });
-                        }
-                    });
-                } catch(e) {
-                    console.error('Stats error:', e);
-                }
-            }
-            
-            const totalLocations = WORLD_LOCATIONS.filter(l => l.type !== 'home').length;
-            
-            const statsHtml = Object.values(PVP_FACTIONS).map(f => {
-                const terr = totalTerritories[f.id] || 0;
-                const pts = totalPoints[f.id] || 0;
-                const percent = Math.round(terr / totalLocations * 100);
-                return `
-                    <div style="background: ${f.color}20; padding: 1rem; border-radius: 8px; border-left: 4px solid ${f.color}; margin-bottom: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="color: ${f.color}; font-weight: bold;">${f.icon} ${f.name}</span>
-                            <span style="color: #fff;">${terr} území (${percent}%)</span>
-                        </div>
-                        <div style="background: #000; height: 8px; border-radius: 4px; margin: 0.5rem 0; overflow: hidden;">
-                            <div style="background: ${f.color}; height: 100%; width: ${percent}%;"></div>
-                        </div>
-                        <div style="color: #888; font-size: 0.8rem;">Celkem bodů: ${pts.toLocaleString()}</div>
-                    </div>
-                `;
-            }).join('');
-            
-            showModal('📊 Statistiky frakcí', `
-                ${statsHtml}
-                <button class="btn" onclick="showFactionHub()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
-            `);
+            // Přesměruj na hlavní klanový hub
+            showFactionHub();
         }
         
         // Interval pro refresh territory modal během capture
@@ -88540,8 +88251,8 @@ function openFullscreenMap() {
             // Zastav předchozí refresh interval
             stopTerritoryRefresh();
             
-            const faction = getPlayerFaction();
-            if (!faction) {
+            const clanTag = getPlayerFaction();
+            if (!clanTag) {
                 showFactionSelection();
                 return;
             }
@@ -88553,47 +88264,33 @@ function openFullscreenMap() {
             }
             
             const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
-            const factionData = PVP_FACTIONS[faction];
+            const myClanInfo = getClanWarInfo(clanTag);
             const myName = getPlayerName();
             
             // Načti info o teritoriu
             let territoryOwner = null;
-            let territoryPoints = { kory: 0, koudy: 0, independent: 0 };
-            let activePlayers = []; // Hráči kteří právě dobývají
+            let territoryPoints = {};
+            let activePlayers = [];
             
             if (multiplayerEnabled && firebaseDB) {
                 try {
-                    console.log('🏴 showTerritoryActions - loading territory:', locationId);
-                    
-                    // Načti body přímo z /points cesty pro spolehlivější data
                     const pointsSnapshot = await firebaseDB.ref('territories/' + locationId + '/points').once('value');
                     const pointsData = pointsSnapshot.val();
-                    console.log('🏴 Raw points data from Firebase:', pointsData);
-                    
                     if (pointsData) {
-                        territoryPoints = {
-                            kory: parseInt(pointsData.kory) || 0,
-                            koudy: parseInt(pointsData.koudy) || 0,
-                            independent: parseInt(pointsData.independent) || 0
-                        };
+                        territoryPoints = pointsData;
                     }
-                    console.log('🏴 Parsed territory points:', JSON.stringify(territoryPoints));
                     
-                    // Načti owner a activeCaptures
                     const snapshot = await firebaseDB.ref('territories/' + locationId).once('value');
                     const territory = snapshot.val();
                     
                     if (territory) {
                         territoryOwner = territory.owner;
-                        console.log('🏴 Territory owner:', territoryOwner);
                         
-                        // Načti aktivní hráče dobývající toto území
                         if (territory.activeCaptures) {
                             const now = Date.now();
                             for (const [playerName, capture] of Object.entries(territory.activeCaptures)) {
-                                // Capture je aktivní 15 minut
                                 if (now - capture.startTime < 15 * 60 * 1000) {
-                                    activePlayers.push({ name: playerName, faction: capture.faction, startTime: capture.startTime });
+                                    activePlayers.push({ name: playerName, clan: capture.faction, startTime: capture.startTime });
                                 }
                             }
                         }
@@ -88603,25 +88300,22 @@ function openFullscreenMap() {
                 }
             }
             
-            const ownerFaction = territoryOwner ? PVP_FACTIONS[territoryOwner] : null;
-            const isOurTerritory = territoryOwner === faction;
-            const isEnemyTerritory = territoryOwner && territoryOwner !== faction;
+            const ownerInfo = territoryOwner ? getClanWarInfo(territoryOwner) : null;
+            const isOurTerritory = territoryOwner === clanTag;
+            const isEnemyTerritory = territoryOwner && territoryOwner !== clanTag;
             const isNeutral = !territoryOwner;
             
             // Kontrola jestli už dobýváme
             const myCapture = state.territoryCapture?.[locationId];
             const amCapturing = myCapture && (Date.now() - myCapture.startTime < 15 * 60 * 1000);
             
-            // Body se počítají na pozadí, ale nezobrazují se v UI
-            // (real-time listener zůstává pro interní funkčnost)
+            // Real-time listener
             if (multiplayerEnabled && firebaseDB) {
                 if (territoryPointsListener) {
-                    try { territoryPointsListener.off(); } catch(e) { /* cleanup ok */ }
+                    try { territoryPointsListener.off(); } catch(e) {}
                 }
-                
                 territoryPointsListener = firebaseDB.ref('territories/' + locationId + '/points');
                 territoryPointsListener.on('value', (snapshot) => {
-                    // Body se počítají, ale nezobrazují
                     const rawPoints = snapshot.val();
                     console.log('🏴 Territory points update:', rawPoints);
                 });
@@ -88631,34 +88325,20 @@ function openFullscreenMap() {
             let activePlayersHtml = '';
             if (activePlayers.length > 0) {
                 const playersList = activePlayers.map(p => {
-                    const pFaction = PVP_FACTIONS[p.faction];
+                    const pClan = getClanWarInfo(p.clan);
                     const remaining = Math.ceil((15 * 60 * 1000 - (Date.now() - p.startTime)) / 60000);
-                    return `<span style="color: ${pFaction?.color || '#888'};">${pFaction?.icon || '?'} ${p.name} (${remaining}min)</span>`;
+                    return '<span style="color: ' + (pClan?.color || '#888') + ';">' + (pClan?.icon || '?') + ' ' + p.name + ' (' + remaining + 'min)</span>';
                 }).join(', ');
-                activePlayersHtml = `
-                    <div style="background: #2a2a1a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem;">
-                        <p style="color: #ffd700; margin: 0; font-size: 0.85rem;">⚔️ Právě dobývají: ${playersList}</p>
-                    </div>
-                `;
+                activePlayersHtml = '<div style="background: #2a2a1a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem;"><p style="color: #ffd700; margin: 0; font-size: 0.85rem;">⚔️ Právě dobývají: ' + playersList + '</p></div>';
             }
             
             let actionsHtml = '';
-            
             if (isOurTerritory) {
-                actionsHtml = `
-                    <p style="color: #4caf50; text-align: center;">✅ Toto území patří tvé frakci!</p>
-                    <p style="color: #888; text-align: center; font-size: 0.85rem;">Můžeš přidávat body pro udržení kontroly.</p>
-                `;
+                actionsHtml = '<p style="color: #4caf50; text-align: center;">✅ Toto území patří tvému klanu!</p><p style="color: #888; text-align: center; font-size: 0.85rem;">Můžeš přidávat body pro udržení kontroly.</p>';
             } else if (isEnemyTerritory) {
-                actionsHtml = `
-                    <p style="color: ${ownerFaction.color}; text-align: center;">${ownerFaction.icon} Území patří: ${ownerFaction.name}</p>
-                    <p style="color: #ff9800; text-align: center; font-size: 0.85rem;">Dobývej pro svou frakci!</p>
-                `;
+                actionsHtml = '<p style="color: ' + ownerInfo.color + '; text-align: center;">' + ownerInfo.icon + ' Území patří: [' + ownerInfo.name + ']</p><p style="color: #ff9800; text-align: center; font-size: 0.85rem;">Dobývej pro svůj klan!</p>';
             } else {
-                actionsHtml = `
-                    <p style="color: #888; text-align: center;">⚪ Neutrální území</p>
-                    <p style="color: #888; text-align: center; font-size: 0.85rem;">Frakce s nejvíce body ho získá při denním sčítání.</p>
-                `;
+                actionsHtml = '<p style="color: #888; text-align: center;">⚪ Neutrální území</p><p style="color: #888; text-align: center; font-size: 0.85rem;">Klan s nejvíce body ho získá při denním sčítání.</p>';
             }
             
             // Tlačítko pro dobývání
@@ -88670,25 +88350,25 @@ function openFullscreenMap() {
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin: 0.5rem 0;">
                         <p style="color: #ffd700; margin: 0 0 0.5rem 0; text-align: center;">⏳ Dobýváš území...</p>
                         <div style="background: #000; height: 20px; border-radius: 10px; overflow: hidden;">
-                            <div style="background: ${factionData.color}; height: 100%; width: ${progress}%; transition: width 0.3s;"></div>
+                            <div style="background: ${myClanInfo.color}; height: 100%; width: ${progress}%; transition: width 0.3s;"></div>
                         </div>
-                        <p style="color: #888; text-align: center; margin: 0.5rem 0 0 0; font-size: 0.85rem;">Zbývá: ${remaining} min (+10 bodů pro frakci)</p>
+                        <p style="color: #888; text-align: center; margin: 0.5rem 0 0 0; font-size: 0.85rem;">Zbývá: ${remaining} min (+10 bodů pro klan)</p>
                         <p style="color: #ff9800; text-align: center; margin: 0.3rem 0 0 0; font-size: 0.75rem;">⚠️ Zůstaň na místě!</p>
                     </div>
                     <button class="btn" onclick="cancelTerritoryCapture('${locationId}')" style="width: 100%; background: #c62828;">❌ Zrušit dobývání</button>
                 `;
             } else {
                 captureButtonHtml = `
-                    <button class="btn" onclick="startTerritoryCapture('${locationId}')" style="width: 100%; background: ${factionData.color}; margin-top: 0.5rem;">
+                    <button class="btn" onclick="startTerritoryCapture('${locationId}')" style="width: 100%; background: ${myClanInfo.color}; margin-top: 0.5rem;">
                         🏴 Dobývat území (15 min = +10 bodů)
                     </button>
                     <p style="color: #666; font-size: 0.75rem; text-align: center; margin-top: 0.3rem;">Víc hráčů může dobývat současně!</p>
                 `;
             }
             
-            showModal(`🏴 ${loc?.name || 'Území'}`, `
+            showModal('🏴 ' + (loc?.name || 'Území'), `
                 <div style="text-align: center; margin-bottom: 0.5rem;">
-                    <p style="color: ${factionData.color}; margin: 0;">Tvá frakce: ${factionData.icon} ${factionData.name}</p>
+                    <p style="color: ${myClanInfo.color}; margin: 0;">Tvůj klan: ${myClanInfo.icon} [${myClanInfo.name}]</p>
                 </div>
                 
                 ${activePlayersHtml}
@@ -88697,7 +88377,7 @@ function openFullscreenMap() {
                 
                 <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem;">
                     <p style="color: #666; font-size: 0.7rem; margin: 0; text-align: center;">
-                        💡 Jednou denně se sčítají body. Frakce s nejvíce body získá území a rozdělí si 15 💰 za každé.
+                        💡 Jednou denně se sčítají body. Klan s nejvíce body získá území a rozdělí si 15 💰 za každé.
                     </p>
                 </div>
                 
@@ -88741,7 +88421,7 @@ function openFullscreenMap() {
                     
                     const timerEl = modalContent.querySelector('[style*="color: #888"][style*="text-align: center"]');
                     if (timerEl && timerEl.textContent.includes('Zbývá:')) {
-                        timerEl.textContent = `Zbývá: ${remainingMin} min (+10 bodů pro frakci)`;
+                        timerEl.textContent = `Zbývá: ${remainingMin} min (+10 bodů pro klan)`;
                     }
                 }, 1000);
             }
@@ -88881,7 +88561,7 @@ function openFullscreenMap() {
             }
             
             // Zobraz přehled strážců před bojem
-            const ownerFaction = territory?.owner ? PVP_FACTIONS[territory.owner] : null;
+            const ownerFaction = territory?.owner ? getClanWarInfo(territory.owner) : null;
             const guardsListHtml = guards.map((g, i) => {
                 const guardDef = TERRITORY_GUARDS.find(gt => gt.id === g.type);
                 return `
@@ -89062,7 +88742,7 @@ function openFullscreenMap() {
                         window.territoryCache = null;
                         
                         // Jen notifikace, ne modal
-                        notifySuccess('🏆 Území dobyto!', `Území nyní patří ${PVP_FACTIONS[faction].name}! +50 bodů`);
+                        notifySuccess('🏆 Území dobyto!', `Území nyní patří [${(getClanWarInfo(faction)?.name || faction)}]! +50 bodů`);
                     } catch(e) {
                         console.error('Territory capture error:', e);
                     }
@@ -89154,7 +88834,7 @@ function openFullscreenMap() {
                         const territory = snapshot.val() || {};
                         
                         if (territory.owner) {
-                            const ownerFaction = PVP_FACTIONS[territory.owner];
+                            const ownerFaction = getClanWarInfo(territory.owner);
                             notifyWarning('Území obsazeno!', `Území již patří ${ownerFaction?.name || 'jiné frakci'}`);
                         } else if (territory.activeCaptures && Object.values(territory.activeCaptures).some(cap => (Date.now() - (cap.startTime || 0)) < 20 * 60 * 1000)) {
                             const activeCap = Object.values(territory.activeCaptures).find(cap => (Date.now() - (cap.startTime || 0)) < 20 * 60 * 1000);
@@ -89176,7 +88856,22 @@ function openFullscreenMap() {
                 }
             }
             
-            notifySuccess('Území obsazeno!', `+20 bodů pro ${PVP_FACTIONS[faction].name}`);
+            notifySuccess('Území obsazeno!', `+20 bodů pro [${(getClanWarInfo(faction)?.name || faction)}]`);
+            
+            // 🔔 Chat notifikace - obsazení neutrálního území
+            if (multiplayerEnabled && firebaseDB) {
+                try {
+                    const _loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+                    const _ci = getClanWarInfo(faction);
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '⚔️ KLANOVÉ VÁLKY',
+                        text: `🏴 [${_ci?.name || faction}] obsadil neutrální území: ${_loc?.icon || ''} ${_loc?.name || locationId}`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    });
+                } catch(e) { console.error('Chat notify error:', e); }
+            }
+            
             closeModal();
         }
         
@@ -89196,7 +88891,7 @@ function openFullscreenMap() {
             
             const myName = getPlayerName();
             const CAPTURE_DURATION = 15 * 60 * 1000; // 15 minut
-            const factionData = PVP_FACTIONS[faction];
+            const factionData = getClanWarInfo(faction) || { icon: '⚔️', color: '#888', name: faction };
             
             // KONTROLA: Už dobýváme toto území?
             if (state.territoryCapture?.[locationId]) {
@@ -89517,7 +89212,7 @@ function openFullscreenMap() {
             const faction = getPlayerFaction();
             if (!faction) {
                 console.log('🏴 completeTerritoryCapture - no faction!');
-                notifyWarning('Chyba', 'Nemáš frakci!');
+                notifyWarning('Chyba', 'Nemáš klan!');
                 return;
             }
             
@@ -89564,7 +89259,9 @@ function openFullscreenMap() {
                     
                     if (!existingPoints.val()) {
                         // Inicializuj strukturu pokud neexistuje
-                        await firebaseDB.ref(pointsPath).set({ kory: 0, koudy: 0, independent: 0 });
+                        const initPoints = {};
+                        initPoints[faction] = 0;
+                        await firebaseDB.ref(pointsPath).set(initPoints);
                         console.log('🏴 Initialized points structure for', locationId);
                     }
                     
@@ -89653,26 +89350,34 @@ function openFullscreenMap() {
                 } catch(e) { console.error("Silent error:", e); }
             }
             
-            // Seskup podle frakce
-            const byFaction = { kory: [], koudy: [], independent: [], neutral: [] };
+            // Seskup podle klanu (dynamické klíče)
+            const byClan = {};
+            const neutralList = [];
             WORLD_LOCATIONS.filter(l => l.type !== 'home').forEach(loc => {
                 const owner = territories[loc.id]?.owner;
                 if (owner) {
-                    byFaction[owner].push(loc.name);
+                    if (!byClan[owner]) byClan[owner] = [];
+                    byClan[owner].push(loc.name);
                 } else {
-                    byFaction.neutral.push(loc.name);
+                    neutralList.push(loc.name);
                 }
             });
             
-            const html = Object.entries(PVP_FACTIONS).map(([id, f]) => `
+            // Seřaď klany podle počtu území
+            const sorted = Object.entries(byClan).sort((a,b) => b[1].length - a[1].length);
+            
+            const html = sorted.map(([clanTag, locs]) => {
+                const ci = getClanWarInfo(clanTag);
+                return `
                 <div style="margin-bottom: 1rem;">
-                    <h4 style="color: ${f.color}; margin: 0 0 0.3rem 0;">${f.icon} ${f.name} (${byFaction[id].length})</h4>
-                    <p style="color: #888; font-size: 0.75rem; margin: 0;">${byFaction[id].slice(0, 5).join(', ')}${byFaction[id].length > 5 ? '...' : ''}</p>
+                    <h4 style="color: ${ci?.color || '#888'}; margin: 0 0 0.3rem 0;">${ci?.icon || '⚔️'} [${ci?.name || clanTag}] (${locs.length})</h4>
+                    <p style="color: #888; font-size: 0.75rem; margin: 0;">${locs.slice(0, 5).join(', ')}${locs.length > 5 ? '...' : ''}</p>
                 </div>
-            `).join('') + `
+                `;
+            }).join('') + `
                 <div style="margin-bottom: 1rem;">
-                    <h4 style="color: #888; margin: 0 0 0.3rem 0;">⚪ Neutrální (${byFaction.neutral.length})</h4>
-                    <p style="color: #666; font-size: 0.75rem; margin: 0;">${byFaction.neutral.slice(0, 5).join(', ')}${byFaction.neutral.length > 5 ? '...' : ''}</p>
+                    <h4 style="color: #888; margin: 0 0 0.3rem 0;">⚪ Neutrální (${neutralList.length})</h4>
+                    <p style="color: #666; font-size: 0.75rem; margin: 0;">${neutralList.slice(0, 5).join(', ')}${neutralList.length > 5 ? '...' : ''}</p>
                 </div>
             `;
             
@@ -89682,26 +89387,26 @@ function openFullscreenMap() {
             `);
         }
         
-        // Cache pro vedoucí frakci (aktualizuje se při načtení territory cache)
+        // Cache pro vedoucí klan (aktualizuje se při načtení territory cache)
         window.leadingFaction = null;
         
-        // Získat vedoucí frakci (ta s nejvíce územími)
+        // Získat vedoucí klan (ten s nejvíce územími)
         function getLeadingFaction() {
             if (!window.territoryCache) return null;
             
-            const counts = { kory: 0, koudy: 0, independent: 0 };
+            const counts = {};
             Object.values(window.territoryCache).forEach(t => {
-                if (t.owner && counts[t.owner] !== undefined) {
-                    counts[t.owner]++;
+                if (t && t.owner) {
+                    counts[t.owner] = (counts[t.owner] || 0) + 1;
                 }
             });
             
             let leading = null;
             let maxCount = 0;
-            Object.entries(counts).forEach(([faction, count]) => {
+            Object.entries(counts).forEach(([clanTag, count]) => {
                 if (count > maxCount) {
                     maxCount = count;
-                    leading = faction;
+                    leading = clanTag;
                 }
             });
             
@@ -89711,16 +89416,17 @@ function openFullscreenMap() {
         
         // Získat frakční bonus hráče (pouze pokud je jeho frakce vedoucí!)
         function getFactionBonus() {
-            const faction = getPlayerFaction();
-            if (!faction || !PVP_FACTIONS[faction]) return { damage: 1, xp: 0, loot: 0 };
+            // Klanové války: bonus pro vedoucí klan
+            const clanTag = getPlayerFaction();
+            if (!clanTag) return { damage: 0, xp: 0, loot: 0 };
             
-            // Bonus pouze pro vedoucí frakci
-            const leading = window.leadingFaction || getLeadingFaction();
-            if (faction !== leading) {
-                return { damage: 1, xp: 0, loot: 0 }; // Není vedoucí, žádný bonus
+            const leading = window.leadingFaction;
+            if (clanTag !== leading) {
+                return { damage: 0, xp: 0, loot: 0 };
             }
             
-            return PVP_FACTIONS[faction].bonus;
+            // Vedoucí klan dostává bonus
+            return { damage: 0.05, xp: 0.05, loot: 0.05 }; // +5% ke všemu
         }
         
         // Získat barvu frakce hráče podle jména (pro chat)
@@ -89731,8 +89437,9 @@ function openFullscreenMap() {
                 const sanitizedName = playerName.replace(/[\/\.#$\[\]]/g, '_');
                 const snapshot = await firebaseDB.ref('factionMembers/' + sanitizedName).once('value');
                 const data = snapshot.val();
-                if (data?.faction && PVP_FACTIONS[data.faction]) {
-                    return PVP_FACTIONS[data.faction].color;
+                if (data?.faction) {
+                    const _cwi = getClanWarInfo(data.faction);
+                    if (_cwi) return _cwi.color;
                 }
             } catch(e) {
                 console.log('Get faction color error:', e);
@@ -89741,350 +89448,11 @@ function openFullscreenMap() {
         }
         
         // === DANĚ Z ÚZEMÍ ===
-        // Každou hodinu se rozdělí příjem z území mezi členy frakce
+        // Příjem z území jde do klanové kasy (1💰/území/den)
         async function collectTerritoryTaxes() {
-            const faction = getPlayerFaction();
-            if (!faction || !multiplayerEnabled || !firebaseDB) return;
-            
-            try {
-                // Načti počet území tvé frakce
-                const terrSnapshot = await firebaseDB.ref('territories').once('value');
-                const territories = terrSnapshot.val() || {};
-                
-                let factionTerritories = 0;
-                Object.values(territories).forEach(t => {
-                    if (t.owner === faction) factionTerritories++;
-                });
-                
-                if (factionTerritories === 0) return; // Žádná území, žádné daně
-                
-                // Načti počet aktivních členů frakce (online v posledních 24h)
-                const membersSnapshot = await firebaseDB.ref('factionMembers').once('value');
-                const members = membersSnapshot.val() || {};
-                
-                let activeMembers = 0;
-                const dayAgo = Date.now() - (24 * 60 * 60 * 1000);
-                Object.values(members).forEach(m => {
-                    if (m.faction === faction && m.lastActive && m.lastActive > dayAgo) {
-                        activeMembers++;
-                    }
-                });
-                
-                // Minimálně 1 člen (ty)
-                activeMembers = Math.max(1, activeMembers);
-                
-                // Výpočet příjmu: 2 peněz za území za hodinu, rozděleno mezi aktivní členy (sníženo z 5)
-                const totalIncome = factionTerritories * 2;
-                const myShare = Math.floor(totalIncome / activeMembers);
-                
-                if (myShare > 0) {
-                    addMoney(myShare); // Použij správnou funkci
-                    
-                    // Aktualizuj lastActive pro sebe
-                    const myName = getPlayerName();
-                    const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
-                    await firebaseDB.ref('factionMembers/' + sanitizedName + '/lastActive').set(Date.now());
-                    
-                    // Notifikace
-                    const factionData = PVP_FACTIONS[faction];
-                    notifySuccess(`${factionData.icon} Daně z území`, `+${myShare}💰 (${factionTerritories} území)`);
-                    addLog(`${factionData.icon} Frakční daně: +${myShare} peněz z ${factionTerritories} území`, '💰');
-                    
-                    console.log(`💰 Territory taxes: ${myShare} money from ${factionTerritories} territories (${activeMembers} active members)`);
-                }
-            } catch(e) {
-                console.error('Territory taxes error:', e);
-            }
-        }
-        
-        // === TÝDENNÍ SEZÓNA FRAKČNÍ VÁLKY ===
-        
-        // Získat čas do konce sezóny (neděle 23:59:59)
-        function getSeasonEndTime() {
-            const now = new Date();
-            const dayOfWeek = now.getDay(); // 0 = neděle
-            const daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
-            
-            const endDate = new Date(now);
-            endDate.setDate(now.getDate() + daysUntilSunday);
-            endDate.setHours(23, 59, 59, 999);
-            
-            return endDate.getTime();
-        }
-        
-        // Formátovat zbývající čas
-        function formatTimeRemaining(ms) {
-            if (ms <= 0) return 'Končí!';
-            
-            const days = Math.floor(ms / (24 * 60 * 60 * 1000));
-            const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
-            const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
-            
-            if (days > 0) return `${days}d ${hours}h`;
-            if (hours > 0) return `${hours}h ${minutes}m`;
-            return `${minutes}m`;
-        }
-        
-        // Zkontrolovat a provést reset sezóny
-        async function checkSeasonReset() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            
-            try {
-                const now = new Date();
-                const dayOfWeek = now.getDay(); // 0 = neděle
-                const hour = now.getHours();
-                
-                // Reset pouze v neděli mezi 23:00 a 23:59
-                if (dayOfWeek !== 0 || hour < 23) {
-                    return; // Není neděle večer, nic nedělej
-                }
-                
-                // Načti poslední reset
-                const seasonSnapshot = await firebaseDB.ref('factionSeason').once('value');
-                const seasonData = seasonSnapshot.val() || {};
-                
-                const lastReset = seasonData.lastReset || 0;
-                const lastResetDate = new Date(lastReset);
-                
-                // Pokud už byl reset dnes (tuto neděli), nic nedělej
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                
-                if (lastReset > today.getTime()) {
-                    return; // Už bylo resetováno dnes
-                }
-                
-                console.log('🔄 Je neděle 23:xx - čas na reset sezóny!');
-                await performSeasonReset();
-                
-            } catch(e) {
-                // Ignoruj permission denied chyby - Firebase pravidla nemusí dovolovat čtení
-                if (e.message && e.message.includes('permission_denied')) {
-                    console.log('Season check skipped - no permission');
-                } else {
-                    console.error('Season check error:', e);
-                }
-            }
-        }
-        
-        // Získat timestamp poslední neděle 23:59:59 (pro zobrazení "do konce sezóny")
-        function getNextSundayMidnight() {
-            const now = new Date();
-            const dayOfWeek = now.getDay(); // 0 = neděle
-            
-            // Kolik dní do neděle?
-            const daysUntilSunday = dayOfWeek === 0 ? 0 : (7 - dayOfWeek);
-            
-            const nextSunday = new Date(now);
-            nextSunday.setDate(now.getDate() + daysUntilSunday);
-            nextSunday.setHours(23, 59, 59, 999);
-            
-            return nextSunday.getTime();
-        }
-        
-        // Stará funkce pro zpětnou kompatibilitu
-        function getLastSundayMidnight() {
-            return getNextSundayMidnight(); // Teď vrací PŘÍŠTÍ neděli
-        }
-        
-        // Provést reset sezóny
-        async function performSeasonReset() {
-            if (!multiplayerEnabled || !firebaseDB) return;
-            
-            try {
-                // 1. Zjisti výsledky před resetem
-                const terrSnapshot = await firebaseDB.ref('territories').once('value');
-                const territories = terrSnapshot.val() || {};
-                
-                const membersSnapshot = await firebaseDB.ref('factionMembers').once('value');
-                const members = membersSnapshot.val() || {};
-                
-                // Spočítej území každé frakce
-                const factionTerritories = { kory: 0, koudy: 0, independent: 0 };
-                Object.values(territories).forEach(t => {
-                    if (t.owner && factionTerritories[t.owner] !== undefined) {
-                        factionTerritories[t.owner]++;
-                    }
-                });
-                
-                // Najdi vítěze
-                let winnerFaction = null;
-                let maxTerr = 0;
-                Object.entries(factionTerritories).forEach(([fid, count]) => {
-                    if (count > maxTerr) {
-                        maxTerr = count;
-                        winnerFaction = fid;
-                    }
-                });
-                
-                // Spočítej top 3 hráče vítězné frakce
-                const winnerMembers = [];
-                Object.entries(members).forEach(([key, m]) => {
-                    if (m.faction === winnerFaction) {
-                        winnerMembers.push({ key, name: m.name, contribution: m.contribution || 0 });
-                    }
-                });
-                winnerMembers.sort((a, b) => b.contribution - a.contribution);
-                const top3Winners = winnerMembers.slice(0, 3);
-                
-                // 2. Ulož historii sezóny
-                const seasonNumber = (await firebaseDB.ref('factionSeason/seasonCount').once('value')).val() || 0;
-                await firebaseDB.ref('factionSeasonHistory/' + (seasonNumber + 1)).set({
-                    endedAt: Date.now(),
-                    winner: winnerFaction,
-                    territories: factionTerritories,
-                    top3: top3Winners.map(m => ({ name: m.name, contribution: m.contribution }))
-                });
-                
-                // 3. Reset území
-                await firebaseDB.ref('territories').remove();
-                
-                // 4. Reset členů frakcí - všichni si musí vybrat znovu
-                await firebaseDB.ref('factionMembers').remove();
-                
-                // 5. Aktualizuj sezónu
-                await firebaseDB.ref('factionSeason').set({
-                    lastReset: Date.now(),
-                    seasonCount: seasonNumber + 1,
-                    lastWinner: winnerFaction,
-                    lastTerritories: factionTerritories
-                });
-                
-                console.log('✅ Sezóna resetována! Vítěz:', winnerFaction);
-                
-                // 6. Rozdej odměny tomuto hráči pokud je online
-                await claimSeasonRewards(winnerFaction, top3Winners);
-                
-            } catch(e) {
-                console.error('Season reset error:', e);
-            }
-        }
-        
-        // Vyzvednout odměny za sezónu
-        async function claimSeasonRewards(winnerFaction, top3Winners) {
-            const myFaction = getPlayerFaction();
-            const myName = getPlayerName();
-            
-            if (!myFaction) return;
-            
-            let reward = { money: 0, xp: 0, bonus: '' };
-            
-            if (myFaction === winnerFaction) {
-                // Vítězná frakce
-                reward.money = 100;
-                reward.xp = 50;
-                reward.bonus = '🏆 Vítězná frakce!';
-                
-                // Bonus pro TOP 3
-                const myRank = top3Winners.findIndex(m => m.name === myName);
-                if (myRank === 0) {
-                    reward.money += 200;
-                    reward.bonus = '🥇 1. místo ve frakci!';
-                } else if (myRank === 1) {
-                    reward.money += 150;
-                    reward.bonus = '🥈 2. místo ve frakci!';
-                } else if (myRank === 2) {
-                    reward.money += 100;
-                    reward.bonus = '🥉 3. místo ve frakci!';
-                }
-            } else {
-                // Účastnická odměna
-                reward.money = 25;
-                reward.xp = 0;
-                reward.bonus = 'Účastnická odměna';
-            }
-            
-            // Přidej odměny
-            if (reward.money > 0) {
-                state.money = (state.money || 0) + reward.money;
-            }
-            if (reward.xp > 0) {
-                addXP(reward.xp);
-            }
-            
-            // Reset lokálních dat - hráč si musí vybrat novou frakci
-            state.pvpFactionContribution = 0;
-            state.pvpFaction = null;
-            state.pvpFactionJoinedAt = null;
-            saveGame();
-            
-            // Zobraz notifikaci
-            const winnerData = PVP_FACTIONS[winnerFaction];
-            showModal('🏁 Sezóna skončila!', `
-                <div style="text-align: center;">
-                    <div style="font-size: 4rem; margin: 1rem 0;">${winnerData?.icon || '🏆'}</div>
-                    <h2 style="color: ${winnerData?.color || '#ffd700'}; margin: 0;">Vítěz: ${winnerData?.name || 'Neznámá frakce'}</h2>
-                    <p style="color: #888;">Ovládli ${factionTerritories?.[winnerFaction] || 0} území!</p>
-                    
-                    <div style="background: #1a2a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0; border: 2px solid ${myFaction === winnerFaction ? '#4caf50' : '#666'};">
-                        <p style="color: ${myFaction === winnerFaction ? '#4caf50' : '#888'}; font-size: 1.2rem; margin: 0;">${reward.bonus}</p>
-                        <p style="color: #ffd700; font-size: 1.1rem; margin: 0.5rem 0;">+${reward.money} 💰${reward.xp > 0 ? ` +${reward.xp} XP` : ''}</p>
-                    </div>
-                    
-                    <p style="color: #ff9800; font-size: 0.9rem;">🔄 Vyber si frakci pro novou sezónu!</p>
-                </div>
-                <button class="btn" onclick="closeModal(); showFactionSelection();" style="width: 100%; margin-top: 1rem; background: #4caf50;">Vybrat frakci</button>
-            `);
-        }
-        
-        // Zobrazit info o sezóně
-        async function showSeasonInfo() {
-            const seasonEnd = getSeasonEndTime();
-            const timeLeft = seasonEnd - Date.now();
-            const timeLeftStr = formatTimeRemaining(timeLeft);
-            
-            // Načti historii
-            let historyHtml = '<p style="color: #666; text-align: center;">Žádná historie</p>';
-            
-            if (multiplayerEnabled && firebaseDB) {
-                try {
-                    const historySnapshot = await firebaseDB.ref('factionSeasonHistory').orderByKey().limitToLast(5).once('value');
-                    const history = historySnapshot.val() || {};
-                    
-                    const entries = Object.entries(history).reverse();
-                    if (entries.length > 0) {
-                        historyHtml = entries.map(([num, data]) => {
-                            const winner = PVP_FACTIONS[data.winner];
-                            const date = new Date(data.endedAt).toLocaleDateString('cs-CZ');
-                            return `
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: ${winner?.color || '#333'}20; border-radius: 6px; margin-bottom: 0.3rem; border-left: 3px solid ${winner?.color || '#666'};">
-                                    <span style="color: #888;">Sezóna ${num}</span>
-                                    <span style="color: ${winner?.color || '#fff'};">${winner?.icon || '?'} ${winner?.name || '?'}</span>
-                                    <span style="color: #666; font-size: 0.8rem;">${date}</span>
-                                </div>
-                            `;
-                        }).join('');
-                    }
-                } catch(e) {
-                    console.error('Season history error:', e);
-                }
-            }
-            
-            showModal('📅 Frakční sezóna', `
-                <div style="background: linear-gradient(135deg, #1a1a2e 0%, #0a0a15 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 2px solid #ffd700;">
-                    <div style="text-align: center;">
-                        <p style="color: #888; margin: 0;">⏳ Do konce sezóny:</p>
-                        <p style="color: #ffd700; font-size: 2rem; font-weight: bold; margin: 0.5rem 0;">${timeLeftStr}</p>
-                        <p style="color: #666; font-size: 0.8rem; margin: 0;">Reset: Neděle 23:59</p>
-                    </div>
-                </div>
-                
-                <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">🏆 Odměny za výhru:</h4>
-                <div style="background: #0a0a0a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.9rem;">
-                    <p style="color: #4caf50; margin: 0 0 0.3rem 0;">🏆 Vítězná frakce: <span style="color: #ffd700;">100💰 + 50 XP</span></p>
-                    <p style="color: #ffd700; margin: 0 0 0.3rem 0;">🥇 1. místo: <span style="color: #ffd700;">+200💰 navíc</span></p>
-                    <p style="color: #c0c0c0; margin: 0 0 0.3rem 0;">🥈 2. místo: <span style="color: #ffd700;">+150💰 navíc</span></p>
-                    <p style="color: #cd7f32; margin: 0 0 0.3rem 0;">🥉 3. místo: <span style="color: #ffd700;">+100💰 navíc</span></p>
-                    <p style="color: #888; margin: 0;">📦 Účast (ostatní): <span style="color: #ffd700;">25💰</span></p>
-                </div>
-                
-                <h4 style="color: #888; margin: 0 0 0.5rem 0;">📜 Historie sezón:</h4>
-                <div style="max-height: 150px; overflow-y: auto;">
-                    ${historyHtml}
-                </div>
-                
-                <button class="btn" onclick="showFactionHub()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
-            `);
+            // Příjem z území nyní jde do klanové kasy přes processFactionTerritoryIncome()
+            // Tato funkce je zachována pro zpětnou kompatibilitu
+            await processFactionTerritoryIncome();
         }
         
         // === ONLINE STATUS ===
@@ -90226,17 +89594,24 @@ function openFullscreenMap() {
                 const data = snapshot.val() || {};
                 const players = Object.values(data).sort((a, b) => b.score - a.score);
                 
-                // Načti frakce hráčů
-                const factionsSnapshot = await firebaseDB.ref('factionMembers').once('value');
-                const factionMembers = factionsSnapshot.val() || {};
-                
-                // Vytvoř mapu jméno -> frakce
-                const playerFactions = {};
-                Object.values(factionMembers).forEach(m => {
-                    if (m.name && m.faction) {
-                        playerFactions[m.name] = m.faction;
-                    }
-                });
+                // Načti klany hráčů
+                let playerClans = {};
+                try {
+                    const clansSnap = await firebaseDB.ref('clans').once('value');
+                    const clansData = clansSnap.val() || {};
+                    Object.values(clansData).forEach(clan => {
+                        if (!clan || !clan.name) return;
+                        const tag = clan.tag || clan.name;
+                        const color = clan.color || '#ce93d8';
+                        if (clan.leader) playerClans[clan.leader] = { tag, color, name: clan.name };
+                        if (clan.members) Object.values(clan.members).forEach(m => {
+                            if (m.name) playerClans[m.name] = { tag, color, name: clan.name };
+                        });
+                        if (clan.officers) Object.values(clan.officers).forEach(o => {
+                            if (o.name) playerClans[o.name] = { tag, color, name: clan.name };
+                        });
+                    });
+                } catch(e) { console.error('Clan load error:', e); }
                 
                 // Najdi pozici hráče
                 const myName = getPlayerName();
@@ -90280,13 +89655,11 @@ function openFullscreenMap() {
                         const isMe = player.name === myName;
                         const isOnline = onlinePlayers.includes(player.name);
                         
-                        // Frakce hráče - text v závorce jako v chatu
-                        const playerFaction = playerFactions[player.name];
-                        const factionData = playerFaction ? PVP_FACTIONS[playerFaction] : null;
-                        let factionPrefix = '';
-                        if (factionData) {
-                            const factionShort = playerFaction === 'kory' ? 'Koryho' : playerFaction === 'koudy' ? 'Koudyho' : 'Nezávislý';
-                            factionPrefix = `<span style="color: ${factionData.color}; font-size: 0.65rem;">[${factionShort}]</span> `;
+                        // Klan hráče
+                        const playerClan = playerClans[player.name];
+                        let clanBadge = '';
+                        if (playerClan) {
+                            clanBadge = `<span style="background: ${playerClan.color}30; color: ${playerClan.color}; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.6rem; margin-left: 0.3rem; border: 1px solid ${playerClan.color}50;">[${escapeHtml(playerClan.tag)}]</span> `;
                         }
                         
                         // Politický badge
@@ -90317,7 +89690,7 @@ function openFullscreenMap() {
                                 <div style="font-size: 1.1rem; text-align: center;">${medal}</div>
                                 <div>
                                     <div style="color: ${isMe ? '#8bc34a' : '#fff'}; font-weight: ${isMe ? 'bold' : 'normal'};">
-                                        ${isOnline ? '🟢' : '⚫'} ${factionPrefix}${escapeHtml(player.name)} ${isMe ? '(ty)' : ''}${lbPoliticsBadge}
+                                        ${isOnline ? '🟢' : '⚫'} ${escapeHtml(player.name)}${clanBadge} ${isMe ? '(ty)' : ''}${lbPoliticsBadge}
                                     </div>
                                     <div style="font-size: 0.75rem; color: #666;">
                                         Lvl ${player.level || '?'} | ⚔️${player.kills || 0} | 📜${player.quests || 0}
@@ -90650,6 +90023,36 @@ function openFullscreenMap() {
             return null;
         }
         
+        // === KLANOVÉ VÁLKY - Pomocné funkce ===
+        // Získej info o klanu pro zobrazení v territory UI (náhrada PVP_FACTIONS)
+        function getClanWarInfo(clanTag) {
+            if (!clanTag) return null;
+            const cache = window.clanOwnershipCache || {};
+            const clan = cache[clanTag];
+            if (!clan) return { tag: clanTag, name: clanTag, icon: '⚔️', color: '#888', colorLight: '#aaa' };
+            const loc = WORLD_LOCATIONS.find(l => l.id === clanTag);
+            // Generate a color from clan name hash
+            const colors = ['#e53935','#1e88e5','#9c27b0','#43a047','#f4511e','#00acc1','#ffb300','#5c6bc0','#e91e63','#00897b'];
+            let hash = 0;
+            for (let i = 0; i < (clan.name||'').length; i++) hash = ((hash << 5) - hash) + (clan.name||'').charCodeAt(i);
+            const color = colors[Math.abs(hash) % colors.length];
+            return {
+                tag: clanTag,
+                name: clan.name || clanTag,
+                icon: loc?.icon || '⚔️',
+                color: color,
+                colorLight: color + 'cc',
+                leader: clan.leader,
+                members: 1 + Object.keys(clan.members || {}).length + Object.keys(clan.officers || {}).length
+            };
+        }
+        
+        // Získej všechny klany jako pole pro territory systém
+        function getAllClansForWar() {
+            const cache = window.clanOwnershipCache || {};
+            return Object.entries(cache).filter(([k,v]) => v && v.name).map(([tag, clan]) => getClanWarInfo(tag)).filter(Boolean);
+        }
+        
         let _clanChatRef = null; // Uložení Firebase ref pro správné odpojení
         
         function listenToClanChat() {
@@ -90799,7 +90202,6 @@ function openFullscreenMap() {
                 msgCount: state.stats.chatMessagesSent,
                 rankName: rankName,
                 rankColor: rank.color,
-                faction: getPlayerFaction() || null,  // Přidej frakci do zprávy
                 clanName: myClanName || null  // Přidej klan do zprávy
             };
             
@@ -91146,15 +90548,8 @@ function openFullscreenMap() {
                             } catch(e) { console.error("Silent error:", e); }
                         }
                     }
-                    // Frakce v závorce před nickem
-                    let factionPrefix = '';
-                    if (msg.faction && PVP_FACTIONS[msg.faction]) {
-                        const f = PVP_FACTIONS[msg.faction];
-                        const factionShort = msg.faction === 'kory' ? 'Koryho frakce' : msg.faction === 'koudy' ? 'Koudyho frakce' : 'Nezávislá frakce';
-                        factionPrefix = `<span style="color: ${f.color}; font-size: 0.65rem;">[${factionShort}]</span> `;
-                    }
-                    
                     // Klan badge za nickem (pokud hráč má klan)
+                    let factionPrefix = '';
                     const clanBadge = msg.clanName
                         ? `<span style="background: linear-gradient(135deg, #4a148c, #7b1fa2); color: #e1bee7; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.6rem; margin-left: 0.3rem; font-weight: bold; border: 1px solid #9c27b0;">⚔️ ${escapeHtml(msg.clanName)}</span>`
                         : '';
@@ -95588,8 +94983,8 @@ function openFullscreenMap() {
                     <div style="background: #080810; padding: 0.4rem; border-radius: 0 0 4px 4px; border: 1px solid #2a2a3a; border-top: none; display: grid; gap: 3px;">
                         
                         <button class="btn wl-btn wl-dirt" onclick="showFactionHub()" style="width: 100%; background: #0a0a0a; border: 1px solid #222; padding: 0.45rem 0.6rem; border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Courier New', monospace; box-shadow: inset 0 -1px 3px rgba(0,0,0,0.3);">
-                            <span style="font-size: 1rem;">${getPlayerFaction() ? PVP_FACTIONS[getPlayerFaction()].icon : '🏴'}</span>
-                            <span style="font-size: 0.7rem; color: ${getPlayerFaction() ? PVP_FACTIONS[getPlayerFaction()].color : '#666'};">FRAKCE</span>
+                            <span style="font-size: 1rem;">${getPlayerFaction() ? (getClanWarInfo(getPlayerFaction())?.icon || '⚔️') : '⚔️'}</span>
+                            <span style="font-size: 0.7rem; color: ${getPlayerFaction() ? (getClanWarInfo(getPlayerFaction())?.color || '#ce93d8') : '#666'};">KLANOVÉ VÁLKY</span>
                         </button>
                         
                         <button id="politicsBtn" class="btn wl-btn wl-scratch" onclick="showPoliticsPanel()" style="width: 100%; background: #0a0a0a; border: 1px solid #222; padding: 0.45rem 0.6rem; border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Courier New', monospace; box-shadow: inset 0 -1px 3px rgba(0,0,0,0.3);">
@@ -102188,9 +101583,7 @@ function openFullscreenMap() {
                     'players',              // Data hráčů
                     'playerData',           // Data hráčů (starý název)
                     'factions',             // Frakce
-                    'factionMembers',       // Členové frakcí
-                    'factionSeason',        // Aktuální sezóna frakcí
-                    'factionSeasonHistory', // Historie sezón
+                    'factionMembers',       // Členové frakcí/klanů
                     'notifications',        // Notifikace
                     'poker',                // Poker
                     'bugReports',           // Bug reporty
@@ -113460,7 +112853,7 @@ function openFullscreenMap() {
                 for (const capture of activeCaptures) {
                     const elapsed = Date.now() - capture.startTime;
                     const elapsedMins = Math.floor(elapsed / 60000);
-                    const factionData = PVP_FACTIONS[capture.faction];
+                    const factionData = getClanWarInfo(capture.faction) || { icon: '⚔️', color: '#888', name: capture.faction };
                     
                     html += `
                         <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #333;">
@@ -113929,9 +113322,13 @@ function openFullscreenMap() {
                     const terrSnap = await firebaseDB.ref('warZone/factionPoints').once('value');
                     const warPoints = terrSnap.val() || {};
                     
-                    // Seřaď podle bodů
-                    const sorted = Object.entries(PVP_FACTIONS)
-                        .map(([fid, f]) => ({ fid, f, pts: warPoints[fid] || 0 }))
+                    // Seřaď podle bodů - dynamicky z dat
+                    const sorted = Object.entries(warPoints)
+                        .filter(([_, pts]) => pts > 0)
+                        .map(([fid, pts]) => {
+                            const f = getClanWarInfo(fid) || { icon: '⚔️', color: '#888', name: fid };
+                            return { fid, f, pts };
+                        })
                         .sort((a, b) => b.pts - a.pts);
                     
                     pointsHtml = sorted.map(({ fid, f, pts }) => {
@@ -114297,7 +113694,7 @@ function openFullscreenMap() {
                     return;
                 }
                 
-                const winnerFaction = PVP_FACTIONS[winner];
+                const winnerFaction = getClanWarInfo(winner) || { icon: '⚔️', color: '#888', name: winner };
                 
                 // Rozdej odměny členům vítězné frakce
                 const membersSnap = await firebaseDB.ref('factionMembers').once('value');
@@ -114352,7 +113749,7 @@ function openFullscreenMap() {
                 const allPoints = Object.entries(warPoints)
                     .filter(([_, pts]) => pts > 0)
                     .sort((a, b) => b[1] - a[1])
-                    .map(([fid, pts]) => `${PVP_FACTIONS[fid]?.icon || '?'} ${pts}`)
+                    .map(([fid, pts]) => `${(getClanWarInfo(fid)?.icon || '⚔️')} ${pts}`)
                     .join(' | ');
                 
                 await firebaseDB.ref('chat/messages').push({
@@ -114417,7 +113814,7 @@ function openFullscreenMap() {
                     return;
                 }
                 
-                const winnerFaction = PVP_FACTIONS[winner];
+                const winnerFaction = getClanWarInfo(winner) || { icon: '⚔️', color: '#888', name: winner };
                 
                 // Rozdej odměny členům vítězné frakce
                 const membersSnap = await firebaseDB.ref('factionMembers').once('value');
@@ -114463,7 +113860,7 @@ function openFullscreenMap() {
                 const allPoints = Object.entries(warPoints)
                     .filter(([_, pts]) => pts > 0)
                     .sort((a, b) => b[1] - a[1])
-                    .map(([fid, pts]) => `${PVP_FACTIONS[fid]?.icon || '?'} ${pts}`)
+                    .map(([fid, pts]) => `${(getClanWarInfo(fid)?.icon || '⚔️')} ${pts}`)
                     .join(' | ');
                 
                 // Vytvoř seznam výherců (max 10 jmen)
@@ -114519,7 +113916,7 @@ function openFullscreenMap() {
                             ${Object.entries(warPoints)
                                 .sort((a, b) => b[1] - a[1])
                                 .map(([fid, pts]) => {
-                                    const f = PVP_FACTIONS[fid];
+                                    const f = getClanWarInfo(fid) || { icon: '⚔️', color: '#888', name: fid };
                                     const isWinner = fid === winner;
                                     return `<span style="color: ${f?.color || '#888'}; ${isWinner ? 'font-weight: bold; font-size: 1.2rem;' : ''}">${f?.icon || '?'} ${pts}</span>`;
                                 }).join(' | ')}
@@ -114582,13 +113979,17 @@ function openFullscreenMap() {
             
             // Aktuální skóre
             const points = warZone.factionPoints || {};
-            const sorted = Object.entries(PVP_FACTIONS)
-                .map(([fid, f]) => ({ fid, f, pts: points[fid] || 0 }))
+            const sorted = Object.entries(points)
+                .filter(([_, pts]) => pts > 0)
+                .map(([fid, pts]) => {
+                    const f = getClanWarInfo(fid) || { icon: '⚔️', color: '#888', name: fid };
+                    return { fid, f, pts };
+                })
                 .sort((a, b) => b.pts - a.pts);
             
             const scoreHtml = sorted.map(({ fid, f, pts }) => 
                 `<span style="color: ${f.color}; margin: 0 0.3rem;">${f.icon} ${pts}</span>`
-            ).join('|');
+            ).join('|') || '<span style="color: #666;">Zatím žádné body</span>';
             
             if (!check.canFight) {
                 showModal('⚔️ Válečná zóna', `
@@ -114609,7 +114010,7 @@ function openFullscreenMap() {
                 return;
             }
             
-            const factionData = PVP_FACTIONS[check.faction];
+            const factionData = getClanWarInfo(check.faction) || { icon: '⚔️', color: '#888', name: check.faction };
             
             showModal('⚔️ Válečná zóna', `
                 <div style="text-align: center;">
@@ -114715,7 +114116,7 @@ function openFullscreenMap() {
                 
                 state.pvpFactionContribution = (state.pvpFactionContribution || 0) + warFight.pointsPerWin;
                 
-                const factionData = PVP_FACTIONS[warFight.faction];
+                const factionData = getClanWarInfo(warFight.faction) || { icon: '⚔️', color: '#888', name: warFight.faction };
                 notifySuccess(`+${warFight.pointsPerWin} bodů!`, `Pro ${factionData.icon} ${factionData.name}`);
                 
                 // Refresh pokud jsme stále na lokaci
@@ -114764,8 +114165,8 @@ function openFullscreenMap() {
                     <button class="btn" onclick="adminResetDatabase()" style="background: linear-gradient(135deg, #b71c1c 0%, #4a0000 100%); padding: 1rem;">
                         ☢️ RESET CELÉ DATABÁZE
                     </button>
-                    <button class="btn" onclick="adminResetFactions()" style="background: linear-gradient(135deg, #d84315 0%, #6a1b00 100%); padding: 1rem;">
-                        🏴 RESET FRAKCÍ
+                    <button class="btn" onclick="adminResetTerritories()" style="background: linear-gradient(135deg, #d84315 0%, #6a1b00 100%); padding: 1rem;">
+                        🏴 RESET ÚZEMÍ (klany zůstanou)
                     </button>
                     <button class="btn" onclick="adminCleanupTerritories()" style="background: linear-gradient(135deg, #795548 0%, #4e342e 100%); padding: 0.8rem;">
                         🧹 Vyčistit stará territory data
@@ -114846,29 +114247,14 @@ function openFullscreenMap() {
         }
         
         // Reset frakcí - smaže všechna území, členy a historii
-        async function adminResetFactions() {
+        async function adminResetTerritories() {
             if (!isAdmin()) return;
-            if (!confirm('⚠️ OPRAVDU CHCEŠ RESETOVAT VŠECHNY FRAKCE?')) return;
-            if (!confirm('Toto smaže:\n• Všechna území\n• Všechny členy frakcí\n• Historii sezón\n• Válečnou zónu\n\nHráči si budou muset znovu vybrat frakci!')) return;
+            if (!confirm('⚠️ OPRAVDU CHCEŠ RESETOVAT VŠECHNA ÚZEMÍ?')) return;
+            if (!confirm('Toto smaže:\n• Všechna území\n• Válečnou zónu\n\nKlany a členství zůstanou!')) return;
             
             try {
-                const resetTime = Date.now();
-                
                 // Smaž území
                 await firebaseDB.ref('territories').remove();
-                
-                // Smaž členy frakcí
-                await firebaseDB.ref('factionMembers').remove();
-                
-                // Smaž historii sezón
-                await firebaseDB.ref('factionSeasonHistory').remove();
-                
-                // Nastav novou sezónu s časem resetu (důležité pro detekci u ostatních hráčů!)
-                await firebaseDB.ref('factionSeason').set({
-                    startTime: resetTime,
-                    seasonNumber: 1,
-                    lastReset: resetTime
-                });
                 
                 // Smaž válečnou zónu
                 await firebaseDB.ref('warZone').remove();
@@ -114877,26 +114263,20 @@ function openFullscreenMap() {
                 window.territoryCache = null;
                 window.activeWarZone = null;
                 
-                // Reset lokálního stavu frakce - hráč si musí vybrat znovu
-                state.pvpFaction = null;
-                state.pvpFactionJoinedAt = null;
-                state.pvpFactionContribution = 0;
-                saveGame();
-                
                 // Oznámení do chatu
                 await firebaseDB.ref('chat/messages').push({
                     author: '⚔️ SYSTÉM',
-                    text: '🏴 FRAKCE BYLY RESETOVÁNY! Všechna území a členství byla smazána. Vyberte si novou frakci!',
+                    text: '🏴 ÚZEMÍ BYLA RESETOVÁNA! Všechna území jsou znovu neutrální. Klany zůstávají!',
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
                 
-                notifySuccess('🏴 FRAKCE RESETOVÁNY', 'Všechna data frakcí byla smazána');
+                notifySuccess('🏴 ÚZEMÍ RESETOVÁNA', 'Všechna území jsou neutrální');
                 closeModal();
                 renderFull();
                 
             } catch (e) {
-                console.error('Reset factions error:', e);
+                console.error('Reset territories error:', e);
                 notifyWarning('Chyba', e.message);
             }
         }
