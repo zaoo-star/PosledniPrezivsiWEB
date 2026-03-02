@@ -26855,35 +26855,52 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Filtruj equipnuté předměty hráče - ty nesmí být dostupné pro companion
-            // Ale pokud má hráč víc kusů (count > 1), přebytky JSOU dostupné
+            // Po save/load reference === nefunguje, proto porovnáváme ID
+            const _playerEquippedIds = {};
+            if (state.equipped) {
+                ['weapon', 'armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
+                    const eq = state.equipped[slot];
+                    if (eq) _playerEquippedIds[eq.id] = (_playerEquippedIds[eq.id] || 0) + 1;
+                });
+            }
+            const _playerEquipSeen = {};
             const isEquippedByPlayer = (item) => {
-                if (!state.equipped) return false;
-                const hasSpare = (item.count || 1) > 1;
-                if (state.equipped.weapon === item && !hasSpare) return true;
-                if (state.equipped.armor === item && !hasSpare) return true;
-                if (state.equipped.helmet === item && !hasSpare) return true;
-                if (state.equipped.gloves === item && !hasSpare) return true;
-                if (state.equipped.boots === item && !hasSpare) return true;
-                if (item.type === 'accessory' && state.equippedAccessory === item.id && !hasSpare) return true;
+                if (!_playerEquippedIds[item.id]) return false;
+                // Kolikátý kus tohoto ID v inventáři procházíme
+                _playerEquipSeen[item.id] = (_playerEquipSeen[item.id] || 0) + 1;
+                // Prvních N kusů je "equipped" na hráči, zbytek je volný
+                if (_playerEquipSeen[item.id] <= _playerEquippedIds[item.id]) return true;
                 return false;
             };
             
-            // Filtruj i předměty equipnuté jinými companiony (mají count v inv)
-            const isEquippedByOtherCompanion = (item) => {
-                if (!state.companions) return false;
-                return state.companions.some(c => {
-                    if ((c.id === companionId || c.uniqueId === companionId) || !c.equipped) return false;
-                    return Object.values(c.equipped).some(eq => eq && eq.id === item.id);
+            // Filtruj i předměty equipnuté jinými companiony
+            const _otherCompEquippedIds = {};
+            if (state.companions) {
+                state.companions.forEach(c => {
+                    if ((c.id === companionId || c.uniqueId === companionId) || !c.equipped) return;
+                    Object.values(c.equipped).forEach(eq => {
+                        if (eq) _otherCompEquippedIds[eq.id] = (_otherCompEquippedIds[eq.id] || 0) + 1;
+                    });
                 });
-            };
+            }
+            const _otherCompSeen = {};
             
-            // Najdi dostupné předměty - vyřaď equipnuté hráčem
-            const weapons = state.inv.filter(i => i.type === 'weapon' && !isEquippedByPlayer(i));
-            const armors = state.inv.filter(i => i.type === 'armor' && !isEquippedByPlayer(i));
-            const helmets = state.inv.filter(i => i.type === 'helmet' && !isEquippedByPlayer(i));
-            const gloves = state.inv.filter(i => i.type === 'gloves' && !isEquippedByPlayer(i));
-            const boots = state.inv.filter(i => i.type === 'boots' && !isEquippedByPlayer(i));
-            const accessories = state.inv.filter(i => (i.type === 'accessory' || i.id === 'compass' || i.id === 'binoculars') && !isEquippedByPlayer(i));
+            // Najdi dostupné předměty - vyřaď equipnuté hráčem a jinými společníky
+            const _isAvailable = (i) => {
+                if (isEquippedByPlayer(i)) return false;
+                // Vyřaď items equipnuté jinými společníky
+                if (_otherCompEquippedIds[i.id]) {
+                    _otherCompSeen[i.id] = (_otherCompSeen[i.id] || 0) + 1;
+                    if (_otherCompSeen[i.id] <= _otherCompEquippedIds[i.id]) return false;
+                }
+                return true;
+            };
+            const weapons = state.inv.filter(i => i.type === 'weapon' && _isAvailable(i));
+            const armors = state.inv.filter(i => i.type === 'armor' && _isAvailable(i));
+            const helmets = state.inv.filter(i => i.type === 'helmet' && _isAvailable(i));
+            const gloves = state.inv.filter(i => i.type === 'gloves' && _isAvailable(i));
+            const boots = state.inv.filter(i => i.type === 'boots' && _isAvailable(i));
+            const accessories = state.inv.filter(i => (i.type === 'accessory' || i.id === 'compass' || i.id === 'binoculars') && _isAvailable(i));
             
             const currentWeapon = comp.equipped.weapon;
             const currentArmor = comp.equipped.armor;
@@ -33537,6 +33554,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <div id="hudHP" onclick="showStatInfo('hp')" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a0a; padding: 0.2rem; border-radius: 3px; border: 1px solid #2a1515; cursor: pointer;">
                                 <span style="font-size: 0.6rem;">❤️</span><span style="font-size: 0.6rem; font-weight: bold; color: #ff6b6b;">${Math.round(state.char?.hp || 0)}/${state.char?.maxHp || 100}</span>
                             </div>
+                            <div onclick="if(typeof showFinanceModal==='function')showFinanceModal()" style="display: flex; align-items: center; justify-content: center; gap: 0.15rem; background: #0a0a0a; padding: 0.2rem; border-radius: 3px; border: 1px solid #2a2a15; cursor: pointer;" title="Klikni pro přehled financí">
+                                <span style="font-size: 0.6rem;">💰</span><span style="font-size: 0.6rem; font-weight: bold; color: #ffd700;">${state.money || 0}</span>${state.settlement ? (() => { const _i = typeof calculateDailyIncome === 'function' ? calculateDailyIncome() : 0; const _m = typeof calculateDailyMaintenance === 'function' ? calculateDailyMaintenance() : 0; const _b = _i - _m; return _b !== 0 ? `<span style="font-size:0.5rem;color:${_b > 0 ? '#4caf50' : '#f44336'};">${_b > 0 ? '+' : ''}${_b}</span>` : ''; })() : ''}
+                            </div>
                         </div>
                         
                         <!-- Aktivní buffy -->
@@ -34379,8 +34399,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <span style="background: #1a1a1a; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--metal-light); font-size: 0.7rem;">
                                 ⚖️<span style="color: ${state.carryWeight > state.maxCarryWeight * 0.8 ? '#ff9800' : 'var(--toxic-green)'};">${state.carryWeight.toFixed(1)}</span>/${state.maxCarryWeight}kg
                             </span>
-                            <span style="background: #1a1a1a; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--warning-yellow); font-size: 0.7rem;">
-                                💰<span style="color: var(--warning-yellow);">${state.money || 0}</span>
+                            <span onclick="if(typeof showFinanceModal==='function'){showFinanceModal()}" style="cursor: pointer; background: #1a1a1a; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--warning-yellow); font-size: 0.7rem;" title="Klikni pro detail financí">
+                                💰<span style="color: var(--warning-yellow);">${state.money || 0}</span>${state.settlement ? (() => { const inc = typeof calculateDailyIncome === 'function' ? calculateDailyIncome() : 0; const mnt = typeof calculateDailyMaintenance === 'function' ? calculateDailyMaintenance() : 0; const bal = inc - mnt; return bal !== 0 ? `<span style="color:${bal > 0 ? '#4caf50' : '#f44336'};font-size:0.6rem;margin-left:2px;">${bal > 0 ? '+' : ''}${bal}</span>` : ''; })() : ''}
                             </span>
                         </div>
                     </div>
@@ -70814,6 +70834,7 @@ function openFullscreenMap() {
         
         function startCombatWithGroup(enemyGroup, combatType = 'normal', skipPreCombat = false) {
             console.log('⚔️ startCombatWithGroup called with', enemyGroup?.length || 0, 'enemies, type:', combatType);
+            window._combatScrolledToTop = false;
             
             if (!enemyGroup || enemyGroup.length === 0) {
                 console.error('⚔️ startCombatWithGroup: No enemies!');
@@ -75605,10 +75626,10 @@ function openFullscreenMap() {
                 <div id="combatContainer" style="background: linear-gradient(180deg, #0d1520 0%, #0a0f15 100%); margin: -1rem; padding: 0.8rem; border-radius: 8px; max-height: 85vh; overflow-y: auto; -webkit-overflow-scrolling: touch; scroll-behavior: smooth;">
                     
                     <!-- FLOATING SCROLL BUTTONS -->
-                    <div style="position: sticky; top: 0; z-index: 10; display: flex; justify-content: flex-end; pointer-events: none; margin-bottom: -28px;">
-                        <div style="pointer-events: auto; display: flex; gap: 0.2rem;">
-                            <button onclick="document.getElementById('combatGridAnchor').scrollIntoView({behavior:'smooth',block:'start'})" style="background: rgba(30,50,70,0.85); border: 1px solid #4a6a8a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #8ab4f8;" title="Scroll na mapu">🗺️▲</button>
-                            <button onclick="document.getElementById('combatLogGrid').scrollIntoView({behavior:'smooth',block:'end'})" style="background: rgba(30,50,70,0.85); border: 1px solid #4a6a8a; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #4af626;" title="Scroll na log">📜▼</button>
+                    <div style="position: sticky; top: 0; z-index: 10; display: flex; justify-content: flex-end; pointer-events: none; margin-bottom: -48px;">
+                        <div style="pointer-events: auto; display: flex; flex-direction: column; gap: 0.3rem; margin-right: 0.2rem; margin-top: 0.2rem;">
+                            <button onclick="document.getElementById('combatGridAnchor').scrollIntoView({behavior:'smooth',block:'start'})" style="width:40px;height:40px;border-radius:50%;background:rgba(30,50,70,0.9);border:1px solid #4a6a8a;color:#8ab4f8;font-size:1.1rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.5);" title="Bojové pole">▲</button>
+                            <button onclick="document.getElementById('combatLogGrid').scrollIntoView({behavior:'smooth',block:'end'})" style="width:40px;height:40px;border-radius:50%;background:rgba(30,50,70,0.9);border:1px solid #4a6a8a;color:#4af626;font-size:1.1rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.5);" title="Bojový log">▼</button>
                         </div>
                     </div>
                     
@@ -75813,17 +75834,50 @@ function openFullscreenMap() {
                 </div>
             `;
             
-            // Scroll vždy na vrch - hráč vidí boj, na log si scrollne sám
-            const combatContainer = document.getElementById('combatContainer');
-            if (combatContainer) combatContainer.scrollTop = 0;
-            const modalContent = document.getElementById('modalContent');
-            if (modalContent) modalContent.scrollTop = 0;
+            // Scroll na vrch jen při startu boje - hráč vidí bojové pole, na log si scrollne sám
+            if (!window._combatScrolledToTop || cs.round <= 1) {
+                const combatContainer = document.getElementById('combatContainer');
+                if (combatContainer) combatContainer.scrollTop = 0;
+                const modalContent = document.getElementById('modalContent');
+                if (modalContent) modalContent.scrollTop = 0;
+            }
             
             // Scroll log dolů (s delay pro animované entries) - jen vnitřní log element
             const log = document.getElementById('combatLogGrid');
             if (log) {
                 log.scrollTop = log.scrollHeight;
                 setTimeout(() => { if (log) log.scrollTop = log.scrollHeight; }, 300);
+            }
+            
+            // Delayed scroll to top - only on combat start or first render
+            if (!window._combatScrolledToTop || cs.round <= 1) {
+                window._combatScrolledToTop = true;
+                setTimeout(() => {
+                    const cc = document.getElementById('combatContainer');
+                    const mc = document.getElementById('modalContent');
+                    const modal = document.getElementById('modal');
+                    if (cc) cc.scrollTop = 0;
+                    if (mc) mc.scrollTop = 0;
+                    if (modal) modal.scrollTop = 0;
+                    window.scrollTo(0, 0);
+                    // Scroll grid anchor into view
+                    const anchor = document.getElementById('combatGridAnchor');
+                    if (anchor) anchor.scrollIntoView({ block: 'start', behavior: 'instant' });
+                }, 50);
+                setTimeout(() => {
+                    const cc = document.getElementById('combatContainer');
+                    const mc = document.getElementById('modalContent');
+                    const modal = document.getElementById('modal');
+                    if (cc) cc.scrollTop = 0;
+                    if (mc) mc.scrollTop = 0;
+                    if (modal) modal.scrollTop = 0;
+                }, 200);
+                setTimeout(() => {
+                    const cc = document.getElementById('combatContainer');
+                    const mc = document.getElementById('modalContent');
+                    if (cc) cc.scrollTop = 0;
+                    if (mc) mc.scrollTop = 0;
+                }, 500);
             }
         }
         
@@ -76289,6 +76343,7 @@ function openFullscreenMap() {
         // === STARÝ startCombat upravený pro nový systém ===
         
         function startCombat(enemy, isAmbush = false, isVillageRaid = false, forceEnemyCount = null) {
+            window._combatScrolledToTop = false;
             // Ulož aktuální zbraň před bojem (pro případ změny během boje při cestování)
             if (state.map?.traveling && state.equipped?.weapon) {
                 state.preCombatWeapon = { ...state.equipped.weapon };
