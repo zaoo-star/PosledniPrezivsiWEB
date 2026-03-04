@@ -6474,6 +6474,13 @@
                 total += state.buffs.allStats.value;
             }
             
+            // Alchemy buffs (Elixír síly, rychlosti, vnímání atd.)
+            const _alchBuffMap = { str: 'strength', agi: 'agility', per: 'perception' };
+            const _alchKey = _alchBuffMap[attr];
+            if (_alchKey && state.buffs?.[_alchKey] && state.buffs[_alchKey].until > Date.now()) {
+                total += state.buffs[_alchKey].value;
+            }
+            
             // Bonusy z aktivních buffy (lektvary atd.)
             if (state.activeBuffs) {
                 state.activeBuffs.forEach(buff => {
@@ -11172,6 +11179,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'grenade', name: 'Granát', icon: '💣', result: { type: 'throwable', damage: 35, aoe: true }, requires: { metal: 3, chemicals: 2 }, category: 'ammo', portable: false },
             { id: 'acid_bomb', name: 'Kyselinová bomba', icon: '🟢', result: { type: 'throwable', damage: 28, special: 'acid' }, requires: { acid: 2, glass: 1 }, category: 'ammo', portable: false },
             { id: 'emp_grenade', name: 'EMP granát', icon: '⚡', result: { type: 'throwable', damage: 14, special: 'emp' }, requires: { electronics: 3, copper: 2 }, category: 'ammo', portable: false },
+            { id: 'flash_grenade', name: 'Oslňující granát', icon: '💥', result: { type: 'throwable', damage: 5, special: 'flash' }, requires: { chemicals: 2, glass: 1, electronics: 1 }, category: 'ammo', portable: false },
             
             // === SPECIÁLNÍ (většina vyžaduje dílnu) ===
             { id: 'torch', name: 'Pochodeň', icon: '🔥', result: { type: 'tool', bonus: 'light', desc: 'Světlo v noci' }, requires: { wood: 2, cloth: 1, fuel: 1 }, category: 'special', portable: true },
@@ -16585,7 +16593,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function canSellHere() {
             const loc = getCurrentLocation();
             if (!loc) return false;
-            return loc.type === 'home' || loc.type === 'shop' || loc.type === 'city';
+            const validType = loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement';
+            if (!validType) return false;
+            
+            // Doma a ve městě = vždy otevřeno
+            if (loc.type === 'home' || loc.type === 'city') return true;
+            
+            // Pro shop a settlement lokace zkontroluj otevírací dobu
+            const shopType = loc.shopType || 'settlement';
+            return isShopOpen(shopType);
         }
         
         // Synchronizace starého map.inBase s novým systémem
@@ -19308,6 +19324,77 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             return count;
         }
+        
+        // ⛪ Kaple - léčení nemocí v osadě
+        function chapelCureDisease() {
+            initDiseases();
+            const diseases = state.diseases.active || [];
+            
+            if (diseases.length === 0) {
+                showModal('⛪ Kaple', `
+                    <div style="text-align: center;">
+                        <div style="font-size: 3rem;">⛪</div>
+                        <p style="color: #4caf50;">Jsi zdravý! Žádné nemoci k vyléčení.</p>
+                        <p style="color: #888; font-size: 0.85rem;">Kaple ti dává +15% odolnost proti nemocem.</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                `);
+                return;
+            }
+            
+            // Cooldown - 1x za 12 hodin
+            const now = Date.now();
+            const lastChapelHeal = state._lastChapelHeal || 0;
+            const cooldownMs = 12 * 60 * 60 * 1000;
+            const canHeal = (now - lastChapelHeal) >= cooldownMs;
+            const remainingMs = cooldownMs - (now - lastChapelHeal);
+            const remainingH = Math.ceil(remainingMs / 3600000);
+            
+            let diseaseList = diseases.map(d => {
+                const def = DISEASES.find(dd => dd.id === d.id);
+                return `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0.5rem; background: #2a1a1a; border-radius: 4px; margin-bottom: 0.3rem;">
+                    <span>${def?.icon || '🦠'} ${def?.name || d.id}</span>
+                    <span style="color: #f44336; font-size: 0.8rem;">${def?.effect || ''}</span>
+                </div>`;
+            }).join('');
+            
+            showModal('⛪ Kaple - Léčení', `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem;">⛪</div>
+                    <p style="color: #ff9800;">Máš ${diseases.length} aktivní${diseases.length > 1 ? 'ch' : ''} nemoc${diseases.length > 1 ? 'í' : ''}:</p>
+                </div>
+                <div style="margin: 0.5rem 0;">${diseaseList}</div>
+                ${canHeal ? `
+                    <button class="btn" onclick="doChapelHeal()" style="width: 100%; margin-top: 0.5rem; background: #9C27B0;">
+                        ⛪ Vyléčit všechny nemoci
+                    </button>
+                    <p style="color: #888; font-size: 0.75rem; text-align: center; margin-top: 0.3rem;">Kaple léčí 1× za 12 hodin</p>
+                ` : `
+                    <button class="btn" disabled style="width: 100%; margin-top: 0.5rem; background: #333; cursor: not-allowed; opacity: 0.6;">
+                        ⏳ Další léčení za ~${remainingH}h
+                    </button>
+                    <p style="color: #888; font-size: 0.75rem; text-align: center; margin-top: 0.3rem;">Kaple léčí 1× za 12 hodin</p>
+                `}
+                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.3rem; background: #333;">Zavřít</button>
+            `);
+        }
+        window.chapelCureDisease = chapelCureDisease;
+        
+        function doChapelHeal() {
+            const count = cureAllDiseases();
+            state._lastChapelHeal = Date.now();
+            closeModal();
+            showModal('⛪ Vyléčen!', `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem;">✨⛪✨</div>
+                    <h3 style="color: #4caf50;">Kaple tě uzdravila!</h3>
+                    <p style="color: #aaa;">Vyléčeno ${count} nemocí. Máš imunitu na 48 hodin.</p>
+                </div>
+                <button class="btn" onclick="closeModal(); renderFull();" style="width: 100%; margin-top: 1rem;">OK</button>
+            `);
+            saveGame(true);
+        }
+        window.doChapelHeal = doChapelHeal;
         
         // Kontrola počasí a šance na nemoc
         function checkWeatherDisease() {
@@ -26855,52 +26942,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Filtruj equipnuté předměty hráče - ty nesmí být dostupné pro companion
-            // Po save/load reference === nefunguje, proto porovnáváme ID
-            const _playerEquippedIds = {};
-            if (state.equipped) {
-                ['weapon', 'armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
-                    const eq = state.equipped[slot];
-                    if (eq) _playerEquippedIds[eq.id] = (_playerEquippedIds[eq.id] || 0) + 1;
-                });
-            }
-            const _playerEquipSeen = {};
-            const isEquippedByPlayer = (item) => {
-                if (!_playerEquippedIds[item.id]) return false;
-                // Kolikátý kus tohoto ID v inventáři procházíme
-                _playerEquipSeen[item.id] = (_playerEquipSeen[item.id] || 0) + 1;
-                // Prvních N kusů je "equipped" na hráči, zbytek je volný
-                if (_playerEquipSeen[item.id] <= _playerEquippedIds[item.id]) return true;
-                return false;
-            };
-            
-            // Filtruj i předměty equipnuté jinými companiony
-            const _otherCompEquippedIds = {};
-            if (state.companions) {
-                state.companions.forEach(c => {
-                    if ((c.id === companionId || c.uniqueId === companionId) || !c.equipped) return;
-                    Object.values(c.equipped).forEach(eq => {
-                        if (eq) _otherCompEquippedIds[eq.id] = (_otherCompEquippedIds[eq.id] || 0) + 1;
-                    });
-                });
-            }
-            const _otherCompSeen = {};
-            
-            // Najdi dostupné předměty - vyřaď equipnuté hráčem a jinými společníky
-            const _isAvailable = (i) => {
-                if (isEquippedByPlayer(i)) return false;
-                // Vyřaď items equipnuté jinými společníky
-                if (_otherCompEquippedIds[i.id]) {
-                    _otherCompSeen[i.id] = (_otherCompSeen[i.id] || 0) + 1;
-                    if (_otherCompSeen[i.id] <= _otherCompEquippedIds[i.id]) return false;
-                }
-                return true;
-            };
-            const weapons = state.inv.filter(i => i.type === 'weapon' && _isAvailable(i));
-            const armors = state.inv.filter(i => i.type === 'armor' && _isAvailable(i));
-            const helmets = state.inv.filter(i => i.type === 'helmet' && _isAvailable(i));
-            const gloves = state.inv.filter(i => i.type === 'gloves' && _isAvailable(i));
-            const boots = state.inv.filter(i => i.type === 'boots' && _isAvailable(i));
-            const accessories = state.inv.filter(i => (i.type === 'accessory' || i.id === 'compass' || i.id === 'binoculars') && _isAvailable(i));
+            // Equipnuté předměty hráče i companionů jsou ODSTRANĚNY z inv při equipnutí.
+            // Proto stačí jednoduše zobrazit vše z inventáře - žádné ID-based filtrování.
+            // (Duplicita kontroly je v equipCompanionItem funkci)
+            const weapons = state.inv.filter(i => i.type === 'weapon');
+            const armors = state.inv.filter(i => i.type === 'armor');
+            const helmets = state.inv.filter(i => i.type === 'helmet');
+            const gloves = state.inv.filter(i => i.type === 'gloves');
+            const boots = state.inv.filter(i => i.type === 'boots');
+            const accessories = state.inv.filter(i => (i.type === 'accessory' || i.id === 'compass' || i.id === 'binoculars'));
             
             const currentWeapon = comp.equipped.weapon;
             const currentArmor = comp.equipped.armor;
@@ -27110,18 +27160,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const item = state.inv[itemIndex];
             
-            // Kontrola - nelze vzít předmět co má hráč na sobě (pokud nemá víc kusů)
-            if (state.equipped && (item.count || 1) <= 1) {
+            // Kontrola - nelze vzít předmět co má hráč na sobě
+            // (Equipnuté itemy jsou normálně ODSTRANĚNY z inv, takže toto je pouze fallback)
+            if (state.equipped) {
                 const equippedSlots = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
                 for (const s of equippedSlots) {
-                    if (state.equipped[s] === item) {
-                        notifyWarning('Nelze vybavit', 'Tento předmět máš na sobě! Nejdříve ho sundej.');
-                        return;
+                    const eq = state.equipped[s];
+                    // ID-based porovnání (reference === nefunguje po save/load)
+                    if (eq && eq.id === item.id) {
+                        // Zkontroluj jestli v inv existuje víc kusů tohoto ID
+                        const totalInInv = state.inv.filter(i => i.id === item.id).reduce((sum, i) => sum + (i.count || 1), 0);
+                        if (totalInInv <= 1) {
+                            notifyWarning('Nelze vybavit', 'Tento předmět máš na sobě! Nejdříve ho sundej.');
+                            return;
+                        }
                     }
                 }
                 if (item.type === 'accessory' && state.equippedAccessory === item.id) {
-                    notifyWarning('Nelze vybavit', 'Tento doplněk máš na sobě! Nejdříve ho sundej.');
-                    return;
+                    const totalAccInInv = state.inv.filter(i => i.id === item.id).reduce((sum, i) => sum + (i.count || 1), 0);
+                    if (totalAccInInv <= 1) {
+                        notifyWarning('Nelze vybavit', 'Tento doplněk máš na sobě! Nejdříve ho sundej.');
+                        return;
+                    }
                 }
             }
             
@@ -28376,13 +28436,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const baseAmount = found.amount || 1;
                 const bonus = found.bonusAmount ? Math.floor(Math.random() * (found.bonusAmount + 1)) : 0;
                 minedAmount = baseAmount + bonus;
-                state.resources[found.smeltTo] = (state.resources[found.smeltTo] || 0) + minedAmount;
+                addResource(found.smeltTo, minedAmount, true);
                 addLog(`+${minedAmount} ${RESOURCE_ICONS[found.smeltTo] || found.icon} ${RESOURCE_NAMES[found.smeltTo] || found.smeltTo}`, '⛏️');
             }
             
             // Bonusová šance na měď (15%)
             if (Math.random() < 0.15) {
-                state.resources.copper = (state.resources.copper || 0) + 1;
+                addResource('copper', 1, true);
                 addLog('+1 🟤 Měď (bonus)', '⛏️');
             }
             
@@ -28513,17 +28573,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 Object.entries(animal.loot).forEach(([item, baseAmount]) => {
                     const amount = Math.max(1, Math.floor(baseAmount * 0.7 * hunterLootMult)); // -30% base, pak hunter bonus
                     if (item === 'meat') {
-                        state.resources.raw_meat = (state.resources.raw_meat || 0) + amount;
+                        addResource('raw_meat', amount, true);
                         markFoodAsNew('raw_meat', amount);
                         lootDisplay.push({ item: '🥩 Syrové maso', amount });
                     } else if (item === 'cloth') {
-                        state.resources.cloth = (state.resources.cloth || 0) + amount;
+                        addResource('cloth', amount, true);
                         lootDisplay.push({ item: '🧵 Látka', amount });
                     } else if (item === 'leather') {
-                        state.resources.leather = (state.resources.leather || 0) + amount;
+                        addResource('leather', amount, true);
                         lootDisplay.push({ item: '🦴 Kůže', amount });
                     } else if (item === 'fur') {
-                        state.resources.fur = (state.resources.fur || 0) + amount;
+                        addResource('fur', amount, true);
                         lootDisplay.push({ item: '🦊 Kožešina', amount });
                     } else if (item === 'radx' || item === 'radaway' || item === 'stimpack' || item === 'medkit') {
                         // Spotřební předměty - přidej do inventáře
@@ -28536,7 +28596,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         }
                     } else {
                         // Ostatní suroviny
-                        state.resources[item] = (state.resources[item] || 0) + amount;
+                        addResource(item, amount, true);
                         const icons = { crystal: '💎', chemicals: '🧪', electronics: '📱' };
                         lootDisplay.push({ item: (icons[item] || '📦') + ' ' + item, amount });
                     }
@@ -33668,6 +33728,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function renderFull() {
+            // Invaliduj damage cache pro nový render cyklus
+            window._cachedDamage = null;
+            
+            // Aktualizuj nosnost (závisí na buffech, které se mění)
+            if (typeof updateCarryWeight === 'function') updateCarryWeight();
+            
             // Debug log pouze při prvním renderování
             if (!window._renderFullLogged) {
                 console.log('🎨 renderFull() - confirmed:', state.confirmed);
@@ -33970,52 +34036,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 if (shouldReset) {
                     console.log('🔄 renderCreation: Resetuji state pro novou postavu');
+                    resetStateToDefault();
                     state._alreadyResetForNewChar = true;
-                    
-                    // Kompletní reset všech herních dat
-                    state.confirmed = false;
-                    state.isDead = false;
-                    state._characterFinalized = false;
-                    state.money = 0;
-                    state.inv = [{ id: 'lore_1', name: 'Deník vědce I', icon: '📕', type: 'lore', weight: 0, price: 0, rarity: 'rare' }];
-                    state.equipped = { weapon: null, armor: null, helmet: null, gloves: null, boots: null };
-                    state.equippedAccessory = null;
-                    state.npcQuests = {};
-                    state.activeQuest = null;
-                    state.mainQuest = { currentQuest: 'intro', completedQuests: [], questProgress: {}, npcMet: [], storyComplete: false, chapter: 0 };
-                    state.dailyQuests = { quests: [], completed: [], progress: {}, lastRefresh: 0 };
-                    state.quests = [];
-                    state.completedQuests = [];
-                    state.achievements = [];
-                    state.companions = [];
-                    state.settlement = null;
-                    state.faction = null;
-                    state.factionRep = {};
-                    state.mutations = [];
-                    state.perks = [];
-                    state.skills = {};
-                    state.skillTree = {};
-                    state.skillTreePoints = 0;
-                    state.readBooks = [];
-                    state.loadouts = [];
-                    state.log = [];
-                    state.resources = { wood: 0, metal: 0, stone: 0, cloth: 0, fuel: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, copper: 0, silver: 0, gold: 0, crystal: 0, acid: 0, fur: 0, mutant_blood: 0, raw_meat: 0, fish: 0 };
-                    state.stats = { kills: 0, explored: 0, crafted: 0, traveled: 0 };
-                    state.stashes = {};
-                    state.discoveredEnemies = [];
-                    state.killsByType = {};
-                    state.exoticBonuses = {};
-                    state.vacationMode = false;
-                    state.starterToolChosen = false;
-                    state.visitedLocations = ['shelter'];
-                    state.world = { currentLocation: 'shelter', visitedLocations: ['shelter'], unlockedPaths: [], discoveredSecrets: [], traveling: false, bossesDefeated: [], questItems: {}, groundLoot: {} };
-                    state.map = { traveling: false, inBase: true };
-                    state.time = { gameStart: Date.now(), realStart: Date.now(), last: Date.now(), days: 0, hours: 0, mins: 0, totalElapsed: 0 };
-                    state.baseStorage = { food: 0, water: 0 };
-                    state.baseItems = [];
-                    state.status = { hunger: 100, thirst: 100, energy: 100, radiation: 0, mood: 100 };
-                    state.ammo = {};
-                    
                     console.log('✅ State resetován pro novou postavu');
                 }
             }
@@ -36158,6 +36180,33 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return; // Nelze zavřít během odpočinku
             }
             
+            // === DUNGEON RECOVERY ===
+            // Pokud je aktivní dungeon a zavíráme sub-modal (skrýš, inventář...), obnov dungeon UI
+            if (state.dungeon?.active && state.dungeon.floor > 0 && !window._closingDungeonModal) {
+                const mc = document.getElementById('modalContent')?.innerHTML || '';
+                const hasDungeonMarker = mc.includes('exitDungeon') || mc.includes('exploreDungeonFloor') || mc.includes('exitAbyss') || mc.includes('startAbyssCombat');
+                if (!hasDungeonMarker) {
+                    console.log('🏰 closeModal: Active dungeon detected, restoring dungeon UI');
+                    if (typeof showDungeonUI === 'function') {
+                        showDungeonUI();
+                        return;
+                    }
+                }
+            }
+            // === ABYSS RECOVERY ===
+            if (state.abyss?.inProgress && !window._closingDungeonModal) {
+                const mc = document.getElementById('modalContent')?.innerHTML || '';
+                const hasAbyssMarker = mc.includes('exitAbyss') || mc.includes('startAbyssCombat');
+                if (!hasAbyssMarker) {
+                    console.log('🕳️ closeModal: Active abyss detected, restoring abyss UI');
+                    if (typeof showAbyssFloor === 'function') {
+                        showAbyssFloor();
+                        return;
+                    }
+                }
+            }
+            window._closingDungeonModal = false;
+            
             document.getElementById('modal').classList.remove('show');
             
             // OPRAVA: Reset land workshop/campfire access při zavření modalu
@@ -37606,6 +37655,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (deadCompanion) {
                     html += renderActionButton('💀', actionTexts.revive, 'showReviveCompanionModal()', '#c62828');
                 }
+                
+                // ⛪ Kaple - léčení nemocí
+                const hasChapelBuilt = state.settlement?.buildings?.includes('chapel') || state.base?.includes('chapel');
+                const activeDiseases = state.diseases?.active?.length || 0;
+                if (hasChapelBuilt) {
+                    html += renderActionButton('⛪', activeDiseases > 0 ? `Léčit (${activeDiseases})` : 'Kaple', 'chapelCureDisease()', activeDiseases > 0 ? '#9C27B0' : '#555');
+                }
+                
                 return html; // Shelter má speciální akce, konec
             }
             
@@ -39419,16 +39476,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (path) {
                 distance = path.distance + ' km';
-                travelTime = Math.ceil(path.time * 1.3); // +30% delší cestování
-                
-                // Aplikuj počasí
-                const weather = getCurrentWeather();
-                const weatherMod = weather?.effect?.speedMod || 1.0;
-                if (weatherMod !== 1.0) {
-                    travelTime = Math.ceil(travelTime / weatherMod);
-                }
-                
-                travelTime = travelTime + ' min';
+                travelTime = calculateFinalTravelTime(path, locId) + ' min';
             } else {
                 // Není přímá cesta - spočítej Manhattan distance jako odhad
                 const currentLoc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
@@ -39637,6 +39685,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     nomadBonusInfo = `<p style="color: #8d6e63;">🏜️ Nomád: -${Math.round(nomadSpeedBonus * 100)}% čas</p>`;
                 }
                 
+                // Tank: +15% pomalejší
+                let tankPenaltyInfo = '';
+                if (state.char?.classId === 'tank') {
+                    travelBonus = Math.min(1.15, travelBonus + 0.15);
+                    tankPenaltyInfo = `<p style="color: #ff9800;">🛡️ Tank: +15% čas (těžká výstroj)</p>`;
+                }
+                
+                // Kartograf Ludvík a jiné NPC bonusy
+                let npcTravelInfo = '';
+                if (typeof getNPCBonuses === 'function') {
+                    const npcTB = getNPCBonuses();
+                    if (npcTB.travelSpeedBonus > 0) {
+                        travelBonus -= npcTB.travelSpeedBonus;
+                        npcTravelInfo = `<p style="color: #00bcd4;">📍 Kartograf: -${Math.round(npcTB.travelSpeedBonus * 100)}%</p>`;
+                    }
+                }
+                
                 // === SKILLS BONUSY ===
                 let skillsBonusInfo = '';
                 
@@ -39663,7 +39728,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // pathfinder skill - Průzkumník (-1% per level) - je ve SKILL_TREE větvi EXPLORATION
                 const pathfinderLevel = state.skillTree?.exploration?.pathfinder || state.skills?.['pathfinder'] || 0;
                 if (pathfinderLevel > 0) {
-                    const pathfinderBonus = pathfinderLevel * 0.01;
+                    const pathfinderBonus = pathfinderLevel * 0.03;
                     travelBonus -= pathfinderBonus;
                     skillsBonusInfo += `<p style="color: #64b5f6;">👣 Průzkumník (${pathfinderLevel}): -${Math.round(pathfinderBonus * 100)}%</p>`;
                     hasSomeBonus = true;
@@ -39672,7 +39737,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // fast_travel skill - Rychlý pochod (-1% per level) - pokud existuje
                 const fastTravelLevel = state.skillTree?.exploration?.fast_travel || state.skillTree?.survival?.fast_travel || state.skills?.['fast_travel'] || 0;
                 if (fastTravelLevel > 0) {
-                    const fastTravelBonus = fastTravelLevel * 0.01;
+                    const fastTravelBonus = fastTravelLevel * 0.05;
                     travelBonus -= fastTravelBonus;
                     skillsBonusInfo += `<p style="color: #64b5f6;">🏃 Rychlý pochod (${fastTravelLevel}): -${Math.round(fastTravelBonus * 100)}%</p>`;
                     hasSomeBonus = true;
@@ -39869,8 +39934,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     npcBonusInfo = '<p style="color: #8bc34a; font-weight: bold;">⏱️ Celkem: ' + finalTime + ' min (úspora ' + savedTime + ' min)</p>';
                 }
                 
-                // Použij finální čas
-                travelTime = finalTime;
+                // Použij finální čas - vždy přes sdílenou funkci pro konzistenci
+                travelTime = calculateFinalTravelTime(path, targetId);
                 
                 let dangerWarning = '';
                 let travelFunction = 'startTravel';
@@ -39908,6 +39973,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         powerArmorPenaltyInfo +
                         terrainPenaltyInfo +
                         nomadBonusInfo +
+                        tankPenaltyInfo +
+                        npcTravelInfo +
                         skillsBonusInfo +
                         npcBonusInfo +
                         vehicleInfo +
@@ -39963,6 +40030,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     // Nomad bonus
                     if (nomadBonusInfo) bonuses.push(nomadBonusInfo.replace(/<\/?p[^>]*>/g, ''));
+                    
+                    // Tank penalty
+                    if (tankPenaltyInfo) bonuses.push(tankPenaltyInfo.replace(/<\/?p[^>]*>/g, ''));
+                    
+                    // NPC travel bonus (Kartograf)
+                    if (npcTravelInfo) bonuses.push(npcTravelInfo.replace(/<\/?p[^>]*>/g, ''));
                     
                     // Skills bonus
                     if (skillsBonusInfo) bonuses.push(skillsBonusInfo.replace(/<\/?p[^>]*>/g, ''));
@@ -40171,6 +40244,112 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
         }
         
+        // === SDÍLENÝ VÝPOČET CESTOVNÍHO ČASU ===
+        // Jedna funkce pro VŠECHNY místa kde se zobrazuje nebo používá čas cestování
+        function calculateFinalTravelTime(path, targetLocationId) {
+            // 1. Základ (+30% delší cestování)
+            const baseTime = Math.ceil(path.time * 1.3);
+            let time = baseTime;
+            
+            // 2. Počasí
+            const weather = getCurrentWeather();
+            const weatherMod = weather?.effect?.speedMod || 1.0;
+            if (weatherMod !== 1.0) {
+                time = Math.ceil(time / weatherMod);
+            }
+            
+            // 3. Nemoci a zranění
+            let healthPenalty = 1.0;
+            if (typeof getDiseaseModifiers === 'function') {
+                const dm = getDiseaseModifiers();
+                if (dm.speedMod < 1.0) healthPenalty *= dm.speedMod;
+            }
+            if (typeof getInjuryModifiers === 'function') {
+                const im = getInjuryModifiers();
+                if (im.speedMod < 1.0) healthPenalty *= im.speedMod;
+            }
+            if (healthPenalty < 1.0) time = Math.ceil(time / healthPenalty);
+            
+            // 4. Power Armor bez paliva
+            if (typeof getPowerArmorBonuses === 'function' && state.equipped?.powerArmor) {
+                const pab = getPowerArmorBonuses();
+                if (pab.speed < 1.0) time = Math.ceil(time / pab.speed);
+            }
+            
+            // 5. Terénní postihy
+            const hasIgnoreTerrain = (state.skillTree?.agility?.parkour > 0) || 
+                                     (state.skillTree?.exploration?.nomad > 0) ||
+                                     (state.perks?.includes('parkour')) ||
+                                     (state.perks?.includes('nomad')) ||
+                                     (state.companions?.some(c => !c.isDead && c.skills?.some(s => s === 'parkour' || (typeof s === 'object' && s.id === 'parkour')))) ||
+                                     (getAllCompanionBonuses().ignoreTerrain);
+            if (!hasIgnoreTerrain) {
+                const targetLoc = WORLD_LOCATIONS.find(l => l.id === targetLocationId);
+                if (targetLoc?.zone === 'danger') time = Math.ceil(time * 1.08);
+                else if (targetLoc?.zone === 'deadly') time = Math.ceil(time * 1.12);
+            }
+            
+            // 6. Bonusy (zrychlení)
+            let travelBonus = 1.0;
+            
+            // Nomád class
+            if (hasClassPassive('travelSpeedBonus')) {
+                travelBonus -= getClassPassiveValue('travelSpeedBonus') || 0;
+            }
+            // Tank: +15% pomalejší
+            if (state.char?.classId === 'tank') {
+                travelBonus = Math.min(1.15, travelBonus + 0.15);
+            }
+            // AGI bonus
+            const agiBonus = Math.max(0, (state.char?.attrs?.agi || 5) - 5) * 0.02;
+            if (agiBonus > 0) travelBonus -= agiBonus;
+            // Pathfinder skill
+            const pathfinderLevel = state.skillTree?.exploration?.pathfinder || state.skills?.['pathfinder'] || 0;
+            if (pathfinderLevel > 0) travelBonus -= pathfinderLevel * 0.03;
+            // Fast travel skill
+            const fastTravelLevel = state.skillTree?.exploration?.fast_travel || state.skillTree?.survival?.fast_travel || state.skills?.['fast_travel'] || 0;
+            if (fastTravelLevel > 0) travelBonus -= fastTravelLevel * 0.05;
+            // Kompas
+            if (state.inv?.some(i => i.id === 'compass' || i.bonus === 'navigation')) travelBonus -= 0.015;
+            // Companion bonus
+            const companionBonus = getCompanionTravelSpeedBonus();
+            if (companionBonus > 0) travelBonus -= companionBonus;
+            // Boots speed
+            const armorFx = typeof getArmorSpecialEffects === 'function' ? getArmorSpecialEffects() : { speedBonus: 0 };
+            if (armorFx.speedBonus > 0) travelBonus -= armorFx.speedBonus;
+            // NPC bonusy (Jin, Kartograf Ludvík...)
+            if (state.secrets?.includes('jin_fast_routes')) travelBonus -= 0.05;
+            if (state.secrets?.includes('jin_secret_shortcuts')) travelBonus -= 0.10;
+            if (state.secretPathExpires && Date.now() < state.secretPathExpires) travelBonus -= 0.15;
+            if (typeof getNPCBonuses === 'function') {
+                const npcB = getNPCBonuses();
+                if (npcB.travelSpeedBonus > 0) travelBonus -= npcB.travelSpeedBonus;
+            }
+            // Mutace
+            const mutB = getMutationBonuses();
+            if (mutB.travelSpeed > 0) travelBonus -= mutB.travelSpeed;
+            if (mutB.speed < 0) travelBonus -= mutB.speed;
+            // Item specials
+            if (typeof hasEquippedSpecial === 'function') {
+                if (hasEquippedSpecial('speed_bonus')) travelBonus -= 0.02;
+                if (hasEquippedSpecial('light_feet')) travelBonus -= 0.01;
+                if (hasEquippedSpecial('power_kick')) travelBonus -= 0.04;
+            }
+            
+            // 7. Aplikuj bonusy
+            travelBonus = Math.max(0.1, travelBonus);
+            if (travelBonus < 1.0) time = Math.max(1, Math.ceil(time * travelBonus));
+            // TravelBonus > 1 (Tank penalty)
+            if (travelBonus > 1.0) time = Math.ceil(time * travelBonus);
+            
+            // 8. Přetížení
+            const enc = getEncumbrancePenalty();
+            if (enc.active) time = Math.ceil(time * enc.travelPenalty);
+            
+            // Min 2 minuty
+            return Math.max(2, time);
+        }
+        
         function startTravel(targetLocationId) {
             if (state.world.traveling) return;
             
@@ -40274,7 +40453,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         return '<h3>' + (isVisited ? (targetLoc?.name || '???') : '??? Neznámá lokace') + '</h3>';
                     })() +
                     '<p style="color: #ff9800;">Nebezpečí: ' + '💀'.repeat(path.danger) + '</p>' +
-                    '<p style="color: #888;">Čas: ~' + Math.ceil(path.time * 1.3) + ' min</p>' +
+                    '<p style="color: #888;">Čas: ~' + calculateFinalTravelTime(path, targetLocationId) + ' min</p>' +
                     (isNight ? '<p style="color: #9c27b0;">🌙 Je noc - více nepřátel!</p>' : '') +
                     nightWarning +
                     healthWarnings +
@@ -40315,150 +40494,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             );
             if (!path) return;
             
-            // Získej aktuální počasí
-            const weather = getCurrentWeather();
-            const weatherMod = weather?.effect?.speedMod || 1.0;
+            // === VÝPOČET CESTOVNÍHO ČASU přes sdílenou funkci ===
+            let travelTimeMin = calculateFinalTravelTime(path, targetLocationId);
             
-            // === VÝPOČET FINÁLNÍHO ČASU (IDENTICKÝ s info panelem) ===
-            // 1. Základ (+30% delší cestování pro větší výzvu)
-            const baseTime = Math.ceil(path.time * 1.3);
-            let travelTimeMin = baseTime;
-            let weatherInfo = '';
-            
-            // 2. Aplikuj počasí PRVNÍ (zpomalení/zrychlení)
-            if (weatherMod !== 1.0) {
-                travelTimeMin = Math.ceil(travelTimeMin / weatherMod);
-                if (weatherMod < 1) {
-                    weatherInfo = weather.icon + ' ' + weather.name + ' zpomaluje cestu!';
-                }
-            }
-            
-            // 2.5 Aplikuj zpomalení z nemocí a zranění
-            let healthPenalty = 1.0;
-            if (typeof getDiseaseModifiers === 'function') {
-                const diseaseMods = getDiseaseModifiers();
-                if (diseaseMods.speedMod < 1.0) {
-                    healthPenalty *= diseaseMods.speedMod;
-                }
-            }
-            if (typeof getInjuryModifiers === 'function') {
-                const injuryMods = getInjuryModifiers();
-                if (injuryMods.speedMod < 1.0) {
-                    healthPenalty *= injuryMods.speedMod;
-                }
-            }
-            if (healthPenalty < 1.0) {
-                travelTimeMin = Math.ceil(travelTimeMin / healthPenalty);
-            }
-            
-            // 2.6 Power Armor bez paliva zpomaluje
-            if (typeof getPowerArmorBonuses === 'function' && state.equipped?.powerArmor) {
-                const paBonuses = getPowerArmorBonuses();
-                if (paBonuses.speed < 1.0) {
-                    travelTimeMin = Math.ceil(travelTimeMin / paBonuses.speed);
-                }
-            }
-            
-            // 2.7 Terénní postihy
-            const hasIgnoreTerrain = (state.skillTree?.agility?.parkour > 0) || 
-                                     (state.skillTree?.exploration?.nomad > 0) ||
-                                     (state.perks?.includes('parkour')) ||
-                                     (state.perks?.includes('nomad')) ||
-                                     (state.companions?.some(c => !c.isDead && c.skills?.some(s => s === 'parkour' || (typeof s === 'object' && s.id === 'parkour')))) ||
-                                     (getAllCompanionBonuses().ignoreTerrain);
-            
-            if (!hasIgnoreTerrain) {
-                const targetLoc2 = WORLD_LOCATIONS.find(l => l.id === targetLocationId);
-                if (targetLoc2?.zone === 'danger') {
-                    travelTimeMin = Math.ceil(travelTimeMin * 1.08);
-                } else if (targetLoc2?.zone === 'deadly') {
-                    travelTimeMin = Math.ceil(travelTimeMin * 1.12);
-                }
-            }
-            
-            // 3. Spočítej všechny bonusy
-            let travelBonus = 1.0;
-            
-            // Nomád class bonus
-            if (hasClassPassive('travelSpeedBonus')) {
-                const nomadSpeedBonus = getClassPassiveValue('travelSpeedBonus') || 0;
-                travelBonus -= nomadSpeedBonus;
-            }
-            
-            // Tank: -15% rychlost (těžká výstroj) — Fix: chybělo
-            if (state.char.classId === 'tank') {
-                travelBonus = Math.min(1.15, travelBonus + 0.15);
-            }
-            
-            // AGILITY BONUS
-            const agiBonus = Math.max(0, (state.char.attrs?.agi || 5) - 5) * 0.02;
-            if (agiBonus > 0) travelBonus -= agiBonus;
-            
-            // pathfinder skill
-            const pathfinderLevel = state.skillTree?.exploration?.pathfinder || state.skills?.['pathfinder'] || 0;
-            if (pathfinderLevel > 0) travelBonus -= pathfinderLevel * 0.03;
-            
-            // fast_travel skill
-            const fastTravelLevel = state.skillTree?.exploration?.fast_travel || state.skillTree?.survival?.fast_travel || state.skills?.['fast_travel'] || 0;
-            if (fastTravelLevel > 0) travelBonus -= fastTravelLevel * 0.05;
-            
-            // Kompas
-            const hasCompass = state.inv?.some(i => i.id === 'compass' || i.bonus === 'navigation');
-            if (hasCompass) travelBonus -= 0.015;
-            
-            // Companion skills bonus
-            const companionTravelBonus = getCompanionTravelSpeedBonus();
-            if (companionTravelBonus > 0) travelBonus -= companionTravelBonus;
-            
-            // Boots speed bonus
-            const armorEffects2 = typeof getArmorSpecialEffects === 'function' ? getArmorSpecialEffects() : { speedBonus: 0 };
-            if (armorEffects2.speedBonus > 0) travelBonus -= armorEffects2.speedBonus;
-            
-            // NPC bonusy
-            if (state.secrets?.includes('jin_fast_routes')) travelBonus -= 0.05;
-            if (state.secrets?.includes('jin_secret_shortcuts')) travelBonus -= 0.10;
-            if (state.secretPathExpires && Date.now() < state.secretPathExpires) travelBonus -= 0.15;
-            
-            // Kartograf Ludvík - rychlejší cestování
-            if (typeof getNPCBonuses === 'function') {
-                const npcTravelBon = getNPCBonuses();
-                if (npcTravelBon.travelSpeedBonus > 0) travelBonus -= npcTravelBon.travelSpeedBonus;
-            }
-            
-            // Mutace
-            const mutBonuses = getMutationBonuses();
-            if (mutBonuses.travelSpeed > 0) travelBonus -= mutBonuses.travelSpeed;
-            if (mutBonuses.speed < 0) travelBonus -= mutBonuses.speed;
-            
-            // Item special efekty - rychlost
-            if (typeof hasEquippedSpecial === 'function') {
-                if (hasEquippedSpecial('speed_bonus')) travelBonus -= 0.02;
-                if (hasEquippedSpecial('light_feet')) travelBonus -= 0.01;
-                if (hasEquippedSpecial('power_kick')) travelBonus -= 0.04;
-            }
-            
-            // 4. Aplikuj bonusy (STEJNÝ cap jako v zobrazení!)
-            travelBonus = Math.max(0.1, travelBonus);
-            if (travelBonus < 1.0) {
-                travelTimeMin = Math.max(1, Math.ceil(travelTimeMin * travelBonus));
-            }
-            
-            // 🎒 Přetížení - postih na cestování
+            // 🎒 Přetížení - speciální efekty (notifikace + hunger/thirst rate)
             const _enc = getEncumbrancePenalty();
             if (_enc.active) {
-                travelTimeMin = Math.ceil(travelTimeMin * _enc.travelPenalty);
-                const _hungerAdd = _enc.hungerMult - 1.0;
-                state.map.travelHungerRate = (state.map.travelHungerRate || 0) * _enc.hungerMult;
-                state.map.travelThirstRate = (state.map.travelThirstRate || 0) * (1 + _hungerAdd * 0.5);
                 const _minText = Math.round((_enc.travelPenalty - 1) * 100);
                 notifyWarning(_enc.label, `Cestování trvá o ${_minText}% déle! DEF/DMG/Úhyb sníženě.`);
             }
             
-            // Minimum 2 minuty (aby cestování nebylo příliš rychlé)
-            travelTimeMin = Math.max(2, travelTimeMin);
-            
             // Debug log
-            console.log(`🚶 Travel: base=${baseTime}, weatherMod=${weatherMod}, afterWeather=${Math.ceil(baseTime/weatherMod)}, bonus=${travelBonus.toFixed(2)}, final=${travelTimeMin}`);
+            console.log(`🚶 Travel: path.time=${path.time}, final=${travelTimeMin}min`);
             
             state.world.traveling = true;
             state.world.travelTo = targetLocationId;
@@ -41276,7 +41323,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 );
                 return; // Důležité - nepokračovat dál
             } else if (event.id === 'herb_patch') {
-                state.resources.herbs = (state.resources.herbs || 0) + amount;
+                addResource('herbs', amount, true);
                 addLog(`🌿 Pole bylin: +${amount} byliny`, '🌿');
                 notifySuccess('Byliny!', '+' + amount + ' 🌿');
             }
@@ -42400,7 +42447,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const herbEntry = gathered.find(g => g.name === 'Byliny' || g.name === 'Bylinky');
                 if (herbEntry) {
                     const bonusHerbs = gatherCompBonuses.herbBonus;
-                    state.resources.herbs = (state.resources.herbs || 0) + bonusHerbs;
+                    addResource('herbs', bonusHerbs, true);
                     herbEntry.amount += bonusHerbs;
                     gathered.push({ name: 'Bonus byliny (Medik)', amount: bonusHerbs, icon: '🩹' });
                 }
@@ -43791,7 +43838,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 ${recentLoot ? `<div style="background:#0a0a0a;padding:0.2rem 0.4rem;border-radius:4px;margin-bottom:0.3rem;">${recentLoot}</div>` : ''}
                 ${exitBtn}
-                <button onclick="endDungeonExploration(true)" style="width:100%;background:#444;border:none;color:#aaa;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">🚪 Utéct (bez XP bonusu)</button>
+                <button onclick="confirmFleeExploration()" style="width:100%;background:#444;border:none;color:#aaa;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">🚪 Utéct (bez XP bonusu)</button>
             `);
         }
         
@@ -43808,6 +43855,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.endDungeonExploration = endDungeonExploration;
         window.handleDungeonExploreVictory = handleDungeonExploreVictory;
         window.handleDungeonExploreDefeat = handleDungeonExploreDefeat;
+        
+        function confirmFleeExploration() {
+            const ds = _dungeonExploreState;
+            if (!ds) return;
+            const lootCount = ds.lootLog.length;
+            const xpLoss = 10 + ds.steps * 2 + ds.enemiesKilled * 15 + ds.roomsExplored * 5;
+            showModal('🚪 Opravdu utéct?', `
+                <div style="text-align: center; margin-bottom: 1rem;">
+                    <div style="font-size: 3rem;">🚪</div>
+                    <p style="color: #ff9800;">Opravdu chceš ukončit průzkum?</p>
+                    <p style="color: #f44336; font-size: 0.9rem;">⚠️ Ztratíš <strong>${xpLoss} XP</strong> bonus!</p>
+                    ${lootCount > 0 ? `<p style="color: #4caf50; font-size: 0.85rem;">📦 Nalezený loot (${lootCount} položek) si ponecháš.</p>` : ''}
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" onclick="endDungeonExploration(true)" style="background: #c62828;">🚪 Ano, utéct</button>
+                    <button class="btn" onclick="renderExploreDungeonUI()" style="background: #555;">← Pokračovat</button>
+                </div>
+            `);
+        }
+        window.confirmFleeExploration = confirmFleeExploration;
 
         function exploreLocation(skipLimitCheck = false) {
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
@@ -47249,34 +47316,170 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return '<p style="text-align: center; color: #666; font-size: 0.85rem;">Nemáš co prodat</p>';
             }
             
-            let html = '';
+            // Inicializuj zámky
+            if (!state.lockedItems) state.lockedItems = [];
+            
+            // Kategorie
+            const categories = {
+                weapon: { name: '⚔️ Zbraně', items: [] },
+                armor: { name: '🛡️ Zbroje', items: [] },
+                helmet: { name: '⛑️ Helmy', items: [] },
+                boots: { name: '🥾 Boty', items: [] },
+                gloves: { name: '🧤 Rukavice', items: [] },
+                consumable: { name: '💊 Spotřební', items: [] },
+                tool: { name: '🔧 Nástroje', items: [] },
+                ammo: { name: '🔫 Munice', items: [] },
+                accessory: { name: '💍 Doplňky', items: [] },
+                other: { name: '📦 Ostatní', items: [] }
+            };
+            
+            let totalWeight = 0;
+            let totalValue = 0;
+            let sellableCount = 0;
+            let unsellableItems = [];
+            
             state.inv.forEach(function(item, index) {
-                // Přeskoč nasazené předměty
-                if (isItemEquipped(item)) return;
-                // Přeskoč quest itemy, crafted, fromCaravan, fromShop
-                if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') return;
-                if (item.crafted || item.fromCaravan || item.fromShop) return;
-                
                 const itemData = ITEMS.find(function(i) { return i.id === item.id; }) || item;
                 const price = itemData.price || item.price;
-                if (!price) return;
+                const isEquipped = isItemEquipped(item);
+                const isLocked = state.lockedItems.includes(item.id);
+                const isCantSell = item.cantSell || item.type === 'quest' || item.type === 'quest_item';
+                const isCrafted = item.crafted;
+                const isFromCaravan = item.fromCaravan;
+                const isFromShop = item.fromShop;
+                const isRune = item.type === 'rune';
                 
-                // Sdílený výpočet - stejný jako skutečný prodej (konzistentní zobrazení)
-                let sellPrice = calculateNpcSellPrice(price);
+                // Důvod proč nelze prodat
+                let blockReason = null;
+                if (isEquipped) blockReason = '👤 Nasazeno';
+                else if (isLocked) blockReason = '🔒 Zamčeno';
+                else if (isCantSell) blockReason = '📜 Quest item';
+                else if (isCrafted) blockReason = '🔨 Vyrobeno';
+                else if (isFromCaravan) blockReason = '🐪 Z karavany';
+                else if (isFromShop) blockReason = '🏪 Koupeno';
+                else if (isRune) blockReason = '🔮 Runa';
+                else if (!price) blockReason = '💰 Bez ceny';
                 
-                const countText = item.count ? ' (' + item.count + 'x)' : '';
+                const weight = (item.weight || itemData.weight || 0) * (item.count || 1);
+                const sellPrice = price ? calculateNpcSellPrice(price) : 0;
                 
-                html += '<div style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
-                html += '<div style="display: flex; align-items: center; gap: 0.5rem;">';
-                html += '<span style="font-size: 1.3rem;">' + item.icon + '</span>';
-                html += '<div><div style="font-weight: bold; font-size: 0.85rem;">' + item.name + '</div>';
-                html += '<div style="font-size: 0.8rem; color: #ffd700;">💰 ' + sellPrice + countText + '</div></div></div>';
-                html += '<button class="btn" onclick="showSellDialogByIndex(' + index + ')" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: #d4722e;">Prodat</button>';
-                html += '</div>';
+                const cat = categories[item.type] || categories.other;
+                cat.items.push({ item, index, itemData, price, sellPrice, weight, blockReason, isLocked, isEquipped });
+                
+                if (!blockReason && sellPrice > 0) {
+                    totalValue += sellPrice * (item.count || 1);
+                    sellableCount++;
+                }
+                totalWeight += weight;
             });
             
-            return html || '<p style="text-align: center; color: #666; font-size: 0.85rem;">Nemáš co prodat</p>';
+            // Řazení - podle ceny sestupně (nejdražší nahoře)
+            const sortMode = window._shopSellSort || 'price';
+            Object.values(categories).forEach(cat => {
+                if (sortMode === 'price') {
+                    cat.items.sort((a, b) => (b.sellPrice * (b.item.count || 1)) - (a.sellPrice * (a.item.count || 1)));
+                } else if (sortMode === 'weight') {
+                    cat.items.sort((a, b) => b.weight - a.weight);
+                } else if (sortMode === 'name') {
+                    cat.items.sort((a, b) => a.item.name.localeCompare(b.item.name));
+                }
+            });
+            
+            // Filtr kategorií
+            const activeFilter = window._shopSellFilter || 'all';
+            
+            let html = '';
+            
+            // Ovládání: řazení + filtr
+            html += '<div style="display: flex; gap: 0.3rem; flex-wrap: wrap; margin-bottom: 0.5rem;">';
+            // Filtr kategorie
+            const filterBtns = [
+                { id: 'all', label: '📦 Vše' },
+                { id: 'weapon', label: '⚔️' },
+                { id: 'armor', label: '🛡️' },
+                { id: 'consumable', label: '💊' },
+                { id: 'tool', label: '🔧' },
+                { id: 'ammo', label: '🔫' },
+                { id: 'other', label: '📦' }
+            ];
+            filterBtns.forEach(f => {
+                const isActive = activeFilter === f.id;
+                html += `<button onclick="window._shopSellFilter='${f.id}'; document.getElementById('shopSellSection').innerHTML = '<h4 style=\\'color: #ff9800; font-size: 0.85rem; margin: 0.5rem 0;\\'>📦 Předměty</h4>' + renderSellItems() + '<h4 style=\\'color: #8bc34a; font-size: 0.85rem; margin: 0.8rem 0 0.3rem 0;\\'>📦 Suroviny</h4>' + renderSellResources();" style="padding: 0.2rem 0.4rem; font-size: 0.7rem; background: ${isActive ? '#d4722e' : '#333'}; border: 1px solid ${isActive ? '#ff9800' : '#555'}; color: #fff; border-radius: 3px; cursor: pointer;">${f.label}</button>`;
+            });
+            html += '</div>';
+            
+            // Řazení
+            html += '<div style="display: flex; gap: 0.3rem; margin-bottom: 0.5rem; align-items: center;">';
+            html += '<span style="color: #888; font-size: 0.7rem;">Řadit:</span>';
+            ['price', 'weight', 'name'].forEach(s => {
+                const labels = { price: '💰 Cena', weight: '⚖️ Váha', name: '🔤 Název' };
+                const isActive = sortMode === s;
+                html += `<button onclick="window._shopSellSort='${s}'; document.getElementById('shopSellSection').innerHTML = '<h4 style=\\'color: #ff9800; font-size: 0.85rem; margin: 0.5rem 0;\\'>📦 Předměty</h4>' + renderSellItems() + '<h4 style=\\'color: #8bc34a; font-size: 0.85rem; margin: 0.8rem 0 0.3rem 0;\\'>📦 Suroviny</h4>' + renderSellResources();" style="padding: 0.15rem 0.4rem; font-size: 0.65rem; background: ${isActive ? '#555' : '#222'}; border: 1px solid ${isActive ? '#888' : '#444'}; color: ${isActive ? '#fff' : '#888'}; border-radius: 3px; cursor: pointer;">${labels[s]}</button>`;
+            });
+            // Sumář
+            html += `<span style="margin-left: auto; color: #ffd700; font-size: 0.7rem;">${sellableCount} ks = ${totalValue} 💰</span>`;
+            html += '</div>';
+            
+            // Vykreslení kategorií
+            let hasItems = false;
+            Object.entries(categories).forEach(([catId, cat]) => {
+                if (cat.items.length === 0) return;
+                if (activeFilter !== 'all' && activeFilter !== catId) return;
+                
+                hasItems = true;
+                html += `<div style="margin-bottom: 0.3rem;">`;
+                html += `<div style="color: #888; font-size: 0.7rem; padding: 0.2rem 0; border-bottom: 1px solid #333;">${cat.name} (${cat.items.length})</div>`;
+                
+                cat.items.forEach(({ item, index, itemData, sellPrice, weight, blockReason, isLocked, isEquipped }) => {
+                    const countText = (item.count && item.count > 1) ? ` (${item.count}x)` : '';
+                    const weightText = weight > 0 ? `⚖️${weight.toFixed(1)}kg` : '';
+                    const blocked = !!blockReason;
+                    const bgColor = blocked ? '#1a1a1a' : (isLocked ? '#1a1a2a' : '#2a2a2a');
+                    const borderLeft = isEquipped ? '3px solid #2196f3' : (isLocked ? '3px solid #ff9800' : (blocked ? '3px solid #333' : 'none'));
+                    
+                    html += `<div style="background: ${bgColor}; padding: 0.35rem 0.5rem; margin: 0.15rem 0; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; border-left: ${borderLeft}; opacity: ${blocked ? '0.6' : '1'};">`;
+                    html += `<div style="display: flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 0;">`;
+                    html += `<span style="font-size: 1.1rem; flex-shrink: 0;">${item.icon || '📦'}</span>`;
+                    html += `<div style="min-width: 0; overflow: hidden;">`;
+                    html += `<div style="font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.name}${countText}</div>`;
+                    html += `<div style="font-size: 0.65rem; color: #888;">${blocked ? `<span style="color: ${isLocked ? '#ff9800' : '#666'};">${blockReason}</span>` : `<span style="color: #ffd700;">💰${sellPrice}${countText}</span>`} ${weightText}</div>`;
+                    html += `</div></div>`;
+                    
+                    // Tlačítka
+                    html += `<div style="display: flex; gap: 0.2rem; flex-shrink: 0;">`;
+                    if (!blocked) {
+                        html += `<button class="btn" onclick="showSellDialogByIndex(${index})" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: #d4722e;">Prodat</button>`;
+                    }
+                    // Zámek tlačítko (ne pro equipped a quest itemy)
+                    if (!isEquipped && !item.cantSell && item.type !== 'quest' && item.type !== 'quest_item') {
+                        html += `<button onclick="toggleItemLock('${item.id}')" style="padding: 0.2rem 0.3rem; font-size: 0.7rem; background: ${isLocked ? '#ff9800' : '#333'}; border: 1px solid ${isLocked ? '#ff9800' : '#555'}; color: #fff; border-radius: 3px; cursor: pointer;">${isLocked ? '🔓' : '🔒'}</button>`;
+                    }
+                    html += `</div></div>`;
+                });
+                html += `</div>`;
+            });
+            
+            return hasItems ? html : '<p style="text-align: center; color: #666; font-size: 0.85rem;">Nemáš co prodat</p>';
         }
+        
+        function toggleItemLock(itemId) {
+            if (!state.lockedItems) state.lockedItems = [];
+            const idx = state.lockedItems.indexOf(itemId);
+            if (idx >= 0) {
+                state.lockedItems.splice(idx, 1);
+                notifySuccess('🔓 Odemčeno', itemId);
+            } else {
+                state.lockedItems.push(itemId);
+                notifySuccess('🔒 Zamčeno', 'Tento item nelze prodat.');
+            }
+            saveGame(true);
+            // Překresli sell tab
+            const sellSection = document.getElementById('shopSellSection');
+            if (sellSection) {
+                sellSection.innerHTML = '<h4 style="color: #ff9800; font-size: 0.85rem; margin: 0.5rem 0;">📦 Předměty</h4>' + renderSellItems() + '<h4 style="color: #8bc34a; font-size: 0.85rem; margin: 0.8rem 0 0.3rem 0;">📦 Suroviny</h4>' + renderSellResources();
+            }
+        }
+        window.toggleItemLock = toggleItemLock;
         
         function renderSellResources() {
             let html = '';
@@ -47377,6 +47580,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (npcOverlay) npcOverlay.remove();
             const postApoOverlay = document.getElementById('postApoModalOverlay');
             if (postApoOverlay) postApoOverlay.remove();
+            
+            // 🕐 KONTROLA OTEVÍRACÍ DOBY (ne pro domov a město)
+            const _shopLoc = getCurrentLocation();
+            const _shopType = _shopLoc?.shopType || 'settlement';
+            if (_shopLoc && _shopLoc.type !== 'city' && _shopLoc.type !== 'home' && !isShopOpen(_shopType)) {
+                const msg = getShopClosedMessage(_shopType);
+                showModal('🌙 Zavřeno', `
+                    <div style="text-align: center; padding: 1rem;">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌙</div>
+                        <p style="color: #ccc; white-space: pre-line;">${msg}</p>
+                    </div>
+                `);
+                return;
+            }
             
             // 🦠 KARANTÉNA - obchody zavřené
             if (typeof areShopsClosed === 'function') {
@@ -47936,9 +48153,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function sellItem(itemId, amount = 1) {
-            // 🏪 KONTROLA LOKACE
+            // 🏪 KONTROLA LOKACE A OTEVÍRACÍ DOBY
             if (typeof canSellHere === 'function' && !canSellHere()) {
-                notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                // Zjisti jestli je problém lokace nebo čas
+                const loc = getCurrentLocation();
+                const validLoc = loc && (loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement');
+                if (!validLoc) {
+                    notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                } else {
+                    const shopType = loc.shopType || 'settlement';
+                    const hours = SHOP_HOURS[shopType];
+                    notifyWarning('🌙 Zavřeno!', `${hours?.name || 'Obchod'} je zavřený. Otevírací doba: ${hours ? hours.open + ':00 - ' + hours.close + ':00' : '6:00-22:00'}`);
+                }
                 closeModal();
                 return;
             }
@@ -47961,6 +48187,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const item = state.inv[itemIndex];
             const itemData = ITEMS.find(i => i.id === itemId) || item;
+            
+            // 🔒 ZAMČENO - nelze prodat
+            if (state.lockedItems?.includes(item.id)) {
+                notifyWarning('🔒 Zamčeno', 'Tento item je zamčený. Odemkni ho v obchodě.');
+                return;
+            }
             
             // Quest itemy nelze prodat
             if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') {
@@ -48061,9 +48293,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Prodej podle indexu v inventáři - řeší problém s duplicitními ID (např. deníky)
         function showSellDialogByIndex(itemIndex) {
-            // 🏪 KONTROLA LOKACE
+            // 🏪 KONTROLA LOKACE A OTEVÍRACÍ DOBY
             if (typeof canSellHere === 'function' && !canSellHere()) {
-                notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                const loc = getCurrentLocation();
+                const validLoc = loc && (loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement');
+                if (!validLoc) {
+                    notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                } else {
+                    const shopType = loc.shopType || 'settlement';
+                    const hours = SHOP_HOURS[shopType];
+                    notifyWarning('🌙 Zavřeno!', `${hours?.name || 'Obchod'} otevírá v ${hours?.open || 6}:00`);
+                }
                 return;
             }
             
@@ -48144,9 +48384,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Prodej podle indexu - správně prodá konkrétní item i když mají stejná ID
         function sellItemByIndex(itemIndex, amount = 1) {
-            // 🏪 KONTROLA LOKACE - prodávat lze jen u obchodníka
+            // 🏪 KONTROLA LOKACE A OTEVÍRACÍ DOBY
             if (typeof canSellHere === 'function' && !canSellHere()) {
-                notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                const loc = getCurrentLocation();
+                const validLoc = loc && (loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement');
+                if (!validLoc) {
+                    notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka, v osadě nebo ve městě.');
+                } else {
+                    const shopType = loc.shopType || 'settlement';
+                    const hours = SHOP_HOURS[shopType];
+                    notifyWarning('🌙 Zavřeno!', `${hours?.name || 'Obchod'} je zavřený. Otevírací doba: ${hours ? hours.open + ':00 - ' + hours.close + ':00' : '6:00-22:00'}`);
+                }
                 closeModal();
                 return;
             }
@@ -48168,6 +48416,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const item = state.inv[itemIndex];
             const itemData = ITEMS.find(i => i.id === item.id) || item;
+            
+            // 🔒 ZAMČENO
+            if (state.lockedItems?.includes(item.id)) {
+                notifyWarning('🔒 Zamčeno', 'Tento item je zamčený. Odemkni ho v obchodě.');
+                closeModal();
+                return;
+            }
             
             // Quest itemy nelze prodat
             if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') {
@@ -48968,7 +49223,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (alreadyInstalled) {
                     specialAction = `<div style="background: #2a2a1a; padding: 0.8rem; border-radius: 8px; border: 1px solid #ffd700;"><p style="color: #ffd700; margin: 0;">☀️ Solární panely už máš nainstalované!</p></div>`;
                 } else if (state.settlement) {
-                    specialAction = `<button class="btn" onclick="installSolarPanel(${idx})" style="background: #ff8f00;">☀️ Nainstalovat do osady (+8 ⚡/den)</button>`;
+                    if (state.world?.currentLocation === 'shelter') {
+                        specialAction = `<button class="btn" onclick="installSolarPanel(${idx})" style="background: #ff8f00;">☀️ Nainstalovat do osady (+8 ⚡/den)</button>`;
+                    } else {
+                        specialAction = `<div style="background: #2a2a1a; padding: 0.8rem; border-radius: 8px; border: 1px solid #ff9800;"><p style="color: #ff9800; margin: 0;">📍 Musíš být v osadě pro instalaci panelů!</p></div>`;
+                    }
                 } else {
                     specialAction = `<div style="background: #2a1a1a; padding: 0.8rem; border-radius: 8px; border: 1px solid #f44336;"><p style="color: #f44336; margin: 0;">❌ Potřebuješ osadu pro instalaci</p></div>`;
                 }
@@ -49256,6 +49515,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!panel || panel.bonus !== 'power') return;
             if (!state.settlement) {
                 notifyWarning('Chyba', 'Nemáš osadu!');
+                return;
+            }
+            // Musíš být v osadě
+            if (state.world?.currentLocation !== 'shelter') {
+                notifyWarning('📍 Musíš být v osadě!', 'Solární panely lze nainstalovat pouze přímo v osadě.');
                 return;
             }
             const allBuildings = [...(state.base || []), ...(state.settlement?.buildings || [])];
@@ -51040,14 +51304,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     moraleBonus = 15;
                 } else if (item.id === 'wine') {
                     energyBonus = 25;
-                    thirstPenalty = 15;
+                    thirstPenalty = -15; // Alkohol dehydratuje
                     damageBonus = 0;
                     healBonus = 15;
                     moraleBonus = 20;
                 }
                 
                 state.status.energy = Math.min(100, state.status.energy + energyBonus);
-                state.status.thirst = Math.min(100, state.status.thirst + thirstPenalty);
+                state.status.thirst = Math.max(0, Math.min(100, state.status.thirst + thirstPenalty));
                 if (healBonus > 0) {
                     state.char.hp = Math.min(state.char.maxHp || 100, state.char.hp + healBonus);
                 }
@@ -51064,7 +51328,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 SoundSystem.play('pickup');
-                let resultText = `⚡ +${energyBonus} energie<br>💧 +${thirstPenalty} žízeň<br>😊 +${moraleBonus} nálada`;
+                let resultText = `⚡ +${energyBonus} energie<br>💧 ${thirstPenalty >= 0 ? '+' : ''}${thirstPenalty} žízeň<br>😊 +${moraleBonus} nálada`;
                 if (healBonus > 0) resultText += `<br>❤️ +${healBonus} HP`;
                 if (damageBonus > 0) resultText += `<br><span style="color: #ffd700;">⚔️ +${damageBonus}% damage na 2 hodiny!</span>`;
                 
@@ -52292,9 +52556,11 @@ function openFullscreenMap() {
                 } else if (recipe.result.type === 'tool') {
                     resultDesc = recipe.result.desc || '🔧 ' + recipe.result.bonus;
                 } else if (recipe.result.type === 'throwable') {
-                    resultDesc = recipe.result.damage ? '💥 ' + recipe.result.damage + ' DMG' : '💨 ' + recipe.result.effect;
+                    const _existThrow = state.inv.filter(i => i.id === recipe.id).reduce((sum, i) => sum + (i.count || 1), 0);
+                    resultDesc = (recipe.result.damage ? '💥 ' + recipe.result.damage + ' DMG' : '💨 ' + recipe.result.effect) + (_existThrow > 0 ? ' <span style="color:#64b5f6;">(' + _existThrow + ')</span>' : '');
                 } else if (recipe.result.type === 'ammo') {
-                    resultDesc = '🏹 ' + recipe.result.count + 'x';
+                    const _existAmmo = state.inv.filter(i => i.id === recipe.result.itemId).reduce((sum, i) => sum + (i.count || 1), 0);
+                    resultDesc = '🏹 ' + recipe.result.count + 'x' + (_existAmmo > 0 ? ' <span style="color:#64b5f6;">(máš ' + _existAmmo + ')</span>' : '');
                 } else if (recipe.result.type === 'weapon_coating') {
                     resultDesc = (recipe.result.effect === 'poison' ? '☠️' : '🔥') + ' ' + recipe.result.uses + 'x ' + ('použití');
                 } else if (recipe.result.type === 'accessory') {
@@ -52462,7 +52728,9 @@ function openFullscreenMap() {
                 `;
             } else if (recipe.result.type === 'consumable') {
                 const effectNames = { health: '❤️ Léčení', hunger: '🍖 Hlad', thirst: '💧 Žízeň', energy: '⚡ Energie', radiation: '☢️ Radiace', repair: '🔧 Oprava', sleep: '💤 Spánek' };
+                const existingConsumable = state.inv.filter(i => i.id === recipe.id || i.id === (recipe.result.itemId || recipe.id)).reduce((sum, i) => sum + (i.count || 1), 0);
                 typeInfo = `<p style="color: #ff9800; font-size: 1.1rem;">${effectNames[recipe.result.effect] || '📦 Spotřební'} ${recipe.result.value > 0 ? '+' : ''}${recipe.result.value}${recipe.result.effect === 'repair' ? ' durability' : '%'}</p>`;
+                if (existingConsumable > 0) typeInfo += `<div style="background: #1a1a2a; padding: 0.4rem 0.6rem; border-radius: 6px; margin-top: 0.3rem; border: 1px solid #3949AB;"><span style="color: #64b5f6; font-size: 0.9rem;">📦 V inventáři: <strong style="color: #fff;">${existingConsumable}x</strong></span></div>`;
                 usageInfo = `
                     <p>📌 <strong>Použití:</strong> Klikni v inventáři → Spotřebuje se</p>
                     ${recipe.result.secondary ? `<p>➕ <strong>Bonus:</strong> ${Object.entries(recipe.result.secondary).map(([key, val]) => {
@@ -52529,17 +52797,37 @@ function openFullscreenMap() {
                     <p>💡 <strong>Tip:</strong> ${recipe.result.bonus === 'capacity' ? 'Automaticky zvýší nosnost když je v inventáři' : recipe.result.bonus === 'fishing' ? 'Potřebuješ pro rybaření' : recipe.result.bonus === 'light' ? 'Použij v noci pro lepší viditelnost' : recipe.result.bonus === 'stealth' ? 'Pasivní bonus - sníží šanci na přepadení' : 'Drž v inventáři pro bonus'}</p>
                 `;
             } else if (recipe.result.type === 'throwable') {
+                const existingThrowable = state.inv.filter(i => i.id === recipe.id).reduce((sum, i) => sum + (i.count || 1), 0);
                 typeInfo = `<p style="color: #7b1fa2; font-size: 1.1rem;">💣 Vrhací - ${recipe.result.damage || 0} DMG</p>`;
+                if (existingThrowable > 0) typeInfo += `<div style="background: #1a1a2a; padding: 0.4rem 0.6rem; border-radius: 6px; margin-top: 0.3rem; border: 1px solid #3949AB;"><span style="color: #64b5f6; font-size: 0.9rem;">📦 V inventáři: <strong style="color: #fff;">${existingThrowable}x</strong></span></div>`;
+                // Grenade AOE effect info
+                const _gConfig = typeof GRENADE_CONFIG !== 'undefined' ? GRENADE_CONFIG[recipe.id] : null;
+                let grenadeEffectInfo = '';
+                if (_gConfig) {
+                    const bonusCatNames = { humanoid: 'humanoidům', robot: 'robotům', animal: 'zvířatům/mutantům' };
+                    grenadeEffectInfo = `<div style="background: #2a1a1a; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem; border: 1px solid #ff9800;">
+                        <p style="color: #ff9800; font-weight: bold; margin: 0 0 0.3rem;">💥 AOE Efekty:</p>
+                        ${_gConfig.bonusCategory ? `<p style="color: #ffd700; font-size: 0.85rem;">+20% DMG proti ${bonusCatNames[_gConfig.bonusCategory] || _gConfig.bonusCategory}</p>` : ''}
+                        ${_gConfig.effects.map(e => `<p style="font-size: 0.82rem; color: #ccc;">${e.desc} (${Math.round(e.chance * 100)}%)</p>`).join('')}
+                        <p style="font-size: 0.75rem; color: #888; margin-top: 0.3rem;">⚠️ ${Math.round((_gConfig.misfireChance || 0.10) * 100)}% selhání | 1% odraz zpět</p>
+                    </div>`;
+                }
                 usageInfo = `
                     <p>📌 <strong>Použití:</strong> V boji vyber "Hodit" → Zasáhne nepřátele</p>
                     ${recipe.result.aoe ? '<p>💥 <strong>Plošný útok:</strong> Zasáhne všechny nepřátele</p>' : ''}
-                    ${recipe.result.effect === 'escape' ? '<p>🏃 <strong>Speciální:</strong> Umožní útěk z boje</p>' : ''}
+                    ${recipe.result.effect === 'escape' ? '<p>🏃 <strong>Speciální:</strong> Umožní útěk z boje + kouřová clona</p>' : ''}
+                    ${grenadeEffectInfo}
                 `;
             } else if (recipe.result.type === 'ammo') {
+                // Spočítej kolik už hráč má v inventáři
+                const existingAmmo = state.inv.filter(i => i.id === recipe.result.itemId).reduce((sum, i) => sum + (i.count || 1), 0);
                 typeInfo = `<p style="color: #7b1fa2; font-size: 1.1rem;">🔫 Munice - ${recipe.result.count}x</p>`;
+                typeInfo += `<div style="background: #1a1a2a; padding: 0.4rem 0.6rem; border-radius: 6px; margin-top: 0.3rem; border: 1px solid #3949AB;">
+                    <span style="color: #64b5f6; font-size: 0.9rem;">📦 V inventáři: <strong style="color: #fff;">${existingAmmo}x</strong></span>
+                </div>`;
                 usageInfo = `
                     <p>📌 <strong>Použití:</strong> Automaticky se spotřebuje při střelbě</p>
-                    <p>🔫 <strong>Pro zbraně:</strong> ${recipe.result.itemId === 'ammo_arrow' ? 'Luk, Kuše' : recipe.result.itemId === 'ammo_9mm' ? 'Pistole' : recipe.result.itemId === 'ammo_556' ? 'Útočná puška' : recipe.result.itemId === 'ammo_762' ? 'Sniper, Lovecká puška' : recipe.result.itemId === 'ammo_shell' ? 'Brokovnice' : 'Různé'}</p>
+                    <p>🔫 <strong>Pro zbraně:</strong> ${recipe.result.itemId === 'ammo_arrow' ? 'Luk, Kuše' : recipe.result.itemId === 'ammo_bolt' ? 'Kuše' : recipe.result.itemId === 'ammo_9mm' ? 'Pistole' : recipe.result.itemId === 'ammo_556' ? 'Útočná puška' : recipe.result.itemId === 'ammo_762' ? 'Sniper, Lovecká puška' : recipe.result.itemId === 'ammo_shell' ? 'Brokovnice' : recipe.result.itemId === 'ammo_cell' ? 'Laserové zbraně' : 'Různé'}</p>
                 `;
             } else if (recipe.result.type === 'weapon_coating') {
                 typeInfo = `<p style="color: #ffd700; font-size: 1.1rem;">✨ Povlak na zbraň - ${recipe.result.uses}x</p>`;
@@ -52600,11 +52888,41 @@ function openFullscreenMap() {
                 </div>
                 
                 <div style="display: grid; gap: 0.5rem;">
-                    ${canCraft ? `
-                        <button class="btn" onclick="craftItem('${recipeId}'); closeModal();" style="background: #4CAF50;">
-                            🔨 Vyrobit
-                        </button>
-                    ` : `
+                    ${canCraft ? (() => {
+                        // Bulk crafting pro stackovatelné typy
+                        const isStackable = ['ammo', 'throwable', 'consumable', 'resource', 'weapon_coating'].includes(recipe.result.type);
+                        if (isStackable) {
+                            // Spočítej max kolikrát lze vyrobit
+                            let maxCrafts = 999;
+                            for (const [res, amt] of Object.entries(recipe.requires)) {
+                                const adjustedAmt = Math.ceil(amt * engineerReduction);
+                                const has = getTotalResource(res, useSettlement);
+                                maxCrafts = Math.min(maxCrafts, Math.floor(has / adjustedAmt));
+                            }
+                            maxCrafts = Math.max(1, Math.min(maxCrafts, 99));
+                            return `
+                                <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4CAF50;">
+                                    <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                                        <button onclick="window._craftAmount=Math.max(1,(window._craftAmount||1)-1); document.getElementById('craftAmountDisplay').textContent=window._craftAmount+'x'; document.getElementById('craftAmountTotal').textContent='= '+(window._craftAmount*(${recipe.result.count || 1}))+'ks';" style="width: 2rem; height: 2rem; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; cursor: pointer; font-size: 1.1rem;">−</button>
+                                        <button onclick="window._craftAmount=Math.max(1,(window._craftAmount||1)-5); document.getElementById('craftAmountDisplay').textContent=window._craftAmount+'x'; document.getElementById('craftAmountTotal').textContent='= '+(window._craftAmount*(${recipe.result.count || 1}))+'ks';" style="padding: 0.3rem 0.4rem; background: #333; border: 1px solid #555; color: #888; border-radius: 4px; cursor: pointer; font-size: 0.7rem;">-5</button>
+                                        <span id="craftAmountDisplay" style="font-size: 1.3rem; font-weight: bold; color: #fff; min-width: 3rem; text-align: center;">1x</span>
+                                        <button onclick="window._craftAmount=Math.min(${maxCrafts},(window._craftAmount||1)+5); document.getElementById('craftAmountDisplay').textContent=window._craftAmount+'x'; document.getElementById('craftAmountTotal').textContent='= '+(window._craftAmount*(${recipe.result.count || 1}))+'ks';" style="padding: 0.3rem 0.4rem; background: #333; border: 1px solid #555; color: #888; border-radius: 4px; cursor: pointer; font-size: 0.7rem;">+5</button>
+                                        <button onclick="window._craftAmount=Math.min(${maxCrafts},(window._craftAmount||1)+1); document.getElementById('craftAmountDisplay').textContent=window._craftAmount+'x'; document.getElementById('craftAmountTotal').textContent='= '+(window._craftAmount*(${recipe.result.count || 1}))+'ks';" style="width: 2rem; height: 2rem; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; cursor: pointer; font-size: 1.1rem;">+</button>
+                                        <button onclick="window._craftAmount=${maxCrafts}; document.getElementById('craftAmountDisplay').textContent=window._craftAmount+'x'; document.getElementById('craftAmountTotal').textContent='= '+(window._craftAmount*(${recipe.result.count || 1}))+'ks';" style="padding: 0.3rem 0.4rem; background: #555; border: 1px solid #888; color: #ff9800; border-radius: 4px; cursor: pointer; font-size: 0.7rem;">MAX</button>
+                                    </div>
+                                    <div style="text-align: center; color: #888; font-size: 0.8rem;">
+                                        <span id="craftAmountTotal">= ${recipe.result.count || 1}ks</span>
+                                        <span style="margin-left: 0.5rem; color: #666;">(max ${maxCrafts}x)</span>
+                                    </div>
+                                </div>
+                                <button class="btn" onclick="window._craftAmount=window._craftAmount||1; craftItem('${recipeId}', window._craftAmount); window._craftAmount=1; closeModal();" style="background: #4CAF50;">
+                                    🔨 Vyrobit
+                                </button>
+                            `;
+                        } else {
+                            return `<button class="btn" onclick="craftItem('${recipeId}'); closeModal();" style="background: #4CAF50;">🔨 Vyrobit</button>`;
+                        }
+                    })() : `
                         <button class="btn" style="background: #555; cursor: not-allowed;" disabled>
                             🔒 ${state.map.traveling ? 'Cestuješ...' : (needsWorkshop && !hasWorkshopAccess()) ? 'Potřebuješ dílnu' : 'Chybí suroviny'}
                         </button>
@@ -52785,7 +53103,8 @@ function openFullscreenMap() {
             renderFull();
         }
         
-        function craftItem(recipeId) {
+        function craftItem(recipeId, bulkAmount = 1) {
+            bulkAmount = Math.max(1, Math.min(99, bulkAmount || 1));
             const recipe = CRAFTING.find(r => r.id === recipeId);
             if (!recipe) return;
             
@@ -52849,11 +53168,11 @@ function openFullscreenMap() {
             // Portable = pouze inventář, Dílna = inventář + sklad osady
             const useSettlement = needsWorkshop;
             
-            // Check resources (podle typu receptu)
+            // Check resources (podle typu receptu) × bulkAmount
             for (const [res, amt] of Object.entries(recipe.requires)) {
-                const adjustedAmt = Math.ceil(amt * engineerReduction);
+                const adjustedAmt = Math.ceil(amt * engineerReduction) * bulkAmount;
                 if (getTotalResource(res, useSettlement) < adjustedAmt) {
-                    showModal(t('notifications', 'notEnoughResources'), 'Nemáš dostatek materiálů!');
+                    showModal(t('notifications', 'notEnoughResources'), `Nemáš dostatek materiálů pro ${bulkAmount}x výrobu!`);
                     return;
                 }
             }
@@ -52863,22 +53182,23 @@ function openFullscreenMap() {
                 const defaultWeightsCheck = { 'weapon': 2, 'armor': 4, 'gloves': 1, 'boots': 1.5, 'helmet': 1.5, 'tool': 1, 'consumable': 0.3, 'throwable': 0.1, 'ammo': 0.1, 'weapon_coating': 0.2, 'accessory': 0.5 };
                 const itemDefCheck = ITEMS.find(i => i.id === recipeId);
                 const craftWeight = recipe.result.weight || itemDefCheck?.weight || defaultWeightsCheck[recipe.result.type] || 1;
-                // Pro stackovatelné itemy, které už existují, je "nová váha" jen 1 kus
-                const existingStack = state.inv.find(i => i.id === recipeId || i.id === (recipe.result.itemId || recipeId));
-                const addedWeight = existingStack ? (itemDefCheck?.weight || recipe.result.weight || 0.1) : craftWeight;
+                // Pro stackovatelné itemy váha = per kus × počet výstupů × bulkAmount
+                const perItemWeight = itemDefCheck?.weight || recipe.result.weight || 0.1;
+                const totalOutputCount = (recipe.result.count || 1) * bulkAmount;
+                const addedWeight = perItemWeight * totalOutputCount;
                 const currentWeight = calculateCurrentWeight();
                 const maxWeight = calculateMaxWeight();
                 if (currentWeight + addedWeight > maxWeight) {
-                    notifyWarning('❌ Plný inventář', `Neuneseš to! (${currentWeight.toFixed(1)}/${maxWeight.toFixed(1)}kg, předmět váží ${addedWeight.toFixed(1)}kg). Vyhoď něco z inventáře.`);
+                    notifyWarning('❌ Plný inventář', `Neuneseš to! (${currentWeight.toFixed(1)}/${maxWeight.toFixed(1)}kg, předměty váží ${addedWeight.toFixed(1)}kg). Vyhoď něco z inventáře.`);
                     return;
                 }
             }
             
-            // Consume resources
+            // Consume resources (× bulkAmount for bulk crafting)
             const specialComponents = ['deathclaw_hand', 'mutant_heart', 'crystal', 'gold', 'gems'];
             
             for (const [res, amt] of Object.entries(recipe.requires)) {
-                const adjustedAmt = Math.ceil(amt * engineerReduction);
+                const adjustedAmt = Math.ceil(amt * engineerReduction) * bulkAmount;
                 let remaining = adjustedAmt;
                 
                 // Speciální komponenty - odeber z inventáře
@@ -52926,11 +53246,11 @@ function openFullscreenMap() {
             if (recipe.result.type === 'resource') {
                 // Přidání suroviny přímo do resources
                 const resType = recipe.result.resource;
-                let amount = recipe.result.amount || 1;
+                let amount = (recipe.result.amount || 1) * bulkAmount;
                 if (isDoubleCraft) amount *= 2;
                 state.resources[resType] = (state.resources[resType] || 0) + amount;
-                showModal('Vyrobeno!', `${itemIcon(recipe.id, recipe.icon)} ${recipe.name}! +${amount} ${resType}${isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : ''}`);
-                state.stats.itemsCrafted++;
+                showModal('Vyrobeno!', `${itemIcon(recipe.id, recipe.icon)} ${recipe.name}! +${amount} ${resType}${bulkAmount > 1 ? ' (' + bulkAmount + 'x)' : ''}${isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : ''}`);
+                state.stats.itemsCrafted += bulkAmount;
                 if (state.dailyQuests.progress) {
                     state.dailyQuests.progress.crafted = (state.dailyQuests.progress.crafted || 0) + 1;
                     checkDailyQuests();
@@ -52941,10 +53261,9 @@ function openFullscreenMap() {
                 return;
             } else if (recipe.result.type === 'consumable') {
                 const existing = state.inv.find(i => i.id === recipeId);
-                // Najdi váhu z ITEMS nebo použij rozumný default
                 const itemDef = ITEMS.find(i => i.id === recipeId);
                 const itemWeight = recipe.result.weight || itemDef?.weight || 0.3;
-                const craftCount = isDoubleCraft ? 2 : 1;
+                const craftCount = (isDoubleCraft ? 2 : 1) * bulkAmount;
                 if (existing) {
                     existing.count = (existing.count || 1) + craftCount;
                 } else {
@@ -52954,7 +53273,7 @@ function openFullscreenMap() {
                 // Pro ammo hledej podle itemId (např. 'ammo_arrow'), pro ostatní podle recipeId
                 const searchId = recipe.result.itemId || recipeId;
                 const existing = state.inv.find(i => i.id === searchId);
-                const baseCount = recipe.result.count || 1;
+                const baseCount = (recipe.result.count || 1) * bulkAmount;
                 const craftCount = isDoubleCraft ? baseCount * 2 : baseCount;
                 if (existing) {
                     existing.count = (existing.count || 1) + craftCount;
@@ -52982,10 +53301,11 @@ function openFullscreenMap() {
             } else if (recipe.result.type === 'weapon_coating') {
                 // Povlak na zbraň - stackable
                 const existing = state.inv.find(i => i.id === recipeId);
+                const coatCount = (isDoubleCraft ? 2 : 1) * bulkAmount;
                 if (existing) {
-                    existing.count = (existing.count || 1) + 1;
+                    existing.count = (existing.count || 1) + coatCount;
                 } else {
-                    state.inv.push({id: recipeId, name: recipe.name, icon: recipe.icon, ...recipe.result, count: 1, weight: 0.2});
+                    state.inv.push({id: recipeId, name: recipe.name, icon: recipe.icon, ...recipe.result, count: coatCount, weight: 0.2});
                 }
             } else if (recipe.result.type === 'accessory') {
                 // Doplněk - nestavkuje se
@@ -53064,15 +53384,15 @@ function openFullscreenMap() {
                 state.inv.push(craftedItem);
             }
             
-            state.stats.itemsCrafted++;
+            state.stats.itemsCrafted += bulkAmount;
             if (state.dailyQuests.progress) {
-                state.dailyQuests.progress.crafted = (state.dailyQuests.progress.crafted || 0) + 1;
+                state.dailyQuests.progress.crafted = (state.dailyQuests.progress.crafted || 0) + bulkAmount;
                 checkDailyQuests();
             }
             
             // Přidej do herního deníku
-            addLog(`🔨 Vyrobeno: ${recipe.icon} ${recipe.name}${isDoubleCraft ? ' (2x!)' : ''}`, '🔨', 'craft', {
-                items: [{ id: recipeId, count: isDoubleCraft ? 2 : 1 }],
+            addLog(`🔨 Vyrobeno: ${recipe.icon} ${recipe.name}${bulkAmount > 1 ? ' (' + bulkAmount + 'x)' : ''}${isDoubleCraft ? ' (2x!)' : ''}`, '🔨', 'craft', {
+                items: [{ id: recipeId, count: (isDoubleCraft ? 2 : 1) * bulkAmount }],
                 resources: recipe.requires
             });
             
@@ -53081,7 +53401,8 @@ function openFullscreenMap() {
             
             const engineerText = engineerReduction < 1 ? ' (Engineer: -50% surovin)' : '';
             const doubleCraftText = isDoubleCraft ? '<br><span style="color: #ffd700;">⭐ Mistr řemesla: Dvojitý výstup!</span>' : '';
-            showModal('Vyrobeno!', `${itemIcon(recipe.id, recipe.icon)} ${recipe.name} byl vyroben!${engineerText}${doubleCraftText}`);
+            const bulkText = bulkAmount > 1 ? ` (${bulkAmount}x)` : '';
+            showModal('Vyrobeno!', `${itemIcon(recipe.id, recipe.icon)} ${recipe.name}${bulkText} byl vyroben!${engineerText}${doubleCraftText}`);
             checkAchievements();
             saveGame(true);
             renderFull();
@@ -54616,6 +54937,9 @@ function openFullscreenMap() {
                     ` : ''}
                     <button class="btn" onclick="exitDungeon()" style="background: #333;">
                         🚪 Opustit dungeon
+                    </button>
+                    <button class="btn" onclick="openStashMenu()" style="background: #455A64; font-size: 0.85rem;">
+                        📦 Uložit do skrýše
                     </button>
                 </div>
             `);
@@ -72145,6 +72469,49 @@ function openFullscreenMap() {
                     }
                 }
                 
+                // 🟢 Koroze z granátu (-30% DEF, countdown)
+                if (u.corroded && u.corroded > 0) {
+                    u.corroded--;
+                    if (u.corroded <= 0 && u.originalDefense) {
+                        u.defense = u.originalDefense;
+                        delete u.originalDefense;
+                        cs.log.push(`🟢 ${u.name}: Koroze odezněla, obrana obnovena.`);
+                    }
+                }
+                
+                // 🔥 Grenade burn DOT
+                if (u.alive && u.burning > 0 && u.grenadeBurnRounds > 0) {
+                    const bDmg = u.burning;
+                    u.hp -= bDmg;
+                    u.grenadeBurnRounds--;
+                    if (u.grenadeBurnRounds <= 0) u.burning = 0;
+                    cs.log.push(`🔥 ${u.name}: -${bDmg} HP ohněm z granátu. (${u.grenadeBurnRounds} kol)`);
+                    if (u.hp <= 0) { u.alive = false; u.hp = 0; cs.log.push(`☠️ ${u.name} uhořel.`); }
+                }
+                
+                // 👁️ Oslepení countdown
+                if (u.blinded && u.blinded > 0) {
+                    u.blinded--;
+                    if (u.blinded <= 0) cs.log.push(`👁️ ${u.name}: Oslepení odeznělo.`);
+                }
+                
+                // 💨 Smoke blind countdown
+                if (u.smokeBlind && u.smokeBlind > 0) {
+                    u.smokeBlind--;
+                }
+                
+                // 🦿 Immobilize countdown
+                if (u.immobilized && u.immobilized > 0) {
+                    u.immobilized--;
+                }
+                
+                // 🩸 Bleed rounds countdown (nový z granátu)
+                if (u.alive && u.bleedRounds > 0 && u.bleeding > 0) {
+                    // bleeding damage je už zpracován výše, jen countdown
+                    u.bleedRounds--;
+                    if (u.bleedRounds <= 0) u.bleeding = 0;
+                }
+                
                 // === WORLD BOSS REGEN - VYPNUTO pro raid bossy ===
                 // Raid boss se neregeneruje v boji (regen je jen pro solo bossy)
                 if (u.alive && u.team === 'enemy' && u.regenPerTurn > 0 && !u.isRaidBoss) {
@@ -72346,6 +72713,15 @@ function openFullscreenMap() {
             if (unit.stunned) {
                 cs.log.push(`${unit.name} je omráčený a přeskakuje tah.`);
                 unit.stunned = false;
+                unit.actionsLeft = 0;
+                useAction(unit, 0);
+                return;
+            }
+            
+            // 🦿 Imobilizovaný nepřítel přeskočí tah
+            if (unit.immobilized && unit.immobilized > 0) {
+                cs.log.push(`🦿 ${unit.name} je imobilizovaný a nemůže se pohnout.`);
+                unit.immobilized = 0;
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
                 return;
@@ -73149,6 +73525,17 @@ function openFullscreenMap() {
             if ((attacker.team === 'player' || attacker.isPlayer) && state.buffs?.drunk && state.buffs.drunk.until > Date.now()) {
                 const drunkMiss = state.buffs.drunk.level === 1 ? 0.05 : state.buffs.drunk.level === 2 ? 0.10 : 0.20;
                 dodgeChance = Math.min(0.9, dodgeChance + drunkMiss);
+            }
+            
+            // 👁️ Oslepení z flash granátu - útočník má -40% zásah
+            if (attacker.blinded && attacker.blinded > 0) {
+                dodgeChance = Math.min(0.9, dodgeChance + 0.40);
+            }
+            
+            // 💨 Smoke blind - ranged útočníci mají 0% zásah
+            if (attacker.smokeBlind && attacker.smokeBlind > 0 && attacker.isRanged) {
+                cs.log.push(`💨 ${attacker.name} nevidí přes kouřovou clonu — míjí!`);
+                return;
             }
             
             if (dodgeChance > 0 && Math.random() < dodgeChance) {
@@ -75276,20 +75663,20 @@ function openFullscreenMap() {
                 throwables.forEach(item => {
                     const dmg = item.damage || item.result?.damage || item.value || 25;
                     const isEscape = item.effect === 'escape' || item.id === 'smoke_bomb';
-                    const isAcid = item.special === 'acid' || item.id === 'acid_bomb';
-                    const isEmp = item.special === 'emp' || item.id === 'emp_grenade';
+                    const config = typeof GRENADE_CONFIG !== 'undefined' ? GRENADE_CONFIG[item.id] : null;
                     
                     let effectDesc = '';
                     let btnColor = '#e65100';
                     if (isEscape) {
-                        effectDesc = '💨 Útěk z boje';
+                        effectDesc = '💨 Útěk + kouřová clona (2 kola)';
                         btnColor = '#546e7a';
-                    } else if (isAcid) {
-                        effectDesc = `${dmg} DMG všem + 🟢 -5 DEF`;
-                        btnColor = '#2e7d32';
-                    } else if (isEmp) {
-                        effectDesc = `${dmg} DMG všem + ⚡ -5 DMG`;
-                        btnColor = '#1565c0';
+                    } else if (config) {
+                        const bonusText = config.bonusCategory ? ` (+20% proti ${config.bonusCategory === 'humanoid' ? 'lidem' : config.bonusCategory === 'robot' ? 'robotům' : config.bonusCategory === 'animal' ? 'zvířatům' : config.bonusCategory})` : '';
+                        effectDesc = `${config.baseDmg} DMG${bonusText}`;
+                        if (item.id === 'emp_grenade') btnColor = '#1565c0';
+                        else if (item.id === 'acid_bomb') btnColor = '#2e7d32';
+                        else if (item.id === 'flash_grenade') btnColor = '#f9a825';
+                        else if (item.id === 'molotov') btnColor = '#bf360c';
                     } else {
                         effectDesc = `${dmg} DMG všem`;
                     }
@@ -75325,6 +75712,66 @@ function openFullscreenMap() {
             useItemInCombat(itemId);
         }
         
+        // === GRENADE AOE EFFECTS CONFIG ===
+        const GRENADE_CONFIG = {
+            grenade: {
+                name: 'Granát', icon: '💣', baseDmg: 35, range: 4,
+                bonusCategory: 'humanoid', bonusDmg: 0.20,
+                effects: [
+                    { id: 'bleed', chance: 0.70, desc: '🩸 Krvácení' },
+                    { id: 'ptsd', chance: 0.15, desc: '🌀 PTSD (zmatení)' }
+                ],
+                misfireChance: 0.10
+            },
+            emp_grenade: {
+                name: 'EMP', icon: '⚡', baseDmg: 14, range: 3,
+                bonusCategory: 'robot', bonusDmg: 0.20,
+                effects: [
+                    { id: 'stun', chance: 0.60, desc: '💫 Omráčení (1 kolo)' },
+                    { id: 'action_loss', chance: 0.40, desc: '⏳ Ztráta akce' },
+                    { id: 'immobilize', chance: 0.30, desc: '🦿 Imobilizace' },
+                    { id: 'restart', chance: 0.10, desc: '🔄 Restart (zmatení)' }
+                ],
+                misfireChance: 0.10
+            },
+            acid_bomb: {
+                name: 'Kyselina', icon: '🟢', baseDmg: 28, range: 3,
+                bonusCategory: 'animal', bonusDmg: 0.20,
+                effects: [
+                    { id: 'poison', chance: 0.70, desc: '☠️ Otrava' },
+                    { id: 'corrosion', chance: 0.50, desc: '🟢 Koroze (-30% DEF, 4 kola)' }
+                ],
+                misfireChance: 0.10
+            },
+            molotov: {
+                name: 'Molotov', icon: '🔥', baseDmg: 21, range: 3,
+                effects: [
+                    { id: 'burn', chance: 0.60, desc: '🔥 Oheň (5 DMG/kolo, 3 kola)' }
+                ],
+                misfireChance: 0.05
+            },
+            flash_grenade: {
+                name: 'Flash', icon: '💥', baseDmg: 5, range: 3,
+                effects: [
+                    { id: 'blind', chance: 0.90, desc: '👁️ Oslepení (-40% zásah, 2 kola)' }
+                ],
+                misfireChance: 0.08
+            }
+        };
+        
+        // Kategorizace nepřátel
+        function getEnemyCategory(enemy) {
+            const id = (enemy.id || enemy.name || '').toLowerCase();
+            // Roboti/elektronika
+            if (id.includes('robot') || id.includes('turret') || id.includes('drone') || id.includes('mech') || id.includes('automat')) return 'robot';
+            // Zvířata
+            if (id.includes('rat') || id.includes('dog') || id.includes('wolf') || id.includes('cat') || id.includes('spider') || id.includes('frog') || id.includes('fish') || id.includes('bear') || id.includes('snake') || id.includes('scorpion') || id.includes('bug') || id.includes('bat') || id.includes('croc') || id.includes('swamp')) return 'animal';
+            // Mutanti
+            if (id.includes('mutant') || id.includes('ghoul') || id.includes('experiment') || id.includes('deathclaw') || id.includes('behemoth') || id.includes('glowing') || id.includes('abomination') || (enemy.faction === 'mutants')) return 'mutant';
+            // Humanoidi (default)
+            return 'humanoid';
+        }
+        
         function throwGrenade(itemId) {
             const cs = window.combatState;
             const item = state.inv.find(i => i.id === itemId);
@@ -75333,19 +75780,23 @@ function openFullscreenMap() {
             const unit = cs.selectedUnit;
             if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
             
-            // Dýmovnice - útěk z boje
+            // Dýmovnice - útěk z boje (speciální zacházení)
             if (item.effect === 'escape' || item.id === 'smoke_bomb') {
-                cs.log.push(`${item.name}: Kouřová clona! Útěk úspěšný.`);
+                cs.log.push(`💨 ${item.name}: Kouřová clona!`);
                 SoundSystem.play('combat_hit');
+                
+                // Smoke efekt: ranged zbraně 0% zásah v okolí na 2 kola
+                cs.units.filter(u => u.team === 'enemy' && u.alive).forEach(e => {
+                    e.smokeBlind = 2; // 2 kola
+                });
                 
                 // Odeber item
                 if (item.count > 1) item.count--;
                 else state.inv = state.inv.filter(i => i.id !== itemId);
                 
                 // Úspěšný útěk
-                cs.log.push('Utekl jsi z boje.');
+                cs.log.push('🏃 Utekl jsi z boje.');
                 setTimeout(() => {
-                    // 🕳️ ABYSS: dýmovnice ukončí run, zachová loot
                     if (state.abyss?.inProgress) {
                         window.isAbyssCombat = false;
                         endCombat();
@@ -75362,39 +75813,94 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Damage může být přímo na itemu nebo v result
-            const baseDamage = item.damage || item.result?.damage || item.value || 25;
+            // === GRENADE AOE SYSTEM ===
+            const config = GRENADE_CONFIG[item.id] || GRENADE_CONFIG[item.special] || null;
+            const baseDamage = config?.baseDmg || item.damage || item.result?.damage || item.value || 25;
+            
+            // Demolisher class bonus: +1.5% DMG/level, nikdy neselhání
+            const isDemolisher = state.char?.classId === 'demolisher';
+            const playerLevel = state.char?.level || 1;
+            let dmgMult = 1.0;
+            if (isDemolisher) {
+                dmgMult += playerLevel * 0.015;
+            }
+            
+            // Misfire check (Demolisher = nikdy neselhání)
+            const misfireChance = config?.misfireChance || 0.10;
+            if (!isDemolisher && Math.random() < misfireChance) {
+                cs.log.push(`💨 ${item.name} selhal! Žádný efekt.`);
+                if (item.count > 1) item.count--;
+                else state.inv = state.inv.filter(i => i.id !== itemId);
+                useAction(unit, 1);
+                return;
+            }
+            
+            // Backfire check: 1% pro non-Demolisher
+            let backfired = false;
+            if (!isDemolisher && Math.random() < 0.01) {
+                backfired = true;
+                cs.log.push(`💥 ${item.name} se odrazil zpět! 33% DMG na tebe!`);
+            }
+            
             let totalDmg = 0;
             let kills = 0;
+            let effectsApplied = [];
             
-            // Damage všem nepřátelům
-            cs.units.filter(u => u.team === 'enemy' && u.alive).forEach(enemy => {
-                const dmg = Math.max(1, baseDamage - Math.floor(enemy.defense * 0.3));
-                enemy.hp -= dmg;
-                totalDmg += dmg;
+            // Targets: enemies + friendly fire (if backfire or natural AOE for flash/smoke)
+            const enemies = cs.units.filter(u => u.team === 'enemy' && u.alive);
+            
+            enemies.forEach(enemy => {
+                const category = getEnemyCategory(enemy);
+                let finalDmg = Math.ceil(baseDamage * dmgMult);
                 
-                // Kyselina - sníží obranu
-                if (item.special === 'acid' || item.id === 'acid_bomb') {
-                    enemy.defense = Math.max(0, (enemy.defense || 0) - 5);
+                // Bonus DMG pro citlivou kategorii
+                if (config?.bonusCategory) {
+                    const isSensitive = (config.bonusCategory === 'animal' && (category === 'animal' || category === 'mutant')) ||
+                                         (config.bonusCategory === 'robot' && category === 'robot') ||
+                                         (config.bonusCategory === 'humanoid' && category === 'humanoid');
+                    if (isSensitive) finalDmg = Math.ceil(finalDmg * (1 + (config.bonusDmg || 0.20)));
                 }
                 
-                // EMP - sníží damage nepřítele
-                if (item.special === 'emp' || item.id === 'emp_grenade') {
-                    enemy.damage = Math.max(1, (enemy.damage || 10) - 5);
+                // Obrana snižuje DMG
+                finalDmg = Math.max(1, finalDmg - Math.floor((enemy.defense || 0) * 0.3));
+                
+                enemy.hp -= finalDmg;
+                totalDmg += finalDmg;
+                
+                // Aplikuj efekty
+                if (config?.effects) {
+                    config.effects.forEach(eff => {
+                        if (Math.random() < eff.chance) {
+                            applyGrenadeEffect(enemy, eff.id, item.id);
+                            if (!effectsApplied.includes(eff.desc)) effectsApplied.push(eff.desc);
+                        }
+                    });
                 }
                 
-                if (enemy.hp <= 0) {
-                    enemy.alive = false;
-                    enemy.hp = 0;
-                    kills++;
-                }
+                if (enemy.hp <= 0) { enemy.alive = false; enemy.hp = 0; kills++; }
             });
             
-            // Log s efektem
-            let effectText = '';
-            if (item.special === 'acid') effectText = ' [🟢 -5 DEF]';
-            if (item.special === 'emp') effectText = ' [⚡ -5 DMG]';
-            cs.log.push(`${item.name}: ${totalDmg} životů.${effectText} [${unit.actionsLeft - 1} akce]`);
+            // Backfire: 33% DMG na hráče
+            if (backfired) {
+                const selfDmg = Math.ceil(baseDamage * 0.33);
+                const playerUnit = cs.units.find(u => u.isPlayer && u.alive);
+                if (playerUnit) {
+                    playerUnit.hp -= selfDmg;
+                    state.char.hp = Math.max(0, (state.char.hp || 100) - selfDmg);
+                    cs.log.push(`🔥 Dostal jsi ${selfDmg} DMG z vlastního granátu!`);
+                    if (config?.effects) {
+                        config.effects.forEach(eff => {
+                            if (Math.random() < eff.chance * 0.5) { // 50% šance efektu na sebe
+                                applyGrenadeEffect(playerUnit, eff.id, item.id);
+                            }
+                        });
+                    }
+                }
+            }
+            
+            // Log
+            const effectText = effectsApplied.length > 0 ? ' ' + effectsApplied.join(', ') : '';
+            cs.log.push(`${config?.icon || '💣'} ${item.name}: ${totalDmg} DMG${kills > 0 ? ', ' + kills + ' zabit' : ''}.${effectText}`);
             SoundSystem.play('combat_hit');
             
             // Odeber item
@@ -75402,9 +75908,51 @@ function openFullscreenMap() {
             else state.inv = state.inv.filter(i => i.id !== itemId);
             
             if (checkCombatEnd()) return;
-            
             useAction(unit, 1);
         }
+        
+        // Aplikuj granátový efekt na jednotku
+        function applyGrenadeEffect(unit, effectId, grenadeId) {
+            const playerLevel = state.char?.level || 1;
+            switch (effectId) {
+                case 'bleed':
+                    unit.bleeding = Math.ceil(7 + playerLevel * 0.5);
+                    unit.bleedRounds = 2;
+                    break;
+                case 'stun':
+                    if (!unit.stunCooldown || unit.stunCooldown <= 0) unit.stunned = true;
+                    break;
+                case 'action_loss':
+                    unit.actionsLeft = Math.max(0, (unit.actionsLeft || 1) - 1);
+                    break;
+                case 'immobilize':
+                    unit.immobilized = 1; // 1 kolo
+                    break;
+                case 'restart': // Zmatení - zaútočí na spojence
+                case 'ptsd':
+                    unit.confused = 2; // 2 kola
+                    break;
+                case 'poison':
+                    unit.poisoned = 5; // 5 DMG/kolo
+                    unit.poisonRounds = 3;
+                    break;
+                case 'corrosion':
+                    if (!unit.corroded) { // Nestackuje se
+                        unit.corroded = 4; // 4 kola
+                        unit.originalDefense = unit.originalDefense || unit.defense;
+                        unit.defense = Math.floor(unit.defense * 0.7); // -30% DEF
+                    }
+                    break;
+                case 'burn':
+                    unit.burning = 5; // 5 DMG/kolo
+                    unit.grenadeBurnRounds = 3;
+                    break;
+                case 'blind':
+                    unit.blinded = 2; // 2 kola, -40% hit
+                    break;
+            }
+        }
+        window.throwGrenade = throwGrenade;
         
         function useCombatBuff(itemId) {
             const cs = window.combatState;
@@ -75622,8 +76170,15 @@ function openFullscreenMap() {
             // Má společníky?
             const hasCompanions = playerUnits.some(u => u.isCompanion);
             
+            // === SAVE SCROLL POSITION before re-render ===
+            const _prevCC = document.getElementById('combatContainer');
+            const _prevMC = document.getElementById('modalContent');
+            const _savedScrollCC = _prevCC ? _prevCC.scrollTop : 0;
+            const _savedScrollMC = _prevMC ? _prevMC.scrollTop : 0;
+            const _savedScrollWin = window.scrollY || window.pageYOffset || 0;
+            
             document.getElementById('modalContent').innerHTML = `
-                <div id="combatContainer" style="background: linear-gradient(180deg, #0d1520 0%, #0a0f15 100%); margin: -1rem; padding: 0.8rem; border-radius: 8px; max-height: 85vh; overflow-y: auto; -webkit-overflow-scrolling: touch; scroll-behavior: smooth;">
+                <div id="combatContainer" style="background: linear-gradient(180deg, #0d1520 0%, #0a0f15 100%); margin: -1rem; padding: 0.8rem; border-radius: 8px; max-height: 85vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">
                     
                     <!-- FLOATING SCROLL BUTTONS -->
                     <div style="position: sticky; top: 0; z-index: 10; display: flex; justify-content: flex-end; pointer-events: none; margin-bottom: -48px;">
@@ -75834,12 +76389,22 @@ function openFullscreenMap() {
                 </div>
             `;
             
-            // Scroll na vrch jen při startu boje - hráč vidí bojové pole, na log si scrollne sám
+            // === SCROLL HANDLING ===
             if (!window._combatScrolledToTop || cs.round <= 1) {
+                // První render: scroll na vrch (hráč vidí bojové pole)
                 const combatContainer = document.getElementById('combatContainer');
                 if (combatContainer) combatContainer.scrollTop = 0;
                 const modalContent = document.getElementById('modalContent');
                 if (modalContent) modalContent.scrollTop = 0;
+            } else {
+                // Následné re-rendery: OBNOV scroll pozici (zabrání skákání)
+                requestAnimationFrame(() => {
+                    const cc = document.getElementById('combatContainer');
+                    const mc = document.getElementById('modalContent');
+                    if (cc && _savedScrollCC > 0) cc.scrollTop = _savedScrollCC;
+                    if (mc && _savedScrollMC > 0) mc.scrollTop = _savedScrollMC;
+                    if (_savedScrollWin > 0) window.scrollTo(0, _savedScrollWin);
+                });
             }
             
             // Scroll log dolů (s delay pro animované entries) - jen vnitřní log element
@@ -75849,35 +76414,18 @@ function openFullscreenMap() {
                 setTimeout(() => { if (log) log.scrollTop = log.scrollHeight; }, 300);
             }
             
-            // Delayed scroll to top - only on combat start or first render
+            // Delayed scroll to top - ONLY on combat start (first render)
             if (!window._combatScrolledToTop || cs.round <= 1) {
                 window._combatScrolledToTop = true;
                 setTimeout(() => {
-                    const cc = document.getElementById('combatContainer');
-                    const mc = document.getElementById('modalContent');
-                    const modal = document.getElementById('modal');
-                    if (cc) cc.scrollTop = 0;
-                    if (mc) mc.scrollTop = 0;
-                    if (modal) modal.scrollTop = 0;
-                    window.scrollTo(0, 0);
-                    // Scroll grid anchor into view
                     const anchor = document.getElementById('combatGridAnchor');
                     if (anchor) anchor.scrollIntoView({ block: 'start', behavior: 'instant' });
+                    const cc = document.getElementById('combatContainer');
+                    const mc = document.getElementById('modalContent');
+                    if (cc) cc.scrollTop = 0;
+                    if (mc) mc.scrollTop = 0;
+                    window.scrollTo(0, 0);
                 }, 50);
-                setTimeout(() => {
-                    const cc = document.getElementById('combatContainer');
-                    const mc = document.getElementById('modalContent');
-                    const modal = document.getElementById('modal');
-                    if (cc) cc.scrollTop = 0;
-                    if (mc) mc.scrollTop = 0;
-                    if (modal) modal.scrollTop = 0;
-                }, 200);
-                setTimeout(() => {
-                    const cc = document.getElementById('combatContainer');
-                    const mc = document.getElementById('modalContent');
-                    if (cc) cc.scrollTop = 0;
-                    if (mc) mc.scrollTop = 0;
-                }, 500);
             }
         }
         
@@ -76069,6 +76617,10 @@ function openFullscreenMap() {
                                 ${unit.poisoned ? '<span style="position: absolute; top: -2px; right: -2px; font-size: 0.5rem;">☠️</span>' : ''}
                                 ${unit.bleeding ? '<span style="position: absolute; top: -2px; left: -2px; font-size: 0.5rem;">🩸</span>' : ''}
                                 ${unit.stunned ? '<span style="position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 0.7rem;">💫</span>' : ''}
+                                ${unit.corroded ? '<span style="position: absolute; bottom: -2px; right: -2px; font-size: 0.5rem;">🟢</span>' : ''}
+                                ${(unit.burning > 0 || unit.burnDamage > 0) ? '<span style="position: absolute; bottom: -2px; left: -2px; font-size: 0.5rem;">🔥</span>' : ''}
+                                ${unit.blinded > 0 ? '<span style="position: absolute; top: -2px; left: 50%; transform: translateX(-50%); font-size: 0.5rem;">👁️</span>' : ''}
+                                ${unit.immobilized > 0 ? '<span style="position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%); font-size: 0.5rem;">🦿</span>' : ''}
                                 ${unit.defending ? '<span style="position: absolute; bottom: 5px; right: -2px; font-size: 0.5rem;">🛡️</span>' : ''}
                             ` : ''}
                         </div>
@@ -78763,6 +79315,13 @@ function openFullscreenMap() {
         }
         
         function calculateDamage() {
+            // Cache: vrať cachovanou hodnotu pokud je < 2s stará (stabilní zobrazení)
+            const now = Date.now();
+            if (window._cachedDamage !== null && window._cachedDamage !== undefined && 
+                window._cachedDamageTime && (now - window._cachedDamageTime) < 2000) {
+                return window._cachedDamage;
+            }
+            
             // === ZÁKLADNÍ DAMAGE ===
             // Base damage + STR bonus (+2 per point above 5) - VČETNĚ equipment bonusů
             let baseDmg = 5 + getAttrBonus('str');
@@ -78993,9 +79552,17 @@ function openFullscreenMap() {
             
             // 🎒 Přetížení - snižuje útok
             const _encDmg = typeof getEncumbrancePenalty === 'function' ? getEncumbrancePenalty() : { active: false };
-            if (_encDmg.active) return Math.max(1, Math.floor(finalDamage * _encDmg.damagePenalty));
+            let result;
+            if (_encDmg.active) {
+                result = Math.max(1, Math.floor(finalDamage * _encDmg.damagePenalty));
+            } else {
+                result = Math.max(1, finalDamage);
+            }
             
-            return Math.max(1, finalDamage);
+            // Cache výsledek na 2s pro stabilní zobrazení
+            window._cachedDamage = result;
+            window._cachedDamageTime = Date.now();
+            return result;
         }
         
         function calculateDefense() {
@@ -79836,18 +80403,11 @@ function openFullscreenMap() {
                 }
             }
             
-            // Aplikuj all_stats buff
-            if (state.buffs?.allStats && state.buffs.allStats.until > Date.now()) {
-                const statBonus = Math.floor(state.buffs.allStats.value * 0.5); // Polovina hodnoty jako damage
-                playerDmg += statBonus;
-                log.innerHTML += `<div style="color: #ffd700;">✨ Elixír síly: +${statBonus} DMG</div>`;
-            }
+            // allStats buff - NEPŘIDÁVEJ ZNOVU - již zahrnuto v calculateDamage() přes getEffectiveAttr('str')
+            // (Staré double-counting odstraněno)
             
-            // Aplikuj strength buff
-            if (state.buffs?.strength && state.buffs.strength.until > Date.now()) {
-                playerDmg += state.buffs.strength.value;
-                log.innerHTML += `<div style="color: #f44336;">💪 Síla buff: +${state.buffs.strength.value} DMG</div>`;
-            }
+            // Strength buff - NEPŘIDÁVEJ ZNOVU - již zahrnuto v calculateDamage() přes getEffectiveAttr('str')
+            // (Staré double-counting odstraněno)
             
             // Check for critical hit using new function
             let critChance = calculateCritChance();
@@ -82685,7 +83245,7 @@ function openFullscreenMap() {
                     const classData = CLASSES[state.char.classId];
                     const attrs = state.char.attrs || state.char.stats || {};
                     
-                    // Výpočet efektivních statů (základ + bonusy)
+                    // Výpočet efektivních statů - SJEDNOCENO s getEffectiveAttr()
                     const baseStats = {
                         strength: attrs.str || attrs.strength || 5,
                         endurance: attrs.end || attrs.endurance || 5,
@@ -82695,23 +83255,14 @@ function openFullscreenMap() {
                         luck: attrs.lck || attrs.luck || 5
                     };
                     
-                    // Bonusy z povolání
-                    const classBonuses = classData?.bonuses || {};
-                    
-                    // Bonusy z buffů
-                    const buffBonus = (state.buffs?.allStats && state.buffs.allStats.until > Date.now()) ? Math.floor(state.buffs.allStats.value / 5) : 0;
-                    
-                    // Bonusy ze setu
-                    const setEffects = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-                    
-                    // Celkové staty
+                    // Použij getEffectiveAttr pro správné hodnoty (zahrnuje vše: equipment, buffs, sety)
                     const totalStats = {
-                        strength: baseStats.strength + (classBonuses.str || 0) + buffBonus + (setEffects.str || 0),
-                        endurance: baseStats.endurance + (classBonuses.end || 0) + buffBonus + (setEffects.end || 0),
-                        agility: baseStats.agility + (classBonuses.agi || 0) + buffBonus + (setEffects.agi || 0),
-                        perception: baseStats.perception + (classBonuses.per || 0) + buffBonus + (setEffects.per || 0),
-                        intelligence: baseStats.intelligence + (classBonuses.int || 0) + buffBonus + (setEffects.int || 0),
-                        luck: baseStats.luck + (classBonuses.lck || 0) + buffBonus + (setEffects.lck || 0)
+                        strength: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('str') : baseStats.strength,
+                        endurance: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('end') : baseStats.endurance,
+                        agility: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('agi') : baseStats.agility,
+                        perception: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('per') : baseStats.perception,
+                        intelligence: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('int') : baseStats.intelligence,
+                        luck: typeof getEffectiveAttr === 'function' ? getEffectiveAttr('lck') : baseStats.luck
                     };
                     
                     // Výpočet odvozených hodnot - SJEDNOCENO s hlavním UI (záložka PŘEŽIVŠÍ)
@@ -84154,9 +84705,11 @@ function openFullscreenMap() {
         }
         
         function deleteSave() {
+            const hasCloud = currentUser && !currentUser.isAnonymous && firebaseDB;
             showModal('⚠️ Smazat hru?', `
                 <p>Opravdu chceš smazat uloženou hru?</p>
                 <p style="color: #c62828; font-size: 0.9rem;">Tato akce je nevratná!</p>
+                ${hasCloud ? '<label style="display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; color: #ff9800; font-size: 0.9rem;"><input type="checkbox" id="deleteCloudSave2" checked> ☁️ Smazat i cloud save</label>' : ''}
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
                     <button class="btn" onclick="confirmDeleteSave()" style="background: #c62828;">🗑️ Smazat</button>
@@ -84165,7 +84718,19 @@ function openFullscreenMap() {
         }
         
         function confirmDeleteSave() {
+            // Smaž cloud save pokud je zaškrtnuto
+            const deleteCloud = document.getElementById('deleteCloudSave2')?.checked;
+            if (deleteCloud && currentUser && !currentUser.isAnonymous && firebaseDB) {
+                try { firebaseDB.ref('cloudSaves/' + currentUser.uid).remove(); } catch(e) { console.error(e); }
+            }
             localStorage.removeItem('survival_hero_save');
+            localStorage.removeItem('survival_hero_save_v2');
+            localStorage.removeItem('survival_hero_backup');
+            // Nastav flag aby se po reloadu nenahrál cloud save
+            localStorage.setItem('creatingNewCharacter', 'true');
+            sessionStorage.setItem('creatingNewCharacter', 'true');
+            window.creatingNewCharacter = true;
+            window._blockCloudSyncUntil = Date.now() + 30000;
             closeModal();
             showModal('✓ Smazáno!', '<p>Uložená hra byla smazána.</p><button class="btn" onclick="location.reload()" style="width: 100%; margin-top: 1rem;">🔄 Nová hra</button>');
         }
@@ -84189,6 +84754,25 @@ function openFullscreenMap() {
                 state.time.days = Math.floor((now - state.time.gameStart) / (24 * 60 * 60 * 1000));
             } else {
                 state.time.days = Math.floor(state.time.totalElapsed / 86400); // Fallback na starý systém
+            }
+            
+            // === BUFF EXPIRY CHECK (každých ~5s) ===
+            // Detekuj expiraci buffů a přepočítej nosnost + invaliduj cache
+            if (!window._lastBuffCheck || now - window._lastBuffCheck > 5000) {
+                window._lastBuffCheck = now;
+                let buffChanged = false;
+                const buffKeys = ['allStats', 'strength', 'agility', 'defense', 'perception', 'alcoholDamage', 'nausea', 'drunk'];
+                buffKeys.forEach(key => {
+                    if (state.buffs?.[key] && state.buffs[key].until && state.buffs[key].until <= now) {
+                        console.log(`⏰ Buff expired: ${key}`);
+                        delete state.buffs[key];
+                        buffChanged = true;
+                    }
+                });
+                if (buffChanged) {
+                    updateCarryWeight();
+                    window._cachedDamage = null; // Invalidate damage cache
+                }
             }
             
             // Update weather
@@ -112798,6 +113382,23 @@ function openFullscreenMap() {
         
         // Pomocná funkce pro kompletní reset state na výchozí hodnoty
         function resetStateToDefault() {
+            // === WIPE ALL STATE PROPERTIES ===
+            // Odstraň VŠECHNY vlastnosti state objektu aby nic nezůstalo z předchozí hry
+            // (Nemůžeme state = {} protože je referencovaný všude)
+            const keysToDelete = Object.keys(state);
+            keysToDelete.forEach(key => {
+                try { delete state[key]; } catch(e) { /* ignore non-configurable */ }
+            });
+            
+            // === RESET GLOBAL WINDOWS FLAGS ===
+            window.combatState = null;
+            window._combatScrolledToTop = false;
+            window._cachedDamage = null;
+            window._lastBuffCheck = 0;
+            window._resultModalActive = false;
+            window._closingDungeonModal = false;
+            
+            // === SET DEFAULT VALUES ===
             state.confirmed = false;
             state.isDead = false;
             state._characterFinalized = false;
@@ -114844,6 +115445,12 @@ function openFullscreenMap() {
         }
         
         function initSettlerExtended(settler) {
+            if (!settler) return;
+            // Vždy zajisti kritické properties (mohou chybět po load)
+            if (!settler.memories) settler.memories = [];
+            if (!settler.needs) settler.needs = { hunger: 50, thirst: 50, rest: 60, safety: 40, social: 30 };
+            if (!settler.stats) settler.stats = { daysInSettlement: 0, foodEaten: 0, timesInjured: 0, raidsDefended: 0, itemsProduced: 0, conversations: 0 };
+            
             if (settler._extendedInit) return;
             
             if (!settler.personality) assignSettlerPersonality(settler);
@@ -114966,7 +115573,9 @@ function openFullscreenMap() {
         
         // Přidání vzpomínky
         function addSettlerMemory(settler, text, icon, type) {
+            if (!settler) return;
             initSettlerExtended(settler);
+            if (!settler.memories) settler.memories = [];
             settler.memories.unshift({
                 text, icon: icon || '📝', type: type || 'neutral',
                 day: state.time?.days || 0, time: Date.now()
