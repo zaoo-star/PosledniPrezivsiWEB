@@ -83157,8 +83157,8 @@ function openFullscreenMap() {
             
             console.log('✅ Migrace dokončena');
             
-            // === MIGRACE: Doplň chybějící effect/value/type na inventářních předmětech ===
-            // === VELKÁ MIGRACE: Aktualizuj VŠECHNY staty předmětů na aktuální definice ===
+            // === MIGRACE: Doplň chybějící properties a sync metadata na inventářních předmětech ===
+            // BEZPEČNÁ MIGRACE: Nikdy nesnižuje damage/defense, pouze sync metadata a doplní chybějící
             if (state.inv && state.inv.length > 0) {
                 let fixedItems = 0;
                 const migrateItem = (item) => {
@@ -83168,66 +83168,70 @@ function openFullscreenMap() {
                     
                     let changed = false;
                     
-                    // Ulož player modifikace
-                    const playerMods = {
-                        ivanUpgrades: item.ivanUpgrades || 0,
-                        labUpgraded: item.labUpgraded || false,
-                        enchantment: item.enchantment || null,
-                        aiUpgraded: item.aiUpgraded || false,
-                        techUpgrades: item.techUpgrades || 0,
-                        upgraded: item.upgraded || false,
-                        count: item.count,
-                        durability: item.durability,
-                        maxDurability: item.maxDurability,
-                        locked: item.locked,
-                        _originalIcon: item._originalIcon
-                    };
-                    
-                    // Sync base staty z definice (damage, defense, weight, price, special, ammoType, bonus, desc, rarity, effect, value, cures, healsInjuries)
-                    const syncProps = ['weight', 'price', 'special', 'ammoType', 'bonus', 'desc', 'rarity', 'effect', 'value', 'cures', 'healsInjuries', 'classRequired', 'setId', 'stackable'];
-                    syncProps.forEach(prop => {
-                        if (def[prop] !== undefined) {
-                            if (JSON.stringify(item[prop]) !== JSON.stringify(def[prop])) { changed = true; }
+                    // Sync METADATA (nekombatní properties) z definice
+                    const metaProps = ['weight', 'price', 'special', 'ammoType', 'desc', 'rarity', 'effect', 'value', 'cures', 'healsInjuries', 'classRequired', 'setId', 'stackable'];
+                    metaProps.forEach(prop => {
+                        if (def[prop] !== undefined && JSON.stringify(item[prop]) !== JSON.stringify(def[prop])) {
                             item[prop] = def[prop];
+                            changed = true;
                         }
                     });
                     
-                    // Reset base damage (zbraně)
+                    // Bonus - sync pokud item nemá žádný
+                    if (def.bonus !== undefined && !item.bonus) {
+                        item.bonus = def.bonus;
+                        changed = true;
+                    }
+                    
+                    // === OPRAVA POŠKOZENÝCH STATŮ ===
+                    // Předchozí migrace mohla snížit staty. Spočítej MINIMUM co by item měl mít
+                    // a pokud je aktuální hodnota nižší, oprav nahoru.
+                    
+                    // Damage (zbraně)
                     if (def.damage !== undefined && (def.type === 'weapon' || item.type === 'weapon')) {
-                        let newDmg = def.damage;
-                        // Re-apply Ivan upgrades: +5 za každý upgrade
-                        if (playerMods.ivanUpgrades > 0) newDmg += playerMods.ivanUpgrades * 5;
-                        // Re-apply Lab upgrade: +10%
-                        if (playerMods.labUpgraded) newDmg = Math.ceil(newDmg * 1.1);
-                        if (item.damage !== newDmg) { changed = true; }
-                        item.damage = newDmg;
+                        let minExpected = def.damage;
+                        // Ivan upgrady: +5 za každý
+                        if (item.ivanUpgrades > 0) minExpected += item.ivanUpgrades * 5;
+                        // Lab upgrade: +10%
+                        if (item.labUpgraded) minExpected = Math.ceil(minExpected * 1.1);
+                        // Pokud aktuální damage je NIŽŠÍ než minimum, oprav
+                        if (!item.damage || item.damage < minExpected) {
+                            console.log(`🔧 Oprava DMG: ${item.name || item.id} ${item.damage || 0} → ${minExpected}`);
+                            item.damage = minExpected;
+                            changed = true;
+                        }
                     }
                     
-                    // Reset base defense (zbroj, helma, rukavice, boty)
+                    // Defense (zbroj/helma/rukavice/boty)
                     if (def.defense !== undefined && ['armor', 'helmet', 'gloves', 'boots', 'power_armor'].includes(def.type || item.type)) {
-                        let newDef = def.defense;
-                        // Re-apply Ivan upgrades: +5 za každý upgrade (pro zbroj)
-                        if (playerMods.ivanUpgrades > 0) newDef += playerMods.ivanUpgrades * 5;
-                        // Re-apply Lab upgrade: +10%
-                        if (playerMods.labUpgraded) newDef = Math.ceil(newDef * 1.1);
-                        if (item.defense !== newDef) { changed = true; }
-                        item.defense = newDef;
+                        let minExpected = def.defense;
+                        if (item.ivanUpgrades > 0) minExpected += item.ivanUpgrades * 5;
+                        if (item.labUpgraded) minExpected = Math.ceil(minExpected * 1.1);
+                        if (!item.defense || item.defense < minExpected) {
+                            console.log(`🔧 Oprava DEF: ${item.name || item.id} ${item.defense || 0} → ${minExpected}`);
+                            item.defense = minExpected;
+                            changed = true;
+                        }
                     }
                     
-                    // Reset name na base + upgrady suffix
+                    // Sync type pokud chybí
+                    if (!item.type && def.type) { item.type = def.type; changed = true; }
+                    
+                    // Fix name — obnov base jméno + upgrady suffix
                     if (def.name) {
-                        let newName = def.name;
-                        if (playerMods.ivanUpgrades > 0) newName += ' ' + '+'.repeat(playerMods.ivanUpgrades);
-                        if (playerMods.labUpgraded) newName += ' ⚡';
-                        if (playerMods.techUpgrades > 0) newName += ' [TECH]';
-                        if (playerMods.aiUpgraded) newName += ' [AI]';
-                        item.name = newName;
+                        let expectedName = def.name;
+                        if (item.ivanUpgrades > 0) expectedName += ' ' + '+'.repeat(item.ivanUpgrades);
+                        if (item.labUpgraded) expectedName += ' ⚡';
+                        if (item.techUpgrades > 0) expectedName += ' [TECH]';
+                        if (item.aiUpgraded) expectedName += ' [AI]';
+                        // Oprav pouze pokud jméno neodpovídá (předchozí migrace mohla rozbít)
+                        if (item.name !== expectedName) {
+                            item.name = expectedName;
+                            changed = true;
+                        }
                     }
                     
-                    // Sync type
-                    if (!item.type && def.type) item.type = def.type;
-                    
-                    // Fix maxDurability
+                    // Fix maxDurability — pouze zvyšujeme
                     if (item.durability !== undefined || item.maxDurability) {
                         const expectedDur = def.rarity === 'legendary' ? 200 : def.rarity === 'epic' ? 150 : def.rarity === 'rare' ? 120 : def.rarity === 'uncommon' ? 80 : 50;
                         if (!item.maxDurability || item.maxDurability < expectedDur) {
