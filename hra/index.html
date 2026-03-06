@@ -26849,11 +26849,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Přidej do společníkova inventáře
-            const existing = comp.inventory.find(i => i.id === item.id);
+            const existing = comp.inventory.find(i => i.id === item.id && !i._ownedByCompanion);
             if (existing) {
                 existing.count = (existing.count || 1) + actualCount;
             } else {
-                comp.inventory.push({...item, count: actualCount});
+                comp.inventory.push({...item, count: actualCount, _ownedByCompanion: comp.uniqueId || comp.id});
             }
             
             // Odeber z hráčova inventáře
@@ -26888,11 +26888,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Přidej do hráčova inventáře - NEmergeuj vylepšené
             const isModified = item.aiUpgraded || item.techUpgrades || item.ivanUpgrades || item.upgraded || item.technicianUpgrades || item.labUpgraded || item._smithyUpgrades || item.abyssShardUpgrades;
+            const itemClean = {...item};
+            delete itemClean._ownedByCompanion; // Vráceno hráči - smaž značku
             const existing = !isModified ? state.inv.find(i => i.id === item.id && !i.aiUpgraded && !i.techUpgrades && !i.ivanUpgrades && !i.upgraded && !i.technicianUpgrades && !i.labUpgraded && !i._smithyUpgrades && !i.abyssShardUpgrades) : null;
             if (existing) {
                 existing.count = (existing.count || 1) + actualCount;
             } else {
-                state.inv.push({...item, count: actualCount});
+                state.inv.push({...itemClean, count: actualCount});
             }
             
             // Odeber ze společníkova inventáře
@@ -27239,7 +27241,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Vybaví nový předmět
-            comp.equipped[slot] = {...item, count: 1};
+            comp.equipped[slot] = {...item, count: 1, _ownedByCompanion: comp.uniqueId || comp.id};
             
             // Odeber z inventáře (jen 1 kus)
             if (item.count > 1) {
@@ -27267,8 +27269,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             const item = {...comp.equipped[slot]};
-            
-            // Pokud sundáváme zbraň a společník má náboje, vrátíme je hráči
+            delete item._ownedByCompanion; // Vráceno hráči - smaž značku, vrátíme je hráči
             if (slot === 'weapon' && comp.ammo > 0 && item.ammoType) {
                 addAmmo(item.ammoType, comp.ammo);
                 notifyInfo('Náboje vráceny', `+${comp.ammo} ${getAmmoName(item.ammoType)}`);
@@ -33252,6 +33253,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Věci koupené od karavany nelze prodat zpět (anti-exploit)
+            
+            // Předměty společníka nelze prodat
+            if (item._ownedByCompanion) {
+                notifyWarning('Nelze prodat', '🤝 Tento předmět patří společníkovi! Sundej ho nejdříve z jeho výbavy.');
+                return;
+            }
             if (item.fromCaravan) {
                 notifyWarning('Nelze prodat', 'Věci koupené od karavany nelze prodat. Použij je nebo prodej na online tržišti!');
                 return;
@@ -34706,15 +34713,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             const currentFilter = window.inventoryFilter || 'all';
                             let filteredInv;
                             if (currentFilter === 'all') {
-                                filteredInv = state.inv.filter(i => i.type !== 'rune'); // Runy mají vlastní sekci
+                                filteredInv = state.inv.filter(i => i.type !== 'rune' && !i._ownedByCompanion);
                             } else if (currentFilter === 'healing') {
-                                filteredInv = state.inv.filter(i => i.type === 'consumable' && i.effect === 'health');
+                                filteredInv = state.inv.filter(i => i.type === 'consumable' && i.effect === 'health' && !i._ownedByCompanion);
                             } else if (currentFilter === 'unequipped') {
-                                filteredInv = state.inv.filter(i => !isItemEquipped(i) && i.type !== 'rune');
+                                filteredInv = state.inv.filter(i => !isItemEquipped(i) && i.type !== 'rune' && !i._ownedByCompanion);
                             } else if (currentFilter === 'rune') {
                                 filteredInv = []; // Runy se zobrazují v sekci níže
                             } else {
-                                filteredInv = state.inv.filter(i => i.type === currentFilter);
+                                filteredInv = state.inv.filter(i => i.type === currentFilter && !i._ownedByCompanion);
                             }
                             
                             // === RUNY - kompaktní rozklikávací sekce ===
@@ -37730,6 +37737,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (location.type === 'medical') {
                 const healText = 'Léčit se';
                 const searchText = 'Prohledat';
+                
+                // 📜 Quest item indicator (stejně jako u dungeonů)
+                if (state.world?.questItems?.[location.id]) {
+                    const _qiId = state.world.questItems[location.id];
+                    const _qi = QUEST_ITEMS.find(i => i.id === _qiId);
+                    if (_qi && !state.inv.some(i => i.id === _qiId)) {
+                        html += `<div style="background: linear-gradient(135deg, #1a1a0a, #2a2a0a); padding: 0.5rem; border-radius: 6px; margin-bottom: 0.5rem; text-align: center; border: 2px solid #ffd700; animation: pulse 2s infinite;">
+                            <span style="color: #ffd700; font-weight: bold;">${_qi.icon} Quest předmět: ${_qi.name}</span>
+                            <div style="color: #888; font-size: 0.7rem;">Prohledej lokaci pro získání</div>
+                        </div>`;
+                    }
+                }
+                
                 html += renderActionButton('💊', healText, 'visitHospital()', '#c62828');
                 html += renderActionButton('🔍', searchText, "showActionModal('explore')", 'var(--rust)');
             }
@@ -37746,7 +37766,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 console.log('🏰 DUNGEON_FLOORS keys:', Object.keys(DUNGEON_FLOORS || {}));
                 console.log('🏰 Has floors:', !!DUNGEON_FLOORS?.[location.id]);
                 
-                // 📜 Quest item indicator
+                // 📜 Quest item indicator - retroaktivní respawn
+                if (state.mainQuest?.currentQuest) {
+                    const _rQ = MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest);
+                    if (_rQ?.spawnItem && _rQ.spawnItem.location === location.id) {
+                        const _rId = _rQ.spawnItem.id;
+                        if (!state.inv.some(i => i.id === _rId) && !state.world.questItems?.[location.id]) {
+                            if (!state.world.questItems) state.world.questItems = {};
+                            state.world.questItems[location.id] = _rId;
+                        }
+                    }
+                }
                 if (state.world?.questItems?.[location.id]) {
                     const _qiId = state.world.questItems[location.id];
                     const _qi = QUEST_ITEMS.find(i => i.id === _qiId);
@@ -41990,6 +42020,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 checkSpecialQuestTriggers(state.world.currentLocation);
                 
                 // 📜 Quest item check - zobraz nalezený quest item na lokaci
+                // Retroaktivní respawn: pokud quest item chybí v questItems ale patří sem
+                if (state.mainQuest?.currentQuest) {
+                    const _curQ = MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest);
+                    if (_curQ?.spawnItem && _curQ.spawnItem.location === state.world.currentLocation) {
+                        const _sid = _curQ.spawnItem.id;
+                        if (!state.inv.some(i => i.id === _sid) && !state.world.questItems?.[state.world.currentLocation]) {
+                            if (!state.world.questItems) state.world.questItems = {};
+                            state.world.questItems[state.world.currentLocation] = _sid;
+                            console.log(`📦 [FIX arrival] Retroaktivní spawn ${_sid}`);
+                        }
+                    }
+                }
                 if (state.world.questItems?.[state.world.currentLocation]) {
                     const _qItemId = state.world.questItems[state.world.currentLocation];
                     const _qItem = QUEST_ITEMS.find(i => i.id === _qItemId);
@@ -43962,6 +44004,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 useActionLimit('explore', loc.id);
                 if (!state.world.locationCooldowns) state.world.locationCooldowns = {};
                 state.world.locationCooldowns[cooldownKey] = now;
+            }
+            
+            // === RETROAKTIVNÍ OPRAVA: Respawn hlavního quest itemu ===
+            // Pokud hráč je na lokaci kde má být quest item (spawnItem) ale chybí v questItems
+            // (může nastat po update hry, resetu nebo starém save) – spawni ho znovu
+            if (state.mainQuest?.currentQuest) {
+                const currentQ = MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest);
+                if (currentQ?.spawnItem && currentQ.spawnItem.location === loc.id) {
+                    const spawnId = currentQ.spawnItem.id;
+                    const alreadyInInv = state.inv.some(i => i.id === spawnId);
+                    const alreadySpawned = state.world.questItems?.[loc.id] === spawnId;
+                    if (!alreadyInInv && !alreadySpawned) {
+                        // Quest item chybí - spawni ho
+                        if (!state.world.questItems) state.world.questItems = {};
+                        state.world.questItems[loc.id] = spawnId;
+                        console.log(`📦 [FIX] Retroaktivní spawn quest itemu ${spawnId} na lokaci ${loc.id}`);
+                    }
+                }
             }
             
             // Kontrola quest itemů na této lokaci
@@ -48258,6 +48318,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Věci koupené od karavany nelze prodat obchodníkům (anti-exploit)
+            
+            // Předměty společníka nelze prodat
+            if (item._ownedByCompanion) {
+                notifyWarning('Nelze prodat', '🤝 Tento předmět patří společníkovi! Sundej ho nejdříve z jeho výbavy.');
+                return;
+            }
             if (item.fromCaravan) {
                 notifyWarning('Nelze prodat', 'Věci koupené od karavany nelze prodat. Použij je nebo prodej na online tržišti!');
                 return;
@@ -48488,6 +48554,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Věci koupené od karavany nelze prodat obchodníkům (anti-exploit)
+            
+            // Předměty společníka nelze prodat
+            if (item._ownedByCompanion) {
+                notifyWarning('Nelze prodat', '🤝 Tento předmět patří společníkovi! Sundej ho nejdříve z jeho výbavy.');
+                return;
+            }
             if (item.fromCaravan) {
                 notifyWarning('Nelze prodat', 'Věci koupené od karavany nelze prodat. Použij je nebo prodej na online tržišti!');
                 return;
@@ -54848,6 +54920,19 @@ function openFullscreenMap() {
             closeModal();
             const dungeonData = DUNGEON_FLOORS[dungeonId];
             if (!dungeonData) return;
+            
+            // === RETROAKTIVNÍ OPRAVA: Respawn quest itemu pokud chybí ===
+            if (state.mainQuest?.currentQuest) {
+                const _curQ = MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest);
+                if (_curQ?.spawnItem && _curQ.spawnItem.location === dungeonId) {
+                    const _sid = _curQ.spawnItem.id;
+                    if (!state.inv.some(i => i.id === _sid) && !state.world.questItems?.[dungeonId]) {
+                        if (!state.world.questItems) state.world.questItems = {};
+                        state.world.questItems[dungeonId] = _sid;
+                        console.log(`📦 [FIX dungeon] Retroaktivní spawn ${_sid} na ${dungeonId}`);
+                    }
+                }
+            }
             
             // 📜 QUEST ITEM CHECK - automaticky sesbírej quest item na této lokaci
             if (state.world.questItems?.[dungeonId]) {
@@ -68366,6 +68451,12 @@ function openFullscreenMap() {
             }
             
             // Věci koupené od karavany nelze prodat obchodníkům (anti-exploit)
+            
+            // Předměty společníka nelze prodat
+            if (item._ownedByCompanion) {
+                notifyWarning('Nelze prodat', '🤝 Tento předmět patří společníkovi! Sundej ho nejdříve z jeho výbavy.');
+                return;
+            }
             if (item.fromCaravan) {
                 notifyWarning('Nelze prodat', 'Věci koupené od karavany nelze prodat. Použij je nebo prodej na online tržišti!');
                 return;
@@ -81922,6 +82013,11 @@ function openFullscreenMap() {
                 } else {
                     // Item je v equipped ale NE v inv → přidej ho do inv
                     // ALE zkontroluj jestli tam náhodou není duplicita
+                    // OCHRANA: Nespinjej companion-owned items
+                    if (equippedItem._ownedByCompanion) {
+                        console.log(`🔧 syncEquipped: Přeskakuji ${slot} '${equippedItem.name}' - patří společníkovi`);
+                        continue;
+                    }
                     const possibleDup = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type);
                     if (possibleDup) {
                         // Existuje item se stejným id — nespinej nový, použij existující
@@ -106532,7 +106628,7 @@ function openFullscreenMap() {
                     ` : ''}
                     ${mayor ? `
                         <button class="btn" onclick="showMayorPowersPanel()" style="width: 100%; margin-bottom: 0.5rem; background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
-                            🔐 Pravomoci šéfa ${mayorPasswordUnlocked ? '🔓' : '🔒'}
+                            🔐 Pravomoci šéfa ${(mayorPasswordUnlocked || isMayor() || isStaff()) ? '🔓' : '🔒'}
                         </button>
                     ` : ''}
                     ${isCurrentMayor ? `
@@ -106871,10 +106967,11 @@ function openFullscreenMap() {
         // Hlasovat pro kandidáta
         // Šéf rozhoduje
         async function mayorDecide(decisionId, optionId) {
-            if (!mayorPasswordUnlocked && !isStaff()) {
+            if (!mayorPasswordUnlocked && !isStaff() && !isMayor()) {
                 requireMayorPassword(() => mayorDecide(decisionId, optionId));
                 return;
             }
+            if (isMayor() || isStaff()) mayorPasswordUnlocked = true;
             
             try {
                 const decision = [...MAYOR_SYSTEM.dailyDecisions, ...MAYOR_SYSTEM.crisisDecisions]
@@ -107294,10 +107391,12 @@ function openFullscreenMap() {
         
         // Použití pravomoci šéfa
         async function useMayorPower(powerId) {
-            if (!mayorPasswordUnlocked && !isStaff()) {
+            if (!mayorPasswordUnlocked && !isStaff() && !isMayor()) {
                 requireMayorPassword(() => useMayorPower(powerId));
                 return;
             }
+            // Auto-unlock pro skutečného šéfa
+            if (isMayor() || isStaff()) mayorPasswordUnlocked = true;
             
             const power = MAYOR_SYSTEM.mayorPowers.find(p => p.id === powerId);
             if (!power) return;
@@ -107346,6 +107445,13 @@ function openFullscreenMap() {
             if (isStaff()) {
                 mayorPasswordUnlocked = true;
                 await _renderMayorPowersPanel(true);
+                return;
+            }
+            
+            // Pokud jsi skutečný šéf (ověřeno Firebasem), auto-unlock bez hesla
+            if (isMayor()) {
+                mayorPasswordUnlocked = true;
+                await _renderMayorPowersPanel(false);
                 return;
             }
             
@@ -109996,10 +110102,11 @@ function openFullscreenMap() {
         
         // Vyzvednutí daňových příjmů šéfa
         async function collectMayorTaxIncome() {
-            if (!mayorPasswordUnlocked && !isStaff()) {
+            if (!mayorPasswordUnlocked && !isStaff() && !isMayor()) {
                 requireMayorPassword(() => collectMayorTaxIncome());
                 return;
             }
+            if (isMayor() || isStaff()) mayorPasswordUnlocked = true;
             
             if (!currentMayor || !currentMayor.name) {
                 notifyWarning('Žádný šéf', 'Není nastaven šéf pustiny');
