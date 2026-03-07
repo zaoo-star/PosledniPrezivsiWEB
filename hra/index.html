@@ -13491,7 +13491,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     { id: 'chef', name: 'Kuchař', icon: '👨‍🍳', desc: '+20% efekt jídla', maxLevel: 5, effect: { foodBonus: 0.2 }, requires: 'tinkerer', tier: 2 },
                     { id: 'alchemist', name: 'Alchymista', icon: '⚗️', desc: '+20% efekt lektvarů', maxLevel: 5, effect: { potionBonus: 0.2 }, requires: 'tinkerer', tier: 2 },
                     { id: 'master_craft', name: 'Mistr řemesla', icon: '⭐', desc: '20% šance na double výstup', maxLevel: 3, effect: { doubleCraft: 0.2 }, requires: 'chef', tier: 3 },
-                    { id: 'legendary_smith', name: 'Legendární kovář', icon: '🔨', desc: 'Může vytvářet legendární předměty', maxLevel: 1, effect: { legendaryUnlock: true }, requires: 'master_craft', tier: 4 }
+                    { id: 'legendary_smith', name: 'Legendární kovář', icon: '🔨', desc: '-50% opotřebení vybavení — tvé zbraně a zbroj vydrží 2× déle', maxLevel: 1, effect: { durabilityBonus: 0.50 }, requires: 'master_craft', tier: 4 }
                 ]
             }
         };
@@ -30083,10 +30083,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 hordeEnemies.forEach(eId => {
                     const enemyDef = ENEMIES.find(e => e.id === eId);
                     if (enemyDef) {
+                        const _hordeLvl = state.char?.level || 1;
+                        const _hordeScaling = Math.max(0, Math.min(_hordeLvl - 1, 20));
+                        const _hordeHpMult  = 1 + _hordeScaling * 0.30;
+                        const _hordeDmgMult = 1 + _hordeScaling * 0.25;
+                        const _hordeDefMult = 1 + _hordeScaling * 0.15;
                         enemyGroup.push({
                             ...enemyDef,
-                            hp: enemyDef.hp,
-                            maxHp: enemyDef.hp,
+                            hp: Math.floor(enemyDef.hp * _hordeHpMult),
+                            maxHp: Math.floor(enemyDef.hp * _hordeHpMult),
+                            damage: Math.floor(enemyDef.damage * _hordeDmgMult),
+                            defense: Math.floor(enemyDef.defense * _hordeDefMult),
                             alive: true,
                             stunned: false,
                             poisoned: 0,
@@ -61921,7 +61928,7 @@ function openFullscreenMap() {
             // Ivan vyková legendární zbraň BEZ potřeby skillu — ale za příplatek
             const hasLegendarySmith = getSkillLevel('legendary_smith') > 0;
             if (hasLegendarySmith) {
-                notifyInfo('Máš skill!', 'Máš Legendární kovář — vykuj si sám v Craftingu za méně surovin.');
+                notifyInfo('Máš skill!', 'Máš Legendární kovář — opravy jsou o 50% levnější a vybavení se opotřebovává pomaleji.');
                 return;
             }
             
@@ -70205,6 +70212,29 @@ function openFullscreenMap() {
                     <div style="font-size: 0.85rem; color: #aaa;">${currentBonuses || settlerDetailTexts.noBonuses}</div>
                 </div>
                 
+                <!-- Info box pro kováře -->
+                ${settler.type === 'blacksmith' ? `
+                    <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #4a4a7a;">
+                        <h4 style="margin: 0 0 0.5rem 0; color: #9c88ff; font-size: 0.9rem;">⚒️ Jak kovář pomáhá?</h4>
+                        <p style="color: #aaa; font-size: 0.8rem; margin: 0 0 0.4rem 0;">
+                            🔧 <strong>Opravy zdarma</strong> — všechny opravy vybavení u tebe jsou zdarma (od úrovně 1)<br>
+                            ⚔️ <strong>Bonus k vylepšení</strong> — při upgradu zbraně nebo zbroje u Ivana dostaneš bonus DMG/DEF navíc:
+                        </p>
+                        <div style="display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.78rem; margin-top: 0.3rem;">
+                            ${[1,2,3,4,5].map(lvl => {
+                                const lvlData = SETTLER_SKILLS.smithing.levels[lvl - 1];
+                                const upgradeBonus = lvlData?.effect?.upgrade || 0;
+                                const isCurrentLevel = currentLevel === lvl;
+                                return `<div style="display: flex; justify-content: space-between; padding: 0.2rem 0.4rem; background: ${isCurrentLevel ? '#2a2a3a' : '#111'}; border-radius: 4px; border-left: 2px solid ${isCurrentLevel ? '#9c88ff' : '#333'};">
+                                    <span style="color: ${isCurrentLevel ? '#ddd' : '#666'};">${lvlData.name}</span>
+                                    <span style="color: ${isCurrentLevel ? '#ffd700' : '#555'};">+${5 + upgradeBonus} DMG/DEF za upgrade${isCurrentLevel ? ' ← teď' : ''}</span>
+                                </div>`;
+                            }).join('')}
+                        </div>
+                        <p style="color: #666; font-size: 0.75rem; margin: 0.4rem 0 0 0;">💡 Upgraduj kováře v skill tree níže za 💰</p>
+                    </div>
+                ` : ''}
+                
                 <!-- Historie sběru pro sběrače -->
                 ${settler.type === 'scavenger_s' ? `
                     <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #4a6a4a;">
@@ -75910,8 +75940,13 @@ function openFullscreenMap() {
                     const compBonuses = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
                     let durLoss = 1; // 1 durability za útok v taktickém boji
                     
+                    // Legendary smith skill - 50% šance ušetřit opotřebení
+                    if (getSkillLevel('legendary_smith') > 0 && Math.random() < 0.50) {
+                        durLoss = 0;
+                    }
+                    
                     // Technik společník - šance zabránit opotřebení
-                    if (compBonuses.durabilityBonus > 0 && Math.random() < compBonuses.durabilityBonus) {
+                    if (durLoss > 0 && compBonuses.durabilityBonus > 0 && Math.random() < compBonuses.durabilityBonus) {
                         durLoss = 0;
                     }
                     
@@ -77506,15 +77541,32 @@ function openFullscreenMap() {
                 // Ambush bonus
                 const ambushBonus = isAmbush ? 1.1 : 1.0;
                 
+                // === LEVEL SCALING: nepřátelé rostou s hráčem ===
+                // Tier bossů a world bossů jsou vyňati (mají vlastní balanci)
+                const _playerLvl = state.char?.level || 1;
+                const _scalingLevels = Math.max(0, Math.min(_playerLvl - 1, 20)); // začíná od lvl 2, cap na lvl 21
+                const _isSpecialEnemy = enemyData.isBoss || enemyData.isWorldBoss || enemyData.isRaidBoss;
+                let levelHpMult = 1.0;
+                let levelDmgMult = 1.0;
+                let levelDefMult = 1.0;
+                if (!_isSpecialEnemy && _scalingLevels > 0) {
+                    levelHpMult  = 1 + _scalingLevels * 0.30; // +30% HP za level
+                    levelDmgMult = 1 + _scalingLevels * 0.25; // +25% DMG za level
+                    levelDefMult = 1 + _scalingLevels * 0.15; // +15% DEF za level
+                }
+                
                 // Create enemy group pro nový Heroes3 systém
                 const enemyGroup = [];
                 for (let i = 0; i < enemyCount; i++) {
+                    const scaledHp  = Math.floor(enemyData.hp * levelHpMult);
+                    const scaledDmg = Math.floor(enemyData.damage * ambushBonus * levelDmgMult);
+                    const scaledDef = Math.floor(enemyData.defense * ambushBonus * levelDefMult);
                     enemyGroup.push({
                         ...enemyData,
-                        damage: Math.floor(enemyData.damage * ambushBonus),
-                        defense: Math.floor(enemyData.defense * ambushBonus),
-                        hp: enemyData.hp,
-                        maxHp: enemyData.maxHp || enemyData.hp,
+                        damage: scaledDmg,
+                        defense: scaledDef,
+                        hp: scaledHp,
+                        maxHp: scaledHp,
                         speed: enemyData.speed || 5 + Math.floor(Math.random() * 5)
                     });
                 }
@@ -80982,7 +81034,10 @@ function openFullscreenMap() {
                     // Technik zpevnění - menší opotřebení
                     const compBonuses = getAllCompanionBonuses();
                     let durabilityLoss = 2;
-                    if (compBonuses.durabilityBonus > 0) {
+                    // Legendary smith skill - 50% šance ušetřit opotřebení
+                    if (getSkillLevel('legendary_smith') > 0 && Math.random() < 0.50) {
+                        durabilityLoss = 0;
+                    } else if (compBonuses.durabilityBonus > 0) {
                         // S durabilityBonus 0.05 je šance 5% že se zbraň neopotřebí
                         if (Math.random() < compBonuses.durabilityBonus) {
                             durabilityLoss = 0; // Technik zabránil opotřebení
@@ -92704,7 +92759,7 @@ function openFullscreenMap() {
             
             showModal('🤝 Uzavřít obchod?', `
                 <div style="text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">${escapeHtml(itemIcon)}</div>
+                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">${itemIcon && itemIcon.startsWith('<img') ? itemIcon : escapeHtml(itemIcon)}</div>
                     <div style="font-size: 1.1rem; color: #fff; margin-bottom: 0.3rem;">${escapeHtml(itemName)}${countText}</div>
                     <div style="color: #888; font-size: 0.85rem; margin-bottom: 0.5rem;">od ${escapeHtml(sellerName)}</div>
                     <div style="color: #ffd700; font-size: 1.3rem; font-weight: bold; margin-bottom: 1rem;">${totalPrice} 💰</div>
@@ -110110,10 +110165,13 @@ function openFullscreenMap() {
                 const hasVoted = votes[getPlayerName()];
                 const mayorName = currentMayor.name;
                 
-                // Kontrola cooldownu
+                // Kontrola cooldownu - cooldown platí jen pro NEÚSPĚŠNÉ pokusy o sesazení
+                // Po úspěšném sesazení (a novém šéfovi) cooldown NEplatí
                 const lastAttempt = impeachData.lastAttempt || 0;
+                const lastTarget = impeachData.lastTarget || null;
                 const cooldownEnd = lastAttempt + MAYOR_SYSTEM.impeachment.cooldown;
-                const onCooldown = Date.now() < cooldownEnd;
+                // Cooldown platí jen pokud: neuplynul čas A poslední pokus byl o STEJNÉHO šéfa
+                const onCooldown = Date.now() < cooldownEnd && lastTarget === mayorName;
                 
                 const html = `
                     <div style="background: linear-gradient(135deg, #2a1a1a 0%, #1a0d0d 100%); padding: 1.5rem; border-radius: 10px; margin-bottom: 1rem; border: 2px solid #f44336;">
@@ -110238,22 +110296,30 @@ function openFullscreenMap() {
                 // Smaž šéfa
                 await firebaseDB.ref('politics/mayor').remove();
                 
-                // Vyčisti hlasy a nastav cooldown
+                // Vyčisti hlasy impeachmentu - BEZ cooldownu (nový šéf = nové hlasování)
                 await firebaseDB.ref('politics/impeachment').set({
-                    lastAttempt: Date.now(),
                     lastTarget: mayorName,
+                    lastImpeachedAt: firebase.database.ServerValue.TIMESTAMP,
                     votes: null
+                    // lastAttempt záměrně nenastavujeme - cooldown se nesmí přenést na nového šéfa
                 });
+                
+                // Spusť nový volební cyklus okamžitě od dnešního dne
+                const now = new Date();
+                await firebaseDB.ref('politics/election/cycleStart').set(now.toISOString());
+                await firebaseDB.ref('politics/election/votes').remove();
+                await firebaseDB.ref('politics/election/candidates').remove();
+                await firebaseDB.ref('politics/election/manualPhase').remove();
                 
                 // Oznámení do chatu
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `⚖️ ${mayorName} byl SESAZEN z funkce Šéfa Pustiny hlasováním komunity! Budou vyhlášeny nové volby.`,
+                    text: `⚖️ ${mayorName} byl SESAZEN z funkce Šéfa Pustiny hlasováním komunity! Dnes začínají nové volby — přihlaste se jako kandidát v sekci Politika!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
                 
-                notifySuccess('⚖️ Impeachment úspěšný!', `${mayorName} byl sesazen`);
+                notifySuccess('⚖️ Impeachment úspěšný!', `${mayorName} byl sesazen. Začínají nové volby!`);
                 closeModal();
                 
             } catch (e) {
@@ -111547,6 +111613,8 @@ function openFullscreenMap() {
                     // Vyčisti hlasy a kandidáty (zachovej cycleStart!)
                     await firebaseDB.ref('politics/election/votes').remove();
                     await firebaseDB.ref('politics/election/candidates').remove();
+                    // Smaž staré hlasy impeachmentu (nový šéf = čistý stůl)
+                    await firebaseDB.ref('politics/impeachment/votes').remove();
                     
                     // Sestavení výsledků
                     const resultsText = Object.entries(voteCounts)
@@ -111790,6 +111858,8 @@ function openFullscreenMap() {
                     // Vyčisti hlasy a kandidáty (ale zachovej cycleStart pro další cyklus!)
                     await firebaseDB.ref('politics/election/votes').remove();
                     await firebaseDB.ref('politics/election/candidates').remove();
+                    // Smaž staré hlasy impeachmentu (nový šéf = čistý stůl)
+                    await firebaseDB.ref('politics/impeachment/votes').remove();
                     
                     // Sestavení výsledků pro chat
                     const resultsText = Object.entries(voteCounts)
