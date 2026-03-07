@@ -18982,37 +18982,99 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // === POČASÍ SYSTÉM ===
+        // === GLOBÁLNÍ POČASÍ (Firebase) ===
+        let globalWeatherListenerActive = false;
+
+        function initGlobalWeather() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            if (globalWeatherListenerActive) return;
+            globalWeatherListenerActive = true;
+
+            firebaseDB.ref('globalWeather').on('value', (snap) => {
+                const data = snap.val();
+                if (!data) {
+                    generateAndPushWeather(true);
+                    return;
+                }
+                const prev = state.weather?.current;
+                state.weather = {
+                    current: data.current,
+                    lastChange: data.lastChange,
+                    duration: data.duration
+                };
+                if (prev && prev !== data.current) {
+                    const w = WEATHER_TYPES.find(w => w.id === data.current);
+                    if (w) {
+                        addLog('Počasí se změnilo na: ' + w.name, w.icon);
+                        if (data.current === 'radstorm' && !state.map.inBase) {
+                            addRadiation(8);
+                            addLog('Radiační bouře! +radiace', '☢️');
+                        }
+                    }
+                }
+                renderFull();
+            });
+        }
+
+        function generateAndPushWeather(force) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            const now = Date.now();
+            if (!state.weather) state.weather = { current: 'clear', lastChange: now, duration: 3600000 };
+            if (!force && now - state.weather.lastChange < state.weather.duration) return;
+
+            const roll = Math.random();
+            let cumulative = 0;
+            let newWeather = WEATHER_TYPES[0];
+            for (const w of WEATHER_TYPES) {
+                cumulative += w.chance;
+                if (roll < cumulative) { newWeather = w; break; }
+            }
+            if (!force && newWeather.id === state.weather.current) return;
+
+            const duration = 12 * 60 * 60 * 1000; // 12 hodin
+            firebaseDB.ref('globalWeather').set({
+                current: newWeather.id,
+                lastChange: now,
+                duration: duration,
+                setBy: state.char?.name || 'anon'
+            }).catch(() => {});
+        }
+
         function updateWeather() {
             if (!state.weather) state.weather = { current: 'clear', lastChange: Date.now(), duration: 3600000 };
-            const now = Date.now();
-            if (now - state.weather.lastChange > state.weather.duration) {
-                // Změna počasí
-                const roll = Math.random();
-                let cumulative = 0;
-                for (const weather of WEATHER_TYPES) {
-                    cumulative += weather.chance;
-                    if (roll < cumulative) {
-                        if (state.weather.current !== weather.id) {
-                            state.weather.current = weather.id;
-                            state.weather.lastChange = now;
-                            state.weather.duration = (30 + Math.random() * 60) * 60 * 1000; // 30-90 minut
-                            addLog('Počasí se změnilo na: ' + getWeatherName(weather.id), weather.icon);
-                            
-                            // Radiační bouře - speciální efekt
-                            if (weather.id === 'radstorm' && !state.map.inBase) {
-                                addRadiation(8);
-                                addLog('Radiační bouře! +radiace', '☢️');
+
+            if (multiplayerEnabled && firebaseDB) {
+                initGlobalWeather();
+                const now = Date.now();
+                if (now - state.weather.lastChange > state.weather.duration) {
+                    generateAndPushWeather(false);
+                }
+            } else {
+                // Offline fallback
+                const now = Date.now();
+                if (now - state.weather.lastChange > state.weather.duration) {
+                    const roll = Math.random();
+                    let cumulative = 0;
+                    for (const weather of WEATHER_TYPES) {
+                        cumulative += weather.chance;
+                        if (roll < cumulative) {
+                            if (state.weather.current !== weather.id) {
+                                state.weather.current = weather.id;
+                                state.weather.lastChange = now;
+                                state.weather.duration = 12 * 60 * 60 * 1000; // 12 hodin
+                                addLog('Počasí se změnilo na: ' + getWeatherName(weather.id), weather.icon);
+                                if (weather.id === 'radstorm' && !state.map.inBase) {
+                                    addRadiation(8);
+                                    addLog('Radiační bouře! +radiace', '☢️');
+                                }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
             }
-            
-            // Kontrola nemocí z počasí
+
             checkWeatherDisease();
-            
-            // Sběr dešťové vody (každých 10 minut při dešti/bouřce venku)
             checkRainWaterCollection();
         }
         
@@ -19035,9 +19097,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                              state.map?.inBase;
             if (inShelter) return;
             
+            // Limit: max 3 vody za jedno počasí (12h cyklus)
+            const weatherCycleKey = state.weather?.lastChange || 0;
+            if (state.rainWaterCycleKey !== weatherCycleKey) {
+                state.rainWaterCycleKey = weatherCycleKey;
+                state.rainWaterCollected = 0;
+            }
+            const MAX_RAIN_WATER = 3;
+            if ((state.rainWaterCollected || 0) >= MAX_RAIN_WATER) return;
+            
             // Šance na vodu
             if (Math.random() < weather.effect.waterChance) {
-                // Přidej vodu do inventáře
                 const waterItem = ITEMS.find(i => i.id === 'water');
                 if (waterItem) {
                     const existingWater = state.inv.find(i => i.id === 'water');
@@ -19046,8 +19116,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     } else {
                         state.inv.push({ ...waterItem, count: 1 });
                     }
+                    state.rainWaterCollected = (state.rainWaterCollected || 0) + 1;
+                    const remaining = MAX_RAIN_WATER - state.rainWaterCollected;
                     addLog(`${weather.icon} Nasbíral jsi dešťovou vodu! (+1 💧)`, '💧');
-                    notifySuccess('Dešťová voda!', '+1 💧 do inventáře');
+                    notifySuccess('Dešťová voda!', `+1 💧 do inventáře${remaining > 0 ? ` (ještě ${remaining} možné)` : ' — maximum dosaženo'}`);
                 }
             }
         }
