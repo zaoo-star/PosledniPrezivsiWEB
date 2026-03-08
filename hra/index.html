@@ -28,50 +28,7 @@
         // DŮLEŽITÉ: Hosté jsou povoleni - nastavit IHNED
         window.guestsDisabled = false;
         
-        (function() {
-            // Verze pro kontrolu aktualizace
-            const FORCE_UPDATE_VERSION = '3.6.0';
-            const storedVersion = localStorage.getItem('appVersion');
-            
-            // Pokud je nová verze, vymaž všechny cache a SW
-            if (storedVersion !== FORCE_UPDATE_VERSION) {
-                console.log('🔄 Nová verze! Mažu cache...');
-                
-                // Odregistruj staré service workery (ale NE notifikační sw.js!)
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                        for (let registration of registrations) {
-                            var scriptURL = '';
-                            try { scriptURL = (registration.active || registration.installing || registration.waiting || {}).scriptURL || ''; } catch(e) { /* sw check ok */ }
-                            if (scriptURL.includes('sw.js')) {
-                                console.log('🔔 Zachovávám notifikační SW');
-                                continue;
-                            }
-                            registration.unregister();
-                            console.log('🗑️ SW odregistrován:', scriptURL);
-                        }
-                    });
-                }
-                
-                // Vymaž všechny cache
-                if ('caches' in window) {
-                    caches.keys().then(function(names) {
-                        for (let name of names) {
-                            caches.delete(name);
-                            console.log('🗑️ Cache smazána:', name);
-                        }
-                    });
-                }
-                
-                // Ulož novou verzi
-                localStorage.setItem('appVersion', FORCE_UPDATE_VERSION);
-                
-                // Reload po krátké pauze (aby se stihly smazat cache)
-                setTimeout(function() {
-                    location.reload();
-                }, 500);
-            }
-        })();
+        // (cache force-update odstraněn)
     </script>
     
     <!-- VYPNUTÍ CONSOLE.LOG V PRODUKCI -->
@@ -4213,6 +4170,7 @@
                 
                 var tryDirectNotification = function() {
                     try {
+                        if (typeof Notification === 'undefined') return;
                         var n = new Notification(title, notifOpts);
                         n.onclick = function() { window.focus(); n.close(); };
                         setTimeout(function() { n.close(); }, 8000);
@@ -18735,7 +18693,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             });
             
             // Fallback na starý systém pokud MobileNotifications není aktivní
-            if (!MobileNotifications.enabled && systemNotificationsEnabled && Notification.permission === 'granted') {
+            if (!MobileNotifications.enabled && systemNotificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
                 try {
                     var notification = new Notification('🎮 ' + title, {
                         body: body,
@@ -18891,7 +18849,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Zobraz banner pro povolení notifikací
             setTimeout(() => {
-                if (Notification.permission === 'default') {
+                if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
                     showNotificationPrompt();
                 }
             }, 5000);
@@ -43386,11 +43344,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Aplikuj efekt
             switch(item.effect) {
                 case 'reveal_locations':
-                    const unvisited = WORLD_LOCATIONS.filter(l => !state.world.visitedLocations?.includes(l.id) && l.type !== 'empty');
-                    const toReveal = unvisited.slice(0, 3).map(l => l.id);
                     if (!state.world.revealedLocations) state.world.revealedLocations = [];
+                    if (!Array.isArray(state.world.revealedLocations)) state.world.revealedLocations = [];
+                    const alreadyKnown = new Set([
+                        ...(state.world.visitedLocations || []),
+                        ...(state.world.revealedLocations || [])
+                    ]);
+                    const unvisited = WORLD_LOCATIONS.filter(l => !alreadyKnown.has(l.id) && l.type !== 'empty');
+                    const toReveal = unvisited.slice(0, 3).map(l => l.id);
                     state.world.revealedLocations.push(...toReveal);
-                    notifySuccess('Mapa použita!', `Odhaleno ${toReveal.length} lokací`);
+                    notifySuccess('Mapa použita!', toReveal.length > 0 ? `Odhaleno ${toReveal.length} lokací` : 'Žádné nové lokace k odhalení.');
                     break;
                     
                 case 'permanent_hp':
@@ -71912,10 +71875,10 @@ function openFullscreenMap() {
                 // === ENEMY SCALING SYSTEM ===
                 const playerLevel = state.char.level || 1;
                 
-                // Soft scaling: +5% HP/DMG za každý level nad 10
+                // Soft scaling: +2.5% HP/DMG za každý level nad 10
                 let levelScaling = 1.0;
                 if (playerLevel > 10) {
-                    levelScaling = 1 + (playerLevel - 10) * 0.05;
+                    levelScaling = 1 + (playerLevel - 10) * 0.025;
                 }
                 
                 // Day scaling: nepřátelé jsou silnější po 30 dnech
@@ -82757,6 +82720,19 @@ function openFullscreenMap() {
             if (!Array.isArray(state.world.unlockedPaths)) state.world.unlockedPaths = [];
             if (!state.world.discoveredSecrets) state.world.discoveredSecrets = [];
             if (!state.world.bossesDefeated) state.world.bossesDefeated = [];
+            // Validace revealedLocations: musí být pole platných location ID, bez duplikátů
+            if (state.world.revealedLocations !== undefined) {
+                if (!Array.isArray(state.world.revealedLocations)) {
+                    state.world.revealedLocations = [];
+                } else {
+                    const validLocIds = new Set(WORLD_LOCATIONS.map(l => l.id));
+                    const cleaned = [...new Set(state.world.revealedLocations)].filter(id => typeof id === 'string' && validLocIds.has(id));
+                    if (cleaned.length !== state.world.revealedLocations.length) {
+                        console.log('🔧 Migrace: revealedLocations vyčištěno z', state.world.revealedLocations.length, 'na', cleaned.length);
+                        state.world.revealedLocations = cleaned;
+                    }
+                }
+            }
             if (!state.visitedLocations) state.visitedLocations = ['shelter'];
             if (!state.companions) state.companions = [];
             if (!Array.isArray(state.companions)) state.companions = [];
@@ -89229,6 +89205,22 @@ function openFullscreenMap() {
                         state.inv = Object.values(state.inv);
                     }
                     if (!state.inv) state.inv = [];
+                    
+                    // CRITICAL: Validace revealedLocations po cloud load (Firebase může vrátit objekt místo pole)
+                    if (state.world?.revealedLocations !== undefined) {
+                        if (!Array.isArray(state.world.revealedLocations)) {
+                            console.warn('☁️ revealedLocations nebyl pole po cloud load - opravuji');
+                            // Firebase vrátil objekt {0: 'id1', 1: 'id2'} - převeď zpět
+                            if (typeof state.world.revealedLocations === 'object') {
+                                state.world.revealedLocations = Object.values(state.world.revealedLocations).filter(v => typeof v === 'string');
+                            } else {
+                                state.world.revealedLocations = [];
+                            }
+                        }
+                        // Deduplikace a validace
+                        const _validIds = new Set(WORLD_LOCATIONS.map(l => l.id));
+                        state.world.revealedLocations = [...new Set(state.world.revealedLocations)].filter(id => _validIds.has(id));
+                    }
                     
                     // CRITICAL: Zajisti equipped strukturu (Firebase maže null hodnoty)
                     if (!state.equipped) state.equipped = {};
@@ -97533,10 +97525,6 @@ function openFullscreenMap() {
                     <button class="btn" onclick="showBugList()" style="background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%); padding: 0.8rem;">
                         📋 Seznam chyb
                     </button>
-                </div>
-                <div style="background:#1a1a2a; border:1px solid #3a3a5a; border-radius:6px; padding:0.7rem; margin-bottom:0.8rem; font-size:0.8rem;">
-                    🔗 <span style="color:#888;">Odkaz pro vývojáře:</span><br>
-                    <a href="${publicUrl}" target="_blank" style="color:#64b5f6; word-break:break-all;">${publicUrl}</a>
                 </div>
                 <div id="bugContent" style="min-height: 200px;">
                     <p style="color: #888; text-align: center;">Vyber možnost výše...</p>
