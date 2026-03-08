@@ -54712,6 +54712,25 @@ function openFullscreenMap() {
         }
         
         function startSettlementRaid() {
+            // Pokud je hráč v dungeonu (Propast atd.), odlož raid - nesmí přerušit postup
+            if (state.dungeon?.active || state.activeCombat || window.combatState) {
+                console.log('⚔️ Raid odložen - hráč je v dungeonu/boji');
+                // Ulož pending raid a spusť ho po dokončení dungeonu
+                state._pendingSettlementRaid = true;
+                notifyWarning('⚔️ NÁJEZD!', 'Osada je napadena! Dokonči dungeon a bude tě čekat zpráva o obraně.');
+                // Auto-obrana bez hráče
+                setTimeout(() => {
+                    if (state._pendingSettlementRaid) {
+                        state._pendingSettlementRaid = false;
+                        // Automaticky vyhodnoť obranu bez hráče
+                        const settlementLevel = state.settlement?.level || 1;
+                        let waveIndex = Math.min(4, Math.max(0, settlementLevel - 1));
+                        autoDefendSettlement(waveIndex);
+                    }
+                }, 60000); // po 60s auto-obrana
+                return;
+            }
+            
             state.settlement.lastRaid = Date.now();
             
             // Přehraj alarm zvuk
@@ -55872,8 +55891,6 @@ function openFullscreenMap() {
             }
             
             const dungeonId = state.dungeon.active;
-            
-            // === COOLDOWN: nastav až při odchodu z dungeonu ===
             if (dungeonId) {
                 if (!state.dungeonCooldowns) state.dungeonCooldowns = {};
                 state.dungeonCooldowns[dungeonId] = Date.now();
@@ -56189,6 +56206,11 @@ function openFullscreenMap() {
                 state.dungeon.active = null;
                 state.dungeon.floor = 0;
                 state.dungeon.loot = [];
+                // Pokud byl raid odložen, upozorni hráče
+                if (state._pendingSettlementRaid) {
+                    state._pendingSettlementRaid = false;
+                    setTimeout(() => notifyWarning('⚔️ Raid proběhl', 'Zatímco jsi byl v dungeonu, osada se ubránila automaticky.'), 1500);
+                }
                 saveGame(true);
                 renderFull();
                 
@@ -97357,6 +97379,8 @@ function openFullscreenMap() {
         function confirmEndVacation() {
             state.vacationMode = false;
             state.vacationStarted = null;
+            // Ulož okamžitě (localStorage) i cloud
+            saveGame();
             saveGame(true);
             closeModal();
             renderFull();
@@ -97399,7 +97423,7 @@ function openFullscreenMap() {
                             <p style="color: #666; font-size: 0.85rem; margin: 0.5rem 0 0 0;">Nemůže zemřít během dovolené.</p>
                         </div>
                         
-                        <button class="btn" onclick="toggleVacationMode()" style="width: 100%; background: linear-gradient(135deg, #4CAF50, #2e7d32); padding: 1rem; font-size: 1.1rem;">
+                        <button class="btn" onclick="confirmEndVacation()" style="width: 100%; background: linear-gradient(135deg, #4CAF50, #2e7d32); padding: 1rem; font-size: 1.1rem;">
                             🎮 Vrátit se do hry
                         </button>
                     </div>
@@ -108958,10 +108982,15 @@ function openFullscreenMap() {
             
             // Kontrola: už probíhá raid?
             try {
-                const raidSnap = await firebaseDB.ref('worldBossRaid/active').once('value');
-                if (raidSnap.val()) {
+                const raidSnap = await firebaseDB.ref('worldBossRaid').once('value');
+                const raidData = raidSnap.val();
+                if (raidData && raidData.active && !raidData.defeated && (raidData.currentHp > 0)) {
                     notifyWarning('Raid probíhá!', 'Už probíhá jiný World Boss raid. Počkej než skončí.');
                     return;
+                }
+                // Vyčisti starý raid pokud je defeated nebo HP = 0
+                if (raidData && raidData.active && (raidData.defeated || raidData.currentHp <= 0)) {
+                    await firebaseDB.ref('worldBossRaid').update({ active: false });
                 }
             } catch(e) { console.error("Silent error:", e); }
             
