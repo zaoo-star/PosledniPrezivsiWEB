@@ -25475,6 +25475,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.equipped.powerArmor = item;
             state.equipped.powerArmorFuelTime = Date.now(); // Čas posledního natankování
             
+            // Odeber z inventáře (jinak by zůstal v batohu a zabíral váhu)
+            removeItemFromInventory(item, 1);
+            
             // HP bonus se aplikuje přes calculateMaxHp() v renderFull()
             
             addLog(`🤖 Nasazena ${item.name}!`, '🤖', 'general', {
@@ -25495,6 +25498,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Odeber power armor (HP se přepočítá v renderFull přes calculateMaxHp)
             state.equipped.powerArmor = null;
             state.equipped.powerArmorFuelTime = null;
+            
+            // Vrať do inventáře
+            state.inv.push(item);
             
             addLog(`🤖 Sundána ${item.name}`, '🤖');
             notifySuccess('Power Armor sundána', item.name);
@@ -74901,12 +74907,13 @@ function openFullscreenMap() {
                 renderHeroesCombatUI();
             } else if (action === 'attack') {
                 calculateValidTargets(unit);
-                // FORCE FALLBACK: Pokud žádné cíle ale existují nepřátelé, povol útok na všechny
+                // FORCE FALLBACK: Pokud žádné cíle ale existují nepřátelé a hráč má střelnou zbraň
                 if (cs.validTargets.length === 0) {
                     const _enemies = cs.units.filter(u => u.team === 'enemy' && u.alive);
                     const _wpn = state.equipped?.weapon;
+                    const _isRanged = !!_wpn?.ammoType;
                     console.error('⚠️ ŽÁDNÉ CÍLE! weapon:', _wpn?.name, 'ammoType:', _wpn?.ammoType, 'enemies:', _enemies.length);
-                    if (_enemies.length > 0) {
+                    if (_enemies.length > 0 && _isRanged) {
                         _enemies.forEach(e => { e._combatDist = Math.max(Math.abs(e.x - unit.x), Math.abs(e.y - unit.y)); cs.validTargets.push(e); });
                         cs.log.push('⚠️ Nouzový režim: útok na všechny nepřátele.');
                     }
@@ -75231,6 +75238,7 @@ function openFullscreenMap() {
             
             // SAFETY NET: Pokud nemáme žádné cíle ale nepřátelé existují a jsme hráč,
             // vždy povol alespoň melee útok na sousední pole (prevence zaseknutí)
+            // POZN: Pro melee zbraně nepřidáváme vzdálené cíle - hráč se musí přiblížit
             if (cs.validTargets.length === 0 && !isCompanion) {
                 // Zkus melee range 1
                 const nearbyEnemies = allAliveEnemies.filter(enemy => {
@@ -75239,14 +75247,16 @@ function openFullscreenMap() {
                 });
                 if (nearbyEnemies.length > 0) {
                     nearbyEnemies.forEach(e => { e._combatDist = 1; cs.validTargets.push(e); });
-                    cs.log.push(`Útočíš holýma rukama.`);
-                } else if (allAliveEnemies.length > 0) {
-                    // ULTIMATE FALLBACK: Povol útok na VŠECHNY nepřátele (prevence úplného zaseknutí)
+                    if (!isRangedFinal) cs.log.push(`Útočíš holýma rukama.`);
+                } else if (allAliveEnemies.length > 0 && isRangedFinal) {
+                    // ULTIMATE FALLBACK pouze pro střelné zbraně (melee hráč se musí přiblížit)
                     cs.log.push(`⚠️ Nouzový režim - útočíš na dálku holýma rukama!`);
                     allAliveEnemies.forEach(e => { 
                         e._combatDist = Math.max(Math.abs(e.x - unit.x), Math.abs(e.y - unit.y));
                         cs.validTargets.push(e); 
                     });
+                } else if (allAliveEnemies.length > 0 && !isRangedFinal) {
+                    cs.log.push(`Nepřítel je mimo dosah. Přibliž se.`);
                 }
             }
             
@@ -82415,13 +82425,13 @@ function openFullscreenMap() {
                 }
             }
             
-            // Power armor
+            // Power armor - pokud je nasazena, NESMÍ být v inventáři (zabírá váhu)
             if (state.equipped.powerArmor && state.equipped.powerArmor.id) {
                 const paInv = state.inv.find(i => i.id === state.equipped.powerArmor.id && i.type === 'power_armor');
                 if (paInv) {
-                    state.equipped.powerArmor = paInv;
-                } else if (!state.inv.includes(state.equipped.powerArmor)) {
-                    state.inv.push(state.equipped.powerArmor);
+                    // Odeber z inventáře - je nasazena, nemá tam být
+                    state.inv = state.inv.filter(i => !(i.id === state.equipped.powerArmor.id && i.type === 'power_armor'));
+                    state.equipped.powerArmor = paInv; // zachovej referenci na objekt
                 }
             }
             
