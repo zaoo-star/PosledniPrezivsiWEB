@@ -17562,8 +17562,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const countText = count > 1 ? ` x${count}` : '';
                 const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
                 const color = rarityColors[item.rarity] || '#888';
-                const itemWeight = (item.weight || 0) * count;
-                const canPickup = itemWeight <= freeSpace;
+                const unitWeight = item.weight || 0;
+                const itemWeight = unitWeight * count;
+                const canPickupAll = itemWeight <= freeSpace;
+                const canPickupSome = count > 1 && unitWeight > 0 && Math.floor(freeSpace / unitWeight) >= 1;
+                const canPickup = canPickupAll || canPickupSome;
+                const pickupLabel = canPickupAll ? 'Vzít' : (canPickupSome ? 'Vzít část' : '🚫');
                 
                 return `
                     <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem; ${!canPickup ? 'opacity: 0.6;' : ''}">
@@ -17573,11 +17577,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <div style="font-size: 0.75rem; color: #888;">
                                 ${item.damage ? `<span style="color: #c62828;">⚔️${item.damage}${item.aiUpgraded ? '<span style="color:#9c27b0;">🧠</span>' : ''}${typeof meetsWeaponRequirement === 'function' && WEAPON_REQUIREMENTS[item.id] && !meetsWeaponRequirement(item.id).met ? '<span style="color:#f44336;"> ⚠️</span>' : ''}</span> ` : ''}
                                 ${item.defense ? `<span style="color: #2196f3;">🛡️${item.defense}${item.aiUpgraded ? '<span style="color:#9c27b0;">🧠</span>' : ''}</span> ` : ''}
-                                <span style="color: ${canPickup ? '#888' : '#f44336'};">⚖️${itemWeight.toFixed(1)}kg</span>
+                                <span style="color: ${canPickupAll ? '#888' : (canPickupSome ? '#ff9800' : '#f44336')};">⚖️${itemWeight.toFixed(1)}kg</span>
                             </div>
                         </div>
-                        <button class="btn" onclick="pickupGroundLoot(${idx})" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: ${canPickup ? '#4caf50' : '#555'};" ${!canPickup ? 'disabled' : ''}>
-                            ${canPickup ? 'Vzít' : '🚫'}
+                        <button class="btn" onclick="pickupGroundLoot(${idx})" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; background: ${canPickupAll ? '#4caf50' : (canPickupSome ? '#ff9800' : '#555')};" ${!canPickup ? 'disabled' : ''}>
+                            ${pickupLabel}
                         </button>
                     </div>
                 `;
@@ -94231,7 +94235,7 @@ function openFullscreenMap() {
                                 <div style="color: #666; font-size: 0.65rem;">${item._isResource ? 'Surovina' : item.type} · máš: ${max}</div>
                             </div>
                             <div style="display: flex; align-items: center; gap: 0.2rem; flex-shrink: 0;">
-                                <input type="number" value="${suggestedPrice}" min="1"
+                                <input type="number" value="${entry.customPrice ?? suggestedPrice}" min="1"
                                     style="width: 55px; padding: 0.2rem; background: #111; border: 1px solid ${active ? '#4a7a4a' : '#252525'}; border-radius: 4px; color: ${active ? '#ffd700' : '#444'}; text-align: center; font-size: 0.75rem;"
                                     onchange="bulkUpdatePrice(${i}, parseInt(this.value)||1)">
                                 <span style="color: #555; font-size: 0.7rem;">💰</span>
@@ -94291,6 +94295,11 @@ function openFullscreenMap() {
             renderBulkListModal();
         }
         
+        function bulkUpdatePrice(i, val) {
+            if (!window._bulkItems?.[i]) return;
+            window._bulkItems[i].customPrice = Math.max(1, val || 1);
+        }
+        
         async function confirmBulkList() {
             const items = window._bulkItems;
             if (!items) return;
@@ -94302,7 +94311,8 @@ function openFullscreenMap() {
             
             let ok = 0, failed = 0;
             for (const entry of selected) {
-                const { item, invIdx, suggestedPrice, qty } = entry;
+                const { item, invIdx, suggestedPrice, qty, customPrice } = entry;
+                const finalPrice = customPrice ?? suggestedPrice;
                 try {
                     // Odeber z inventáře/zdrojů
                     if (item._isResource) {
@@ -94312,7 +94322,7 @@ function openFullscreenMap() {
                         state.resources[item.id] = available - sellCount;
                         const resDef = ITEMS.find(i => i.id === item.id);
                         const itemForOffer = { id: item.id, name: item.name, icon: item.icon, type: 'resource', price: resDef?.price || item.price || 5 };
-                        const offer = { seller: getPlayerName(), item: itemForOffer, price: suggestedPrice, count: sellCount, totalPrice: suggestedPrice * sellCount, timestamp: firebase.database.ServerValue.TIMESTAMP, status: 'active' };
+                        const offer = { seller: getPlayerName(), item: itemForOffer, price: finalPrice, count: sellCount, totalPrice: finalPrice * sellCount, timestamp: firebase.database.ServerValue.TIMESTAMP, status: 'active' };
                         await firebaseDB.ref('marketplace/offers').push(offer);
                     } else {
                         const invItem = state.inv[invIdx];
@@ -94331,7 +94341,7 @@ function openFullscreenMap() {
                         const removed = removeItemFromInventory(invItem, sellCount);
                         if (!removed) { failed++; continue; }
                         
-                        await createMarketOffer({...itemCopy, count: sellCount}, suggestedPrice);
+                        await createMarketOffer({...itemCopy, count: sellCount}, finalPrice);
                     }
                     ok++;
                 } catch(e) {
