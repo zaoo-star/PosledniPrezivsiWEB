@@ -1897,6 +1897,14 @@
             transition: all 0.15s ease-out;
         }
         
+        @media (max-height: 700px) {
+            #combatGridContainer button { min-height: 24px !important; max-height: 32px !important; font-size: 1rem !important; }
+        }
+        @media (max-width: 380px) {
+            #combatGridContainer { min-width: unset !important; }
+            #combatGridContainer button { font-size: 0.9rem !important; }
+        }
+        
         .combat-cell:hover {
             filter: brightness(1.3);
             z-index: 5;
@@ -16290,6 +16298,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 visitingMerchant: null, // Obchodník na návštěvě { until: timestamp, items: [] }
                 activeQuests: [], // Aktivní mise od osadníků
                 completedQuests: [], // Dokončené mise
+                garrison: [], // Společníci odložení v kasárnách
                 raidWave: 0, // Aktuální vlna při raidu
                 lastDailyUpdate: 0, // Poslední denní aktualizace
                 firstVisit: true, // Pro zobrazení výběru prvního osadníka
@@ -26149,7 +26158,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </p>
                 `}
                 
-                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">${'Zavřít'}</button>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                    <button class="btn" onclick="showFormationSetup()" style="background: #1a2a3a; border: 1px solid #2a4a6a;">⚔️ Nastavit formaci</button>
+                    <button class="btn" onclick="closeModal()" style="background: #333;">${'Zavřít'}</button>
+                </div>
             `);
         }
         
@@ -32720,10 +32732,154 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 html += '</div>';
             }
             
+            // === SEKCE KASÁRNA ===
+            const garrison = state.settlement?.garrison || [];
+            const aliveActive = (state.companions || []).filter(c => !c.isDead);
+            
+            html += '<hr style="border-color: #2a3a4a; margin: 1rem 0;">';
+            html += '<h4 style="color: #90caf9; margin: 0 0 0.5rem 0; text-align: center;">🪖 Kasárna osady <span style="font-size: 0.75rem; color: #555;">(' + garrison.length + '/10)</span></h4>';
+            
+            if (garrison.length === 0) {
+                html += '<p style="text-align: center; color: #444; font-size: 0.85rem; margin-bottom: 0.5rem;">Kasárna jsou prázdná.</p>';
+            } else {
+                html += '<div style="max-height: 220px; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
+                garrison.forEach((comp, idx) => {
+                    const compDef = COMPANIONS.find(c => c.id === comp.id) || comp;
+                    const compName = comp.name || compDef?.name || 'Společník';
+                    const compIcon = comp.icon || compDef?.icon || '👤';
+                    const hpPct = comp.maxHp > 0 ? Math.round((comp.hp / comp.maxHp) * 100) : 100;
+                    const hpColor = hpPct > 60 ? '#4caf50' : hpPct > 30 ? '#ff9800' : '#f44336';
+                    const canRetrieve = aliveActive.length < getMaxCompanions();
+                    
+                    html += '<div style="background: #0d1a2a; padding: 0.7rem; margin: 0.4rem 0; border-radius: 8px; border: 1px solid #1a3a5a;">';
+                    html += '<div style="display: flex; align-items: center; gap: 0.6rem;">';
+                    html += '<span style="font-size: 1.8rem;">' + compIcon + '</span>';
+                    html += '<div style="flex: 1;">';
+                    html += '<div style="font-weight: bold; color: #90caf9; font-size: 0.9rem;">' + compName + '</div>';
+                    html += '<div style="font-size: 0.75rem; color: #888;">❤️ <span style="color:' + hpColor + ';">' + comp.hp + '/' + comp.maxHp + '</span> | ⚔️ ' + (comp.damage || compDef?.damage || '?') + ' | 🛡️ ' + (comp.defense || compDef?.defense || '?') + '</div>';
+                    html += '</div>';
+                    html += '<div style="display: flex; flex-direction: column; gap: 0.25rem; align-items: flex-end;">';
+                    
+                    // Tlačítko: Vyzvednout (pokud je místo)
+                    if (canRetrieve) {
+                        html += '<button class="btn" onclick="retrieveCompanion(' + idx + ')" style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #1a4a2a; border: 1px solid #2a7a4a;">📤 Vzít zpět</button>';
+                    } else {
+                        html += '<span style="font-size: 0.7rem; color: #555;">👥 Tým plný</span>';
+                    }
+                    
+                    // Dropdown výměny za aktivního (pokud jsou nějací aktivní)
+                    if (aliveActive.length > 0) {
+                        html += '<select onchange="if(this.value) swapCompanion(this.value,' + idx + ')" style="padding: 0.25rem; background: #0a0a1a; border: 1px solid #2a3a4a; border-radius: 4px; color: #aaa; font-size: 0.7rem; max-width: 120px;">';
+                        html += '<option value="">🔄 Vyměnit za...</option>';
+                        aliveActive.forEach(ac => {
+                            const acDef = COMPANIONS.find(c => c.id === ac.id) || ac;
+                            const acName = ac.name || acDef?.name || 'Společník';
+                            const acId = ac.uniqueId || ac.id;
+                            html += '<option value="' + acId + '">' + (ac.icon || acDef?.icon || '👤') + ' ' + acName + '</option>';
+                        });
+                        html += '</select>';
+                    }
+                    
+                    html += '</div>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+            
+            // Tlačítka: Odložit aktivní společníky
+            if (aliveActive.length > 0) {
+                html += '<div style="margin-top: 0.5rem;">';
+                html += '<p style="color: #555; font-size: 0.75rem; margin-bottom: 0.3rem; text-align: center;">📥 Odložit do kasáren:</p>';
+                html += '<div style="display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center;">';
+                aliveActive.forEach(ac => {
+                    const acDef = COMPANIONS.find(c => c.id === ac.id) || ac;
+                    const acName = ac.name || acDef?.name || 'Spol.';
+                    const acId = ac.uniqueId || ac.id;
+                    html += '<button class="btn" onclick="garrisonCompanion(\'' + acId + '\')" style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #1a1a2a; border: 1px solid #2a2a4a;">';
+                    html += (ac.icon || acDef?.icon || '👤') + ' ' + acName + ' 📥</button>';
+                });
+                html += '</div>';
+                html += '</div>';
+            }
+            
             html += '<p style="text-align: center; color: #666; font-size: 0.8rem; margin-top: 0.5rem;">Máš: ' + getMoney() + ' 💰</p>';
             html += '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">' + t('ui', 'close') + '</button>';
             
             showModal('🐕 Najmout společníka', html);
+        }
+        
+        // ============================================================
+        // === 🪖 KASÁRNA OSADY - odložit/vyzvednout/vyměnit společníky ===
+        // ============================================================
+        
+        function garrisonCompanion(compId) {
+            // Odloží aktivního společníka do kasáren osady
+            if (!isInBase()) { notifyWarning('Kasárna nedostupná', 'Musíš být v úkrytu.'); return; }
+            const comp = state.companions.find(c => (c.uniqueId || c.id) === compId);
+            if (!comp) return;
+            if (comp.isDead) { notifyWarning('Nelze odložit', 'Mrtvého společníka nemůžeš odložit do kasáren.'); return; }
+            
+            if (!state.settlement.garrison) state.settlement.garrison = [];
+            if (state.settlement.garrison.length >= 10) {
+                notifyWarning('Kasárna plná', 'Kasárna pojmou max. 10 společníků.'); return;
+            }
+            
+            const compName = comp.name || COMPANIONS.find(c => c.id === comp.id)?.name || 'Společník';
+            
+            // Přesuň ze state.companions do garrison
+            state.companions = state.companions.filter(c => (c.uniqueId || c.id) !== compId);
+            state.settlement.garrison.push(comp);
+            
+            addLog(`🪖 ${compName} čeká v kasárnách osady.`, comp.icon || '👤');
+            notifySuccess('Odložen do kasáren', `${compName} čeká v osadě.`);
+            saveGame(true);
+            showHireCompanionsModal();
+        }
+        
+        function retrieveCompanion(garrisonIdx) {
+            // Vyzvedne společníka z kasáren zpět do aktivního týmu
+            if (!isInBase()) { notifyWarning('Kasárna nedostupná', 'Musíš být v úkrytu.'); return; }
+            if (!state.settlement.garrison || !state.settlement.garrison[garrisonIdx]) return;
+            
+            const currentActive = (state.companions || []).filter(c => !c.isDead).length;
+            const maxCount = getMaxCompanions();
+            if (currentActive >= maxCount) {
+                notifyWarning('Tým plný', `Máš max. ${maxCount} aktivních společníků. Nejdřív někoho odlož.`); return;
+            }
+            
+            const comp = state.settlement.garrison.splice(garrisonIdx, 1)[0];
+            if (!state.companions) state.companions = [];
+            state.companions.push(comp);
+            
+            const compName = comp.name || COMPANIONS.find(c => c.id === comp.id)?.name || 'Společník';
+            addLog(`🪖 ${compName} se připojil k týmu.`, comp.icon || '👤');
+            notifySuccess('Vyzvednut!', `${compName} je zpět v týmu.`);
+            saveGame(true);
+            showHireCompanionsModal();
+        }
+        
+        function swapCompanion(activeCompId, garrisonIdx) {
+            // Vymění aktivního za odloženého (bez ohledu na limit počtu)
+            if (!isInBase()) { notifyWarning('Kasárna nedostupná', 'Musíš být v úkrytu.'); return; }
+            if (!state.settlement.garrison || !state.settlement.garrison[garrisonIdx]) return;
+            
+            const activeComp = state.companions.find(c => (c.uniqueId || c.id) === activeCompId);
+            if (!activeComp) return;
+            const activeName = activeComp.name || COMPANIONS.find(c => c.id === activeComp.id)?.name || 'Společník';
+            
+            const garrisonComp = state.settlement.garrison.splice(garrisonIdx, 1)[0];
+            const garrisonName = garrisonComp.name || COMPANIONS.find(c => c.id === garrisonComp.id)?.name || 'Společník';
+            
+            // Přesuň aktivního do garrison, garrisonovaného do týmu
+            state.companions = state.companions.filter(c => (c.uniqueId || c.id) !== activeCompId);
+            state.settlement.garrison.push(activeComp);
+            state.companions.push(garrisonComp);
+            
+            addLog(`🔄 Vyměnil jsi ${activeName} za ${garrisonName}.`, '🔄');
+            notifySuccess('Výměna provedena', `${garrisonName} nastoupil, ${activeName} čeká v kasárnách.`);
+            saveGame(true);
+            showHireCompanionsModal();
         }
         
         function dismissCompanion(companionId) {
@@ -34229,6 +34385,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.settlement.settlers.length === 0 && state.settlement.firstVisit === undefined) {
                 state.settlement.firstVisit = true;
             }
+            if (!state.settlement.garrison) state.settlement.garrison = [];
             if (!state.settlement.resources) state.settlement.resources = { food: 10, water: 10, wood: 0, metal: 0, stone: 0, cloth: 0, leather: 0, herbs: 0, chemicals: 0, electronics: 0, glass: 0, rope: 0, gunpowder: 0, scrap: 0, fuel: 0, copper: 0, fur: 0, sulfur: 0, mutant_blood: 0, acid: 0, gems: 0 };
             // Migrace existujících settlement.resources - přidej chybějící klíče
             const allSettlementResources = ['food', 'water', 'wood', 'metal', 'stone', 'cloth', 'leather', 'herbs', 'chemicals', 'electronics', 'glass', 'rope', 'gunpowder', 'scrap', 'fuel', 'copper', 'fur', 'sulfur', 'mutant_blood', 'acid', 'gems', 'silver', 'gold', 'crystal'];
@@ -56421,6 +56578,19 @@ function openFullscreenMap() {
                     })()}</div>` : ''}
                 </div>
                 
+                ${floor >= 2 ? `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; margin-bottom: 0.5rem;">
+                    <button class="btn" onclick="abyssRestHeal()" style="background: ${state.abyss.activeModifiers?.includes('no_heal') ? '#2a2a2a' : '#1a3a1a'}; font-size: 0.8rem; padding: 0.4rem;" ${state.abyss.activeModifiers?.includes('no_heal') ? 'disabled' : ''}>
+                        ❤️ Léčení${state.abyss.activeModifiers?.includes('no_heal') ? ' 🚫' : ` (${state.char?.hp}/${state.char?.maxHp})`}
+                    </button>
+                    <button class="btn" onclick="abyssRestHealCompanions()" style="background: #1a2a3a; font-size: 0.8rem; padding: 0.4rem;">
+                        🐕 Léčit společníky
+                    </button>
+                    ${floor >= 10 ? `<button class="btn" onclick="abyssRestCraftAmmo()" style="background: #2a1a3a; font-size: 0.8rem; padding: 0.4rem; grid-column: 1 / -1;">
+                        🔶 Vyrobit náboje (použij suroviny)
+                    </button>` : ''}
+                </div>` : ''}
+                
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn" onclick="startAbyssCombat()" style="flex: 2; background: #c62828; padding: 0.8rem;">
                         ⚔️ Bojovat!
@@ -56431,6 +56601,81 @@ function openFullscreenMap() {
                 </div>
             `);
         }
+        
+        function abyssRestHeal() {
+            if (state.abyss?.activeModifiers?.includes('no_heal')) {
+                notifyWarning('🚫 Bez léčení', 'Modifikátor zakazuje léčení v Propasti!');
+                return;
+            }
+            const cost = Math.floor(state.char.maxHp * 0.1); // 10% max HP = cena v "životní energii"
+            // Léčení stojí suroviny nebo peníze
+            const healAmt = Math.floor(state.char.maxHp * 0.4);
+            if (state.char.hp >= state.char.maxHp) { notifyWarning('Plné HP', 'HP je již na maximum!'); return; }
+            const price = 30 + Math.floor(state.abyss.currentFloor * 2);
+            if (getMoney() < price) { notifyWarning('Nedostatek 💰', `Léčení stojí \${price} 💰`); return; }
+            removeMoney(price);
+            state.char.hp = Math.min(state.char.maxHp, state.char.hp + healAmt);
+            notifySuccess('❤️ Léčení', `+\${healAmt} HP | Zaplaceno \${price} 💰`);
+            saveGame();
+            showAbyssFloor();
+        }
+        window.abyssRestHeal = abyssRestHeal;
+        
+        function abyssRestHealCompanions() {
+            if (!state.companions || state.companions.length === 0) { notifyWarning('Žádní společníci', 'Nemáš žádné aktivní společníky'); return; }
+            const price = 20 + Math.floor(state.abyss.currentFloor * 1.5);
+            if (getMoney() < price) { notifyWarning('Nedostatek 💰', `Léčení společníků stojí \${price} 💰`); return; }
+            removeMoney(price);
+            let healed = 0;
+            state.companions.forEach(c => {
+                if (!c.isDead) { const add = Math.floor((c.maxHp || 50) * 0.5); c.hp = Math.min(c.maxHp || 50, (c.hp || 0) + add); healed++; }
+            });
+            notifySuccess('🐕 Společníci', `\${healed}x vyléčen na +50% HP | \${price} 💰`);
+            saveGame();
+            showAbyssFloor();
+        }
+        window.abyssRestHealCompanions = abyssRestHealCompanions;
+        
+        function abyssRestCraftAmmo() {
+            // Ammo recepty - portable verze pro Propast
+            const ammoRecipes = [
+                { id: 'craft_9mm',    name: 'Náboje 9mm (15x)',          icon: '🔶', result: 'ammo_9mm',   count: 15, requires: { metal: 2 } },
+                { id: 'craft_556',    name: 'Náboje 5.56 (10x)',          icon: '🔶', result: 'ammo_556',   count: 10, requires: { metal: 2, copper: 1 } },
+                { id: 'craft_762',    name: 'Náboje 7.62 (8x)',           icon: '🔶', result: 'ammo_762',   count: 8,  requires: { metal: 3, copper: 1 } },
+                { id: 'craft_shells', name: 'Brokové náboje (8x)',        icon: '🔶', result: 'ammo_shell', count: 8,  requires: { metal: 2, scrap: 1 } },
+                { id: 'craft_arrows', name: 'Šípy (15x)',                 icon: '🏹', result: 'ammo_arrow', count: 15, requires: { wood: 2 } },
+                { id: 'craft_bolts',  name: 'Šipky do kuše (10x)',        icon: '🎯', result: 'ammo_bolt',  count: 10, requires: { wood: 1, metal: 1 } },
+            ];
+            const resNames = { metal: '⚙️ Kov', copper: '🔶 Měď', scrap: '🔩 Šrot', wood: '🪵 Dřevo' };
+            let html = '<div style="display:flex;flex-direction:column;gap:0.4rem;">';
+            ammoRecipes.forEach(recipe => {
+                const canCraft = Object.entries(recipe.requires).every(([res, amt]) => (state.resources?.[res] || 0) >= amt);
+                const reqText = Object.entries(recipe.requires).map(([res, amt]) => {
+                    const have = state.resources?.[res] || 0;
+                    return `<span style="color:\${have>=amt?'#4caf50':'#f44336'}">\${resNames[res]||res}: \${have}/\${amt}</span>`;
+                }).join(' ');
+                html += `<button class="btn" onclick="abyssDocraft('\${recipe.result}',\${recipe.count},\${JSON.stringify(recipe.requires).replace(/"/g,"'")})" style="background:\${canCraft?'#1a2a1a':'#151515'};border:1px solid \${canCraft?'#3a5a3a':'#2a2a2a'};text-align:left;padding:0.5rem;font-size:0.8rem;" \${canCraft?'':'disabled'}>
+                    \${recipe.icon} \${recipe.name}<br><span style="font-size:0.7rem;">\${reqText}</span>
+                </button>`;
+            });
+            html += '</div><button class="btn" onclick="showAbyssFloor()" style="width:100%;margin-top:0.5rem;background:#333;">← Zpět</button>';
+            showModal('🔶 Výroba nábojů', html);
+        }
+        window.abyssRestCraftAmmo = abyssRestCraftAmmo;
+        
+        function abyssDocraft(itemId, count, requires) {
+            // Odeber suroviny
+            for (const [res, amt] of Object.entries(requires)) {
+                if ((state.resources?.[res] || 0) < amt) { notifyWarning('Chybí suroviny', 'Nemáš dost surovin!'); return; }
+                state.resources[res] -= amt;
+            }
+            const item = ITEMS.find(i => i.id === itemId);
+            if (item) { addItemToInventory({...item, count}, count, true); }
+            notifySuccess('🔶 Vyrobeno!', `\${count}x \${item?.name || itemId}`);
+            saveGame();
+            abyssRestCraftAmmo(); // Refresh
+        }
+        window.abyssDocraft = abyssDocraft;
         
         function startAbyssCombat() {
             const floor = state.abyss.currentFloor;
@@ -71900,9 +72145,19 @@ function openFullscreenMap() {
             // Pokud máme společníky a není přeskočení, ukaž pre-combat setup
             const aliveCompanions = (state.companions || []).filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
             if (aliveCompanions.length > 0 && !skipPreCombat && !window._inPreCombatFlow) {
-                console.log('🎮 Showing pre-combat setup for', aliveCompanions.length, 'companions');
-                showPreCombatSetup(enemyGroup, combatType);
-                return;
+                // Pokud hráč nastavil přeskočení a má uložené pozice - jdi rovnou do boje
+                if (state.skipPreCombatSetup && state.savedCompanionPositions && Object.keys(state.savedCompanionPositions).length > 0) {
+                    // Načti uložené pozice do preCombatPositions
+                    window.preCombatPositions = {...state.savedCompanionPositions};
+                    window.pendingEnemyGroup = enemyGroup;
+                    window.pendingCombatType = combatType;
+                    console.log('⚡ Skip pre-combat: using saved positions');
+                    // Pokračuj s uloženým nastavením
+                } else {
+                    console.log('🎮 Showing pre-combat setup for', aliveCompanions.length, 'companions');
+                    showPreCombatSetup(enemyGroup, combatType);
+                    return;
+                }
             }
             
             // Reset flag
@@ -77922,6 +78177,36 @@ function openFullscreenMap() {
         }
         
         // Pre-combat setup - rozmístění společníků
+        // Otevřít nastavení formace mimo boj
+        function showFormationSetup() {
+            // Dočasně simuluj prázdnou skupinu nepřátel aby se dal renderovat setup
+            window.pendingEnemyGroup = [];
+            window.pendingCombatType = 'normal';
+            const aliveCompanions = (state.companions || []).filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
+            if (aliveCompanions.length === 0) {
+                notifyWarning('Žádní společníci', 'Nemáš žádné aktivní společníky k nastavení.');
+                return;
+            }
+            if (!state.savedCompanionPositions) state.savedCompanionPositions = {};
+            window.preCombatPositions = {};
+            const defaultPositions = [
+                { id: 'back_top', x: 8, y: 1 }, { id: 'back_bot', x: 8, y: 3 },
+                { id: 'back_mid', x: 8, y: 2 }, { id: 'front_top', x: 7, y: 1 },
+                { id: 'front_bot', x: 7, y: 3 }
+            ];
+            aliveCompanions.forEach((comp, idx) => {
+                const compId = comp.uniqueId || comp.id;
+                window.preCombatPositions[compId] = state.savedCompanionPositions[compId] || defaultPositions[idx] || defaultPositions[0];
+            });
+            renderPreCombatSetup();
+            // Override "Do boje!" button to just save and close
+            setTimeout(() => {
+                const btn = document.querySelector('[onclick="confirmPreCombatSetup()"]');
+                if (btn) { btn.textContent = '💾 Uložit rozmístění'; btn.onclick = () => { saveGame(); closeModal(); notifySuccess('✅ Uloženo', 'Rozmístění uloženo pro příští boje!'); }; }
+            }, 100);
+        }
+        window.showFormationSetup = showFormationSetup;
+        
         function showPreCombatSetup(enemyGroup, combatType) {
             const aliveCompanions = (state.companions || []).filter(c => !c.isDead && (c.hp === undefined || c.hp > 0));
             
@@ -78043,7 +78328,15 @@ function openFullscreenMap() {
             html += `
                 </div>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
+                <div style="background: #1a1a2a; border: 1px solid #333; border-radius: 6px; padding: 0.6rem; margin-top: 0.5rem; margin-bottom: 0.5rem;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" id="skipPreCombatCheck" ${state.skipPreCombatSetup ? 'checked' : ''} onchange="state.skipPreCombatSetup = this.checked; saveGame();" style="width:16px;height:16px;cursor:pointer;">
+                        <span style="color: #aaa; font-size: 0.8rem;">⚡ Příště přeskočit a jít rovnou do boje s tímto rozmístěním</span>
+                    </label>
+                    <div style="color: #555; font-size: 0.7rem; margin-top: 0.2rem; margin-left: 1.3rem;">Rozmístění zůstane uložené. Odškrtni pro opětovné zobrazení.</div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.3rem;">
                     <button class="btn" onclick="resetCompanionPositions()" style="background: #555;">
                         🎲 Výchozí pozice
                     </button>
