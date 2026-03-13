@@ -6419,6 +6419,13 @@
         function getEffectiveAttr(attr) {
             let total = state.char.attrs[attr] || 5;
             
+            // 🧬 OPRAVA: Dynamické mutační bonusy na atributy
+            // (aby fungovaly i po reloadu, i když se neperzistovaly do base attrs)
+            if (typeof getMutationBonuses === 'function') {
+                const _mutB = getMutationBonuses();
+                if (_mutB[attr]) total += _mutB[attr];
+            }
+            
             // Bonusy z vybaveného vybavení
             ['helmet', 'armor', 'weapon'].forEach(slot => {
                 const item = state.equipped?.[slot];
@@ -29191,13 +29198,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             state.mutations = state.mutations || [];
             state.mutations.push(mutation.id);
             
-            // Aplikuj efekty
+            // Aplikuj efekty (maxHp a defense přímo, atributy se počítají dynamicky v getEffectiveAttr)
             if (mutation.effect.maxHp) state.char.maxHp += mutation.effect.maxHp;
             if (mutation.effect.defense) state.char.baseDefense = (state.char.baseDefense || 0) + mutation.effect.defense;
-            if (mutation.effect.perception) state.char.attrs.per += mutation.effect.perception;
-            if (mutation.effect.str) state.char.attrs.str += mutation.effect.str;
-            if (mutation.effect.agi) state.char.attrs.agi += mutation.effect.agi;
-            if (mutation.effect.int) state.char.attrs.int += mutation.effect.int;
+            // str/agi/int/per se NEPŘIDÁVAJÍ přímo — getEffectiveAttr() je počítá dynamicky z getMutationBonuses()
             
             // Zvuky a notifikace
             SoundSystem.play('mutation');
@@ -32894,6 +32898,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory'].forEach(slot => {
                     if (comp.equipped[slot]) {
                         const item = {...comp.equipped[slot], count: 1};
+                        delete item._ownedByCompanion; // OPRAVA: Smaž značku společníka - jinak nelze prodat
                         const itemWeight = item.weight || 0;
                         const playerCurW = calculateCurrentWeight();
                         const playerMaxW = calculateMaxWeight();
@@ -35286,6 +35291,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     } else if (i.type === 'artifact') {
                                         effectText = '🔮 Artefakt';
                                     }
+                                    
+                                    // Fallback: doplň chybějící type/effect z ITEMS definice (fix pro staré/poškozené save)
+                                    const _iDef = ITEMS.find(it => it.id === i.id);
+                                    if (!i.type && _iDef?.type) i.type = _iDef.type;
+                                    if (!i.effect && _iDef?.effect) i.effect = _iDef.effect;
                                     
                                     // Clickable types - use index for unique identification
                                     const isClickable = i.type === 'consumable' || i.type === 'weapon_coating' || i.type === 'accessory' || i.type === 'weapon' || i.type === 'tool' || i.type === 'armor' || i.type === 'ammo' || i.type === 'throwable' || i.type === 'lore' || i.type === 'gloves' || i.type === 'boots' || i.type === 'helmet' || i.type === 'component' || i.type === 'quest' || i.type === 'quest_item' || i.type === 'power_armor' || i.type === 'trophy' || i.type === 'artifact' || i.type === 'rune';
@@ -51076,6 +51086,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = state.inv[idx];
             if (!item) return;
             
+            // Fallback: doplň chybějící type/effect z ITEMS definice (fix pro staré/poškozené save)
+            const _itemDef = ITEMS.find(i => i.id === item.id);
+            if (_itemDef) {
+                if (!item.type && _itemDef.type) item.type = _itemDef.type;
+                if (!item.effect && _itemDef.effect) item.effect = _itemDef.effect;
+                if (item.value === undefined && _itemDef.value !== undefined) item.value = _itemDef.value;
+            }
+            
             // Pro spacák použij existující logiku
             if (item.effect === 'sleep') {
                 useItem(item.id);
@@ -51562,6 +51580,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Doplň chybějící effect/value/healsInjuries/cures z ITEMS definice (migrace starých inventářů)
             const itemDef = getItemBaseDefinition(item);
             if (itemDef) {
+                if (!item.type && itemDef.type) item.type = itemDef.type;
                 if (!item.effect && itemDef.effect) item.effect = itemDef.effect;
                 if (item.value === undefined && itemDef.value !== undefined) item.value = itemDef.value;
                 if (!item.healsInjuries && itemDef.healsInjuries) item.healsInjuries = itemDef.healsInjuries;
@@ -51969,7 +51988,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${intoxLevel >= 2 ? `<div style="text-align: center; margin-top: 0.4rem; color: #888; font-size: 0.7rem;">Opilost: ${'🍺'.repeat(Math.min(intoxLevel, 10))} (${intoxLevel})</div>` : ''}
                 `);
                 addLog(`🍺 Vypil jsi ${item.name}${intoxLevel >= 5 ? ' 🥴' : ''}`, '🍺');
-                removeItemFromInventory(item, 1); // OPRAVA: Alkohol se spotřebuje
                 renderFull();
             } else if (item.effect === 'remove_curse') {
                 // Svěcená voda - odstranění všech prokletí
@@ -53937,7 +53955,9 @@ function openFullscreenMap() {
             } else if (recipe.result.type === 'throwable' || recipe.result.type === 'ammo') {
                 // Pro ammo hledej podle itemId (např. 'ammo_arrow'), pro ostatní podle recipeId
                 const searchId = recipe.result.itemId || recipeId;
-                const existing = state.inv.find(i => i.id === searchId);
+                // OPRAVA: Při stackování matchuj i special (otrávené šípy ≠ běžné šípy)
+                const hasSpecial = recipe.result.special || null;
+                const existing = state.inv.find(i => i.id === searchId && (i.special || null) === hasSpecial);
                 const baseCount = (recipe.result.count || 1) * bulkAmount;
                 const craftCount = isDoubleCraft ? baseCount * 2 : baseCount;
                 if (existing) {
@@ -53947,20 +53967,18 @@ function openFullscreenMap() {
                     const itemDef = ITEMS.find(it => it.id === recipe.result.itemId);
                     const newItem = {
                         id: searchId, 
-                        name: itemDef?.name || recipe.name, 
-                        icon: itemDef?.icon || recipe.icon, 
+                        name: hasSpecial ? recipe.name : (itemDef?.name || recipe.name), 
+                        icon: hasSpecial ? recipe.icon : (itemDef?.icon || recipe.icon), 
                         type: recipe.result.type,
                         ammoType: recipe.result.ammoType || itemDef?.ammoType,
                         count: craftCount, 
                         weight: itemDef?.weight || 0.1
                     };
-                    // Throwable: zachovej damage, aoe, effect, special
-                    if (recipe.result.type === 'throwable') {
-                        if (recipe.result.damage) newItem.damage = recipe.result.damage;
-                        if (recipe.result.aoe) newItem.aoe = recipe.result.aoe;
-                        if (recipe.result.effect) newItem.effect = recipe.result.effect;
-                        if (recipe.result.special) newItem.special = recipe.result.special;
-                    }
+                    // Throwable & Ammo: zachovej damage, aoe, effect, special
+                    if (recipe.result.damage) newItem.damage = recipe.result.damage;
+                    if (recipe.result.aoe) newItem.aoe = recipe.result.aoe;
+                    if (recipe.result.effect) newItem.effect = recipe.result.effect;
+                    if (recipe.result.special) newItem.special = recipe.result.special;
                     state.inv.push(newItem);
                 }
             } else if (recipe.result.type === 'weapon_coating') {
@@ -76404,7 +76422,10 @@ function openFullscreenMap() {
             SoundSystem.play('combat_hit');
             
             // Speciální efekty zbraně (jen hráč)
-            if (!isCompanion && weapon?.special === 'poison' && Math.random() < 0.3) {
+            // OPRAVA: Kontroluj i special na munici (otrávené šípy)
+            const _ammoSpecial = (!isCompanion && weapon?.ammoType) ? (state.inv.find(i => i.type === 'ammo' && i.ammoType === weapon.ammoType && i.special)?.special) : null;
+            const _effectiveSpecial = weapon?.special || _ammoSpecial;
+            if (!isCompanion && _effectiveSpecial === 'poison' && Math.random() < 0.3) {
                 target.poisoned = Math.max(target.poisoned || 0, 5);
                 cs.log.push(`Jed proniká do rány.`);
             }
@@ -78855,7 +78876,10 @@ function openFullscreenMap() {
                 
                 // Weapon special effects (only on first target for AOE)
                 if (idx === 0 || !isAOE) {
-                    if (weapon?.special === 'poison' && Math.random() < 0.3) {
+                    // OPRAVA: Kontroluj i special na munici (otrávené šípy)
+                    const _ammoSpec2 = weapon?.ammoType ? (state.inv.find(i => i.type === 'ammo' && i.ammoType === weapon.ammoType && i.special)?.special) : null;
+                    const _effSpec2 = weapon?.special || _ammoSpec2;
+                    if (_effSpec2 === 'poison' && Math.random() < 0.3) {
                         target.poisoned = Math.max(target.poisoned, 5);
                         log.innerHTML += `<div style="color: #9c27b0;">☠️ Jed proniká do rány!</div>`;
                     }
@@ -83041,6 +83065,11 @@ function openFullscreenMap() {
         
         // Migrace starých uložených her na novou verzi
         function migrateState() {
+            // CRITICAL: Zajisti confirmed = true pokud má hráč platnou postavu (ochrana proti bugnutým savům)
+            if (state.char?.name && state.char?.level >= 1 && !state.confirmed) {
+                console.warn('⚠️ migrateState: Opravuji confirmed = false → true (postava existuje)');
+                state.confirmed = true;
+            }
             console.log('🔄 Migrace uložené hry...');
             
             // === KRITICKÉ: Zajisti základní struktury ===
@@ -84554,6 +84583,45 @@ function openFullscreenMap() {
                 
                 if (fixedItems > 0) console.log(`🔧 Migrace v60: Aktualizováno ${fixedItems} předmětů na nové staty`);
             }
+            
+            // === MIGRACE: Doplnění chybějících type/effect na inventářních itemech ===
+            // Fix pro hráče se starými/poškozenými itemy (např. Střep Temnoty bez type:'consumable')
+            if (state.inv && Array.isArray(state.inv)) {
+                let _patchedCount = 0;
+                state.inv.forEach(item => {
+                    if (!item || !item.id) return;
+                    const def = ITEMS.find(d => d.id === item.id);
+                    if (def) {
+                        if (!item.type && def.type) { item.type = def.type; _patchedCount++; }
+                        if (!item.effect && def.effect) { item.effect = def.effect; _patchedCount++; }
+                        if (item.value === undefined && def.value !== undefined) { item.value = def.value; _patchedCount++; }
+                        if (!item.icon && def.icon) item.icon = def.icon;
+                        if (!item.name && def.name) item.name = def.name;
+                        if (!item.rarity && def.rarity) item.rarity = def.rarity;
+                        if (!item.desc && def.desc) item.desc = def.desc;
+                    }
+                });
+                if (_patchedCount > 0) console.log(`🔧 Migrace: Doplněno ${_patchedCount} chybějících vlastností na inventářních itemech`);
+            }
+            
+            // === MIGRACE: Mutační bonusy na atributy — přechod na dynamický systém ===
+            // Dřív se +str/+agi/+int/+per přidávaly přímo do base attrs. Teď se počítají dynamicky
+            // v getEffectiveAttr(), takže musíme odečíst staré přímé bonusy aby se nepočítaly 2×.
+            if (!state._mutationAttrsMigrated && state.mutations && state.mutations.length > 0) {
+                state.mutations.forEach(mutId => {
+                    const mut = MUTATIONS?.find(m => m.id === mutId);
+                    if (mut?.effect) {
+                        if (mut.effect.str) state.char.attrs.str = (state.char.attrs.str || 5) - mut.effect.str;
+                        if (mut.effect.agi) state.char.attrs.agi = (state.char.attrs.agi || 5) - mut.effect.agi;
+                        if (mut.effect.int) state.char.attrs.int = (state.char.attrs.int || 5) - mut.effect.int;
+                        if (mut.effect.perception) state.char.attrs.per = (state.char.attrs.per || 5) - mut.effect.perception;
+                    }
+                });
+                state._mutationAttrsMigrated = true;
+                console.log('🧬 Migrace: Mutační bonusy přesunuty na dynamický systém');
+            }
+            // Pro nové hráče rovnou nastav flag
+            if (!state._mutationAttrsMigrated) state._mutationAttrsMigrated = true;
         }
         
         function toggleSound() {
@@ -86378,8 +86446,7 @@ function openFullscreenMap() {
                     if (!state.buffs) state.buffs = {};
                     if (!state.buffs.withdrawal || state.buffs.withdrawal.until < Date.now()) {
                         state.buffs.withdrawal = { until: Date.now() + 60 * 60 * 1000 }; // 1h cyklus
-                        // Postihy z abstinence
-                        state.status.mood = Math.max(0, (state.status.mood || 50) - 15);
+                        // Postihy z abstinence - nálada řeší mood formula výše jako modifikátor
                         state.status.energy = Math.max(5, (state.status.energy || 50) - 10);
                         if (!state.intoxication.withdrawalNotified) {
                             addLog('🥴 Abstinenční příznaky... třesou se ti ruce, potřebuješ drink!', '🍺');
@@ -86523,6 +86590,7 @@ function openFullscreenMap() {
             
             // === SETTLEMENT EVENTY KAŽDÝCH 6 HODIN ===
             // Ale až 12 hodin po vytvoření postavy
+            if (state.settlement) {
             const twelveHoursMs = 12 * 60 * 60 * 1000;
             const gameAge = state.time?.totalElapsed ? state.time.totalElapsed * 1000 : (now - (state.time?.realStart || now));
             
@@ -86530,6 +86598,7 @@ function openFullscreenMap() {
             if (gameAge >= twelveHoursMs && now - state.settlement.lastEventCheck > 21600000) { // Každých 6 hodin, ale až po 12h hraní
                 state.settlement.lastEventCheck = now;
                 checkSettlementEvents();
+            }
             }
             
             // === 🔄 ZMĚNA OSOBNOSTÍ OSADNÍKŮ KAŽDÝCH 6 HODIN ===
@@ -86593,7 +86662,7 @@ function openFullscreenMap() {
             }
             
             // Check for settlement raids (every 5 minutes of real time)
-            if (state.confirmed && state.map.inBase) {
+            if (state.confirmed && state.map.inBase && state.settlement) {
                 // Naplánuj další raid pokud není naplánovaný
                 if (!state.settlement.nextRaidCheck) {
                     state.settlement.nextRaidCheck = now + 300000; // 5 min od teď
@@ -87145,19 +87214,33 @@ function openFullscreenMap() {
                     `);
                 }
                 
-                // Update mood based on status
+                // Update mood based on status - postupný přechod k cílovému stavu
                 const avgStatus = (state.status.hunger + state.status.thirst + state.status.energy) / 3;
-                state.status.mood = avgStatus - state.status.radiation * 0.5;
+                // Cílová nálada (nikdy záporná před modifikátory)
+                let targetMood = Math.max(0, avgStatus - state.status.radiation * 0.5);
                 
                 // 🏛️ Politický mood boost/penalty
                 if (cachedPoliticalEffects) {
                     const pNow = Date.now();
                     if (cachedPoliticalEffects.decision_moodBoost && cachedPoliticalEffects.decision_moodBoost.until > pNow) {
-                        state.status.mood += cachedPoliticalEffects.decision_moodBoost.value || 20;
+                        targetMood = Math.min(100, targetMood + (cachedPoliticalEffects.decision_moodBoost.value || 20));
                     }
                     if (cachedPoliticalEffects.decision_moodPenalty && cachedPoliticalEffects.decision_moodPenalty.until > pNow) {
-                        state.status.mood += cachedPoliticalEffects.decision_moodPenalty.value || -10;
+                        targetMood = Math.max(0, targetMood + (cachedPoliticalEffects.decision_moodPenalty.value || -10));
                     }
+                }
+                
+                // Abstinenční příznaky - trvalý postih nálady (přidán jako modifikátor, ne přepis)
+                if (state.buffs?.withdrawal && state.buffs.withdrawal.until > Date.now()) {
+                    targetMood = Math.max(0, targetMood - 15);
+                }
+                
+                // Plynule přibližuj aktuální náladu k cílové (změna max 2% za tick)
+                const currentMood = state.status.mood || 50;
+                if (Math.abs(currentMood - targetMood) < 2) {
+                    state.status.mood = targetMood;
+                } else {
+                    state.status.mood = currentMood + (targetMood > currentMood ? 2 : -2);
                 }
                 
                 state.status.mood = Math.max(0, Math.min(100, state.status.mood));
@@ -87265,6 +87348,7 @@ function openFullscreenMap() {
             }
             
             // Scavenger production (every 6 hours of real time)
+            if (state.settlement) {
             const currentPeriod = Math.floor(state.time.totalElapsed / 21600); // 21600 = 6 hodin
             if (!state.settlement.lastScavengerPeriod) state.settlement.lastScavengerPeriod = currentPeriod;
             if (currentPeriod > state.settlement.lastScavengerPeriod && state.confirmed) {
@@ -87293,6 +87377,7 @@ function openFullscreenMap() {
                     }
                 });
             }
+            } // end if (state.settlement) - scavenger & building production
             
             // Check achievements every 10 seconds
             if (Math.floor(state.time.totalElapsed) % 10 === 0) {
@@ -89542,6 +89627,12 @@ function openFullscreenMap() {
                     }
                     if (_keepFactionAt > (state._lastFactionIncomeAt || 0)) {
                         state._lastFactionIncomeAt = _keepFactionAt;
+                    }
+                    
+                    // CRITICAL: Zajisti confirmed = true pokud má hráč platnou postavu
+                    // Object.assign mohl přepsat confirmed z cloudového save (mohl být false)
+                    if (state.char?.name && state.char?.level >= 1) {
+                        state.confirmed = true;
                     }
                     
                     // CRITICAL: Zajisti že inv je pole (Firebase může vrátit objekt)
