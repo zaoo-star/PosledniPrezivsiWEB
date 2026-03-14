@@ -52045,13 +52045,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 state.equipped.weapon.damage = (state.equipped.weapon.damage || 10) + 5;
                 state.equipped.weapon.abyssShardUpgrades = shardUpgrades + 1;
-                // Sync ALL inv copies of this weapon (by id AND by reference)
-                state.inv.forEach(invItem => {
-                    if (invItem.id === state.equipped.weapon.id && invItem.type === 'weapon') {
-                        invItem.damage = state.equipped.weapon.damage;
-                        invItem.abyssShardUpgrades = state.equipped.weapon.abyssShardUpgrades;
+                // Sync equipped weapon v inventáři (ale NE jiné kopie stejné zbraně!)
+                // Po syncEquippedReferences je equipped STEJNÝ objekt jako inv item - takže stačí najít ten
+                const equippedInvRef = state.inv.find(invItem => invItem === state.equipped.weapon);
+                if (equippedInvRef) {
+                    equippedInvRef.damage = state.equipped.weapon.damage;
+                    equippedInvRef.abyssShardUpgrades = state.equipped.weapon.abyssShardUpgrades;
+                } else {
+                    // Fallback: najdi podle _uniqueId nebo přesného damage matche
+                    const fallbackItem = state.inv.find(invItem => 
+                        invItem.id === state.equipped.weapon.id && invItem.type === 'weapon' &&
+                        (invItem._uniqueId === state.equipped.weapon._uniqueId || (invItem.damage || 0) === (state.equipped.weapon.damage - 5))
+                    );
+                    if (fallbackItem) {
+                        fallbackItem.damage = state.equipped.weapon.damage;
+                        fallbackItem.abyssShardUpgrades = state.equipped.weapon.abyssShardUpgrades;
                     }
-                });
+                }
                 removeItemFromInventory(item, 1);
                 SoundSystem.play('pickup');
                 showModal('💎 Střep Temnoty použit!', `
@@ -82703,8 +82713,16 @@ function openFullscreenMap() {
                 }
                 
                 // 3. Poslední fallback: jen id+type (pro úplně staré save)
+                // OPRAVA: Pokud equipped má upgrady, NEHLEDEJ fallback podle id+type
+                // protože by se našla čistá verze stejné zbraně (např. z aukce) a upgrady by se na ni zkopírovaly
                 if (!invItem) {
-                    invItem = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type);
+                    const equippedIsUpgraded = equippedItem.ivanUpgrades || equippedItem.aiUpgraded || equippedItem.techUpgrades || equippedItem.technicianUpgrades || equippedItem.labUpgraded || equippedItem._smithyUpgrades || equippedItem.abyssShardUpgrades || equippedItem.enchantment;
+                    if (equippedIsUpgraded) {
+                        // Equipped je upgradovaný - hledej POUZE item se STEJNÝM damage (aby se nematchla čistá verze)
+                        invItem = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type && (i.damage || 0) === (equippedItem.damage || 0));
+                    } else {
+                        invItem = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type);
+                    }
                 }
                 
                 if (invItem) {
@@ -82712,7 +82730,13 @@ function openFullscreenMap() {
                     const equippedHasUpgrades = equippedItem.ivanUpgrades || equippedItem.aiUpgraded || equippedItem.techUpgrades || equippedItem.technicianUpgrades || equippedItem.labUpgraded || equippedItem._smithyUpgrades || equippedItem.abyssShardUpgrades;
                     const invHasUpgrades = invItem.ivanUpgrades || invItem.aiUpgraded || invItem.techUpgrades || invItem.technicianUpgrades || invItem.labUpgraded || invItem._smithyUpgrades || invItem.abyssShardUpgrades;
                     
-                    if (equippedHasUpgrades && !invHasUpgrades) {
+                    // OCHRANA: Nekopíruj upgrady pokud se damage/defense výrazně liší
+                    // (znamená to že invItem je JINÁ instance - např. čistá z aukce)
+                    const damageDiff = Math.abs((equippedItem.damage || 0) - (invItem.damage || 0));
+                    const defenseDiff = Math.abs((equippedItem.defense || 0) - (invItem.defense || 0));
+                    const isSameInstance = damageDiff <= 2 && defenseDiff <= 2;
+                    
+                    if (equippedHasUpgrades && !invHasUpgrades && isSameInstance) {
                         // Equipped je novější → přenes upgrady do inv
                         for (const prop of upgradeProps) {
                             if (equippedItem[prop] !== undefined) {
@@ -82720,7 +82744,7 @@ function openFullscreenMap() {
                             }
                         }
                         console.log(`🔧 syncEquipped: Přeneseny upgrady z equipped.${slot} do inv (${invItem.name})`);
-                    } else if (!equippedHasUpgrades && invHasUpgrades) {
+                    } else if (!equippedHasUpgrades && invHasUpgrades && isSameInstance) {
                         // Inv je novější → přenes upgrady do equipped
                         for (const prop of upgradeProps) {
                             if (invItem[prop] !== undefined) {
@@ -82941,6 +82965,8 @@ function openFullscreenMap() {
                 
                 try {
                     state = decrypted;
+                    // Ulož původní čas pro offline výpočet PŘED resetem
+                    state._offlineLastTime = state.time.last;
                     // Reset timing references but keep totalElapsed
                     state.time.last = Date.now();
                     state.time.realStart = Date.now();
@@ -87658,6 +87684,8 @@ function openFullscreenMap() {
                     console.log('⚠️ Hra není potvrzena - bude vytvořena nová postava');
                 }
                 
+                // Ulož původní čas pro offline výpočet PŘED resetem
+                state._offlineLastTime = state._offlineLastTime || state.time?.last;
                 state.time.last = Date.now();
                 state.time.realStart = Date.now();
                 
@@ -87842,7 +87870,9 @@ function openFullscreenMap() {
                 }
                 
                 // Calculate offline time and apply status changes
-                const offlineTime = (Date.now() - state.time.last) / 1000; // seconds
+                // OPRAVA: Používej uložený čas z načtení (state.time.last se resetuje při loadu)
+                const offlineTime = state._offlineLastTime ? (Date.now() - state._offlineLastTime) / 1000 : 0;
+                delete state._offlineLastTime; // Vyčisti - jednou použito
                 if (offlineTime > 60 && state.confirmed) { // More than 1 minute offline
                     console.log('Offline time:', Math.floor(offlineTime / 60), 'minutes');
                     
