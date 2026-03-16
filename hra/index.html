@@ -87481,7 +87481,12 @@ function openFullscreenMap() {
                     }
                     
                     state.status.thirst = Math.max(0, state.status.thirst - thirstRate * delta * finalConsumptionMod * thirstMod);
-                    state.status.energy = Math.max(0, state.status.energy - energyRate * delta);
+                    
+                    // [FIX] Energie — aplikuj consumption mody + nemoci/zranění energyDrain
+                    let _energyDrainMod = 1.0;
+                    if (typeof getDiseaseModifiers === 'function') _energyDrainMod *= getDiseaseModifiers().energyDrain || 1.0;
+                    if (typeof getInjuryModifiers === 'function') _energyDrainMod *= getInjuryModifiers().energyDrain || 1.0;
+                    state.status.energy = Math.max(0, state.status.energy - energyRate * delta * finalConsumptionMod * _energyDrainMod);
                     
                     // Automatické konzumování pokud má hráč perk (kontrola každých 10s)
                     if (Math.floor(now / 10000) !== Math.floor((now - delta * 1000) / 10000)) {
@@ -87524,7 +87529,7 @@ function openFullscreenMap() {
                     // V základně: hlad/žízeň klesají o 50% pomaleji než venku
                     state.status.hunger = Math.max(0, state.status.hunger - hungerRate * 0.5 * delta * finalConsumptionMod * politicalConsumptionMod);
                     state.status.thirst = Math.max(0, state.status.thirst - thirstRate * 0.5 * delta * finalConsumptionMod);
-                    state.status.energy = Math.max(0, state.status.energy - energyRate * 0.3 * delta); // energie klesá o 70% pomaleji
+                    state.status.energy = Math.max(0, state.status.energy - energyRate * 0.3 * delta * finalConsumptionMod); // energie klesá o 70% pomaleji + consumption mod
 
                     // === PŘIROZENÁ REGENERACE V ZÁKLADNĚ ===
                     // V základně se HP regeneruje rychleji - 10 HP za hodinu
@@ -121469,11 +121474,16 @@ function openFullscreenMap() {
             
             function scanForScrollables(root) {
                 if (!root) return;
-                // [FIX] Cílený selektor místo querySelectorAll('*') — řádově méně elementů k prohledání
-                const candidates = root.querySelectorAll('[style*="overflow-y: auto"], [style*="overflow-y: scroll"], [style*="overflow-y:auto"], [style*="overflow-y:scroll"]');
+                // Inline overflow-y + max-height containers + known CSS classes
+                const candidates = root.querySelectorAll(
+                    '[style*="overflow-y: auto"], [style*="overflow-y: scroll"], [style*="overflow-y:auto"], [style*="overflow-y:scroll"], ' +
+                    '[style*="max-height"], .modal-content, .shop-grid'
+                );
                 for (let i = 0; i < candidates.length; i++) {
                     const el = candidates[i];
                     if (el.dataset?.scrollArrows) continue;
+                    // Ověř že je skutečně scrollovatelný
+                    if (el.scrollHeight - el.clientHeight < MIN_SCROLLABLE) continue;
                     attachArrows(el);
                 }
             }
@@ -121484,10 +121494,9 @@ function openFullscreenMap() {
                 if (_scanTimer) clearTimeout(_scanTimer);
                 _scanTimer = setTimeout(() => {
                     removeStaleArrows();
-                    scanForScrollables(document.getElementById('modalContent'));
-                    scanForScrollables(document.getElementById('mainContent'));
-                    scanForScrollables(document.getElementById('gameContent'));
-                }, 500); // [FIX] 500ms debounce (bylo 200ms — příliš agresivní)
+                    scanForScrollables(document.getElementById('modal'));
+                    scanForScrollables(document.getElementById('main'));
+                }, 400);
             });
             
             if (document.body) {
@@ -121498,17 +121507,17 @@ function openFullscreenMap() {
                 });
             }
             
-            // Periodic scan for dynamic content — [FIX] 10s místo 3s (MutationObserver už zachytí většinu změn)
+            // Periodic scan for dynamic content — 5s fallback
             if (typeof safeSetInterval === 'function') {
                 safeSetInterval(() => {
                     removeStaleArrows();
                     scanForScrollables(document.body);
-                }, 10000);
+                }, 5000);
             } else {
                 setInterval(() => {
                     removeStaleArrows();
                     scanForScrollables(document.body);
-                }, 10000);
+                }, 5000);
             }
             
             window._attachScrollArrows = attachArrows;
