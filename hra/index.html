@@ -4207,6 +4207,20 @@
                 options = options || {};
                 if (!this.enabled) return;
                 
+                // [FIX] In-game toggle — hráč může vypnout push notifikace
+                if (typeof state !== 'undefined' && state.pushNotificationsOff) return;
+                
+                // [FIX] Dovolenkový režim — žádné notifikace
+                if (typeof state !== 'undefined' && state.vacationMode) return;
+                
+                // [FIX] Per-tag cooldown — stejná notifikace max 1× za 15 minut
+                if (!this._tagCooldowns) this._tagCooldowns = {};
+                var tag = options.tag || 'pustina';
+                var now = Date.now();
+                var cooldownMs = 15 * 60 * 1000; // 15 minut
+                if (this._tagCooldowns[tag] && (now - this._tagCooldowns[tag]) < cooldownMs) return;
+                this._tagCooldowns[tag] = now;
+                
                 var ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">☢️</text></svg>');
                 var notifOpts = {
                     body: options.body || '',
@@ -86148,28 +86162,26 @@ function openFullscreenMap() {
         
         function toggleMobileNotifications() {
             if (MobileNotifications.enabled) {
-                // Už je povoleno - info + test
+                // Už je povoleno v prohlížeči — nabídni in-game toggle
+                const isOff = state.pushNotificationsOff;
                 showModal('🔔 Notifikace', `
                     <div style="text-align: center;">
-                        <div style="font-size: 3rem; margin-bottom: 1rem;">🔔</div>
-                        <h3 style="color: #4CAF50;">Notifikace jsou povoleny!</h3>
-                        <p style="color: #888; margin: 1rem 0;">Budeš dostávat upozornění na:</p>
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">${isOff ? '🔕' : '🔔'}</div>
+                        <h3 style="color: ${isOff ? '#f44336' : '#4CAF50'};">${isOff ? 'Push notifikace VYPNUTY' : 'Push notifikace ZAPNUTY'}</h3>
+                        <p style="color: #888; margin: 1rem 0;">Upozornění na:</p>
                         <div style="text-align: left; background: #1a1a1a; padding: 1rem; border-radius: 8px; font-size: 0.85rem;">
                             <div>❤️ Kritické zdraví</div>
-                            <div>🍖 Kritický hlad</div>
-                            <div>💧 Kritická žízeň</div>
-                            <div>🐕 Hladoví společníci</div>
+                            <div>🍖 Kritický hlad / 💧 žízeň</div>
                             <div>⚔️ Nájezdy na osadu</div>
-                            <div>🌅 Nový den</div>
-                            <div>🗺️ Dorazil jsi na lokaci</div>
-                            <div>⚔️ Souboj začal</div>
-                            <div>🐪 Karavana dorazila</div>
-                            <div>🎁 Loot nalezen</div>
+                            <div>🌅 Nový den / 🗺️ Cesta hotová</div>
                         </div>
-                        <button class="btn" onclick="MobileNotifications.test(); notifySuccess('Notifikace odeslána!', 'Zkontroluj notifikační centrum')" style="width: 100%; margin-top: 1rem; background: #2196f3;">🧪 Testovat notifikaci</button>
-                        <p style="color: #666; font-size: 0.8rem; margin-top: 1rem;">Pro vypnutí jdi do nastavení prohlížeče/aplikace.</p>
+                        <button class="btn" onclick="state.pushNotificationsOff = !state.pushNotificationsOff; saveGame(true); toggleMobileNotifications();" style="width: 100%; margin-top: 1rem; background: ${isOff ? '#2e7d32' : '#c62828'}; padding: 0.8rem; font-weight: bold;">
+                            ${isOff ? '🔔 ZAPNOUT notifikace' : '🔕 VYPNOUT notifikace'}
+                        </button>
+                        ${!isOff ? '<button class="btn" onclick="MobileNotifications.test(); notifySuccess(\'Odesláno!\', \'Zkontroluj notifikační centrum\')" style="width: 100%; margin-top: 0.5rem; background: #2196f3;">🧪 Test</button>' : ''}
+                        <p style="color: #555; font-size: 0.7rem; margin-top: 0.8rem;">Toto nastavení je uloženo ve hře. Prohlížeč má stále povoleno odesílat notifikace.</p>
                     </div>
-                    <button class="btn" onclick="showGameInfo()" style="width: 100%; margin-top: 1rem;">${'Zpět'}</button>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">Zavřít</button>
                 `);
             } else {
                 // Požádej o povolení
@@ -87156,7 +87168,7 @@ function openFullscreenMap() {
             
             // === PUSH NOTIFIKACE PRO KRITICKÉ STAVY ===
             if (state.confirmed && !state._lastNotifyCheck) state._lastNotifyCheck = 0;
-            if (state.confirmed && now - state._lastNotifyCheck > 60000) { // Max 1x za minutu
+            if (state.confirmed && now - state._lastNotifyCheck > 600000 && !state.vacationMode && !state.pushNotificationsOff) { // [FIX] Max 1x za 10 minut (bylo 60s — spamovalo)
                 state._lastNotifyCheck = now;
                 
                 // Kritické HP
@@ -98281,9 +98293,9 @@ function openFullscreenMap() {
                             </button>
                         </div>
                         
-                        <button class="btn" onclick="toggleMobileNotifications()" style="width: 100%; background: #0a0a0a; border: 1px solid ${MobileNotifications.enabled ? '#2a4a2a' : '#1a1a1a'}; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Courier New', monospace;">
-                            <span>${MobileNotifications.enabled ? '🔔' : '🔕'}</span>
-                            <span style="font-size: 0.75rem; color: ${MobileNotifications.enabled ? '#8bc34a' : '#668a66'};">NOTIFIKACE ${MobileNotifications.enabled ? '[AKTIVNÍ]' : '[VYPNUTO]'}</span>
+                        <button class="btn" onclick="toggleMobileNotifications()" style="width: 100%; background: #0a0a0a; border: 1px solid ${MobileNotifications.enabled && !state.pushNotificationsOff ? '#2a4a2a' : '#1a1a1a'}; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Courier New', monospace;">
+                            <span>${MobileNotifications.enabled && !state.pushNotificationsOff ? '🔔' : '🔕'}</span>
+                            <span style="font-size: 0.75rem; color: ${MobileNotifications.enabled && !state.pushNotificationsOff ? '#8bc34a' : '#668a66'};">NOTIFIKACE ${MobileNotifications.enabled && !state.pushNotificationsOff ? '[AKTIVNÍ]' : '[VYPNUTO]'}</span>
                         </button>
                         
                         <button class="btn" onclick="showBugReportModal()" style="width: 100%; background: #0a0a0a; border: 1px solid #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Courier New', monospace;">
