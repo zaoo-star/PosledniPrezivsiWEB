@@ -88026,8 +88026,13 @@ function openFullscreenMap() {
                     // [FIX] Pouze energy se omezuje na 100 — hunger/thirst mohou jít přes 100 (přejedení/přepití = nevolnost)
                     if (s === 'energy' && state.status[s] > 100) state.status[s] = 100;
                 });
-                // Překresli UI (přeskoč mapový tab - tam způsobuje blikání, HUD update stačí)
-                if (typeof renderFull === 'function' && state.activeTab !== 'map') renderFull();
+                // [FIX] Plný renderFull jen na tabech kde se mění obsah pasivně (base, multiplayer)
+                // Na inv/craft/char/map stačí HUD update — plný render resetuje scroll pozici!
+                if (typeof renderFull === 'function' && (state.activeTab === 'base' || state.activeTab === 'multiplayer')) {
+                    renderFull();
+                } else if (typeof updateHudStatusBars === 'function') {
+                    updateHudStatusBars();
+                }
             }
         }, 10000); // Každých 10 sekund
         
@@ -103341,26 +103346,39 @@ function openFullscreenMap() {
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 
-                // Vrať ostatním prodejcům jejich předměty (oznámení že si to mají vzít zpět)
-                for (const [otherSellerKey, otherOffer] of Object.entries(ad.offers || {})) {
-                    if (otherSellerKey !== sellerKey && otherOffer.item) {
-                        await firebaseDB.ref('marketplace/returns/' + otherSellerKey).push({
-                            item: otherOffer.item,
-                            reason: 'Poptávka byla splněna jiným prodejcem',
-                            adId: adId,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP
-                        });
-                        await firebaseDB.ref('marketplace/notifications/' + otherSellerKey).push({
-                            type: 'offer_returned',
-                            message: `Tvá nabídka na "${ad.itemName}" nebyla přijata. ${otherOffer.item.icon} ${otherOffer.item.name} ti byl vrácen.`,
-                            item: otherOffer.item,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP
-                        });
-                    }
-                }
+                // [FIX] Částečné plnění poptávky — nesmazat celou, jen snížit wantedCount
+                const remainingCount = (ad.wantedCount || addCount) - addCount;
                 
-                // Smaž poptávku
-                await firebaseDB.ref('marketplace/wanted/' + adId).remove();
+                if (remainingCount <= 0) {
+                    // Plně splněno — vrať ostatním prodejcům a smaž
+                    for (const [otherSellerKey, otherOffer] of Object.entries(ad.offers || {})) {
+                        if (otherSellerKey !== sellerKey && otherOffer.item) {
+                            await firebaseDB.ref('marketplace/returns/' + otherSellerKey).push({
+                                item: otherOffer.item,
+                                reason: 'Poptávka byla splněna jiným prodejcem',
+                                adId: adId,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
+                            await firebaseDB.ref('marketplace/notifications/' + otherSellerKey).push({
+                                type: 'offer_returned',
+                                message: `Tvá nabídka na "${ad.itemName}" nebyla přijata. ${otherOffer.item.icon} ${otherOffer.item.name} ti byl vrácen.`,
+                                item: otherOffer.item,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
+                        }
+                    }
+                    // Smaž celou poptávku
+                    await firebaseDB.ref('marketplace/wanted/' + adId).remove();
+                } else {
+                    // Částečně splněno — aktualizuj zbývající počet, odstraň jen přijatou nabídku
+                    const baseName = (ad.itemName || '').replace(/\s*\(×\d+\)\s*$/, '');
+                    await firebaseDB.ref('marketplace/wanted/' + adId).update({
+                        wantedCount: remainingCount,
+                        itemName: remainingCount > 1 ? `${baseName} (×${remainingCount})` : baseName
+                    });
+                    // Odstraň přijatou nabídku
+                    await firebaseDB.ref('marketplace/wanted/' + adId + '/offers/' + sellerKey).remove();
+                }
                 
                 // Ulož historii do marketplace/history (legacy)
                 await firebaseDB.ref('marketplace/history').push({
@@ -103415,8 +103433,8 @@ function openFullscreenMap() {
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 
-                notifySuccess('✓ Koupeno!', `${offer.item.icon} ${offer.item.name} za ${price} 💰`);
-                addLog(`🛒 Koupeno ${offer.item.name} od ${sellerName} za ${price}`, '🛒');
+                notifySuccess('✓ Koupeno!', `${offer.item.icon} ${offer.item.name} ×${addCount} za ${price} 💰${remainingCount > 0 ? ' (poptávka: zbývá ' + remainingCount + ')' : ''}`);
+                addLog(`🛒 Koupeno ${addCount}× ${offer.item.name} od ${sellerName} za ${price}${remainingCount > 0 ? ' (zbývá ' + remainingCount + ')' : ''}`, '🛒');
                 
                 saveGame(true);
                 updateCarryWeight();
