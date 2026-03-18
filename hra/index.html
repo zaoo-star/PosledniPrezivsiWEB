@@ -54085,12 +54085,27 @@ function openFullscreenMap() {
             // Aplikace enchantmentu
             item.enchantment = enchantId;
             
-            // Pokud je item equipped, aktualizuj equipped verzi
+            // Pokud je item equipped HRÁČEM, aktualizuj equipped verzi
+            // [FIX] Porovnávej přes === referenci, ne přes ID — dvě BFG jsou různé objekty!
             if (state.equipped) {
                 const slots = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
                 slots.forEach(slot => {
-                    if (state.equipped[slot] && state.equipped[slot].id === item.id) {
+                    if (state.equipped[slot] === item) {
                         state.equipped[slot].enchantment = enchantId;
+                    }
+                });
+            }
+            
+            // [FIX] Pokud je item equipped u SPOLEČNÍKA, aktualizuj i tam
+            if (state.companions) {
+                state.companions.forEach(comp => {
+                    if (comp.equipped) {
+                        const compSlots = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory'];
+                        compSlots.forEach(slot => {
+                            if (comp.equipped[slot] === item) {
+                                comp.equipped[slot].enchantment = enchantId;
+                            }
+                        });
                     }
                 });
             }
@@ -72730,6 +72745,7 @@ function openFullscreenMap() {
                         const bossUnitData = {
                             id: unitId++,
                             ...e,
+                            enemyId: e.id, // [FIX] Uchovat originální ID z ENEMIES pro bestiář
                             hp: Math.floor(e.hp * bossScaling),
                             maxHp: Math.floor((e.maxHp || e.hp) * bossScaling),
                             damage: Math.floor(e.damage * bossScaling),
@@ -72783,6 +72799,7 @@ function openFullscreenMap() {
                     units.push({
                         id: unitId++,
                         ...e,
+                        enemyId: e.id, // [FIX] Uchovat originální ID z ENEMIES pro bestiář
                         name: elitePrefix + e.name,
                         icon: eliteIcon,
                         isElite: isElite,
@@ -76247,8 +76264,12 @@ function openFullscreenMap() {
             }
             
             // ✨ OPRAVA: Enchant "Kritický úder" - +15% crit chance, +25% crit damage
+            // [FIX] Funguje i pro companiony s jejich vlastní zbraní
             let enchantCritDamageBonus = 0;
-            if (!isCompanion && state.equipped?.weapon?.enchantment === 'critical') {
+            const _critEnchWeapon = isCompanion 
+                ? (function() { const c = (state.companions || []).find(c2 => c2.uniqueId === unit.companionId || c2.id === unit.companionId); return c?.equipped?.weapon; })()
+                : state.equipped?.weapon;
+            if (_critEnchWeapon?.enchantment === 'critical') {
                 const critEnch = ENCHANTMENTS.find(e => e.id === 'critical');
                 if (critEnch?.effect) {
                     critChance += critEnch.effect.critChance || 0;
@@ -76671,32 +76692,36 @@ function openFullscreenMap() {
             }
             
             // ✨ OPRAVA: ENCHANTMENT EFEKTY NA ZBRANÍCH (fire, ice, poison, lifesteal)
-            if (!isCompanion && state.equipped?.weapon?.enchantment) {
-                const weaponEnch = ENCHANTMENTS.find(e => e.id === state.equipped.weapon.enchantment);
+            // [FIX] Funguje pro HRÁČE i SPOLEČNÍKY — každý používá enchant ze SVÉ zbraně
+            const _enchWeapon = isCompanion 
+                ? (function() { const c = (state.companions || []).find(c2 => c2.uniqueId === unit.companionId || c2.id === unit.companionId); return c?.equipped?.weapon; })()
+                : state.equipped?.weapon;
+            if (_enchWeapon?.enchantment) {
+                const weaponEnch = ENCHANTMENTS.find(e => e.id === _enchWeapon.enchantment);
                 if (weaponEnch?.effect) {
                     // 🔥 Oheň: bonus fire damage jako burn DOT
                     if (weaponEnch.effect.bonusDamage && weaponEnch.effect.element === 'fire') {
                         target.burnDamage = Math.max(target.burnDamage || 0, weaponEnch.effect.bonusDamage);
                         target.burnRounds = Math.max(target.burnRounds || 0, 2);
-                        if (cs.round <= 2) cs.log.push(`Enchant Oheň: +${weaponEnch.effect.bonusDamage} fire DMG.`);
+                        if (cs.round <= 2) cs.log.push(`${isCompanion ? unit.name + ': ' : ''}Enchant Oheň: +${weaponEnch.effect.bonusDamage} fire DMG.`);
                     }
                     // ❄️ Led: bonus damage + zpomalení (snížený damage nepřítele)
                     if (weaponEnch.effect.slow) {
                         target._enchantSlowed = true;
-                        if (cs.round <= 2) cs.log.push(`❄️ Enchant Led: nepřítel zpomalen!`);
+                        if (cs.round <= 2) cs.log.push(`${isCompanion ? unit.name + ': ' : ''}❄️ Enchant Led: nepřítel zpomalen!`);
                     }
                     // 🧪 Jed: DOT damage
                     if (weaponEnch.effect.dot) {
                         target.poisoned = Math.max(target.poisoned || 0, weaponEnch.effect.dot);
-                        if (cs.round <= 2) cs.log.push(`Enchant Jed: ${weaponEnch.effect.dot} DMG/kolo.`);
+                        if (cs.round <= 2) cs.log.push(`${isCompanion ? unit.name + ': ' : ''}Enchant Jed: ${weaponEnch.effect.dot} DMG/kolo.`);
                     }
                     // 🧛 Lifesteal: heal on hit
                     if (weaponEnch.effect.lifesteal > 0) {
                         const lsHeal = Math.floor(finalDamage * weaponEnch.effect.lifesteal);
                         if (lsHeal > 0) {
                             unit.hp = Math.min(unit.maxHp, unit.hp + lsHeal);
-                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
-                            cs.log.push(`🧛 Enchant Vysátí: +${lsHeal} HP`);
+                            if (!isCompanion) state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
+                            cs.log.push(`${isCompanion ? unit.name + ': ' : ''}🧛 Enchant Vysátí: +${lsHeal} HP`);
                         }
                     }
                 }
@@ -79878,10 +79903,19 @@ function openFullscreenMap() {
             checkTimedQuestObjectives('combat_victory', state.world.currentLocation);
             checkCompanionQuestObjectives('combat_victory', state.world.currentLocation);
             
-            // Track kills by enemy type for bounties
+            // Track kills by enemy type for bounties and bestiary
             if (!state.stats.killsByType) state.stats.killsByType = {};
-            const enemyType = enemyData.id || enemyData.name?.toLowerCase().replace(/\s+/g, '_');
+            // [FIX] Použij enemyId (originální ID z ENEMIES), ne unit.id (číslo z combat gridu)
+            const enemyType = enemyData.enemyId || enemyData.id || enemyData.name?.toLowerCase().replace(/\s+/g, '_');
             state.stats.killsByType[enemyType] = (state.stats.killsByType[enemyType] || 0) + enemyCount;
+            
+            // Zapiš i pro VŠECHNY nepřátele v boji (ne jen prvního)
+            enemyUnits.forEach(eu => {
+                const euType = eu.enemyId || eu.id;
+                if (euType !== enemyType && typeof euType === 'string') {
+                    state.stats.killsByType[euType] = (state.stats.killsByType[euType] || 0) + 1;
+                }
+            });
             
             // Track general categories too
             if (enemyData.id?.includes('wolf') || enemyData.name?.includes('Vlk')) {
