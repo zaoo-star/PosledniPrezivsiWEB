@@ -7311,9 +7311,11 @@
             'bandit': 'img/bandit.png',
             'rat': 'img/rat.png',
             'giant_rat': 'img/rat.png',
-            'mutant_rat': 'img/rat.png',
+            'mutant_rat': 'img/mutant_rat.png',
             'ghoul': 'img/ghoul.png',
             'feral': 'img/ghoul.png',
+            'cave_spider': 'img/cave_spider.png',
+            'cave_queen': 'img/cave_spider.png',
             // Příklady pro budoucí použití:
             // 'zombie': 'img/zombie.png',
             // 'mutant': 'img/mutant.png',
@@ -48800,17 +48802,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             } else {
                 // Pro všechny ostatní typy - stackovatelné i ne
-                const existing = state.inv.find(i => i.id === itemId && i.fromShop);
-                if (existing && (itemData.stackable || itemData.type === 'consumable')) {
+                const stackableTypes = ['consumable', 'ammo', 'food', 'throwable'];
+                const isStackable = stackableTypes.includes(itemData.type) || itemData.stackable;
+                // [FIX] Hledej jakýkoliv existující stack podle ID (bez fromShop požadavku)
+                const existing = isStackable ? state.inv.find(i => i.id === itemId && !i.stackId) : null;
+                if (existing) {
                     existing.count = (existing.count || 1) + amount;
+                } else if (isStackable) {
+                    // Nový stackovatelný item
+                    state.inv.push({ ...itemData, count: amount });
                 } else {
-                    // Pro nestackovatelné itemy přidej každý zvlášť
+                    // Pro nestackovatelné itemy (zbraně, zbroje) přidej každý zvlášť
                     for (let i = 0; i < amount; i++) {
                         const newItem = {
                             ...itemData,
-                            count: 1,
-                            fromShop: true, // Anti-exploit flag
-                            boughtPrice: price,
                             durability: itemData.type === 'weapon' || itemData.type === 'armor' || itemData.type === 'helmet' || itemData.type === 'gloves' || itemData.type === 'boots' ? 100 : undefined,
                             maxDurability: itemData.type === 'weapon' || itemData.type === 'armor' || itemData.type === 'helmet' || itemData.type === 'gloves' || itemData.type === 'boots' ? 100 : undefined
                         };
@@ -60249,13 +60254,21 @@ function openFullscreenMap() {
         }
         
         function countRune(letter) {
-            return (state.inv || []).filter(i => i.id === `rune_${letter}`).length;
+            // [FIX] Sčítej count property — koupené runy mohou mít count > 1 v jednom slotu
+            return (state.inv || []).filter(i => i.id === `rune_${letter}`).reduce((sum, i) => sum + (i.count || 1), 0);
         }
         
         function removeRunes(letters) {
             for (const letter of letters) {
                 const idx = state.inv.findIndex(i => i.id === `rune_${letter}`);
-                if (idx >= 0) state.inv.splice(idx, 1);
+                if (idx >= 0) {
+                    // [FIX] Pokud má count > 1, sniž count místo smazání celého slotu
+                    if (state.inv[idx].count && state.inv[idx].count > 1) {
+                        state.inv[idx].count--;
+                    } else {
+                        state.inv.splice(idx, 1);
+                    }
+                }
             }
         }
         
@@ -60396,7 +60409,7 @@ function openFullscreenMap() {
             const sellPrice = typeof calculateNpcSellPrice === 'function' ? calculateNpcSellPrice(itemData.price || 0) : 0;
             
             // Kolik run tohoto typu má hráč
-            const runeCount = state.inv.filter(i => i.id === item.id).length;
+            const runeCount = state.inv.filter(i => i.id === item.id).reduce((sum, i) => sum + (i.count || 1), 0);
             
             showModal(item.icon + ' ' + item.name, `
                 <div style="text-align: center; margin-bottom: 0.5rem;">
@@ -94363,6 +94376,17 @@ function openFullscreenMap() {
                 const newItem = {
                     ...offer.item
                 };
+                // [FIX] Odstraň marketplace/Firebase properties které brání stackování
+                delete newItem.stackId;      // z rozděleného stacku při listování
+                delete newItem.count;        // marketplace počet — addItemToInventory má vlastní count parametr
+                delete newItem.seller;       // marketplace metadata
+                delete newItem.listedAt;
+                delete newItem.status;
+                delete newItem.buyer;
+                delete newItem.soldAt;
+                delete newItem.cookedAt;     // legacy timestamp
+                delete newItem.listedDay;
+                delete newItem.perishable;   // marketplace flag
                 // OPRAVA: Doplň VŠECHNY properties z ITEMS definice (marketplace ukládá jen subset)
                 const fullItemDef = ITEMS.find(i => i.id === newItem.id);
                 if (fullItemDef) {
@@ -103343,6 +103367,11 @@ function openFullscreenMap() {
                 const itemToAdd = {...offer.item};
                 const addCount = itemToAdd.count || 1;
                 delete itemToAdd.count;
+                // [FIX] Odstraň marketplace properties které brání stackování
+                delete itemToAdd.stackId;
+                delete itemToAdd.seller;
+                delete itemToAdd.listedAt;
+                delete itemToAdd.cookedAt;
                 
                 if (itemToAdd.type === 'resource') {
                     // Surovina → do state.resources
@@ -110331,6 +110360,32 @@ function openFullscreenMap() {
                     
                     // Boss poražen?
                     if (data.defeated && !state._raidVictoryHandled) {
+                        // [FIX] Nezávislý chat announce — pokud boss poražen a ještě nikdo neohlásil
+                        if (!data.chatAnnounced && data.defeatedAt) {
+                            firebaseDB.ref('worldBossRaid/chatAnnounced').transaction(current => {
+                                if (current) return; // Už ohlášeno
+                                return true;
+                            }).then(result => {
+                                if (result.committed && result.snapshot.val() === true) {
+                                    const _boss = WORLD_BOSSES.find(b => b.id === data.bossId);
+                                    if (_boss) {
+                                        const _sorted = Object.entries(data.participants || {})
+                                            .sort((a, b) => (b[1].damage || 0) - (a[1].damage || 0))
+                                            .slice(0, 5)
+                                            .map((p, i) => `${['🥇','🥈','🥉','⭐','⭐'][i]} ${p[0].replace(/_/g, ' ')}: ${formatNumber(p[1].damage)} DMG`)
+                                            .join(' | ');
+                                        firebaseDB.ref('chat/messages').push({
+                                            author: '🐉 RAID',
+                                            text: stripToEmoji(`🏆 ${_boss.icon} ${_boss.name} BYL PORAŽEN! Killing blow: ${(data.killingBlow || '?').replace(/_/g, ' ')} | Top DPS: ${_sorted}`),
+                                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                            system: true
+                                        }).catch(e => console.error('Chat announce error:', e));
+                                        console.log('🐉 Chat announce sent independently');
+                                    }
+                                }
+                            }).catch(() => {});
+                        }
+                        
                         // GUARD: Nespouštěj victory popup pokud hráč zrovna bojuje, je v dungeonu nebo brání osadu
                         const isInCombat = !!(window.combatState || state.activeCombat);
                         const isInDungeon = !!(state.dungeon?.active);
@@ -110400,6 +110455,28 @@ function openFullscreenMap() {
                                     const isInSettlementRaid = !!window.isSettlementRaid;
                                     if (!isInCombat && !isInDungeon && !isInSettlementRaid) {
                                         console.log('🐉 DEFERRED RETRY: Player no longer busy, triggering victory...');
+                                        checkRaidVictoryFallback();
+                                    }
+                                }
+                                
+                                // [FIX] Safety: Boss 0 HP ale defeated chybí — oprav po 15s
+                                if (worldBossRaidData.currentHp <= 0 && !worldBossRaidData.defeated) {
+                                    console.log('🐉 PERIODIC FIX: Boss 0 HP but not defeated!');
+                                    firebaseDB.ref('worldBossRaid').transaction(d => {
+                                        if (d && d.active && d.currentHp <= 0 && !d.defeated) {
+                                            d.defeated = true;
+                                            d.defeatedAt = Date.now();
+                                            d.currentHp = 0;
+                                        }
+                                        return d;
+                                    }).catch(e => console.error('Periodic fix error:', e));
+                                }
+                                
+                                // [FIX] Safety: Boss poražen >30s ale žádný rewardWriter — znovu zkus
+                                if (worldBossRaidData.defeated && worldBossRaidData.defeatedAt && !worldBossRaidData.rewardWriter) {
+                                    const timeSince = Date.now() - worldBossRaidData.defeatedAt;
+                                    if (timeSince > 30000 && timeSince < 300000 && !state._raidVictoryHandled) {
+                                        console.log('🐉 ORPHAN CHECK: Boss defeated', Math.round(timeSince/1000), 's ago, no rewardWriter — retrying...');
                                         checkRaidVictoryFallback();
                                     }
                                 }
@@ -113499,8 +113576,21 @@ function openFullscreenMap() {
                 // Časované chat notifikace pro tombolu
                 if (newTombola && newTombola.status === 'active') {
                     scheduleTombolaChatReminders(newTombola);
+                    
+                    // [NEW] Auto-draw: pokud čas vypršel, automaticky vylosuj
+                    if (newTombola.endsAt && Date.now() > newTombola.endsAt) {
+                        autoDrawTombola();
+                    }
                 }
             });
+            
+            // [NEW] Periodický check auto-draw — pro případ že nikdo nemá otevřený listener v momentě vypršení
+            safeSetInterval(() => {
+                const t = currentTombola || window.currentTombola;
+                if (t && t.status === 'active' && t.endsAt && Date.now() > t.endsAt) {
+                    autoDrawTombola();
+                }
+            }, 30000); // Každých 30s
         }
         
         // Naplánuj chat připomínky tomboly s Firebase dedup
@@ -114780,6 +114870,134 @@ function openFullscreenMap() {
         }
         
         // Admin: Losovat výherce
+        // [NEW] Automatické losování tomboly po vypršení času — může spustit jakýkoliv klient
+        async function autoDrawTombola() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            if (window._autoDrawInProgress) return;
+            window._autoDrawInProgress = true;
+            
+            try {
+                // Atomicky claimni roli losujícího — jen jeden klient smí losovat
+                const claimResult = await firebaseDB.ref('tombola/active/autoDrawClaimed').transaction(current => {
+                    if (current) return; // Už někdo losuje — abort
+                    return Date.now();
+                });
+                
+                if (!claimResult.committed || !claimResult.snapshot.val()) {
+                    window._autoDrawInProgress = false;
+                    return; // Jiný klient to řeší
+                }
+                
+                console.log('🎰 AUTO-DRAW: Tombola expired, drawing winner...');
+                
+                const snap = await firebaseDB.ref('tombola/active').once('value');
+                const tombola = snap.val();
+                
+                if (!tombola || tombola.status !== 'active') {
+                    window._autoDrawInProgress = false;
+                    return;
+                }
+                
+                const tickets = tombola.tickets || {};
+                const participants = Object.keys(tickets).filter(p => {
+                    const t = tickets[p];
+                    return p && t && typeof t.count === 'number' && !isNaN(t.count) && t.count > 0;
+                });
+                
+                if (participants.length === 0) {
+                    // Žádní účastníci — zruš tombolu
+                    await firebaseDB.ref('tombola/history').push({
+                        ...tombola, status: 'cancelled_no_participants',
+                        drawnAt: firebase.database.ServerValue.TIMESTAMP
+                    });
+                    await firebaseDB.ref('tombola/active').remove();
+                    await firebaseDB.ref('tombola/reminders').remove();
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🎟️ TOMBOLA',
+                        text: `❌ Tombola "${tombola.name}" skončila bez účastníků. Nikdo nevyhrál.`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP, system: true
+                    });
+                    window._autoDrawInProgress = false;
+                    return;
+                }
+                
+                // Balancing — poslední výherce má halvenou šanci
+                let lastWinner = null;
+                try {
+                    const histSnap = await firebaseDB.ref('tombola/history').orderByChild('drawnAt').limitToLast(1).once('value');
+                    histSnap.forEach(child => { lastWinner = child.val()?.winner; });
+                } catch(e) {}
+                
+                const ticketPool = [];
+                participants.forEach(player => {
+                    let count = tickets[player]?.count || 0;
+                    if (player === lastWinner) count = Math.ceil(count / 2);
+                    for (let i = 0; i < count; i++) ticketPool.push(player);
+                });
+                
+                if (ticketPool.length === 0) { window._autoDrawInProgress = false; return; }
+                
+                // Kryptograficky bezpečný náhodný výběr
+                let winnerIndex;
+                if (window.crypto && window.crypto.getRandomValues) {
+                    const arr = new Uint32Array(1);
+                    window.crypto.getRandomValues(arr);
+                    winnerIndex = arr[0] % ticketPool.length;
+                } else {
+                    winnerIndex = Math.floor(Math.random() * ticketPool.length);
+                }
+                const winner = ticketPool[winnerIndex];
+                const winnerTickets = tickets[winner]?.count || 0;
+                const totalTickets = Object.values(tickets).reduce((s, t) => s + (t?.count || 0), 0);
+                const winChance = ((winnerTickets / totalTickets) * 100).toFixed(1);
+                
+                console.log('🎰 AUTO-DRAW WINNER:', winner, winnerTickets, '/', totalTickets, 'tickets');
+                
+                // Ulož výsledek
+                const result = {
+                    ...tombola,
+                    status: 'finished',
+                    winner: winner,
+                    winnerTickets: winnerTickets,
+                    totalTickets: totalTickets,
+                    drawnAt: firebase.database.ServerValue.TIMESTAMP,
+                    autoDrawn: true,
+                    tombolaName: tombola.name,
+                    prizeName: typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???'
+                };
+                
+                await firebaseDB.ref('tombola/history').push(result);
+                await firebaseDB.ref('tombola/active').remove();
+                await firebaseDB.ref('tombola/reminders').remove();
+                
+                // Notifikace výherci
+                await firebaseDB.ref('notifications/' + winner).push({
+                    type: 'tombola_win',
+                    tombolaName: tombola.name,
+                    prize: tombola.prize,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                });
+                
+                // Chat oznámení
+                const prizeDesc = typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???';
+                await firebaseDB.ref('chat/messages').push({
+                    author: '🎉 TOMBOLA',
+                    text: `🏆 TOMBOLA "${tombola.name}" — AUTOMATICKY VYLOSOVÁNO!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${prizeDesc}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participants.length} účastníků\n\n🎊 Gratulujeme!`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
+                });
+                
+                // Pokud jsem výherce, ukáž modal
+                if (winner === getPlayerName()) {
+                    notifySuccess('🎉 VYHRÁL JSI TOMBOLU!', prizeDesc);
+                }
+                
+            } catch (e) {
+                console.error('Auto-draw error:', e);
+            }
+            window._autoDrawInProgress = false;
+        }
+        
         async function drawTombolaWinner() {
             if (!hasPermission('tombola')) return;
             
