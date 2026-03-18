@@ -11527,10 +11527,12 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     const desc = BESTIARY_DESCRIPTIONS[enemy.id] || 'Neznámý nepřítel.';
                     
                     if (discovered) {
+                        // [FIX] Použij custom ikonu pokud existuje (ENEMY_CUSTOM_ICONS)
+                        const _bIcon = typeof enemyIcon === 'function' ? enemyIcon(enemy.id, enemy.icon, '2rem') : `<span style="font-size: 1.5rem;">${enemy.icon}</span>`;
                         html += `
                             <div style="background: linear-gradient(135deg, #1a2a1a, #0a1a0a); padding: 0.6rem; border-radius: 6px; border: 1px solid ${tierColors[tier]}44;">
                                 <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
-                                    <span style="font-size: 1.5rem;">${enemy.icon}</span>
+                                    ${_bIcon}
                                     <div style="flex: 1;">
                                         <div style="color: #fff; font-weight: bold; font-size: 0.9rem;">${enemy.name}</div>
                                         <div style="color: ${tierColors[tier]}; font-size: 0.7rem;">Zabito: ${kills}x</div>
@@ -11587,6 +11589,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 const desc = BESTIARY_DESCRIPTIONS[bossId] || 'Mocný strážce dungeonů.';
                 
                 if (isDiscovered) {
+                    // [FIX] Použij custom ikonu pokud existuje
+                    const _dbIcon = typeof enemyIcon === 'function' ? enemyIcon(bossId, boss.icon, '2rem') : `<span style="font-size: 1.5rem;">${boss.icon}</span>`;
                     // Speciální schopnosti
                     const specials = [];
                     if (boss.canStun) specials.push('💫 Omráčí');
@@ -11599,7 +11603,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                     html += `
                         <div style="background: linear-gradient(135deg, #2a1a3a, #1a0a2a); padding: 0.6rem; border-radius: 6px; border: 1px solid #ffd70044;">
                             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;">
-                                <span style="font-size: 1.5rem;">${boss.icon}</span>
+                                ${_dbIcon}
                                 <div style="flex: 1;">
                                     <div style="color: #fff; font-weight: bold; font-size: 0.9rem;">${boss.name}</div>
                                     <div style="color: #ffd700; font-size: 0.7rem;">Poražen: ${kills}x</div>
@@ -66452,7 +66456,7 @@ function openFullscreenMap() {
             'medium_fish': { days: 2, name: 'Kapr', icon: '🐠' },
             'big_fish': { days: 2, name: 'Sumec', icon: '🐡' },
             'berries': { days: 3, name: 'Borůvky', icon: '🫐' },
-            'herbs': { days: 5, name: 'Byliny', icon: '🌿' },
+            // herbs (byliny) záměrně odstraněny - jsou to sušené bylinky, nekazí se
             // Vařená - delší trvanlivost
             'cooked_meat': { days: 4, name: 'Pečené maso', icon: '🍖' },
             'grilled_fish': { days: 4, name: 'Grilovaná ryba', icon: '🐟' },
@@ -70604,10 +70608,14 @@ function openFullscreenMap() {
                 const mayor = mayorSnap.val();
                 if (!mayor || !mayor.name) return;
                 
-                // Zkontroluj jestli už dnes dostal (aby se nevolalo víckrát)
+                // [FIX] Atomická kontrola + zápis — zabraní dvojímu vyplacení
                 const today = new Date().toDateString();
-                const lastPayoutSnap = await firebaseDB.ref('politics/mayorLastPayout').once('value');
-                if (lastPayoutSnap.val() === today) return; // Už dostal dnes
+                const payoutResult = await firebaseDB.ref('politics/mayorLastPayout').transaction(lastPayout => {
+                    if (lastPayout === today) return; // Abort — už vyplaceno dnes
+                    return today; // Zapiš dnešní datum
+                });
+                
+                if (!payoutResult.committed) return; // Transakce abortovala — už dostal
                 
                 // Získej veřejnou kasu
                 const kasaSnap = await firebaseDB.ref('politics/publicMoney').once('value');
@@ -70621,12 +70629,12 @@ function openFullscreenMap() {
                 
                 const salaryPaid = await removeFromPublicTreasury(mayorIncome, 'mayor_salary', `Denní plat šéfa ${mayor.name}`);
                 if (!salaryPaid) {
-                    console.warn('👑 Treasury deduction failed for mayor salary');
+                    console.warn('👑 Treasury deduction failed for mayor salary — rolling back payout date');
+                    await firebaseDB.ref('politics/mayorLastPayout').set(null); // Rollback — zítra to zkusí znova
                     return;
                 }
                 
-                // Označ že dnes už dostal
-                await firebaseDB.ref('politics/mayorLastPayout').set(today);
+                // Datum už bylo zapsáno v transakci výše
                 
                 // Pokud jsem šéf, přidej rovnou do peněženky
                 if (mayor.name === getPlayerName()) {
