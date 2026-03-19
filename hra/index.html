@@ -7764,7 +7764,14 @@
             'assault_rifle_craft': 'img/assault_rifle.png',
             'survivor_set_weapon': 'img/veteran_shotgun.png',
             'deathclaw_gauntlet': 'img/deathclaw_hand.png',
-            'deathclaw_hand': 'img/deathclaw_hand.png'
+            'deathclaw_hand': 'img/deathclaw_hand.png',
+            'plasma_rifle': 'img/plasma_rifle.png',
+            'hammer': 'img/hammer.png',
+            'hammer_craft': 'img/hammer.png',
+            'axe': 'img/battle_axe.png',
+            'axe_craft': 'img/battle_axe.png',
+            'sword': 'img/sword.png',
+            'sword_craft': 'img/sword.png'
             // Příklady pro budoucí použití:
             // 'hydra_sword': 'img/hydra_sword.png',
             // 'legendary_armor': 'img/legendary_armor.png',
@@ -71108,6 +71115,10 @@ function openFullscreenMap() {
         async function processMayorDailyIncome() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
+            // [FIX] Neplat šéfa před 12:00 — počkat až většina hráčů zaplatí daně a kasa se naplní
+            const currentHour = new Date().getHours();
+            if (currentHour < 12) return; // Periodický check to zkusí znovu po 12:00
+            
             try {
                 // Zkontroluj jestli je šéf
                 const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
@@ -87544,10 +87555,10 @@ function openFullscreenMap() {
                 // Lokální quick check - nevolej Firebase každou sekundu
                 if (now - lastTax >= 23 * 60 * 60 * 1000) {
                     window._taxProcessing = true;
-                    Promise.all([
-                        processDailyTax(),
-                        processMayorDailyIncome()
-                    ]).then(() => {
+                    // [FIX] Sekvenční: nejdřív sebrat daně (naplní kasu), TEĎ šéfův plat
+                    processDailyTax().then(() => {
+                        return processMayorDailyIncome();
+                    }).then(() => {
                         saveGame(true);
                     }).finally(() => {
                         window._taxProcessing = false;
@@ -113762,6 +113773,43 @@ function openFullscreenMap() {
                 const phase = getElectionPhase();
                 if (!phase || phase.phase === 'waiting' || phase.phase === 'paused') return;
                 
+                // === [FIX] SPOLEHLIVÉ ČIŠTĚNÍ na začátku nominace ===
+                // Nezávislé na announcement transakci — každý klient ověří a vyčistí
+                if (phase.phase === 'nomination') {
+                    const elCleanSnap = await firebaseDB.ref('politics/election').once('value');
+                    const elCleanData = elCleanSnap.val();
+                    const cycleStartClean = elCleanData?.cycleStart ? new Date(elCleanData.cycleStart) : null;
+                    
+                    if (cycleStartClean) {
+                        const smClean = new Date(cycleStartClean); smClean.setHours(0,0,0,0);
+                        const tmClean = new Date(); tmClean.setHours(0,0,0,0);
+                        const daysSinceClean = Math.round((tmClean - smClean) / (24 * 60 * 60 * 1000));
+                        const currentCycleClean = Math.floor(daysSinceClean / 7);
+                        
+                        // Pokud existují kandidáti/hlasy z minulého cyklu, smaž je
+                        const lastCleanedSnap = await firebaseDB.ref('politics/lastCleanedCycle').once('value');
+                        const lastCleaned = lastCleanedSnap.val();
+                        
+                        if (lastCleaned === null || lastCleaned < currentCycleClean) {
+                            // Atomický claim — jen jeden klient čistí
+                            const cleanResult = await firebaseDB.ref('politics/lastCleanedCycle').transaction(current => {
+                                if (current !== null && current >= currentCycleClean) return; // Abort
+                                return currentCycleClean;
+                            });
+                            
+                            if (cleanResult.committed) {
+                                const hasCandidates = elCleanData.candidates && Object.keys(elCleanData.candidates).length > 0;
+                                const hasVotes = elCleanData.votes && Object.keys(elCleanData.votes).length > 0;
+                                if (hasCandidates || hasVotes) {
+                                    console.log('🗳️ [FIX] Nomination cleanup: removing old candidates and votes for cycle', currentCycleClean);
+                                    await firebaseDB.ref('politics/election/candidates').remove();
+                                    await firebaseDB.ref('politics/election/votes').remove();
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 // === OZNÁMENÍ ZMĚNY FÁZE DO CHATU ===
                 // Zjisti číslo aktuálního cyklu a fázi
                 const elSnap = await firebaseDB.ref('politics/election').once('value');
@@ -113797,15 +113845,7 @@ function openFullscreenMap() {
                         const mayorName = currentMayor?.name || 'Nikdo';
                         
                         if (phase.phase === 'nomination') {
-                            // 🧹 VYČISTI staré kandidáty a hlasy z minulého kola!
-                            // Toto je klíčové - bez toho by staří kandidáti měli staré hlasy a levely
-                            const oldCandidates = elData.candidates ? Object.keys(elData.candidates) : [];
-                            const oldVotes = elData.votes ? Object.keys(elData.votes) : [];
-                            if (oldCandidates.length > 0 || oldVotes.length > 0) {
-                                console.log('🗳️ Nomination cleanup: removing', oldCandidates.length, 'old candidates and', oldVotes.length, 'old votes');
-                                await firebaseDB.ref('politics/election/candidates').remove();
-                                await firebaseDB.ref('politics/election/votes').remove();
-                            }
+                            // Cleanup se řeší spolehlivě nahoře přes lastCleanedCycle
                             
                             await firebaseDB.ref('chat/messages').push({
                                 author: '🏛️ VOLBY',
@@ -114110,13 +114150,27 @@ function openFullscreenMap() {
                 }
             });
             
-            // [NEW] Periodický check auto-draw — pro případ že nikdo nemá otevřený listener v momentě vypršení
+            // [FIX] Periodický check auto-draw — robustnější s kratším intervalem
             safeSetInterval(() => {
                 const t = currentTombola || window.currentTombola;
                 if (t && t.status === 'active' && t.endsAt && Date.now() > t.endsAt) {
                     autoDrawTombola();
                 }
-            }, 30000); // Každých 30s
+            }, 15000); // Každých 15s
+            
+            // [FIX] Záložní check — pokud tombola vypršela dávno (>5 min), vyčisti stale lock a zkus znovu
+            safeSetInterval(async () => {
+                try {
+                    const t = currentTombola || window.currentTombola;
+                    if (!t || t.status !== 'active' || !t.endsAt) return;
+                    if (Date.now() - t.endsAt > 5 * 60 * 1000) {
+                        // Tombola měla skončit před 5+ minutami — vyčisti zámek
+                        console.warn('🎰 STALE TOMBOLA detected, clearing lock...');
+                        await firebaseDB.ref('tombola/active/autoDrawClaimed').remove();
+                        autoDrawTombola();
+                    }
+                } catch(e) {}
+            }, 60000); // Každou minutu
         }
         
         // Naplánuj chat připomínky tomboly s Firebase dedup
@@ -115404,13 +115458,14 @@ function openFullscreenMap() {
             
             try {
                 // Atomicky claimni roli losujícího — jen jeden klient smí losovat
+                // [FIX] Stale lock recovery: pokud claim je starší než 90s, považuj ho za mrtvý a přepiš
+                const STALE_LOCK_MS = 90000; // 90 sekund
                 const claimResult = await firebaseDB.ref('tombola/active/autoDrawClaimed').transaction(current => {
-                    if (current) return; // Už někdo losuje — abort
-                    return Date.now();
+                    if (current && (Date.now() - current) < STALE_LOCK_MS) return; // Čerstvý claim — abort
+                    return Date.now(); // Nový claim nebo přepis starého
                 });
                 
                 if (!claimResult.committed || !claimResult.snapshot.val()) {
-                    window._autoDrawInProgress = false;
                     return; // Jiný klient to řeší
                 }
                 
@@ -115420,7 +115475,6 @@ function openFullscreenMap() {
                 const tombola = snap.val();
                 
                 if (!tombola || tombola.status !== 'active') {
-                    window._autoDrawInProgress = false;
                     return;
                 }
                 
@@ -115443,7 +115497,6 @@ function openFullscreenMap() {
                         text: `❌ Tombola "${tombola.name}" skončila bez účastníků. Nikdo nevyhrál.`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP, system: true
                     });
-                    window._autoDrawInProgress = false;
                     return;
                 }
                 
@@ -115461,7 +115514,7 @@ function openFullscreenMap() {
                     for (let i = 0; i < count; i++) ticketPool.push(player);
                 });
                 
-                if (ticketPool.length === 0) { window._autoDrawInProgress = false; return; }
+                if (ticketPool.length === 0) { return; }
                 
                 // Kryptograficky bezpečný náhodný výběr
                 let winnerIndex;
@@ -115520,8 +115573,11 @@ function openFullscreenMap() {
                 
             } catch (e) {
                 console.error('Auto-draw error:', e);
+                // [FIX] Při chybě uvolni zámek v Firebase, aby to mohl zkusit jiný klient
+                try { await firebaseDB.ref('tombola/active/autoDrawClaimed').remove(); } catch(_) {}
+            } finally {
+                window._autoDrawInProgress = false;
             }
-            window._autoDrawInProgress = false;
         }
         
         async function drawTombolaWinner() {
