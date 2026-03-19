@@ -10111,7 +10111,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
               background: 'Nikdo neví odkud přišel. Sedí v té pánvi roky a medituje. Říká, že pustina mu dala všechno, co potřebuje — a jednou za čas předá kousek toho dál.',
               gifts: ['herbs', 'crystal', 'food'],
               quests: ['meditate_quest', 'find_silence', 'bring_offering'],
-              rewards: { trust50: 'Sajkovo požehnání (+5% XP)', trust100: 'Sajkovo tajemství' },
+              rewards: { trust50: 'Sajkovo požehnání (+5% XP)', trust100: 'Sajkova meditace (-10% radiace)' },
               relationships: { 'elder_tomas': 'sdílí mlčení', 'healer_zora': 'občas se navštíví', 'mysterious_woman': 'ví o ní' }
             }
         ];
@@ -62321,10 +62321,10 @@ function openFullscreenMap() {
             if (mila?.trust >= 50) bonuses.shopDiscount += 0.10; // +10% sleva
             if (mila?.trust >= 100) bonuses.xpBonus += 0.05; // +5% XP
             
-            // Sajko - Sajkovo požehnání (+5% XP) a tajemství (secret location)
+            // Sajko - Sajkovo požehnání (+5% XP) a meditační odolnost (-10% radiace)
             const sajko = state.npcRelations['sajko'];
             if (sajko?.trust >= 50) bonuses.xpBonus += 0.05; // +5% XP - Sajkovo požehnání
-            if (sajko?.trust >= 100) bonuses.secretLocation = true; // Sajkovo tajemství - odhalí tajné místo
+            if (sajko?.trust >= 100) bonuses.radResistBonus += 0.10; // -10% radiace - Sajkova meditace
             
             return bonuses;
         }
@@ -88999,7 +88999,7 @@ function openFullscreenMap() {
                     // Apply offline consumption (same rates as game loop - +50%)
                     const hungerRate = (100 / 86400) * 1.5; // ~16 hours to deplete
                     const thirstRate = (100 / 86400) * 1.8; // ~13.3 hours to deplete
-                    const energyRate = (100 / 86400) * 1.2; // ~20 hours to deplete
+                    const energyRate = (100 / 86400) * 0.6; // ~40 hours to deplete (50% reduction)
                     
                     // Aplikuj consumptionReduction (class + companion) i při offline (FIX: dříve ignorováno)
                     const _offlineClassCR = typeof getClassPassiveValue === 'function' ? (getClassPassiveValue('consumptionReduction') || 0) : 0;
@@ -114225,34 +114225,44 @@ function openFullscreenMap() {
                 if (newTombola && newTombola.status === 'active') {
                     scheduleTombolaChatReminders(newTombola);
                     
-                    // [NEW] Auto-draw: pokud čas vypršel, automaticky vylosuj
+                    // [FIX] Auto-draw: pokud čas vypršel, okamžitě vylosuj
                     if (newTombola.endsAt && Date.now() > newTombola.endsAt) {
                         autoDrawTombola();
+                    } else if (newTombola.endsAt) {
+                        // [NEW] Naplánuj přesný auto-draw na okamžik vypršení + 2s buffer
+                        const msUntilExpiry = newTombola.endsAt - Date.now() + 2000;
+                        if (msUntilExpiry > 0 && msUntilExpiry < 24 * 60 * 60 * 1000) { // max 24h
+                            if (window._tombolaExpiryTimer) clearTimeout(window._tombolaExpiryTimer);
+                            window._tombolaExpiryTimer = safeSetTimeout(() => {
+                                console.log('🎰 Tombola expiry timer fired — auto-drawing...');
+                                autoDrawTombola();
+                            }, msUntilExpiry);
+                        }
                     }
                 }
             });
             
-            // [FIX] Periodický check auto-draw — robustnější s kratším intervalem
+            // [FIX] Periodický check auto-draw — každých 10s pro rychlejší reakci
             safeSetInterval(() => {
                 const t = currentTombola || window.currentTombola;
                 if (t && t.status === 'active' && t.endsAt && Date.now() > t.endsAt) {
                     autoDrawTombola();
                 }
-            }, 15000); // Každých 15s
+            }, 10000); // Každých 10s
             
-            // [FIX] Záložní check — pokud tombola vypršela dávno (>5 min), vyčisti stale lock a zkus znovu
+            // [FIX] Záložní check — pokud tombola vypršela dávno (>2 min), vyčisti stale lock a zkus znovu
             safeSetInterval(async () => {
                 try {
                     const t = currentTombola || window.currentTombola;
                     if (!t || t.status !== 'active' || !t.endsAt) return;
-                    if (Date.now() - t.endsAt > 5 * 60 * 1000) {
-                        // Tombola měla skončit před 5+ minutami — vyčisti zámek
+                    if (Date.now() - t.endsAt > 2 * 60 * 1000) {
+                        // Tombola měla skončit před 2+ minutami — vyčisti zámek
                         console.warn('🎰 STALE TOMBOLA detected, clearing lock...');
                         await firebaseDB.ref('tombola/active/autoDrawClaimed').remove();
                         autoDrawTombola();
                     }
                 } catch(e) {}
-            }, 60000); // Každou minutu
+            }, 30000); // Každých 30s
         }
         
         // Naplánuj chat připomínky tomboly s Firebase dedup
@@ -115470,6 +115480,21 @@ function openFullscreenMap() {
         
         // Admin: Správa aktivní tomboly
         async function showAdminTombolaManage(tombola) {
+            // [FIX] Pokud tombola vypršela, okamžitě vylosuj místo zobrazení stale UI
+            if (tombola.endsAt && Date.now() > tombola.endsAt) {
+                showModal('🎟️ Tombola', `
+                    <div style="text-align: center; padding: 2rem;">
+                        <div style="font-size: 4rem; margin-bottom: 1rem;">🎰</div>
+                        <p style="color: #ffd700; font-size: 1.2rem;">Automatické losování...</p>
+                        <p style="color: #888;">Čas tomboly vypršel. Losuje se výherce.</p>
+                        <div class="loading-spinner" style="margin: 1rem auto;"></div>
+                    </div>
+                `);
+                await autoDrawTombola();
+                setTimeout(() => showAdminTombola(), 1500);
+                return;
+            }
+            
             const timeLeft = Math.max(0, tombola.endsAt - Date.now());
             const hoursLeft = Math.floor(timeLeft / (60 * 60 * 1000));
             const minsLeft = Math.floor((timeLeft % (60 * 60 * 1000)) / (60 * 1000));
@@ -115548,8 +115573,8 @@ function openFullscreenMap() {
             
             try {
                 // Atomicky claimni roli losujícího — jen jeden klient smí losovat
-                // [FIX] Stale lock recovery: pokud claim je starší než 90s, považuj ho za mrtvý a přepiš
-                const STALE_LOCK_MS = 90000; // 90 sekund
+                // [FIX] Stale lock recovery: pokud claim je starší než 30s, považuj ho za mrtvý a přepiš
+                const STALE_LOCK_MS = 30000; // 30 sekund
                 const claimResult = await firebaseDB.ref('tombola/active/autoDrawClaimed').transaction(current => {
                     if (current && (Date.now() - current) < STALE_LOCK_MS) return; // Čerstvý claim — abort
                     return Date.now(); // Nový claim nebo přepis starého
@@ -115939,6 +115964,22 @@ function openFullscreenMap() {
                         
                         <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zavřít</button>
                     `);
+                    return;
+                }
+                
+                // [FIX] Pokud čas tomboly vypršel, okamžitě spusť automatické losování
+                if (tombola.endsAt && Date.now() > tombola.endsAt) {
+                    showModal('🎟️ Tombola', `
+                        <div style="text-align: center; padding: 2rem;">
+                            <div style="font-size: 4rem; margin-bottom: 1rem;">🎰</div>
+                            <p style="color: #ffd700; font-size: 1.2rem;">Losování probíhá...</p>
+                            <p style="color: #888;">Tombola skončila, automaticky se vyhodnocuje.</p>
+                            <div class="loading-spinner" style="margin: 1rem auto;"></div>
+                        </div>
+                    `);
+                    await autoDrawTombola();
+                    // Po vylosování znovu otevři tombolu (ukáže historii nebo výsledek)
+                    setTimeout(() => showTombola(), 1500);
                     return;
                 }
                 
