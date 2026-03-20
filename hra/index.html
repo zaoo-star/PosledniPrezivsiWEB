@@ -26878,6 +26878,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 value += (level - 1) * 5; // +5 HP za každý level
             }
             
+            // [REBALANCE] Společníci se posilují s levelem HRÁČE
+            // +3% DMG, +3% HP, +2% DEF za každý level hráče nad 1
+            // Zajistí že společníci zůstanou relevantní i v pozdní hře
+            const playerLevel = state.char?.level || 1;
+            if (playerLevel > 1) {
+                const playerScaling = playerLevel - 1;
+                if (stat === 'damage') {
+                    value = Math.floor(value * (1 + playerScaling * 0.03));
+                }
+                if (stat === 'hp') {
+                    value = Math.floor(value * (1 + playerScaling * 0.03));
+                }
+                if (stat === 'defense') {
+                    value = Math.floor(value * (1 + playerScaling * 0.02));
+                }
+            }
+            
             // Přidej bonusy z vybavení
             if (comp.equipped) {
                 if (stat === 'damage' && comp.equipped.weapon) {
@@ -56690,8 +56707,12 @@ function openFullscreenMap() {
             const scaling = DUNGEON_SCALING[scalingKey] || { hpMult: 1.0, dmgMult: 1.0 };
             // Bonus za vyšší patro v rámci dungeonu (+8% per floor)
             const floorBonus = 1 + (currentFloorNum - 1) * 0.08;
-            const finalHpMult = scaling.hpMult * floorBonus;
-            const finalDmgMult = scaling.dmgMult * floorBonus;
+            // [REBALANCE] Soft scaling podle levelu hráče i v dungeonech
+            // +2% HP/DMG za level hráče nad 3 (jemné, nestackuje se příliš s tier scalingem)
+            const _dungPlayerLevel = state.char?.level || 1;
+            const dungeonPlayerScale = _dungPlayerLevel > 3 ? 1 + (_dungPlayerLevel - 3) * 0.02 : 1.0;
+            const finalHpMult = scaling.hpMult * floorBonus * dungeonPlayerScale;
+            const finalDmgMult = scaling.dmgMult * floorBonus * dungeonPlayerScale;
             
             // Vytvoř nepřátele
             let enemyGroup = [];
@@ -73183,15 +73204,31 @@ function openFullscreenMap() {
                 // === ENEMY SCALING SYSTEM ===
                 const playerLevel = state.char.level || 1;
                 
-                // Soft scaling: +2.5% HP/DMG za každý level nad 10
+                // [REBALANCE] Progressivní scaling od levelu 2:
+                // Level 1-5: +3% per level (lehký nárůst pro začátek)
+                // Level 6-15: +4% per level (střední hra)
+                // Level 16+: +3% per level (pozdní hra zpomalí)
+                // Např: LVL 5 = +12%, LVL 10 = +32%, LVL 15 = +52%, LVL 20 = +67%, LVL 30 = +97%
                 let levelScaling = 1.0;
-                if (playerLevel > 10) {
-                    levelScaling = 1 + (playerLevel - 10) * 0.025;
+                if (playerLevel > 1) {
+                    const earlyLevels = Math.min(playerLevel - 1, 4); // level 2-5
+                    const midLevels = Math.max(0, Math.min(playerLevel - 5, 10)); // level 6-15
+                    const lateLevels = Math.max(0, playerLevel - 15); // level 16+
+                    levelScaling = 1 + earlyLevels * 0.03 + midLevels * 0.04 + lateLevels * 0.03;
                 }
                 
                 // Day scaling: nepřátelé jsou silnější po 30 dnech
                 const dayBonus = Math.min(0.3, (state.time.days || 0) * 0.01); // max +30%
                 levelScaling *= (1 + dayBonus);
+                
+                // [REBALANCE] Přeskoč player-level scaling pro typy boje co mají vlastní scaling
+                // dungeon = tier + floor + dungeonPlayerScale, horde = vlastní agresivní scaling, abyss = floor scaling
+                const _skipLevelScaling = ['dungeon', 'horde', 'abyss'].includes(combatType);
+                if (_skipLevelScaling) {
+                    levelScaling = 1.0; // Ponechej jen day bonus bez level scalingu
+                    // Day bonus stále platí — je to globální "svět je těžší" efekt
+                    levelScaling = 1 + dayBonus;
+                }
                 
                 // Vytvoř jednotky na mřížce
                 const units = [];
@@ -73391,16 +73428,20 @@ function openFullscreenMap() {
                     
                     // === RAID BOSS / DUNGEON BOSS / PRE-SCALED ===
                     if (e.isRaidBoss || e.isWorldBoss || e.isBoss || e.isPreScaled) {
-                        // [NEW] Boss difficulty scaling pro hráče nad level 10
-                        // +200% = 3× obtížnost na lvl 10+, postupně roste s levelem
+                        // [REBALANCE] Progressivní boss scaling:
+                        // Level 1-4: žádný bonus
+                        // Level 5-10: 1.5× základ + 0.08× za level (LVL10 = 1.98×)
+                        // Level 11-20: pokračuje +0.06× za level (LVL15 = 2.28×, LVL20 = 2.58×)
+                        // Level 21+: +0.04× za level (LVL30 = 2.98×)
                         // VÝJIMKA: Raid bossy s _raidDamageCap používají sdílené HP z Firebase
-                        //          — lokální škálování by rozbilo damage sync!
                         let bossScaling = 1.0;
-                        const isFirebaseRaid = e._raidDamageCap > 0; // Raid boss se synced HP — NEŠÁLOVAT
-                        if (playerLevel > 10 && !e.isPreScaled && !isFirebaseRaid) {
-                            // Base: 3× na lvl 11, +10% za každý další level (lvl 20 = 3.9×, lvl 30 = 4.9×)
-                            bossScaling = 3.0 + (playerLevel - 11) * 0.10;
-                            console.log(`🐉 Boss scaling: ${e.name} level ${playerLevel} → ${bossScaling.toFixed(1)}× (HP/DMG/DEF)`);
+                        const isFirebaseRaid = e._raidDamageCap > 0;
+                        if (playerLevel >= 5 && !e.isPreScaled && !isFirebaseRaid) {
+                            const earlyBoss = Math.min(playerLevel - 4, 6); // level 5-10
+                            const midBoss = Math.max(0, Math.min(playerLevel - 10, 10)); // level 11-20
+                            const lateBoss = Math.max(0, playerLevel - 20); // level 21+
+                            bossScaling = 1.5 + earlyBoss * 0.08 + midBoss * 0.06 + lateBoss * 0.04;
+                            console.log(`🐉 Boss scaling: ${e.name} level ${playerLevel} → ${bossScaling.toFixed(2)}× (HP/DMG/DEF)`);
                         }
                         
                         const bossUnitData = {
@@ -79162,18 +79203,11 @@ function openFullscreenMap() {
                 const ambushBonus = isAmbush ? 1.1 : 1.0;
                 
                 // === LEVEL SCALING: nepřátelé rostou s hráčem ===
-                // Tier bossů a world bossů jsou vyňati (mají vlastní balanci)
-                const _playerLvl = state.char?.level || 1;
-                const _scalingLevels = Math.max(0, Math.min(_playerLvl - 1, 20)); // začíná od lvl 2, cap na lvl 21
+                // [REBALANCE] Scaling přesunut do startCombatWithGroup() — zde jen ambush bonus
                 const _isSpecialEnemy = enemyData.isBoss || enemyData.isWorldBoss || enemyData.isRaidBoss;
                 let levelHpMult = 1.0;
                 let levelDmgMult = 1.0;
                 let levelDefMult = 1.0;
-                if (!_isSpecialEnemy && _scalingLevels > 0) {
-                    levelHpMult  = 1 + _scalingLevels * 0.30; // +30% HP za level
-                    levelDmgMult = 1 + _scalingLevels * 0.25; // +25% DMG za level
-                    levelDefMult = 1 + _scalingLevels * 0.15; // +15% DEF za level
-                }
                 
                 // Create enemy group pro nový Heroes3 systém
                 const enemyGroup = [];
