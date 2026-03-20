@@ -26879,19 +26879,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // [REBALANCE] Společníci se posilují s levelem HRÁČE
-            // +3% DMG, +3% HP, +2% DEF za každý level hráče nad 1
-            // Zajistí že společníci zůstanou relevantní i v pozdní hře
+            // +12% DMG, +12% HP, +8% DEF za každý level hráče nad 1
+            // LVL10 ≈ +108% DMG/HP, +72% DEF — společníci jsou silní i v early game
             const playerLevel = state.char?.level || 1;
             if (playerLevel > 1) {
                 const playerScaling = playerLevel - 1;
                 if (stat === 'damage') {
-                    value = Math.floor(value * (1 + playerScaling * 0.03));
+                    value = Math.floor(value * (1 + playerScaling * 0.12));
                 }
                 if (stat === 'hp') {
-                    value = Math.floor(value * (1 + playerScaling * 0.03));
+                    value = Math.floor(value * (1 + playerScaling * 0.12));
                 }
                 if (stat === 'defense') {
-                    value = Math.floor(value * (1 + playerScaling * 0.02));
+                    value = Math.floor(value * (1 + playerScaling * 0.08));
                 }
             }
             
@@ -35090,6 +35090,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Konsoliduj inventář - slouč duplicitní stacky
                 consolidateInventory();
+                // [FIX] Po konsolidaci re-linkuj equipped reference (consolidation vytváří nové objekty)
+                if (typeof syncEquippedReferences === 'function') syncEquippedReferences();
             }
             
             // Migration: Přesun Rad-X, Radaway, Stimpack z resources do inventáře (bugfix)
@@ -35620,6 +35622,38 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             document.querySelectorAll('.nav-btn').forEach(btn => {
                 btn.addEventListener('click', () => switchTab(btn.dataset.tab));
             });
+            
+            // [FIX] Safety net: zajisti že VŠECHNY equipped itemy mají kopii v state.inv
+            // Řeší BFG a jiné zbraně co zmizí z inventáře po cloud save/load/marketplace
+            if (state.equipped && Array.isArray(state.inv)) {
+                ['weapon', 'armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
+                    const eq = state.equipped[slot];
+                    if (!eq || !eq.id) return;
+                    // Kontrola: je equipped item v inv? (reference NEBO same id+type)
+                    // Neporovnávej damage/defense — upgrade mohl změnit hodnoty
+                    const inInv = state.inv.some(i => i === eq || (i.id === eq.id && i.type === eq.type));
+                    if (!inInv) {
+                        state.inv.push(eq);
+                        state.equipped[slot] = eq;
+                        console.warn(`🔧 renderFull safety: ${slot} '${eq.name}' chyběl v inv — vrácen`);
+                    } else if (!state.inv.includes(eq)) {
+                        // Item s tímto id+type existuje v inv, ale JINÁ reference
+                        // Re-linkuj equipped na inv verzi a přenes upgrady
+                        const invItem = state.inv.find(i => i.id === eq.id && i.type === eq.type);
+                        if (invItem) {
+                            // Přenes upgrady z equipped do inv (equipped může mít novější data)
+                            const upgradeKeys = ['damage', 'defense', 'ivanUpgrades', 'aiUpgraded', 'techUpgrades', 
+                                'technicianUpgrades', 'labUpgraded', '_smithyUpgrades', 'abyssShardUpgrades', 
+                                'name', 'enchantment', 'durability', 'maxDurability'];
+                            const eqHasUpgrades = eq.ivanUpgrades || eq.aiUpgraded || eq.techUpgrades || eq.labUpgraded || eq._smithyUpgrades || eq.abyssShardUpgrades;
+                            if (eqHasUpgrades) {
+                                upgradeKeys.forEach(k => { if (eq[k] !== undefined) invItem[k] = eq[k]; });
+                            }
+                            state.equipped[slot] = invItem;
+                        }
+                    }
+                });
+            }
             
             document.getElementById('main').innerHTML = `
                 <div id="eventBanners"></div>
@@ -50416,6 +50450,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
+        // [FIX] Helper: zajisti že equipped item je v inventáři, přenes upgrady pokud potřeba
+        const _upgradeProps = ['damage', 'defense', 'ivanUpgrades', 'aiUpgraded', 'techUpgrades', 'technicianUpgrades', 'labUpgraded', '_smithyUpgrades', 'abyssShardUpgrades', 'name', 'enchantment', 'durability', 'maxDurability'];
+        function _ensureEquippedInInventory(slotType) {
+            const eq = state.equipped?.[slotType];
+            if (!eq || !eq.id) return;
+            if (state.inv.includes(eq)) return; // Reference OK — nic dělat
+            
+            // Hledej v inv podle id+type (bez damage/defense — upgrade je mohl změnit)
+            const invItem = state.inv.find(i => i.id === eq.id && i.type === eq.type);
+            if (invItem) {
+                // Existuje kopie v inv — přenes upgrady z equipped (může mít novější data)
+                const hasUpgrades = eq.ivanUpgrades || eq.aiUpgraded || eq.labUpgraded || eq._smithyUpgrades || eq.abyssShardUpgrades || eq.techUpgrades || eq.technicianUpgrades || eq.enchantment;
+                if (hasUpgrades) {
+                    _upgradeProps.forEach(k => { if (eq[k] !== undefined) invItem[k] = eq[k]; });
+                    console.log(`🔧 _ensureEquipped: ${slotType} '${eq.name}' — upgrady přeneseny do inv kopie`);
+                }
+                state.equipped[slotType] = invItem; // Re-link na inv referenci
+            } else {
+                // Žádná kopie — přidej equipped do inv
+                state.inv.push(eq);
+                console.log(`🔧 _ensureEquipped: ${slotType} '${eq.name}' chyběl v inv — vrácen`);
+            }
+        }
+        
         function unequipWeapon() {
             // Zamkni výměnu vybavení během cestování a boje
             if ((state.map?.traveling || state.world?.traveling)) {
@@ -50428,16 +50486,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             state.equipped = state.equipped || {};
-            // [FIX] Před sundáním ověř, že zbraň je v inventáři — po cloud save/load může chybět
-            const weapon = state.equipped.weapon;
-            if (weapon && !state.inv.includes(weapon)) {
-                // Zbraň není v inv (rozlinkovaná reference) — vrať ji zpět
-                const duplicate = state.inv.find(i => i.id === weapon.id && i.type === weapon.type && (i.damage || 0) === (weapon.damage || 0));
-                if (!duplicate) {
-                    state.inv.push(weapon);
-                    console.log('🔧 unequipWeapon: Vrácena chybějící zbraň do inv:', weapon.name);
-                }
-            }
+            // [FIX] Před sundáním ověř, že zbraň je v inventáři + přenes upgrady
+            _ensureEquippedInInventory('weapon');
             state.equipped.weapon = null;
             
             closeModal();
@@ -50459,15 +50509,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             state.equipped = state.equipped || {};
             
-            // [FIX] Před sundáním ověř, že item je v inventáři
-            const item = state.equipped[slotType];
-            if (item && !state.inv.includes(item)) {
-                const duplicate = state.inv.find(i => i.id === item.id && i.type === item.type && (i.damage || 0) === (item.damage || 0) && (i.defense || 0) === (item.defense || 0));
-                if (!duplicate) {
-                    state.inv.push(item);
-                    console.log(`🔧 unequipItem: Vrácen chybějící ${slotType} do inv:`, item.name);
-                }
-            }
+            // [FIX] Před sundáním ověř, že item je v inventáři + přenes upgrady
+            _ensureEquippedInInventory(slotType);
             
             if (slotType === 'weapon') state.equipped.weapon = null;
             else if (slotType === 'armor') state.equipped.armor = null;
@@ -51335,7 +51378,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function unequipArmor() {
-            // Zamkni výměnu vybavení během cestování
             if (state.map?.traveling || state.world?.traveling) {
                 notifyWarning('Nelze změnit', 'Během cestování nelze měnit vybavení!');
                 return;
@@ -51343,15 +51385,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             
             state.equipped = state.equipped || {};
-            // [FIX] Před sundáním ověř, že brnění je v inventáři
-            const armor = state.equipped.armor;
-            if (armor && !state.inv.includes(armor)) {
-                const duplicate = state.inv.find(i => i.id === armor.id && i.type === armor.type && (i.defense || 0) === (armor.defense || 0));
-                if (!duplicate) {
-                    state.inv.push(armor);
-                    console.log('🔧 unequipArmor: Vráceno chybějící brnění do inv:', armor.name);
-                }
-            }
+            _ensureEquippedInInventory('armor');
             state.equipped.armor = null;
             
             closeModal();
@@ -51428,7 +51462,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function unequipGloves() {
-            // Zamkni výměnu vybavení během cestování
             if (state.map?.traveling || state.world?.traveling) {
                 notifyWarning('Nelze změnit', 'Během cestování nelze měnit vybavení!');
                 return;
@@ -51436,15 +51469,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             
             state.equipped = state.equipped || {};
-            // [FIX] Před sundáním ověř, že rukavice jsou v inventáři
-            const gloves = state.equipped.gloves;
-            if (gloves && !state.inv.includes(gloves)) {
-                const duplicate = state.inv.find(i => i.id === gloves.id && i.type === gloves.type);
-                if (!duplicate) {
-                    state.inv.push(gloves);
-                    console.log('🔧 unequipGloves: Vráceny chybějící rukavice do inv:', gloves.name);
-                }
-            }
+            _ensureEquippedInInventory('gloves');
             state.equipped.gloves = null;
             
             closeModal();
@@ -51528,7 +51553,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function unequipBoots() {
-            // Zamkni výměnu vybavení během cestování
             if (state.map?.traveling || state.world?.traveling) {
                 notifyWarning('Nelze změnit', 'Během cestování nelze měnit vybavení!');
                 return;
@@ -51536,15 +51560,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             
             state.equipped = state.equipped || {};
-            // [FIX] Před sundáním ověř, že boty jsou v inventáři
-            const boots = state.equipped.boots;
-            if (boots && !state.inv.includes(boots)) {
-                const duplicate = state.inv.find(i => i.id === boots.id && i.type === boots.type);
-                if (!duplicate) {
-                    state.inv.push(boots);
-                    console.log('🔧 unequipBoots: Vráceny chybějící boty do inv:', boots.name);
-                }
-            }
+            _ensureEquippedInInventory('boots');
             state.equipped.boots = null;
             
             closeModal();
@@ -51632,7 +51648,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function unequipHelmet() {
-            // Zamkni výměnu vybavení během cestování
             if (state.map?.traveling || state.world?.traveling) {
                 notifyWarning('Nelze změnit', 'Během cestování nelze měnit vybavení!');
                 return;
@@ -51640,15 +51655,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             
             state.equipped = state.equipped || {};
-            // [FIX] Před sundáním ověř, že helma je v inventáři
-            const helmet = state.equipped.helmet;
-            if (helmet && !state.inv.includes(helmet)) {
-                const duplicate = state.inv.find(i => i.id === helmet.id && i.type === helmet.type);
-                if (!duplicate) {
-                    state.inv.push(helmet);
-                    console.log('🔧 unequipHelmet: Vrácena chybějící helma do inv:', helmet.name);
-                }
-            }
+            _ensureEquippedInInventory('helmet');
             state.equipped.helmet = null;
             
             closeModal();
@@ -56708,9 +56715,9 @@ function openFullscreenMap() {
             // Bonus za vyšší patro v rámci dungeonu (+8% per floor)
             const floorBonus = 1 + (currentFloorNum - 1) * 0.08;
             // [REBALANCE] Soft scaling podle levelu hráče i v dungeonech
-            // +2% HP/DMG za level hráče nad 3 (jemné, nestackuje se příliš s tier scalingem)
+            // +4% HP/DMG za level hráče nad 3 (jemné, nestackuje se příliš s tier scalingem)
             const _dungPlayerLevel = state.char?.level || 1;
-            const dungeonPlayerScale = _dungPlayerLevel > 3 ? 1 + (_dungPlayerLevel - 3) * 0.02 : 1.0;
+            const dungeonPlayerScale = _dungPlayerLevel > 3 ? 1 + (_dungPlayerLevel - 3) * 0.04 : 1.0;
             const finalHpMult = scaling.hpMult * floorBonus * dungeonPlayerScale;
             const finalDmgMult = scaling.dmgMult * floorBonus * dungeonPlayerScale;
             
@@ -73205,16 +73212,16 @@ function openFullscreenMap() {
                 const playerLevel = state.char.level || 1;
                 
                 // [REBALANCE] Progressivní scaling od levelu 2:
-                // Level 1-5: +3% per level (lehký nárůst pro začátek)
-                // Level 6-15: +4% per level (střední hra)
-                // Level 16+: +3% per level (pozdní hra zpomalí)
-                // Např: LVL 5 = +12%, LVL 10 = +32%, LVL 15 = +52%, LVL 20 = +67%, LVL 30 = +97%
+                // Level 1-5: +6% per level (lehký nárůst pro začátek)
+                // Level 6-15: +8% per level (střední hra)
+                // Level 16+: +6% per level (pozdní hra zpomalí)
+                // Např: LVL 5 = +24%, LVL 10 = +64%, LVL 15 = +104%, LVL 20 = +134%, LVL 30 = +194%
                 let levelScaling = 1.0;
                 if (playerLevel > 1) {
                     const earlyLevels = Math.min(playerLevel - 1, 4); // level 2-5
                     const midLevels = Math.max(0, Math.min(playerLevel - 5, 10)); // level 6-15
                     const lateLevels = Math.max(0, playerLevel - 15); // level 16+
-                    levelScaling = 1 + earlyLevels * 0.03 + midLevels * 0.04 + lateLevels * 0.03;
+                    levelScaling = 1 + earlyLevels * 0.06 + midLevels * 0.08 + lateLevels * 0.06;
                 }
                 
                 // Day scaling: nepřátelé jsou silnější po 30 dnech
@@ -73430,9 +73437,9 @@ function openFullscreenMap() {
                     if (e.isRaidBoss || e.isWorldBoss || e.isBoss || e.isPreScaled) {
                         // [REBALANCE] Progressivní boss scaling:
                         // Level 1-4: žádný bonus
-                        // Level 5-10: 1.5× základ + 0.08× za level (LVL10 = 1.98×)
-                        // Level 11-20: pokračuje +0.06× za level (LVL15 = 2.28×, LVL20 = 2.58×)
-                        // Level 21+: +0.04× za level (LVL30 = 2.98×)
+                        // Level 5-10: 1.5× základ + 0.16× za level (LVL10 = 2.46×)
+                        // Level 11-20: pokračuje +0.12× za level (LVL15 = 3.06×, LVL20 = 3.66×)
+                        // Level 21+: +0.08× za level (LVL30 = 4.46×)
                         // VÝJIMKA: Raid bossy s _raidDamageCap používají sdílené HP z Firebase
                         let bossScaling = 1.0;
                         const isFirebaseRaid = e._raidDamageCap > 0;
@@ -73440,7 +73447,7 @@ function openFullscreenMap() {
                             const earlyBoss = Math.min(playerLevel - 4, 6); // level 5-10
                             const midBoss = Math.max(0, Math.min(playerLevel - 10, 10)); // level 11-20
                             const lateBoss = Math.max(0, playerLevel - 20); // level 21+
-                            bossScaling = 1.5 + earlyBoss * 0.08 + midBoss * 0.06 + lateBoss * 0.04;
+                            bossScaling = 1.5 + earlyBoss * 0.16 + midBoss * 0.12 + lateBoss * 0.08;
                             console.log(`🐉 Boss scaling: ${e.name} level ${playerLevel} → ${bossScaling.toFixed(2)}× (HP/DMG/DEF)`);
                         }
                         
@@ -83817,8 +83824,16 @@ function openFullscreenMap() {
                     }
                     const possibleDup = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type);
                     if (possibleDup) {
-                        // Existuje item se stejným id — nespinej nový, použij existující
-                        console.warn(`🔧 syncEquipped: ${slot} '${equippedItem.name}' - nalezena možná duplikace, používám existující`);
+                        // Existuje item se stejným id — přenes upgrady z equipped do possibleDup PŘED relinkováním
+                        const equippedIsUpgraded2 = equippedItem.ivanUpgrades || equippedItem.aiUpgraded || equippedItem.techUpgrades || equippedItem.technicianUpgrades || equippedItem.labUpgraded || equippedItem._smithyUpgrades || equippedItem.abyssShardUpgrades || equippedItem.enchantment;
+                        if (equippedIsUpgraded2) {
+                            for (const prop of upgradeProps) {
+                                if (equippedItem[prop] !== undefined) {
+                                    possibleDup[prop] = equippedItem[prop];
+                                }
+                            }
+                            console.warn(`🔧 syncEquipped: ${slot} '${equippedItem.name}' - přeneseny upgrady do possibleDup`);
+                        }
                         state.equipped[slot] = possibleDup;
                     } else {
                         console.warn(`🔧 syncEquipped: ${slot} item '${equippedItem.name}' chyběl v inv - přidávám`);
