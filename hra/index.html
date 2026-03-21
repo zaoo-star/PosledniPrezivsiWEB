@@ -8438,6 +8438,15 @@
                     // Rare/Epic: snížení o 80%
                     item.findChance = Math.max(0.001, item.findChance * 0.2);
                 }
+                // [REBALANCE] Zbraně a brnění padají výrazně méně často (common/uncommon -85%)
+                if ((item.type === 'weapon' || item.type === 'armor' || item.type === 'helmet' || item.type === 'gloves' || item.type === 'boots') 
+                    && (!item.rarity || item.rarity === 'common' || item.rarity === 'uncommon')) {
+                    item.findChance = Math.max(0.003, item.findChance * 0.15);
+                }
+                // [REBALANCE] Spotřební předměty -40% (jídlo, léky, nápoje)
+                if (item.type === 'consumable' && (!item.rarity || item.rarity === 'common' || item.rarity === 'uncommon')) {
+                    item.findChance = Math.max(0.01, item.findChance * 0.6);
+                }
             }
         });
         
@@ -45602,16 +45611,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Fallback pokud je lootPool prázdný
             if (lootPool.length === 0) lootPool = ITEMS.filter(i => i.type === 'consumable' || i.type === 'resource').slice(0, 20);
             
-            // Šance na prázdný nález (ZVÝŠENO - méně lootu)
-            let emptyChance = 0.50; // Bylo 0.30, nyní 50% šance že nic nenajdeš
-            if (loc.zone === 'safe') emptyChance = 0.55;    // Bylo 0.35
-            if (loc.zone === 'medium') emptyChance = 0.48;  // Bylo 0.28
-            if (loc.zone === 'danger') emptyChance = 0.42;  // Bylo 0.22
-            if (loc.zone === 'deadly') emptyChance = 0.35;  // Bylo 0.18
+            // Šance na prázdný nález (VÝRAZNĚ ZVÝŠENO)
+            let emptyChance = 0.65; // [REBALANCE] 65% default
+            if (loc.zone === 'safe') emptyChance = 0.72;
+            if (loc.zone === 'medium') emptyChance = 0.62;
+            if (loc.zone === 'danger') emptyChance = 0.55;
+            if (loc.zone === 'deadly') emptyChance = 0.48;
             
             const isEmpty = Math.random() < emptyChance;
             
-            const lootItem = isEmpty ? null : lootPool[Math.floor(Math.random() * lootPool.length)];
+            // [REBALANCE] Weighted loot selection — findChance konečně funguje jako váha
+            // Dříve se item vybíral uniformně z celého poolu (pistole = stejná šance jako jídlo)
+            let lootItem = null;
+            if (!isEmpty) {
+                // Sestav vážený pool podle findChance
+                const totalWeight = lootPool.reduce((sum, i) => sum + (i.findChance || 0.01), 0);
+                let roll = Math.random() * totalWeight;
+                for (const item of lootPool) {
+                    roll -= (item.findChance || 0.01);
+                    if (roll <= 0) {
+                        lootItem = item;
+                        break;
+                    }
+                }
+                // Fallback
+                if (!lootItem) lootItem = lootPool[Math.floor(Math.random() * lootPool.length)];
+            }
             let foundItems = [];
             let groundItems = []; // Položky které zůstaly na zemi
             
@@ -45660,9 +45685,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 resources = ['stone', 'metal', 'copper', 'scrap'];
             }
             
-            // Počet surovin - sníženo o 30%
-            const baseResCount = isEmpty ? Math.floor(Math.random() * 2) : 1 + Math.floor(Math.random() * (1 + (loc.dangerLevel || 0)));
-            let resCount = Math.max(1, Math.floor(baseResCount * 0.7)); // -30%
+            // Počet surovin - výrazně sníženo
+            const baseResCount = isEmpty ? 0 : 1 + Math.floor(Math.random() * (1 + (loc.dangerLevel || 0)));
+            let resCount = Math.max(0, Math.floor(baseResCount * 0.5)); // [REBALANCE] -50% surovin
             
             // Psychic Vision (set 2) - +20% loot z průzkumu
             const setEffectsExplore = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
@@ -45680,19 +45705,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             for (let i = 0; i < resCount; i++) {
                 const res = resources[Math.floor(Math.random() * resources.length)];
-                const baseAmount = 1 + Math.floor(Math.random() * 3);
-                const amount = Math.max(1, Math.floor(baseAmount * 0.7)); // -30%
+                const baseAmount = 1 + Math.floor(Math.random() * 2); // [REBALANCE] Bylo 1-3, nyní 1-2
+                const amount = Math.max(1, Math.floor(baseAmount * 0.5)); // [REBALANCE] -50%
                 state.resources[res] = (state.resources[res] || 0) + amount;
                 const icon = RESOURCE_ICONS[res] || '📦';
                 const name = RESOURCE_NAMES[res] || res;
                 foundResources.push(`+${amount} ${icon} ${name}`);
             }
             
-            // Peníze (menší šance při prázdném nálezu)
+            // Peníze (výrazně snížená šance)
             let moneyFound = 0;
-            const moneyChance = isEmpty ? 0.15 : 0.4;
+            const moneyChance = isEmpty ? 0.08 : 0.25; // [REBALANCE] Bylo 0.15/0.4
             if (Math.random() < moneyChance) {
-                moneyFound = 5 + Math.floor(Math.random() * 20 * (1 + (loc.dangerLevel || 0)));
+                moneyFound = 3 + Math.floor(Math.random() * 12 * (1 + (loc.dangerLevel || 0))); // [REBALANCE] Bylo 5+20
                 addMoney(moneyFound);
             }
             
@@ -80846,10 +80871,10 @@ function openFullscreenMap() {
             
             function generateSingleLootInternal(lootArray) {
                 // Mood loot modifier: high mood = better drop chance
-                let noDropChance = 0.5;
+                let noDropChance = 0.70; // [REBALANCE] 70% šance že nic nepadne
                 const moodLoot = state.status?.mood || 50;
-                if (moodLoot > 75) noDropChance = 0.4; // +10% loot (50%→40% no-drop)
-                else if (moodLoot <= 10) noDropChance = 0.6; // -20% loot
+                if (moodLoot > 75) noDropChance = 0.60; // Dobrá nálada
+                else if (moodLoot <= 10) noDropChance = 0.80; // Špatná nálada
                 
                 if (Math.random() < noDropChance) {
                     return; // Nic nepadne
@@ -80907,7 +80932,7 @@ function openFullscreenMap() {
                 }
                 
                 if (lootId === 'money') {
-                    let moneyGain = Math.floor(Math.random() * 75) + 30;
+                    let moneyGain = Math.floor(Math.random() * 40) + 15; // [REBALANCE] Bylo 30-105, nyní 15-55
                     // Horde bonus na peníze
                     if (state.hordeWarning?.active && Date.now() < state.hordeWarning?.until) {
                         moneyGain = Math.floor(moneyGain * (state.hordeWarning.lootBonus || 1.3));
@@ -80994,8 +81019,8 @@ function openFullscreenMap() {
                             });
                         }
                     } else if (lootItem.type === 'ammo') {
-                        // Munice padá v množství 3-6
-                        const ammoCount = 3 + Math.floor(Math.random() * 4);
+                        // Munice padá v množství 1-3 [REBALANCE] Bylo 3-6
+                        const ammoCount = 1 + Math.floor(Math.random() * 3);
                         if (canAddItem(lootItem, ammoCount)) {
                             addItemToInventory(lootItem, ammoCount, true);
                             lootHtml += `<div style="color: #ffd700;">🎁 ${lootItem.icon} ${lootItem.name} x${ammoCount}</div>`;
