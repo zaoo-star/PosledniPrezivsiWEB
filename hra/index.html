@@ -16059,6 +16059,43 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
         };
         
+        // === ZÁSOBNÍKOVÝ SYSTÉM (přebíjení v boji) ===
+        const MAGAZINE_SIZES = {
+            '9mm': 12,    // Pistole, pipe pistol
+            '556': 25,    // Útočná puška, gatling
+            '762': 5,     // Sniper, lovecká puška
+            'shell': 6,   // Brokovnice
+            'cell': 8,    // Plasma, gauss
+            'rocket': 1   // Granátomet
+            // arrow, bolt, fuel → nemají zásobník (průběžné nabíjení)
+        };
+        
+        // Vyplň zásobník na začátku boje nebo po reloadu
+        function reloadMagazine(unit) {
+            const weapon = state.equipped?.weapon;
+            if (!weapon?.ammoType || !unit?.isPlayer) return false;
+            const magSize = MAGAZINE_SIZES[weapon.ammoType];
+            if (!magSize) return false; // Zbraň bez zásobníku (luk, fuel...)
+            
+            const available = getAmmoCount(weapon.ammoType);
+            const needed = magSize - (unit.magazine || 0);
+            const toLoad = Math.min(needed, available);
+            
+            if (toLoad <= 0) return false;
+            
+            // Odeber náboje z inventáře
+            for (let i = 0; i < toLoad; i++) {
+                if (!consumeAmmo(weapon.ammoType, 1)) break;
+                unit.magazine = (unit.magazine || 0) + 1;
+            }
+            return true;
+        }
+        
+        // Zjisti jestli zbraň má zásobník
+        function weaponHasMagazine(weapon) {
+            return weapon?.ammoType && MAGAZINE_SIZES[weapon.ammoType] !== undefined;
+        }
+        
         // === PVP FRAKČNÍ SYSTÉM ===
         const PVP_FACTIONS = {
             kory: { 
@@ -73765,8 +73802,18 @@ function openFullscreenMap() {
                     poisoned: state.char.poisoned || 0,
                     bleeding: state.char.bleeding || 0,
                     burnDamage: state.char.burning || 0,
-                    burnRounds: state.char.burnRounds || 0
+                    burnRounds: state.char.burnRounds || 0,
+                    magazine: 0,
+                    maxMagazine: 0
                 });
+                
+                // Naplň zásobník na začátku boje
+                const _playerUnit = units[units.length - 1];
+                const _combatWeapon = state.equipped?.weapon;
+                if (_combatWeapon?.ammoType && MAGAZINE_SIZES[_combatWeapon.ammoType]) {
+                    _playerUnit.maxMagazine = MAGAZINE_SIZES[_combatWeapon.ammoType];
+                    reloadMagazine(_playerUnit);
+                }
                 
                 // Přidej živé společníky
                 if (state.companions) {
@@ -76507,6 +76554,31 @@ function openFullscreenMap() {
             } else if (action === 'wait') {
                 cs.log.push(`⏭️ ${unit.name} ukončil tah (${unit.actionsLeft} akce nevyužity)`);
                 endUnitTurn(unit);
+            } else if (action === 'reload') {
+                // Přebíjení — spotřebuje 1 akci
+                const weapon = state.equipped?.weapon;
+                if (!weapon?.ammoType || !weaponHasMagazine(weapon)) {
+                    cs.log.push('⚠️ Tato zbraň nepotřebuje přebíjení.');
+                    return;
+                }
+                if ((unit.magazine || 0) >= (unit.maxMagazine || 0)) {
+                    cs.log.push('✓ Zásobník je plný.');
+                    return;
+                }
+                const before = unit.magazine || 0;
+                const reloaded = reloadMagazine(unit);
+                if (reloaded) {
+                    const loaded = (unit.magazine || 0) - before;
+                    cs.log.push(`🔄 Přebito! +${loaded} nábojů (${unit.magazine}/${unit.maxMagazine})`);
+                    unit.actionsLeft = (unit.actionsLeft || 1) - 1;
+                    if (unit.actionsLeft <= 0) {
+                        endUnitTurn(unit);
+                    } else {
+                        renderHeroesCombatUI();
+                    }
+                } else {
+                    cs.log.push('⚠️ Žádné náboje k nabití!');
+                }
             }
         }
         
@@ -76623,6 +76695,18 @@ function openFullscreenMap() {
             // Aktualizuj damage jednotky
             unit.damage = calculateDamage();
             
+            // Přebij zásobník nové zbraně
+            const newWeapon = state.equipped?.weapon;
+            if (newWeapon?.ammoType && MAGAZINE_SIZES[newWeapon.ammoType]) {
+                unit.maxMagazine = MAGAZINE_SIZES[newWeapon.ammoType];
+                unit.magazine = 0;
+                reloadMagazine(unit);
+                cs.log.push(`🔄 Nabito ${unit.magazine}/${unit.maxMagazine} nábojů.`);
+            } else {
+                unit.magazine = 0;
+                unit.maxMagazine = 0;
+            }
+            
             useAction(unit, 1);
             renderHeroesCombatUI();
         }
@@ -76710,8 +76794,27 @@ function openFullscreenMap() {
             // Kontrola munice pro střelné zbraně (hráč)
             if (isRangedFinal && !isCompanion) {
                 const ammoCount = getAmmoCount(weapon.ammoType);
-                console.log('🏹 Kontrola munice:', weapon.name, 'ammoType:', weapon.ammoType, 'count:', ammoCount);
-                if (ammoCount <= 0) {
+                const hasMag = weaponHasMagazine(weapon);
+                const magEmpty = hasMag && (unit.magazine || 0) <= 0;
+                const totalEmpty = ammoCount <= 0 && (unit.magazine || 0) <= 0;
+                
+                console.log('🏹 Kontrola munice:', weapon.name, 'ammoType:', weapon.ammoType, 'count:', ammoCount, 'mag:', unit.magazine || 0);
+                
+                if (magEmpty && ammoCount > 0) {
+                    // Zásobník prázdný ale máme munici — musí přebít
+                    cs.log.push(`🔄 Zásobník prázdný — přebij! (${ammoCount} ${getAmmoName(weapon.ammoType)} v inventáři)`);
+                    cs.log.push(`Útočíš na blízko.`);
+                    
+                    const meleeRange = 1;
+                    cs.units.filter(u => u.team === 'enemy' && u.alive).forEach(enemy => {
+                        const dist = Math.max(Math.abs(enemy.x - unit.x), Math.abs(enemy.y - unit.y));
+                        if (dist <= meleeRange) {
+                            enemy._combatDist = dist;
+                            cs.validTargets.push(enemy);
+                        }
+                    });
+                    return;
+                } else if (totalEmpty) {
                     cs.log.push(`Zásobník prázdný! (${getAmmoName(weapon.ammoType)})`);
                     cs.log.push(`Útočíš na blízko.`);
                     
@@ -76999,13 +77102,27 @@ function openFullscreenMap() {
             
             // Kontrola: spotřebuj munici POUZE pokud aktuální zbraň má ammoType
             if (weapon && weapon.ammoType) {
-                if (!consumeAmmo(weapon.ammoType, 1)) {
-                    cs.log.push(`Zásobník prázdný! Tah přeskočen.`);
-                    cs.selectedAction = null;
-                    cs.validTargets = [];
-                    // FIX: Ukončí tah aby hráč nebyl frozen bez munice
-                    endUnitTurn(unit);
-                    return;
+                const hasMag = weaponHasMagazine(weapon);
+                
+                if (hasMag && !isCompanion) {
+                    // ZÁSOBNÍKOVÝ SYSTÉM: Spotřebuj z magazine
+                    if ((unit.magazine || 0) <= 0) {
+                        cs.log.push(`🔄 Zásobník prázdný! Musíš přebít.`);
+                        cs.selectedAction = null;
+                        cs.validTargets = [];
+                        endUnitTurn(unit);
+                        return;
+                    }
+                    unit.magazine = (unit.magazine || 0) - 1;
+                } else {
+                    // Zbraně bez zásobníku (luk, fuel...) — přímá spotřeba z inventáře
+                    if (!consumeAmmo(weapon.ammoType, 1)) {
+                        cs.log.push(`Munice došla! Tah přeskočen.`);
+                        cs.selectedAction = null;
+                        cs.validTargets = [];
+                        endUnitTurn(unit);
+                        return;
+                    }
                 }
             }
             
@@ -78673,15 +78790,17 @@ function openFullscreenMap() {
                                 isCompanionTurn && currentUnit.equipped?.weapon?.ammoType ?
                                 `<span style="font-size: 0.75rem; padding: 0.2rem 0.4rem; border-radius: 4px; ${getAmmoCount(currentUnit.equipped.weapon.ammoType) > 0 ? 'background: #2a4a2a; color: #8bc34a;' : 'background: #4a2a2a; color: #ff6b6b;'}">
                                     🔫 ${getAmmoCount(currentUnit.equipped.weapon.ammoType)} ${getAmmoName(currentUnit.equipped.weapon.ammoType)}
+                                ${weaponHasMagazine(currentUnit.equipped.weapon) ? 
+                                    ` <span style="color: ${(playerUnit?.magazine || 0) > 0 ? '#8bc34a' : '#f44336'}; font-weight: bold;">[${playerUnit?.magazine || 0}/${playerUnit?.maxMagazine || 0}]</span>` : ''}
                                 </span>` :
                                 `<span style="font-size: 0.7rem; color: #ff9800;">Dosah: ${isCompanionTurn ? 'Na blízko' : '1 pole'}</span>`}
                         </div>
                         
-                        <div style="display: grid; grid-template-columns: repeat(${isCompanionTurn ? 3 : 4}, 1fr); gap: 0.3rem; margin-bottom: 0.4rem;">
-                            <button class="btn" onclick="selectAction('move')" style="padding: 0.4rem; font-size: 0.8rem; background: ${cs.selectedAction === 'move' ? '#1565c0' : '#2a3a4a'};">
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.4rem;">
+                            <button class="btn" onclick="selectAction('move')" style="padding: 0.4rem; font-size: 0.8rem; background: ${cs.selectedAction === 'move' ? '#1565c0' : '#2a3a4a'}; flex: 1; min-width: 60px;">
                                 🚶 Pohyb
                             </button>
-                            <button class="btn" onclick="selectAction('attack')" style="padding: 0.4rem; font-size: 0.8rem; background: ${cs.selectedAction === 'attack' ? '#c62828' : '#2a3a4a'};">
+                            <button class="btn" onclick="selectAction('attack')" style="padding: 0.4rem; font-size: 0.8rem; background: ${cs.selectedAction === 'attack' ? '#c62828' : '#2a3a4a'}; flex: 1; min-width: 60px;">
                                 ⚔️ Útok
                             </button>
                             ${(() => {
@@ -78692,11 +78811,21 @@ function openFullscreenMap() {
                                 }
                                 return '';
                             })()}
-                            <button class="btn" onclick="selectAction('defend')" style="padding: 0.4rem; font-size: 0.8rem; background: #2a3a4a;">
+                            ${(() => {
+                                const weapon = state.equipped?.weapon;
+                                const pu = cs.units.find(u => u.isPlayer);
+                                if (weapon && weaponHasMagazine(weapon) && !isCompanionTurn) {
+                                    const magEmpty = (pu?.magazine || 0) <= 0;
+                                    const magFull = (pu?.magazine || 0) >= (pu?.maxMagazine || 0);
+                                    return '<button class="btn" onclick="selectAction(\'reload\')" style="padding: 0.4rem; font-size: 0.7rem; flex: 1; min-width: 70px; background: ' + (magEmpty ? '#c62828' : magFull ? '#333' : '#5d4037') + '; ' + (magEmpty ? 'animation: pulse 1s infinite;' : '') + '"' + (magFull ? ' disabled' : '') + '>🔄 Přebít ' + (pu?.magazine || 0) + '/' + (pu?.maxMagazine || 0) + '</button>';
+                                }
+                                return '';
+                            })()}
+                            <button class="btn" onclick="selectAction('defend')" style="padding: 0.4rem; font-size: 0.8rem; background: #2a3a4a; flex: 1; min-width: 60px;">
                                 🛡️ Obrana
                             </button>
                             ${!isCompanionTurn ? `
-                            <button class="btn" onclick="selectAction('weapon')" style="padding: 0.4rem; font-size: 0.8rem; background: #6a4c93;">
+                            <button class="btn" onclick="selectAction('weapon')" style="padding: 0.4rem; font-size: 0.8rem; background: #6a4c93; flex: 1; min-width: 60px;">
                                 🔄 Zbraň
                             </button>
                             ` : ''}
