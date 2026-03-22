@@ -1388,6 +1388,28 @@
         
         /* Chat container - zajisti scroll na mobilech */
         #chatMessagesContainer {
+            scroll-behavior: smooth;
+        }
+        
+        /* Terminálový typewriter efekt */
+        @keyframes chatMsgFadeIn {
+            0% { opacity: 0; transform: translateY(4px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        .chat-msg-typed {
+            animation: chatMsgFadeIn 0.15s ease-out forwards;
+            opacity: 0;
+        }
+        .chat-cursor::after {
+            content: '▌';
+            color: #8bc34a;
+            animation: blink-cursor 0.6s step-end infinite;
+            margin-left: 1px;
+        }
+        @keyframes blink-cursor {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
             -webkit-overflow-scrolling: touch !important;
             overflow-y: auto !important;
             overflow-x: hidden !important;
@@ -37462,6 +37484,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         })();
         
         function closeModal() {
+            // Reset chat typewriter
+            window._chatTyped = false;
+            if (window._typewriterTimers) {
+                window._typewriterTimers.forEach(t => clearTimeout(t));
+                window._typewriterTimers = [];
+            }
+            
             // Blokuj zavření modalu během spánku
             if (state.isSleeping && state.sleepEndTime && Date.now() < state.sleepEndTime) {
                 return; // Nelze zavřít během spánku
@@ -94658,7 +94687,7 @@ function openFullscreenMap() {
                                     <span style="color: #555; font-size: 0.65rem;"> Lvl ${escapeHtml(msg.level) || '?'}</span>` : ''}
                                     <span style="color: #444; margin-left: 0.5rem;">${time}</span>
                                 </div>
-                                <div style="color: ${isSystemMessage ? systemMsgColor : '#ddd'};">${formatChatMessage(msg.text, myName)}</div>
+                                <div class="chat-msg-text" style="color: ${isSystemMessage ? systemMsgColor : '#ddd'};">${formatChatMessage(msg.text, myName)}</div>
                             </div>
                         </div>
                     `;
@@ -94865,7 +94894,7 @@ function openFullscreenMap() {
                 ` : `
                 <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
-                    <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: #0a0a0a; border-radius: 8px; padding: 0.8rem; position: relative;">
+                    <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: linear-gradient(180deg, #080a08 0%, #060a06 100%); border-radius: 8px; padding: 0.8rem; position: relative; border: 1px solid rgba(60,100,60,0.1);">
                         ${messagesHtml}
                     </div>
                     
@@ -94900,13 +94929,92 @@ function openFullscreenMap() {
                 };
                 setupScroll('chatMessagesContainer');
                 setupScroll('clanChatContainer');
+                
+                // Terminálový typewriter efekt na posledních zpráv
+                typewriterChat();
+                
                 // Focus na správný input
                 const activeInput = document.getElementById(window._activeChatTab === 'clan' ? 'clanChatInput' : 'chatInput');
                 // Neautofocusuj na mobilu (vyvolá klávesnici)
             }, 100);
         }
         
+        // === TERMINÁLOVÝ TYPEWRITER EFEKT PRO CHAT ===
+        function typewriterChat() {
+            const container = document.getElementById('chatMessagesContainer');
+            if (!container) return;
+            
+            // Jen jednou při prvním otevření, ne při přepnutí tabu
+            if (window._chatTyped) return;
+            window._chatTyped = true;
+            
+            // Vyčisti staré timery
+            if (window._typewriterTimers) {
+                window._typewriterTimers.forEach(t => clearTimeout(t));
+            }
+            window._typewriterTimers = [];
+            
+            const allMsgs = container.querySelectorAll('.chat-msg-text');
+            if (allMsgs.length === 0) return;
+            
+            // Posledních N zpráv dostane typewriter
+            const count = Math.min(6, allMsgs.length);
+            const startIdx = allMsgs.length - count;
+            let totalDelay = 0;
+            
+            for (let i = startIdx; i < allMsgs.length; i++) {
+                const el = allMsgs[i];
+                const fullHtml = el.innerHTML;
+                const plainText = el.textContent || '';
+                const msgParent = el.closest('[style*="margin-bottom"]');
+                
+                // Skryj zprávu
+                if (msgParent) {
+                    msgParent.classList.add('chat-msg-typed');
+                    msgParent.style.animationDelay = totalDelay + 'ms';
+                }
+                
+                // Vyčisti text a postupně ho piš
+                el.innerHTML = '';
+                el.classList.add('chat-cursor');
+                
+                const chars = plainText.split('');
+                const charDelay = Math.max(16, Math.min(50, 1200 / chars.length));
+                
+                const msgDelay = totalDelay;
+                chars.forEach((char, ci) => {
+                    const timer = setTimeout(() => {
+                        el.textContent += char;
+                        // Scroll dolů
+                        container.scrollTop = container.scrollHeight;
+                    }, msgDelay + 300 + ci * charDelay);
+                    window._typewriterTimers.push(timer);
+                });
+                
+                // Po dopsání zprávy odeber kurzor
+                const finishTimer = setTimeout(() => {
+                    el.classList.remove('chat-cursor');
+                    // Pokud je to poslední zpráva, nechej kurzor
+                    if (i === allMsgs.length - 1) {
+                        el.classList.add('chat-cursor');
+                    }
+                }, msgDelay + 300 + chars.length * charDelay);
+                window._typewriterTimers.push(finishTimer);
+                
+                totalDelay += 300 + chars.length * charDelay + 150;
+            }
+            
+            // Scroll na konec
+            setTimeout(() => { container.scrollTop = container.scrollHeight; }, 50);
+        }
+        
         function sendChatFromInput() {
+            // Zastavit typewriter pokud běží
+            if (window._typewriterTimers) {
+                window._typewriterTimers.forEach(t => clearTimeout(t));
+                window._typewriterTimers = [];
+            }
+            
             const input = document.getElementById('chatInput');
             if (input && input.value.trim()) {
                 let finalText = input.value.trim();
@@ -99239,7 +99347,7 @@ function openFullscreenMap() {
                         </div>
                     </button>
                     
-                    <button class="btn wl-btn wl-burn wl-rust" onclick="showChatModal()" style="background: linear-gradient(180deg, #101510 0%, #050805 100%); padding: 0.7rem 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; position: relative; ">
+                    <button class="btn wl-btn wl-burn wl-rust" onclick="window._chatTyped=false; showChatModal()" style="background: linear-gradient(180deg, #101510 0%, #050805 100%); padding: 0.7rem 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; position: relative; ">
                         <div style="text-align: center;">
                             <div style="font-size: 1.1rem; color: #8bc34a; font-weight: bold; letter-spacing: 3px; text-shadow: 0 1px 0 rgba(0,0,0,0.9), 0 -1px 0 rgba(150,220,80,0.08), 0 0 12px rgba(139,195,74,0.15);">CHAT</div>
                             <div style="font-size: 0.7rem; color: #555;">${chatMessages.length} zpráv</div>
