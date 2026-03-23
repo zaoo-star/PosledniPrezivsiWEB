@@ -8416,6 +8416,24 @@
             return type?.icon || '👤';
         }
         
+        // Lightbox pro zvětšení obrázku osadníka
+        function showSettlerImageLightbox(typeId, settlerName) {
+            const imgPath = SETTLER_CUSTOM_ICONS[typeId];
+            if (!imgPath) return;
+            const type = SETTLER_TYPES.find(t => t.id === typeId);
+            const typeName = type?.name || '';
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;animation:fadeIn 0.2s ease;';
+            overlay.innerHTML = `
+                <img src="${imgPath}" alt="${settlerName}" style="max-width: 90vw; max-height: 70vh; object-fit: contain; border-radius: 12px; border: 2px solid #4caf5088; box-shadow: 0 0 40px rgba(76,175,80,0.3); animation: scaleIn 0.25s ease;" onerror="this.parentElement.remove();">
+                <div style="color: #fff; font-size: 1.2rem; font-weight: bold; margin-top: 0.8rem; text-shadow: 0 0 10px rgba(76,175,80,0.5);">${settlerName}</div>
+                <div style="color: #8bc34a; font-size: 0.85rem; margin-top: 0.3rem;">${typeName}</div>
+                <div style="color: #555; font-size: 0.75rem; margin-top: 0.4rem;">Klikni pro zavření</div>
+            `;
+            overlay.onclick = () => overlay.remove();
+            document.body.appendChild(overlay);
+        }
+        
         // Fallback pro překlady osadníků (používá se .desc přímo z SETTLER_TYPES)
         const SETTLER_TRANSLATIONS = { cs: {} };
         
@@ -38359,7 +38377,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             showModal('🎉 Nový osadník!', `
                 <div style="text-align: center;">
-                    <div style="font-size: 5rem; margin-bottom: 1rem;">${getSettlerIcon(type.id, '5rem')}</div>
+                    <div onclick="showSettlerImageLightbox('${type.id}', '${escapeHtml(name)}')" style="font-size: 5rem; margin-bottom: 1rem; cursor: pointer;">${getSettlerIcon(type.id, '5rem')}</div>
                     <h2 style="margin: 0; color: var(--toxic-green);">${name}</h2>
                     <p style="color: #888; margin: 0.5rem 0;">${type.name}</p>
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0; text-align: left;">
@@ -56080,6 +56098,10 @@ function openFullscreenMap() {
             // Minimálně 4 hodiny mezi nájezdy
             if (hoursSinceLastRaid < 4) return false;
             
+            // [FIX] Ochrana před nájezdy (politická/banditská)
+            if (typeof isRaidProtectionActive === 'function' && isRaidProtectionActive()) return false;
+            if (state.settlement.banditProtection && Date.now() < state.settlement.banditProtection) return false;
+            
             // Šance na nájezd roste s časem a prosperitou
             const baseChance = 0.02; // 2% základní šance za tick
             const prosperityBonus = (state.settlement.prosperity || 0) * 0.001;
@@ -56095,6 +56117,15 @@ function openFullscreenMap() {
         }
         
         function startSettlementRaid() {
+            // [FIX] Ochrana před nájezdy - kontrola na začátku
+            if (typeof isRaidProtectionActive === 'function' && isRaidProtectionActive()) {
+                console.log('⚔️ Raid zablokován - politická ochrana aktivní');
+                return;
+            }
+            if (state.settlement?.banditProtection && Date.now() < state.settlement.banditProtection) {
+                console.log('⚔️ Raid zablokován - výpalné zaplaceno');
+                return;
+            }
             // Pokud je hráč v dungeonu (Propast atd.), odlož raid - nesmí přerušit postup
             if (state.dungeon?.active || state.activeCombat || window.combatState) {
                 console.log('⚔️ Raid odložen - hráč je v dungeonu/boji');
@@ -71995,7 +72026,7 @@ function openFullscreenMap() {
                 <h2>${getSettlerIcon(settler.type, '1.5rem')} ${settler.name}</h2>
                 <div style="display: flex; gap: 1rem; align-items: flex-start;">
                     <div style="text-align: center;">
-                        <div style="font-size: 4rem; background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%); padding: 0.8rem; border-radius: 12px; border: 2px solid #444;">
+                        <div onclick="showSettlerImageLightbox('${settler.type}', '${escapeHtml(settler.name)}')" style="font-size: 4rem; background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%); padding: 0.8rem; border-radius: 12px; border: 2px solid #444; cursor: pointer;">
                             ${getSettlerIcon(settler.type, '4rem')}
                         </div>
                         <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #888;">${settlerDetailTexts.mood}: ${moods[moodIdx]}</div>
@@ -88288,6 +88319,12 @@ function openFullscreenMap() {
             
             // Check for settlement raids (every 5 minutes of real time)
             if (state.confirmed && state.map.inBase && state.settlement) {
+                // [FIX] Přeskoč pokud je aktivní ochrana
+                const _raidProtected = (typeof isRaidProtectionActive === 'function' && isRaidProtectionActive());
+                if (_raidProtected) {
+                    // Reset timer aby nebyl raid hned po skončení ochrany
+                    state.settlement.nextRaidCheck = now + 300000;
+                } else {
                 // Naplánuj další raid pokud není naplánovaný
                 if (!state.settlement.nextRaidCheck) {
                     state.settlement.nextRaidCheck = now + 300000; // 5 min od teď
@@ -88300,6 +88337,7 @@ function openFullscreenMap() {
                         startSettlementRaid();
                     }
                 }
+                } // else - bez ochrany
             }
             
             // === FRAKČNÍ DANĚ Z ÚZEMÍ (každou hodinu) ===
@@ -108883,6 +108921,10 @@ function openFullscreenMap() {
         
         // Zkontrolovat zda je aktivní ochrana proti nájezdům (tribut zaplacen / obranné věže)
         function isRaidProtectionActive() {
+            // [FIX] Kontrola zaplacení výpalného banditovi
+            if (state.settlement?.banditProtection && Date.now() < state.settlement.banditProtection) {
+                return true;
+            }
             if (cachedPoliticalEffects) {
                 const now = Date.now();
                 // Klid po zaplacení tributu (3 dny)
@@ -119908,8 +119950,8 @@ function openFullscreenMap() {
                 <!-- HLAVIČKA -->
                 <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem;">
                     <div style="position: relative;">
-                        <div style="font-size: 3.5rem; background: linear-gradient(135deg, ${pers?.color || '#555'}22, #0a0a0a); padding: 0.6rem; border-radius: 16px; border: 2px solid ${pers?.color || '#555'};">
-                            ${type?.icon || '👤'}
+                        <div onclick="showSettlerImageLightbox('${settler.type}', '${escapeHtml(settler.name)}')" style="font-size: 3.5rem; background: linear-gradient(135deg, ${pers?.color || '#555'}22, #0a0a0a); padding: 0.6rem; border-radius: 16px; border: 2px solid ${pers?.color || '#555'}; cursor: pointer;">
+                            ${getSettlerIcon(settler.type, '3.5rem')}
                         </div>
                         <div style="position: absolute; bottom: -4px; right: -4px; font-size: 1.3rem;" title="${emotion?.name || ''}">${emotion?.icon || '😐'}</div>
                     </div>
@@ -120140,7 +120182,7 @@ function openFullscreenMap() {
             
             showModal(`💪 ${settler.name}`, `
                 <div style="text-align: center; padding: 1rem;">
-                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">${getSettlerIcon(settler.type, '3rem')}</div>
+                    <div onclick="showSettlerImageLightbox('${settler.type}', '${escapeHtml(settler.name)}')" style="font-size: 3rem; margin-bottom: 0.5rem; cursor: pointer;">${getSettlerIcon(settler.type, '3rem')}</div>
                     <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 10px; border-left: 3px solid #4caf50; margin: 0.5rem 0; font-style: italic; color: #c9c9c9;">
                         ${bonusText}
                     </div>
