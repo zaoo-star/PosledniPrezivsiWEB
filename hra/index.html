@@ -26878,9 +26878,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const baseVal = base[stat] || 0;
             const compVal = comp[stat] || 0;
             let value = Math.max(baseVal, compVal);
-            // Pro HP: base je z definice COMPANIONS, IGNORUJ comp.maxHp (může být nafouklé z předchozích bojů)
+            // Pro HP: VŽDY použij originální base HP, ne aktuální (zabrání inflaci)
             if (stat === 'hp') {
-                value = baseVal || 50; // Pouze base definice, ne comp.maxHp
+                // Ulož base HP při prvním volání
+                if (!comp._originalBaseHp) {
+                    const baseDef = COMPANIONS.find(c => c.id === comp.id);
+                    comp._originalBaseHp = baseDef?.hp || 80; // Fallback 80 pro NPC companiony (Maya apod.)
+                }
+                value = comp._originalBaseHp;
             }
             
             // Přidej bonus z levelu společníka
@@ -57759,6 +57764,19 @@ function openFullscreenMap() {
         function startAbyssRun() {
             state.abyss = state.abyss || {};
             
+            // [FIX] Detekce opuštěného runu (refresh uprostřed boje)
+            if (state.abyss.inProgress) {
+                const abandonedFloor = state.abyss.currentFloor || 1;
+                console.log('🕳️ Opuštěný abyss run detekován na patře', abandonedFloor);
+                state.abyss.inProgress = false;
+                // Nastav cooldown jen pokud hráč postoupil
+                if (abandonedFloor >= 2) {
+                    state.abyss.lastRunEnd = Date.now();
+                    notifyWarning('🕳️ Opuštěný run', `Tvůj předchozí run v Propasti (patro ${abandonedFloor}) byl ukončen.`);
+                    return;
+                }
+            }
+            
             // Cooldown check
             const now = Date.now();
             const abyssCooldown = 12 * 60 * 60 * 1000;
@@ -76427,6 +76445,9 @@ function openFullscreenMap() {
             const cs = window.combatState;
             unit.actionsLeft = Math.max(0, unit.actionsLeft - count);
             
+            // Reset action lock
+            cs._actionInProgress = false;
+            
             // Kondenzuj log po dokončení tahu (akce = 0)
             if (unit.actionsLeft <= 0 && cs._turnLogStart !== undefined) {
                 _condenseTurnLog(cs, cs._turnLogStart, unit);
@@ -76519,22 +76540,34 @@ function openFullscreenMap() {
             const unit = cs.selectedUnit;
             if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
             
+            // [FIX] Guard: blokuj akci pokud probíhá AI tah nebo přechod
+            if (cs._turnLocked || cs._actionInProgress) return;
+            cs._actionInProgress = true;
+            
             cs.selectedAction = action;
             
             if (action === 'move') {
                 calculateValidMoves(unit);
+                cs._actionInProgress = false;
                 renderHeroesCombatUI();
             } else if (action === 'attack') {
                 calculateValidTargets(unit);
-                // FORCE FALLBACK: Pokud žádné cíle ale existují nepřátelé a hráč má střelnou zbraň
+                cs._actionInProgress = false;
+                // FORCE FALLBACK: Pokud žádné cíle ale existují nepřátelé
                 if (cs.validTargets.length === 0) {
                     const _enemies = cs.units.filter(u => u.team === 'enemy' && u.alive);
-                    const _wpn = state.equipped?.weapon;
+                    const _wpn = unit.isCompanion ? unit.equipped?.weapon : state.equipped?.weapon;
                     const _isRanged = !!_wpn?.ammoType;
-                    console.error('⚠️ ŽÁDNÉ CÍLE! weapon:', _wpn?.name, 'ammoType:', _wpn?.ammoType, 'enemies:', _enemies.length);
-                    if (_enemies.length > 0 && _isRanged) {
+                    console.error('⚠️ ŽÁDNÉ CÍLE!', unit.name, 'weapon:', _wpn?.name, 'enemies:', _enemies.length);
+                    if (_enemies.length > 0) {
+                        // Nouzový režim - přidej všechny nepřátele jako cíle
                         _enemies.forEach(e => { e._combatDist = Math.max(Math.abs(e.x - unit.x), Math.abs(e.y - unit.y)); cs.validTargets.push(e); });
                         cs.log.push('⚠️ Nouzový režim: útok na všechny nepřátele.');
+                    } else {
+                        // Žádní nepřátelé — přepni na čekání
+                        cs.log.push('⚠️ Žádné cíle, přeskakuji tah.');
+                        endUnitTurn(unit);
+                        return;
                     }
                 }
                 renderHeroesCombatUI();
@@ -76546,6 +76579,7 @@ function openFullscreenMap() {
                 cs.log.push(`${unit.name} zaujal obranný postoj. (+${defBonus}% obrana)`);
                 endUnitTurn(unit);
             } else if (action === 'weapon') {
+                cs._actionInProgress = false;
                 showCombatWeaponSwitch();
                 // Nerendruj UI - showCombatWeaponSwitch to řeší samo
             } else if (action === 'wait') {
@@ -76556,10 +76590,12 @@ function openFullscreenMap() {
                 const weapon = state.equipped?.weapon;
                 if (!weapon?.ammoType || !weaponHasMagazine(weapon)) {
                     cs.log.push('⚠️ Tato zbraň nepotřebuje přebíjení.');
+                    cs._actionInProgress = false;
                     return;
                 }
                 if ((unit.magazine || 0) >= (unit.maxMagazine || 0)) {
                     cs.log.push('✓ Zásobník je plný.');
+                    cs._actionInProgress = false;
                     return;
                 }
                 const before = unit.magazine || 0;
@@ -76575,6 +76611,7 @@ function openFullscreenMap() {
                     }
                 } else {
                     cs.log.push('⚠️ Žádné náboje k nabití!');
+                    cs._actionInProgress = false;
                 }
             }
         }
@@ -77019,6 +77056,8 @@ function openFullscreenMap() {
                 return;
             }
             if (cs._bossFleeTriggered) return; // BOSS FLEE
+            if (cs._actionInProgress) return; // [FIX] Blokuj double-click
+            cs._actionInProgress = true;
             
             // 🛡️ GUARD: Blokuj útok pokud NENÍ tah hráče/manuálního společníka
             if (!unit.isPlayer && !(unit.isCompanion && cs.manualCompanions)) {
