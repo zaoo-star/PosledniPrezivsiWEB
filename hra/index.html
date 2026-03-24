@@ -74390,8 +74390,16 @@ function openFullscreenMap() {
             
             // OCHRANA: zabrání re-entrantním voláním (race condition)
             if (cs._turnLocked) {
-                console.log('⚠️ startNextTurn blocked - AI turn in progress');
-                return;
+                // [FIX] Watchdog: pokud lock trvá déle než 8s, je to bug — uvolni
+                const lockAge = Date.now() - (cs._turnLockedAt || 0);
+                if (lockAge > 8000) {
+                    console.error('⚠️ _turnLocked watchdog: lock zaseknutý ' + lockAge + 'ms — vynucuji uvolnění');
+                    cs._turnLocked = false;
+                    // Pokračuj normálně dál
+                } else {
+                    console.log('⚠️ startNextTurn blocked - AI turn in progress (' + lockAge + 'ms)');
+                    return;
+                }
             }
             
             // Nejdřív zkontroluj konec boje
@@ -74413,8 +74421,9 @@ function openFullscreenMap() {
                     // Nepřítel - automatický AI tah
                     if (unit.team === 'enemy') {
                         cs._turnLocked = true; // Zamkni dokud AI neodehraje
+                        cs._turnLockedAt = Date.now(); // [FIX] Watchdog timestamp
                         setTimeout(() => {
-                            if (window.combatState) window.combatState._turnLocked = false;
+                            // [FIX] Lock se uvolní až v _finishAITurn, ne zde
                             performAITurn(unit);
                         }, 600);
                     }
@@ -74433,8 +74442,9 @@ function openFullscreenMap() {
                             renderHeroesCombatUI();
                         } else {
                             cs._turnLocked = true;
+                            cs._turnLockedAt = Date.now(); // [FIX] Watchdog timestamp
                             setTimeout(() => {
-                                if (window.combatState) window.combatState._turnLocked = false;
+                                // [FIX] Lock se uvolní až v _finishCompanionTurn, ne zde
                                 performCompanionAITurn(unit);
                             }, 500);
                         }
@@ -74725,6 +74735,12 @@ function openFullscreenMap() {
             
             // Akce 1
             doCompAction(0);
+            // [FIX BUG 4] Okamžitě zkontroluj zda boj neskončil po akci 1
+            if (checkCombatEnd()) {
+                cs._turnLocked = false;
+                renderHeroesCombatUI();
+                return;
+            }
             renderHeroesCombatUI();
             
             // Akce 2 s delay
@@ -74741,7 +74757,9 @@ function openFullscreenMap() {
             setTimeout(doCompAction2, 1000);
             } catch(e) {
                 console.error('⚠️ performCompanionAITurn chyba:', e);
+                // [FIX] Uvolni lock i při chybě aby boj nezamrzl
                 if (window.combatState) {
+                    window.combatState._turnLocked = false;
                     unit.actionsLeft = 0;
                     useAction(unit, 0);
                 }
@@ -75396,6 +75414,12 @@ function openFullscreenMap() {
             }
             
             // === KROKOVÝ SYSTÉM: render po akci 1, delay, pak akce 2 ===
+            // [FIX BUG 4] Okamžitě zkontroluj zda boj neskončil po akci 1
+            if (checkCombatEnd()) {
+                cs._turnLocked = false;
+                renderHeroesCombatUI();
+                return;
+            }
             renderHeroesCombatUI();
             _combatHighlightCell(unit.x, unit.y, actionsUsed > 0 && dist > 1 ? 'moved' : 'attacked');
             
@@ -75479,6 +75503,8 @@ function openFullscreenMap() {
             setTimeout(doAction2, 1100);
             } catch(e) {
                 console.error('⚠️ performAITurn chyba:', e);
+                // [FIX] Uvolni lock i při chybě aby boj nezamrzl
+                if (window.combatState) window.combatState._turnLocked = false;
                 try { unit.actionsLeft = 0; useAction(unit, 0); } catch(e2) { console.error('⚠️ AI fallback chyba:', e2); }
             }
         }
@@ -75486,7 +75512,19 @@ function openFullscreenMap() {
         // === HELPER: Dokončení AI tahu s renderem a delay ===
         function _finishAITurn(unit, actionsUsed) {
             const cs = window.combatState;
-            if (!cs) return;
+            // [FIX BUG 2] Uvolni turn lock — AI tah je hotový
+            if (cs) cs._turnLocked = false;
+            // [FIX BUG 3] Pokud combatState zmizel, vyčisti a pokračuj
+            if (!cs) {
+                console.error('⚠️ _finishAITurn: combatState ztracen — vynucuji obnovu');
+                unit.actionsLeft = 0;
+                if (state.activeCombat) {
+                    window.combatState = state.activeCombat;
+                    window.combatState._turnLocked = false;
+                    setTimeout(() => startNextTurn(), 500);
+                }
+                return;
+            }
             if (actionsUsed === 0 && unit.alive) {
                 unit.defending = true;
                 unit.defenseBonus = 5;
@@ -75494,6 +75532,8 @@ function openFullscreenMap() {
             }
             renderHeroesCombatUI();
             setTimeout(() => {
+                // [FIX BUG 3] Další null check před useAction
+                if (!window.combatState) { console.error('⚠️ _finishAITurn setTimeout: combatState null'); return; }
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
             }, 900);
@@ -75502,7 +75542,19 @@ function openFullscreenMap() {
         // === HELPER: Dokončení companion tahu ===
         function _finishCompanionTurn(unit, attacks, moved) {
             const cs = window.combatState;
-            if (!cs) return;
+            // [FIX BUG 2] Uvolni turn lock — companion tah je hotový
+            if (cs) cs._turnLocked = false;
+            // [FIX BUG 3] Pokud combatState zmizel, vyčisti a pokračuj
+            if (!cs) {
+                console.error('⚠️ _finishCompanionTurn: combatState ztracen — vynucuji obnovu');
+                unit.actionsLeft = 0;
+                if (state.activeCombat) {
+                    window.combatState = state.activeCombat;
+                    window.combatState._turnLocked = false;
+                    setTimeout(() => startNextTurn(), 500);
+                }
+                return;
+            }
             if (attacks === 0 && !moved && unit.alive) {
                 unit.defending = true;
                 unit.defenseBonus = 3;
@@ -75518,6 +75570,8 @@ function openFullscreenMap() {
             }
             renderHeroesCombatUI();
             setTimeout(() => {
+                // [FIX BUG 3] Další null check před useAction
+                if (!window.combatState) { console.error('⚠️ _finishCompanionTurn setTimeout: combatState null'); return; }
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
             }, 900);
@@ -78865,7 +78919,6 @@ function openFullscreenMap() {
                             <button onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){window.combatState=null;delete state.activeCombat;delete state.savedCombatState;window.isSettlementRaid=false;state._raidVictoryHandled=false;closeModal();renderFull();saveGame(true);}" style="background: #333; border: 1px solid #555; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #888;" title="Nouzový odchod z boje">✕</button>
                         </div>
                     </div>
-                    </div>
                     
                     <!-- ENEMY HP BAR -->
                     <div style="margin-bottom: 0.5rem;">
@@ -80510,52 +80563,9 @@ function openFullscreenMap() {
                 log.innerHTML += `<div style="color: #76ff03;">🦎 Regenerace: +${healAmount} HP</div>`;
             }
             
-            // Companion attacks
-            if (state.companions && state.companions.length > 0) {
-                state.companions.forEach(comp => {
-                    if (comp.isDead) return;
-                    const compInfo = COMPANIONS.find(c => c.id === comp.id);
-                    if (!compInfo) return;
-                    
-                    // KONTROLA MUNICE - společník bere z inventáře hráče
-                    if (comp.equipped?.weapon?.ammoType) {
-                        const ammoType = comp.equipped.weapon.ammoType;
-                        const playerAmmo = getAmmoCount(ammoType);
-                        if (playerAmmo < 1) {
-                            log.innerHTML += `<div style="color: #ff9800;">⚠️ ${comp.name || compInfo.name} nemá munici → útočí na blízko!</div>`;
-                            // FALLBACK: Pokračuje v útoku bez weapon bonusu
-                        } else {
-                            consumeAmmo(ammoType, 1);
-                        }
-                    }
-                    
-                    const aliveTarget = enemyGroup.find(e => e.alive);
-                    if (!aliveTarget) return;
-                    
-                    // Použij getCompanionStat pro správný výpočet včetně levelu a vybavení
-                    let compDmg = getCompanionStat(comp, 'damage') + Math.floor(Math.random() * 3);
-                    
-                    // 🐾 Veterinářka Dáša - bonus DMG pro companiony
-                    if (typeof getNPCBonuses === 'function') {
-                        const npcCompBon = getNPCBonuses();
-                        if (npcCompBon.companionDmgBonus > 0) {
-                            compDmg = Math.floor(compDmg * (1 + npcCompBon.companionDmgBonus));
-                        }
-                    }
-                    
-                    compDmg = Math.max(1, compDmg - aliveTarget.defense);
-                    aliveTarget.hp -= compDmg;
-                    
-                    const compIcon = comp.icon || compInfo.icon;
-                    const compName = comp.name || compInfo.name;
-                    log.innerHTML += `<div style="color: #ce93d8;">${compIcon} ${compName}: ${compDmg} DMG</div>`;
-                    
-                    if (aliveTarget.hp <= 0) {
-                        aliveTarget.alive = false;
-                        log.innerHTML += `<div style="color: #ffd700;">💀 ${compName} zabil nepřítele!</div>`;
-                    }
-                });
-            }
+            // [FIX BUG 5] Companion attacks ODSTRANĚNY z performAttack — již jsou v combatAction()
+            // Dvojitý útok společníků byl způsoben tím, že combatAction() volá performAttack()
+            // a pak ZNOVU iteruje přes společníky. Ponecháváme pouze jednu smyčku v combatAction().
             
             // Update enemy HP bars
             enemyGroup.forEach((e, i) => {
