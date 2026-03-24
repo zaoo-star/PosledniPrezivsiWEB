@@ -76619,6 +76619,12 @@ function openFullscreenMap() {
             // Reset action lock
             cs._actionInProgress = false;
             
+            // [FIX FREEZE BUG] Vždy uvolni turn lock v useAction — KAŽDÁ cesta ukončení tahu
+            // projde přes tuto funkci (stun, imobilizace, normální konec, error recovery).
+            // Bez tohoto se boj zasekne když runa MRÁZ zmrazí nepřítele, protože
+            // omráčené jednotky přeskočí tah přes useAction() místo _finishAITurn().
+            cs._turnLocked = false;
+            
             // Kondenzuj log po dokončení tahu (akce = 0)
             if (unit.actionsLeft <= 0 && cs._turnLogStart !== undefined) {
                 _condenseTurnLog(cs, cs._turnLogStart, unit);
@@ -77991,6 +77997,7 @@ function openFullscreenMap() {
             
             // 🔮 RUNOVÁ SLOVA - speciální efekty po zásahu (starý boj)
             if (!isCompanion && typeof getRunewordBonuses === 'function' && cappedDamage > 0 && target.hp > 0) {
+                try {
                 const rwb = getRunewordBonuses();
                 // 🩸 Lifesteal
                 if (rwb.lifesteal > 0) {
@@ -78014,7 +78021,8 @@ function openFullscreenMap() {
                 }
                 // ⚡ Chain lightning
                 if (rwb.chainLightning > 0 && Math.random() < rwb.chainLightning) {
-                    const otherEnemies = cs.enemies.filter(e => e.alive && e !== target);
+                    // [FIX] cs.enemies neexistuje v grid combat systému — použij cs.units
+                    const otherEnemies = (cs.units || []).filter(u => u.team === 'enemy' && u.alive && u !== target);
                     if (otherEnemies.length > 0) {
                         const chainTarget = otherEnemies[Math.floor(Math.random() * otherEnemies.length)];
                         const chainDmg = rwb.lightningDmg || 12;
@@ -78030,6 +78038,7 @@ function openFullscreenMap() {
                     if (target.hp <= 0) { target.alive = false; target.hp = 0; }
                     cs.log.push(`🌑 Runa TEMNO: stínový úder +${shadowDmg}!`);
                 }
+                } catch(runeErr) { console.error('⚠️ Runeword efekt chyba:', runeErr); }
             }
             
             // Visual effect - screen shake pokud je hráč zasažen
@@ -93106,7 +93115,8 @@ function openFullscreenMap() {
                         // Získej aktuální stav strážců z bojového systému
                         const cs = window.combatState;
                         if (cs) {
-                            const remainingGuards = cs.enemies
+                            // [FIX] cs.enemies → cs.units pro kompatibilitu s grid combat
+                            const remainingGuards = (cs.units || cs.enemies || [])
                                 .filter(e => e.hp > 0 && e.isGuard)
                                 .map(e => ({
                                     type: e.guardType,
