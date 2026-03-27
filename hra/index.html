@@ -81409,7 +81409,14 @@ function openFullscreenMap() {
                         'bandita': ['bandit', 'bandita'],
                         'raider': ['raider', 'ájezd', 'nájezd'],
                         'dron': ['drone', 'dron'],
-                        'robot': ['robot']
+                        'robot': ['robot'],
+                        'zombie': ['zombie', 'zombi'],
+                        'vlk': ['wolf', 'vlk'],
+                        'voják': ['soldier', 'voják'],
+                        'pavouk': ['spider', 'pavouk'],
+                        'otrokář': ['slaver', 'otrokář'],
+                        'experiment': ['experiment'],
+                        'krysa': ['rat', 'krysa']
                     };
                     const matchTerms = bountyMap[target] || [target];
                     bountyMatch = matchTerms.some(term => eId.includes(term) || eName.includes(term));
@@ -109506,12 +109513,11 @@ function openFullscreenMap() {
             
             try {
                 // Načti data včetně treasury stats
-                const [mayorSnap, electionSnap, decisionsSnap, publicMoneySnap, mayorIncomeSnap, taxRateSnap] = await Promise.all([
+                const [mayorSnap, electionSnap, decisionsSnap, publicMoneySnap, taxRateSnap] = await Promise.all([
                     firebaseDB.ref('politics/mayor').once('value'),
                     firebaseDB.ref('politics/election').once('value'),
                     firebaseDB.ref('politics/decisions/active').once('value'),
                     firebaseDB.ref('politics/publicMoney').once('value'),
-                    firebaseDB.ref(`politics/mayorIncome/${getPlayerName()}`).once('value'),
                     firebaseDB.ref('politics/taxRate').once('value')
                 ]);
                 
@@ -109519,9 +109525,18 @@ function openFullscreenMap() {
                 const election = electionSnap.val() || {};
                 const activeDecision = decisionsSnap.val();
                 const publicMoney = publicMoneySnap.val() || 0;
-                const mayorIncome = mayorIncomeSnap.val() || 0;
                 const taxRate = taxRateSnap.val() || MAYOR_SYSTEM.taxation.defaultRate;
                 _cachedPublicMoney = publicMoney;
+                
+                // [FIX] Čti mayorIncome pod klíčem mayor.name (tak jak se zapisuje v půlnoční logice)
+                // Ne pod getPlayerName() které se může lišit v case/diakritice
+                let mayorIncome = 0;
+                if (mayor?.name) {
+                    try {
+                        const mayorIncomeSnap = await firebaseDB.ref(`politics/mayorIncome/${mayor.name}`).once('value');
+                        mayorIncome = mayorIncomeSnap.val() || 0;
+                    } catch(e) { console.error('Mayor income read error:', e); }
+                }
                 
                 // Aktualizuj globální proměnnou pro getElectionPhase
                 mayorElection = window.mayorElection = election;
@@ -111366,7 +111381,21 @@ function openFullscreenMap() {
         
         // Formulář pro bounty
         function showBountyForm() {
-            const enemies = ['Mutant', 'Ghúl', 'Bandita', 'Raider', 'Dron', 'Robot'];
+            const enemies = [
+                { value: 'Mutant', label: '👹 Mutant' },
+                { value: 'Ghúl', label: '👻 Ghúl' },
+                { value: 'Bandita', label: '🔫 Bandita' },
+                { value: 'Raider', label: '💀 Nájezdník' },
+                { value: 'Robot', label: '🤖 Robot' },
+                { value: 'Zombie', label: '🧟 Zombie' },
+                { value: 'Vlk', label: '🐺 Vlk' },
+                { value: 'Voják', label: '🎖️ Voják' },
+                { value: 'Pavouk', label: '🕷️ Pavouk' },
+                { value: 'Otrokář', label: '⛓️ Otrokář' },
+                { value: 'Experiment', label: '🧬 Experiment' },
+                { value: 'Krysa', label: '🐀 Krysa' },
+                { value: 'Dron', label: '📡 Dron' }
+            ];
             
             const html = `
                 <div style="padding: 1rem;">
@@ -111379,7 +111408,7 @@ function openFullscreenMap() {
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                         <label style="color: #888; font-size: 0.85rem;">Cílový nepřítel:</label>
                         <select id="bounty-target" style="width: 100%; background: #0d0d0d; border: 1px solid #333; border-radius: 4px; padding: 0.5rem; color: #fff; margin-top: 0.3rem;">
-                            ${enemies.map(e => `<option value="${e}">${e}</option>`).join('')}
+                            ${enemies.map(e => `<option value="${e.value}">${e.label}</option>`).join('')}
                         </select>
                     </div>
                     
@@ -113615,10 +113644,9 @@ function openFullscreenMap() {
                 // Vynuluj příjmy
                 await incomeRef.set(0);
                 
-                // Přidej hráči peníze
-                state.inv = state.inv || [];
-                state.char.money = (state.char.money || 0) + income;
-                saveGame();
+                // [FIX] Přidej hráči peníze správně přes addMoney (ne state.char.money)
+                addMoney(income);
+                saveGame(true);
                 
                 // [FIX] Zavři modal a obnov politický panel
                 closeModal();
@@ -114790,6 +114818,8 @@ function openFullscreenMap() {
                     await firebaseDB.ref('politics/election/candidates').remove();
                     // Smaž staré hlasy impeachmentu (nový šéf = čistý stůl)
                     await firebaseDB.ref('politics/impeachment/votes').remove();
+                    // [FIX] Smaž staré rozhodnutí předchozího šéfa
+                    await firebaseDB.ref('politics/decisions/active').remove();
                     
                     // Sestavení výsledků
                     const resultsText = Object.entries(voteCounts)
@@ -115101,6 +115131,8 @@ function openFullscreenMap() {
                     await firebaseDB.ref('politics/election/candidates').remove();
                     // Smaž staré hlasy impeachmentu (nový šéf = čistý stůl)
                     await firebaseDB.ref('politics/impeachment/votes').remove();
+                    // [FIX] Smaž staré rozhodnutí předchozího šéfa
+                    await firebaseDB.ref('politics/decisions/active').remove();
                     
                     // Sestavení výsledků pro chat
                     const resultsText = Object.entries(voteCounts)
@@ -116198,6 +116230,11 @@ function openFullscreenMap() {
                     votes: 0,
                     setByAdmin: true
                 });
+                
+                // [FIX] Smaž staré rozhodnutí předchozího šéfa
+                await firebaseDB.ref('politics/decisions/active').remove();
+                // Smaž staré hlasy impeachmentu
+                await firebaseDB.ref('politics/impeachment/votes').remove();
                 
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
