@@ -79631,6 +79631,7 @@ function openFullscreenMap() {
             }, 2000);
             // [FIX] Po skončení boje zkontroluj pendingRewards (world boss odměny atd.)
             setTimeout(() => {
+                _lastPendingRewardsCheck = 0; // Reset cooldown
                 if (typeof checkPendingRewards === 'function') checkPendingRewards();
             }, 5000);
             // [FIX] Po skončení boje zkontroluj odložený nájezd na osadu
@@ -111111,6 +111112,15 @@ function openFullscreenMap() {
                                 </div>
                             </div>
                         </div>
+                        <div style="background: #1a0a00; border: 1px solid #e65100; border-radius: 8px; padding: 0.75rem; cursor: pointer;" onclick="adminRetriggerRaidRewards()">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span style="font-size: 1.8rem;">🎁</span>
+                                <div>
+                                    <div style="color: #ff6d00; font-weight: bold;">Raid Odměny</div>
+                                    <div style="color: #888; font-size: 0.8rem;">Re-doručit odměny účastníkům raidu</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -112207,6 +112217,15 @@ function openFullscreenMap() {
                                         checkRaidVictoryFallback();
                                     }
                                 }
+                                
+                                // [FIX] Safety: Writer existuje ale rewards nezapsány >90s — writer crashnul, reset
+                                if (worldBossRaidData.defeated && worldBossRaidData.rewardWriter && !worldBossRaidData.offlineRewardsWritten && worldBossRaidData.defeatedAt) {
+                                    const sinceDefeated = Date.now() - worldBossRaidData.defeatedAt;
+                                    if (sinceDefeated > 90000) {
+                                        console.log('🐉 STALE WRITER: Writer', worldBossRaidData.rewardWriter, 'timed out after', Math.round(sinceDefeated/1000), 's — resetting...');
+                                        firebaseDB.ref('worldBossRaid/rewardWriter').remove().catch(e => console.warn('🔇', e?.message));
+                                    }
+                                }
                             } else {
                                 clearInterval(window._raidBannerInterval);
                                 window._raidBannerInterval = null;
@@ -112860,8 +112879,15 @@ function openFullscreenMap() {
             
             // Spusť checkPendingRewards po krátké prodlevě aby se pendingRewards stihly zapsat
             setTimeout(() => {
+                // [FIX] Resetuj cooldown aby checkPendingRewards proběhl i když se volal nedávno
+                _lastPendingRewardsCheck = 0;
                 if (typeof checkPendingRewards === 'function') checkPendingRewards();
             }, 8000);
+            // [FIX] Druhý pokus pro případ že writer ještě nepsal (čeká na fresh data)
+            setTimeout(() => {
+                _lastPendingRewardsCheck = 0;
+                if (typeof checkPendingRewards === 'function') checkPendingRewards();
+            }, 20000);
             
             // Cleanup raidu po 60s
             setTimeout(() => cleanupWorldBossRaid(raidData), 60000);
@@ -112961,7 +112987,7 @@ function openFullscreenMap() {
         
         // Admin: Re-trigger raid rewards pro všechny účastníky
         async function adminRetriggerRaidRewards() {
-            if (!isAdmin()) return;
+            if (!isAdmin() && !isStaff() && !isMayor()) { notifyWarning('Přístup odepřen', 'Pouze admin nebo šéf pustiny.'); return; }
             
             try {
                 const snap = await firebaseDB.ref('worldBossRaid').once('value');
@@ -113020,7 +113046,7 @@ function openFullscreenMap() {
                         <button class="btn" onclick="adminSendMissingRewards()" style="background: linear-gradient(135deg, #ff9800 0%, #e65100 100%); padding: 0.8rem;">
                             📨 Poslat odměny VŠEM kdo nedostali (přes notifikace)
                         </button>
-                        <button class="btn" onclick="showAdminPanel()" style="background: #555;">← Zpět</button>
+                        <button class="btn" onclick="closeModal()" style="background: #555;">← Zavřít</button>
                     </div>
                 `);
             } catch(e) {
@@ -113030,7 +113056,7 @@ function openFullscreenMap() {
         
         // Admin: Force retrigger own rewards
         async function adminForceRetriggerMyRewards() {
-            if (!isAdmin()) return;
+            if (!isAdmin() && !isStaff() && !isMayor()) return;
             try {
                 const snap = await firebaseDB.ref('worldBossRaid').once('value');
                 const data = snap.val();
@@ -113060,7 +113086,7 @@ function openFullscreenMap() {
         
         // Admin: Send missing rewards to all unclaimed participants via notifications
         async function adminSendMissingRewards() {
-            if (!isAdmin()) return;
+            if (!isAdmin() && !isStaff() && !isMayor()) return;
             try {
                 const snap = await firebaseDB.ref('worldBossRaid').once('value');
                 const data = snap.val();
@@ -113093,7 +113119,7 @@ function openFullscreenMap() {
                         xp: myXp,
                         item: randomItem ? { id: randomItem.id, name: randomItem.name, icon: randomItem.icon, count: 1 } : null,
                         reason: `🐉 Kompenzace za ${boss.name} raid (${Math.round(dmgPct * 100)}% DMG)`,
-                        from: ADMIN_NICK,
+                        from: getPlayerName(),
                         timestamp: Date.now(),
                         claimed: false
                     };
@@ -121091,6 +121117,10 @@ function openFullscreenMap() {
         window.adminShowPlayerDetail = adminShowPlayerDetail;
         window.adminSetPlayerMoney = adminSetPlayerMoney;
         window.executeAdminSetMoney = executeAdminSetMoney;
+        // Raid reward funkce (admin + šéf pustiny)
+        window.adminRetriggerRaidRewards = adminRetriggerRaidRewards;
+        window.adminForceRetriggerMyRewards = adminForceRetriggerMyRewards;
+        window.adminSendMissingRewards = adminSendMissingRewards;
         
         // Chat funkce
         window.showChatModal = showChatModal;
