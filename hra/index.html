@@ -124103,33 +124103,37 @@ async function showAIRadio() {
     if (!state.inv?.some(i => i.id === 'radio' || i.bonus === 'radio')) { notifyWarning('📻 Nemáš rádio', 'Najdi nebo kup rádio v obchodě.'); return; }
     showModal('📻 Pustinné Rádio', '<div style="text-align:center;padding:2rem"><div style="font-size:3rem">📻</div><p style="color:#888">*šum* ...ladím frekvenci...</p></div>', []);
     const c = getAICtx();
-    let radioCtx = `Den ${c.day}, ${c.tod}, počasí: ${c.zone} zóna.`;
-    // Zkus načíst reálná data z Firebase
+    
+    // Zkus načíst sdílené vysílání z Firebase
+    let news = null;
     try {
-        if (firebaseDB) {
-            const chatSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').limitToLast(3).once('value');
-            const msgs = []; chatSnap.forEach(s => { const m = s.val(); if (m?.system) msgs.push(m.text?.substring(0,80)); });
-            if (msgs.length > 0) radioCtx += ' Poslední události: ' + msgs.join('. ');
-            const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
-            const mayor = mayorSnap.val();
-            if (mayor?.name) radioCtx += ` Šéf Pustiny: ${mayor.name}.`;
+        const snap = await firebaseDB.ref('shared/radio').once('value');
+        const data = snap.val();
+        if (data?.text && Date.now() - (data.timestamp||0) < 21600000) { // 6h
+            news = data.text;
         }
     } catch(e) {}
-    const news = await AI_ENGINE.generate(`Jsi hlasatel post-apokalyptického rádia "Radio Pustina" v české RPG hře. Vysílej zpravodajství ve stylu sarkastického moderátora.
-
-FORMÁT VYSÍLÁNÍ (dodržuj přesně):
-1. Úvodní znělka: "Tady Radio Pustina, den ${c.day}. Ladíte jedinou frekvenci, která vás ještě nezabije."
-2. ZPRÁVY (3-4 krátké zprávy o dění v pustině — vymysli dramatické události: nájezdy, objevy, smrtelné zóny, NPC aktivity)
-3. POČASÍ: popis počasí v pustině (radiační bouře, kyselinový déšť, jasno s UV indexem 500...)
-4. TIP DNE: praktická rada pro přeživší (kam jít, co si dát pozor, jaký NPC navštívit)
-5. VAROVÁNÍ: nebezpečí v konkrétní oblasti
-6. Závěr: "Tady Radio Pustina. Zůstaňte naživu... nebo aspoň zemřete se stylem."
-
-KONTEXT:
-${radioCtx}
-Hráč "${c.name}" lvl ${c.lvl}, lokace "${c.loc}" (${c.zone} zóna), ${c.tod}.
-
-Piš česky, vtipně, sarkasticky. Každou sekci odděl novým řádkem. Celkem MINIMÁLNĚ 10 vět. MUSÍŠ napsat celé vysílání, ne jen začátek!`, 'Vysílej zprávy', null, 1500);
+    
+    // Pokud není nebo je starší, vygeneruj nové
+    if (!news) {
+        let radioCtx = `Den ${c.day}, ${c.tod}.`;
+        try { if (firebaseDB) {
+            const chatSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').limitToLast(3).once('value');
+            const msgs = []; chatSnap.forEach(s => { const m = s.val(); if (m?.system) msgs.push(m.text?.substring(0,80)); });
+            if (msgs.length > 0) radioCtx += ' Události: ' + msgs.join('. ');
+            const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
+            if (mayorSnap.val()?.name) radioCtx += ` Šéf: ${mayorSnap.val().name}.`;
+        }} catch(e) {}
+        
+        news = await AI_ENGINE.generate(`Jsi hlasatel post-apokalyptického rádia "Radio Pustina". Vysílej zpravodajství ve stylu sarkastického moderátora.
+FORMÁT: 1) Úvodní znělka 2) 3-4 zprávy 3) Počasí 4) Tip dne 5) Varování 6) Závěr
+Kontext: ${radioCtx}. Piš česky, vtipně. MINIMÁLNĚ 10 vět!`, 'Vysílej', null, 1000);
+        
+        // Ulož do Firebase pro ostatní
+        if (news && firebaseDB) {
+            try { await firebaseDB.ref('shared/radio').set({ text: news, timestamp: Date.now(), day: c.day }); } catch(e) {}
+        }
+    }
     if (news) {
         showModal('📻 Pustinné Rádio', `
             <div style="background:#0a0a0a;border:2px solid #ff9800;border-radius:12px;padding:1.5rem;text-align:center">
@@ -124651,21 +124655,42 @@ window.replyToNPC=replyToNPC;window.sendNpcReply=sendNpcReply;
 async function showSettlementBoard() {
     if (!AI_ENGINE.enabled) { notifyWarning('AI off',''); return; }
     showModal('📰 Nástěnka', '<div style="text-align:center;padding:2rem"><p style="color:#888">Čtu nástěnku...</p></div>');
-    let ctx = `Den ${state.time?.days||1}.`;
-    try { if (firebaseDB) {
-        const mSnap = await firebaseDB.ref('politics/mayor').once('value');
-        if (mSnap.val()?.name) ctx += ` Šéf: ${mSnap.val().name}.`;
-        const cSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').limitToLast(5).once('value');
-        const sysM = []; cSnap.forEach(s => { const m=s.val(); if(m?.system) sysM.push(m.text?.substring(0,60)); });
-        if (sysM.length) ctx += ' Události: ' + sysM.join('. ');
-    }} catch(e){}
-    ctx += ` Obyvatel osady: ${state.settlement?.settlers?.length||0}. Budovy: ${state.settlement?.buildings?.length||0}.`;
-    const board = await AI_ENGINE.generate(`Jsi správce nástěnky v post-apokalyptické osadě. Napiš denní vývěsku (5-8 krátkých bodů).
+    
+    // Zkus načíst sdílenou nástěnku z Firebase
+    let board = null;
+    let boardDay = 0;
+    try {
+        const snap = await firebaseDB.ref('shared/board').once('value');
+        const data = snap.val();
+        if (data?.text && Date.now() - (data.timestamp||0) < 21600000) { // 6h
+            board = data.text;
+            boardDay = data.day || 0;
+        }
+    } catch(e) {}
+    
+    // Pokud není nebo je starší než 6h, vygeneruj novou
+    if (!board) {
+        let ctx = `Den ${state.time?.days||1}.`;
+        try { if (firebaseDB) {
+            const mSnap = await firebaseDB.ref('politics/mayor').once('value');
+            if (mSnap.val()?.name) ctx += ` Šéf: ${mSnap.val().name}.`;
+            const cSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').limitToLast(5).once('value');
+            const sysM = []; cSnap.forEach(s => { const m=s.val(); if(m?.system) sysM.push(m.text?.substring(0,60)); });
+            if (sysM.length) ctx += ' Události: ' + sysM.join('. ');
+        }} catch(e){}
+        board = await AI_ENGINE.generateFast(`Jsi správce nástěnky v post-apokalyptické osadě. Napiš denní vývěsku (5-8 krátkých bodů).
 Formát: číslo) zpráva. Obsahuj: počasí, varování, nabídky, události, tipy, vtipy. Kontext: ${ctx}
-Piš česky, stručně, jako reálná nástěnka v osadě.`, 'Nástěnka', `board_${state.time?.days}`, 600);
+Piš česky, stručně, jako reálná nástěnka v osadě.`, 'Nástěnka', null, 600);
+        boardDay = state.time?.days || 0;
+        // Ulož do Firebase pro ostatní hráče
+        if (board && firebaseDB) {
+            try { await firebaseDB.ref('shared/board').set({ text: board, day: boardDay, timestamp: Date.now() }); } catch(e) {}
+        }
+    }
+    
     if (board) {
         showModal('📰 Nástěnka osady', `<div style="background:#0a0a0a;border:2px solid #8bc34a;border-radius:10px;padding:1rem">
-            <div style="text-align:center;color:#8bc34a;font-weight:bold;letter-spacing:2px;margin-bottom:0.8rem">📰 DENNÍ VÝVĚSKA — Den ${state.time?.days||'?'}</div>
+            <div style="text-align:center;color:#8bc34a;font-weight:bold;letter-spacing:2px;margin-bottom:0.8rem">📰 DENNÍ VÝVĚSKA — Den ${boardDay||'?'}</div>
             <div style="color:#ccc;font-size:0.85rem;line-height:1.8;white-space:pre-wrap">${escapeHtml(board)}</div>
         </div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);
     } else closeModal();
