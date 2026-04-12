@@ -146,6 +146,10 @@
             overscroll-behavior-y: none;
             overscroll-behavior: none;
         }
+        html {
+            height: 100.5%;
+            overflow-y: scroll;
+        }
         
         /* Pro PWA - zakázat pull-to-refresh úplně */
         html {
@@ -35210,10 +35214,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.time) state.time = { days: 1, hours: 8, mins: 0 };
             if (!state.world) state.world = { currentLocation: 'shelter', visitedLocations: ['shelter'] };
             if (!state.settlement) state.settlement = { settlers: [], buildings: [], activeQuests: [] };
+            if (!state.settlement.settlers) state.settlement.settlers = [];
+            if (!state.settlement.buildings) state.settlement.buildings = [];
             if (!state.equipped) state.equipped = {};
             if (!state.resources) state.resources = {};
             if (!state.achievements) state.achievements = [];
             if (!state.activeRunewords) state.activeRunewords = [];
+            if (!state.mainQuest) state.mainQuest = { step: 0, npcMet: [], questProgress: {} };
+            if (!state.npcQuests) state.npcQuests = {};
+            if (!state.discoveredSecrets) state.discoveredSecrets = [];
             if (state.money === undefined) state.money = 0;
             // [FIX] Patch companion ikony
             try { if (typeof patchCompanionIcons === 'function') patchCompanionIcons(); } catch(e) {}
@@ -37259,7 +37268,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 <!-- MULTIPLAYER TAB -->
                 <div class="tab ${state.activeTab === 'multiplayer' ? 'active' : ''}" id="tabMultiplayer">
-                    ${renderMultiplayerTab()}
+                    ${(function(){try{return renderMultiplayerTab();}catch(e){console.error('Multiplayer tab error:',e);return '<div style="padding:1rem;color:#ff6b6b">Chyba v online záložce: '+escapeHtml(String(e.message))+'</div>';}})()}
                 </div>
             `;
             
@@ -37283,7 +37292,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } catch (error) {
                 console.error('❌ renderGame error:', error);
-                document.getElementById('main').innerHTML = '<div style="padding: 2rem; color: #ff6b6b;"><h2>Chyba při renderování</h2><pre>' + escapeHtml(error.message) + '</pre></div>';
+                document.getElementById('main').innerHTML = `<div style="padding: 2rem; color: #ff6b6b; text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">⚠️</div>
+                    <h2>Chyba při renderování</h2>
+                    <pre style="color: #888; font-size: 0.8rem; max-width: 90%; overflow-x: auto; margin: 1rem auto; text-align: left; background: #111; padding: 0.5rem; border-radius: 6px;">${escapeHtml(String(error?.message || error || 'Neznámá chyba'))}\n${escapeHtml(String(error?.stack || '').substring(0, 300))}</pre>
+                    <p style="color: #888; font-size: 0.85rem;">Zkus jedno z těchto řešení:</p>
+                    <button onclick="location.reload()" style="display:block;width:80%;margin:0.5rem auto;padding:0.7rem;background:#333;border:1px solid #555;border-radius:6px;color:#fff;cursor:pointer;font-family:inherit;">🔄 Obnovit stránku</button>
+                    <button onclick="if(confirm('Opravdu smazat uloženou hru? Nelze vrátit!')){localStorage.clear();location.reload()}" style="display:block;width:80%;margin:0.5rem auto;padding:0.7rem;background:#4a1a1a;border:1px solid #ff4444;border-radius:6px;color:#ff6b6b;cursor:pointer;font-family:inherit;">🗑️ Smazat uloženou hru a začít znovu</button>
+                    <p style="color: #555; font-size: 0.7rem; margin-top: 1rem;">Pošli screenshot této chyby adminovi.</p>
+                </div>`;
             }
         }
         
@@ -37810,35 +37827,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Globální ochrana: blokuj pull-to-refresh VŽDY (WebView/APK/PWA)
         (function() {
+            // Trick: html je 100.5% vysoké. Drž scrollTop na 1px.
+            // WebView kontroluje canChildScrollUp() → scrollTop > 0 → žádný refresh.
+            var keepScrolled = function() { if(document.documentElement.scrollTop < 1) document.documentElement.scrollTop = 1; };
+            keepScrolled();
+            setTimeout(keepScrolled, 50);
+            setTimeout(keepScrolled, 200);
+            document.addEventListener('scroll', keepScrolled, {passive:true});
+            
+            // JS touch prevention jako záloha
             var _startY = 0;
-            var _startX = 0;
             document.addEventListener('touchstart', function(e) {
                 _startY = e.touches[0].pageY;
-                _startX = e.touches[0].pageX;
             }, { passive: true });
             document.addEventListener('touchmove', function(e) {
-                var y = e.touches[0].pageY;
-                var x = e.touches[0].pageX;
-                var dy = y - _startY;
-                var dx = Math.abs(x - _startX);
-                
-                // Jen vertikální pull-down (ne horizontální swipe)
-                if (dy <= 0 || dx > dy) return;
-                
-                // Hledej scrollovatelný element pod prstem
-                var t = e.target;
-                while (t && t !== document.body) {
-                    var cs = window.getComputedStyle(t);
-                    var canScroll = (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && t.scrollHeight > t.clientHeight + 5;
-                    if (canScroll && t.scrollTop > 0) {
-                        // Jsme uvnitř scrollovatelného elementu co není nahoře → normální scroll
-                        return;
+                var dy = e.touches[0].pageY - _startY;
+                if (dy > 0) {
+                    // Hledej scrollovatelný element
+                    var t = e.target;
+                    while (t && t !== document.body) {
+                        var cs = window.getComputedStyle(t);
+                        var canScroll = (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && t.scrollHeight > t.clientHeight + 5;
+                        if (canScroll && t.scrollTop > 1) return;
+                        t = t.parentElement;
                     }
-                    t = t.parentElement;
+                    e.preventDefault();
                 }
-                
-                // Žádný scrollovatelný element nebo všechny na vrchu → blokuj pull-to-refresh
-                e.preventDefault();
             }, { passive: false });
         })();
         
