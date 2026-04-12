@@ -812,6 +812,9 @@
             width: 95%;
             max-height: 85vh;
             overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;
+            overflow-y: auto;
             overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
@@ -37828,7 +37831,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Globální ochrana: blokuj pull-to-refresh VŽDY (WebView/APK/PWA)
         (function() {
             // Trick: html je 100.5% vysoké. Drž scrollTop na 1px.
-            // WebView kontroluje canChildScrollUp() → scrollTop > 0 → žádný refresh.
             var keepScrolled = function() { if(document.documentElement.scrollTop < 1) document.documentElement.scrollTop = 1; };
             keepScrolled();
             setTimeout(keepScrolled, 50);
@@ -37842,17 +37844,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }, { passive: true });
             document.addEventListener('touchmove', function(e) {
                 var dy = e.touches[0].pageY - _startY;
-                if (dy > 0) {
-                    // Hledej scrollovatelný element
-                    var t = e.target;
-                    while (t && t !== document.body) {
-                        var cs = window.getComputedStyle(t);
-                        var canScroll = (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && t.scrollHeight > t.clientHeight + 5;
-                        if (canScroll && t.scrollTop > 1) return;
-                        t = t.parentElement;
+                if (dy <= 0) return; // scroll dolů = OK
+                
+                // Hledej scrollovatelný element (včetně modálů)
+                var t = e.target;
+                while (t && t !== document.body && t !== document.documentElement) {
+                    var cs = window.getComputedStyle(t);
+                    var oy = cs.overflowY;
+                    var canScroll = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && t.scrollHeight > t.clientHeight + 2;
+                    if (canScroll) {
+                        if (t.scrollTop > 0) return; // Není na vrchu → normální scroll
+                        // Je na vrchu ale má kam scrollovat dolů → povol scroll nahoru jen pokud není úplně nahoře
+                        break;
                     }
-                    e.preventDefault();
+                    // Modal detekce — pokud jsme v modalu, povol scroll
+                    if (t.classList && (t.classList.contains('modal') || t.classList.contains('show') || t.id === 'modal' || t.id === 'postApoModal' || t.id === 'npcModalOverlay')) {
+                        return; // Uvnitř modalu → normální scroll
+                    }
+                    t = t.parentElement;
                 }
+                
+                e.preventDefault();
             }, { passive: false });
         })();
         
@@ -123993,7 +124005,7 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
 // ======== 🤖 AI ENGINE ========
 const AI_ENGINE={geminiKey:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:30,lastReset:Date.now(),enabled:false,
 async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.geminiKey)this.geminiKey=c.geminiKey;if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.model=c.model||this.model;this.maxReq=c.maxReqPerHour||30;this.enabled=!!(this.geminiKey||this.claudeProxy);console.log('🤖 AI:',this.enabled?'ON':'OFF',this.model);}}catch(e){console.error('🤖 AI init error:',e);}},
-_rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset=Date.now();}if(this.requestCount>=this.maxReq)return false;this.requestCount++;return true;},
+_rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset=Date.now();}if(this.requestCount>=this.maxReq){if(!this._rateLimitNotified||Date.now()-this._rateLimitNotified>300000){this._rateLimitNotified=Date.now();if(typeof notifyInfo==='function')notifyInfo('🤖 AI odpočívá','Limit '+this.maxReq+' req/h vyčerpán. Obnoví se za '+Math.ceil((3600000-(Date.now()-this.lastReset))/60000)+' min.');}return false;}this.requestCount++;return true;},
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
 _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>50)this.cache.delete(this.cache.keys().next().value);},
 async callGemini(sys,msg,maxTok){if(!this.geminiKey)return null;try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':this.geminiKey},body:JSON.stringify({system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]})});if(!r.ok){console.error('Gemini HTTP:',r.status,await r.text().catch(()=>''));return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');return null;}return text;}catch(e){console.error('Gemini:',e);return null;}},
@@ -124003,7 +124015,7 @@ async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())
 let r=null;
 if(this.claudeProxy)r=await this.callClaude(sys,msg,maxTok);
 if(!r&&this.geminiKey)r=await this.callGemini(sys,msg,maxTok);
-if(r&&ck)this._sc(ck,r);return r;},
+if(r&&ck)this._sc(ck,r);if(!r&&!this._apiFailNotified||!r&&Date.now()-(this._apiFailNotified||0)>300000){this._apiFailNotified=Date.now();if(typeof notifyInfo==='function'&&this.requestCount>2)notifyInfo('🤖 AI nedostupná','Servery neodpovídají. Hra pokračuje bez AI.');}return r;},
 // Gemini primární (levné features), Claude fallback
 async generateFast(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
 let r=null;
