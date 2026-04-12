@@ -63280,7 +63280,7 @@ function openFullscreenMap() {
             if (typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
                 const _npcRole = typeof NPC_GAME_ROLES !== 'undefined' ? NPC_GAME_ROLES[npcId] : '';
                 const _c = typeof getAICtx === 'function' ? getAICtx() : {};
-                AI_ENGINE.generate(`Jsi ${npc.name}. ${_npcRole}
+                AI_ENGINE.generateFast(`Jsi ${npc.name}. ${_npcRole}
 Co právě děláš? Napiš JEDNU krátkou větu (max 10 slov) popisující tvou aktuální aktivitu.
 Příklady: "Třídí byliny na stole", "Brousí čepel meče", "Pozoruje oblohu", "Kontroluje zásoby".
 Důvěra hráče: ${relation.trust||0}. ${_c.tod==='noc'?'Je noc.':'Je den.'} Den ${_c.day||1}.
@@ -123965,7 +123965,7 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
 })();
 
 // ======== 🤖 AI ENGINE ========
-const AI_ENGINE={geminiKey:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:300000,requestCount:0,maxReq:30,lastReset:Date.now(),enabled:false,
+const AI_ENGINE={geminiKey:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:30,lastReset:Date.now(),enabled:false,
 async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.geminiKey)this.geminiKey=c.geminiKey;if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.model=c.model||this.model;this.maxReq=c.maxReqPerHour||30;this.enabled=!!(this.geminiKey||this.claudeProxy);console.log('🤖 AI:',this.enabled?'ON':'OFF',this.model);}}catch(e){console.error('🤖 AI init error:',e);}},
 _rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset=Date.now();}if(this.requestCount>=this.maxReq)return false;this.requestCount++;return true;},
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
@@ -123973,10 +123973,16 @@ _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>50)this.cache.del
 async callGemini(sys,msg,maxTok){if(!this.geminiKey)return null;try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':this.geminiKey},body:JSON.stringify({system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]})});if(!r.ok){console.error('Gemini HTTP:',r.status,await r.text().catch(()=>''));return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');return null;}return text;}catch(e){console.error('Gemini:',e);return null;}},
 async callClaude(sys,msg,maxTok){if(!this.claudeProxy)return null;try{const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});if(!r.ok){console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){console.error('Claude:',e);return null;}},
 async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
-// Claude primární (lepší s fikcí), Gemini fallback
+// Claude primární pro kvalitu, Gemini fallback
 let r=null;
 if(this.claudeProxy)r=await this.callClaude(sys,msg,maxTok);
 if(!r&&this.geminiKey)r=await this.callGemini(sys,msg,maxTok);
+if(r&&ck)this._sc(ck,r);return r;},
+// Gemini primární (levné features), Claude fallback
+async generateFast(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
+let r=null;
+if(this.geminiKey)r=await this.callGemini(sys,msg,maxTok);
+if(!r&&this.claudeProxy)r=await this.callClaude(sys,msg,maxTok);
 if(r&&ck)this._sc(ck,r);return r;}
 };
 const AI_BASE=`Jsi AI v české post-apokalyptické RPG "Poslední Přeživší" (posledniprezivsi.cz). Odpovídej ČESKY, drsným stylem pustiny. Nikdy nezmiňuj že jsi AI. Délku odpovědi urči podle dalších instrukcí — pokud není řečeno jinak, piš 3-5 vět.
@@ -124055,7 +124061,7 @@ Zbraň: ${c.weapon}. Zbroj: ${c.armor}. ${c.inv} věcí v inventáři.
 Lokace: "${c.loc}", ${c.tod}, den ${c.day}. Zabití: ${c.kills}. Questy: ${c.quests}.
 ${c.comp>0?c.comp+' společníků.':'Je sám.'}
 ${sample?'Inspiruj se stylem (NEKOPÍRUJ): '+sample:''}
-Odpověz 3-5 větami jako ${npc.name}. Reaguj na konkrétní téma. Pokud se ptá na služby, řekni co nabízíš a za jakých podmínek. Buď konkrétní a zajímavý, NIKDY neodpovídej jednou větou.`,topic||'Pozdrav',`npc_${npcId}_${topic}_${Math.floor(trust/25)}`,500);}async function aiGameMaster(ev,ex){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generate(`${AI_BASE}\nJsi vypravěč. Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}" — ${c.locDesc}. ${c.zone} zóna, ${c.tod}, den ${c.day}. ${c.comp>0?c.comp+' společníků.':'Sám.'} ${ex||''}\n2-3 věty co vidí/slyší/cítí.`,ev,`gm_${ev}_${c.loc}_${c.tod}`);}
+Odpověz 3-5 větami jako ${npc.name}. Reaguj na konkrétní téma. Pokud se ptá na služby, řekni co nabízíš a za jakých podmínek. Buď konkrétní a zajímavý, NIKDY neodpovídej jednou větou.`,topic||'Pozdrav',`npc_${npcId}_${topic}_${Math.floor(trust/25)}`,500);}async function aiGameMaster(ev,ex){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generateFast(`Jsi vypravěč. Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}" — ${c.locDesc}. ${c.zone} zóna, ${c.tod}, den ${c.day}. ${c.comp>0?c.comp+' společníků.':'Sám.'} ${ex||''}\n2-3 věty co vidí/slyší/cítí.`,ev,`gm_${ev}_${c.loc}_${c.tod}`);}
 let _aiHist=[];
 async function aiCompanionChat(msg){if(!AI_ENGINE.enabled)return null;const c=getAICtx();const r=await AI_ENGINE.generate(`${AI_BASE}
 Jsi "Průvodce" — tajemný hlas v hlavě přeživšího. Možná halucinace z radiace, možná něco víc. Pomáháš přežít. Občas sarkastický, ale užitečný.
@@ -124673,7 +124679,7 @@ async function aiGenerateEpitaph() {
     if (window._epitaphGenerated) return; // Jen 1x per session
     window._epitaphGenerated = true;
     const c = getAICtx();
-    const epitaph = await AI_ENGINE.generate(`Napiš krátký epitaf (1-2 věty) na náhrobek přeživšího.
+    const epitaph = await AI_ENGINE.generateFast(`Napiš krátký epitaf (1-2 věty) na náhrobek přeživšího.
 "${c.name}", level ${c.lvl}, přežil ${c.day} dní. Zabití: ${c.kills}. Třída: ${c.cls||'přeživší'}.
 Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině.`, 'Epitaf', null, 150);
     if (epitaph && firebaseDB) {
@@ -124729,7 +124735,7 @@ async function aiNpcLetter() {
     const trust = state.npcRelations?.[npc.id]?.trust || 0;
     if (trust < 20) return; // Jen pokud NPC hráče zná
     
-    const letter = await AI_ENGINE.generate(`Jsi NPC "${npc.name}" (${npc.style}). Napiš krátký dopis (2-3 věty) hráči "${c.name}".
+    const letter = await AI_ENGINE.generateFast(`Jsi NPC "${npc.name}" (${npc.style}). Napiš krátký dopis (2-3 věty) hráči "${c.name}".
 Důvěra: ${trust}. ${trust>50?'Znáte se dobře.':'Znáte se letmo.'}
 Důvod dopisu: nabídka, varování, prosba, informace nebo pozvání. Piš přirozeně, česky, ve stylu NPC.
 Konči podpisem: — ${npc.name}`, 'Dopis', null, 300);
@@ -124823,7 +124829,7 @@ function showChronicle() {
 async function aiAchievementStory(achName, achDesc) {
     if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
-    return await AI_ENGINE.generate(`Napiš 2 věty o tom jak přeživší "${c.name}" dosáhl achievementu "${achName}" (${achDesc}).
+    return await AI_ENGINE.generateFast(`Napiš 2 věty o tom jak přeživší "${c.name}" dosáhl achievementu "${achName}" (${achDesc}).
 Styl: epický, krátký, jako zápis v kronice hrdinů. Česky.`, 'Achievement', `ach_${achName}`, 150);
 }
 
@@ -124954,7 +124960,7 @@ setInterval(async () => {
     if (now - _lastUserActivity > 600000) return;
     
     // 💬 SPOLEČNÍK MLUVÍ (každých 5 min)
-    if (now - _lastCompanionComment > 300000 && state.companions?.length > 0 && !state.isSleeping && !window.combatState) {
+    if (now - _lastCompanionComment > 3600000 && state.companions?.length > 0 && !state.isSleeping && !window.combatState) {
         const alive = state.companions.filter(c => !c.isDead);
         if (alive.length > 0) {
             const comp = alive[Math.floor(Math.random() * alive.length)];
@@ -125013,7 +125019,7 @@ setInterval(async () => {
         const topics = ['kdo je lepší vůdce','zda je Kory nebezpečný','kvalita zbraní','počasí v pustině','kdo přežije nejdéle','jestli existuje lék na radiaci','co je za horizontem','zda jsou mutanti inteligentní'];
         const topic = topics[Math.floor(Math.random() * topics.length)];
         
-        const msg1 = await AI_ENGINE.generate(`Jsi NPC "${npc1.name}" (${npc1.style}). Napiš zprávu do chatu kde oslovíš "${npc2.name}" na téma: ${topic}. 1-2 věty, česky, v charakteru. Bez uvozovek.`, 'NPC conv', null, 200);
+        const msg1 = await AI_ENGINE.generateFast(`Jsi NPC "${npc1.name}" (${npc1.style}). Napiš zprávu do chatu kde oslovíš "${npc2.name}" na téma: ${topic}. 1-2 věty, česky, v charakteru. Bez uvozovek.`, 'NPC conv', null, 200);
         
         if (msg1 && firebaseDB) {
             try {
@@ -125022,7 +125028,7 @@ setInterval(async () => {
                 // Druhý NPC odpoví za 3-8 sekund
                 await new Promise(r => setTimeout(r, 3000 + Math.random() * 5000));
                 
-                const msg2 = await AI_ENGINE.generate(`Jsi NPC "${npc2.name}" (${npc2.style}). "${npc1.name}" ti napsal v chatu: "${msg1.substring(0,100)}"
+                const msg2 = await AI_ENGINE.generateFast(`Jsi NPC "${npc2.name}" (${npc2.style}). "${npc1.name}" ti napsal v chatu: "${msg1.substring(0,100)}"
 Odpověz 1-2 větami. Můžeš souhlasit, nesouhlasit, hádat se, vtipkovat. Česky, v charakteru. Bez uvozovek.`, 'NPC conv reply', null, 200);
                 
                 if (msg2) {
@@ -125035,7 +125041,7 @@ Odpověz 1-2 větami. Můžeš souhlasit, nesouhlasit, hádat se, vtipkovat. Če
         const npc = npcAuthors[Math.floor(Math.random() * npcAuthors.length)];
     const c = getAICtx();
     
-    const msg = await AI_ENGINE.generate(`Jsi NPC "${npc.name}" v post-apokalyptické RPG hře. Styl: ${npc.style}.
+    const msg = await AI_ENGINE.generateFast(`Jsi NPC "${npc.name}" v post-apokalyptické RPG hře. Styl: ${npc.style}.
 Napiš zprávu do veřejného chatu hry (2-4 věty). Jako by to NPC napsal ostatním přeživším.
 Příklady: varování před nebezpečím, tip kam jít, nabídka služeb, vtipná poznámka, reakce na události, hledání něčeho, stížnost, pověst o bossech, vzpomínka na minulost.
 Den ${c.day}, ${c.tod}. Piš česky, přirozeně, v charakteru NPC. Bez uvozovek. Buď zajímavý.`, 'NPC chat', null, 400);
