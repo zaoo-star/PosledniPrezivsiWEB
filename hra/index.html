@@ -31847,6 +31847,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <span class="tab-icon">🏛️</span>
                         ${'Frakce'}
                     </div>
+                    <div class="quest-tab" onclick="switchQuestTab('ai')" id="tab-btn-ai">
+                        <span class="tab-icon">🤖</span>
+                        AI <span style="color: #9c27b0;">${(state.aiQuests||[]).filter(q=>!q.completed).length > 0 ? '(' + (state.aiQuests||[]).filter(q=>!q.completed).length + ')' : ''}</span>
+                    </div>
                 </div>
                 
                 <!-- DENNÍ ÚKOLY -->
@@ -32247,6 +32251,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             '<div style="margin-top: 0.5rem; padding: 0.3rem; background: #0a0a0a; border-radius: 3px; text-align: center;"><span style="color: #ff9800; font-size: 0.8rem;">📌 Aktivní: ' + (NPC_QUESTS[state.activeQuest.questId]?.name || 'Quest') + '</span></div>'
                         : ''}
                     </div>
+                </div>
+                
+                <!-- AI QUESTY -->
+                <div class="quest-content" id="quest-ai">
+                    ${(state.aiQuests||[]).length > 0 ? 
+                        (state.aiQuests||[]).map(function(q, i) {
+                            var prog = typeof getAIQuestProgress === 'function' ? getAIQuestProgress(q) : { done: false, current: 0, target: 1, text: '???', pct: 0 };
+                            return '<div class="quest-card' + (q.completed ? ' completed' : prog.done ? ' active-quest' : '') + '">' +
+                                '<div style="display: flex; align-items: center; gap: 0.6rem;">' +
+                                    '<span style="font-size: 1.3rem;">📜</span>' +
+                                    '<div style="flex: 1;">' +
+                                        '<div style="font-weight: bold; color: ' + (q.completed ? '#8bc34a' : '#ce93d8') + '; font-size: 0.9rem;">' + escapeHtml(q.name) + '</div>' +
+                                        '<div style="font-size: 0.75rem; color: #888;">' + escapeHtml(q.desc).substring(0, 80) + '</div>' +
+                                        '<div style="font-size: 0.8rem; color: #ff9800; margin-top: 0.2rem;">🎯 ' + escapeHtml(prog.text) + '</div>' +
+                                    '</div>' +
+                                    '<span style="font-size: 1.2rem;">' + (q.completed ? '✅' : prog.done ? '🎯' : '⏳') + '</span>' +
+                                '</div>' +
+                                (!q.completed ? '<div style="margin-top: 0.4rem;"><div style="height: 4px; background: #0a0a0a; border-radius: 2px; overflow: hidden;"><div style="height: 100%; width: ' + prog.pct + '%; background: ' + (prog.done ? '#4caf50' : '#9c27b0') + ';"></div></div><div style="text-align: right; font-size: 0.65rem; color: #666;">' + prog.current + '/' + prog.target + '</div></div>' : '') +
+                                (q.completed ? '<button class="btn" onclick="claimAIQuest(' + i + ')" style="width:100%;margin-top:0.3rem;background:#4caf50;font-size:0.8rem">🎁 Vyzvednout</button>' : 
+                                 prog.done ? '<button class="btn" onclick="completeAIQuest(' + i + ')" style="width:100%;margin-top:0.3rem;background:#ff9800;font-size:0.8rem">✅ Odevzdat</button>' : '') +
+                            '</div>';
+                        }).join('')
+                    : '<div style="text-align:center;padding:1rem;color:#555">Žádné AI questy. Vygeneruj nový!</div>'}
+                    <button class="btn" onclick="closeModal();setTimeout(showAIQuestPanel,100)" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#9c27b0,#6a1b9a);font-size:0.85rem">🎲 Generovat nový AI quest</button>
                 </div>
                 
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">${t('ui', 'close')}</button>
@@ -39229,17 +39257,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (state.aiQuests?.length > 0) {
                     state.aiQuests.forEach(aq => {
                         if (!aq.completed) {
-                            const canComplete = !aq.canCompleteAfter || Date.now() >= aq.canCompleteAfter;
-                            const minsLeft = aq.canCompleteAfter ? Math.max(0, Math.ceil((aq.canCompleteAfter - Date.now()) / 60000)) : 0;
+                            const prog = typeof getAIQuestProgress === 'function' ? getAIQuestProgress(aq) : { done: false, current: 0, target: 1, text: aq.goal || '???' };
                             activeQuests.push({
                                 type: 'ai_quest',
                                 icon: '📜',
                                 name: aq.name,
                                 npcName: aq.npc || null,
                                 location: null,
-                                color: canComplete ? '#ff9800' : '#9c27b0',
-                                extra: canComplete ? '🎯 ' + (aq.goal || '').substring(0, 40) : `⏳ ${minsLeft}m`,
-                                isQuestComplete: canComplete
+                                color: prog.done ? '#4caf50' : '#9c27b0',
+                                extra: `${prog.done ? '✅' : '🎯'} ${prog.current}/${prog.target} ${prog.text.substring(0, 30)}`,
+                                isQuestComplete: prog.done
                             });
                         }
                     });
@@ -124509,119 +124536,201 @@ Rady musí být KONKRÉTNÍ pro tuto hru — jaký atribut zvýšit, jakou zbra�
     } catch(e) { clearTimeout(_buildTimeout); window._buildAdvisorRunning = false; notifyWarning('Chyba', e.message || 'AI selhala'); closeModal(); }
 }
 
-// 📜 AI QUEST SYSTEM - reálné questy s odměnami
+// 📜 AI QUEST SYSTEM - reálné questy s TRACKINGEM
+function getAIQuestProgress(quest) {
+    if (!quest?.objective) return { done: false, current: 0, target: 1, text: '???' };
+    const obj = quest.objective;
+    const snap = quest.snapshot || {};
+    let current = 0, target = obj.count || 1, text = '';
+    
+    switch(obj.type) {
+        case 'kill':
+            if (obj.enemyType) {
+                current = (state.stats?.killsByType?.[obj.enemyType] || 0) - (snap.killsByType || 0);
+                const enemy = (typeof ENEMIES !== 'undefined') ? ENEMIES.find(e => e.id === obj.enemyType) : null;
+                text = `Zabij ${target}× ${enemy?.name || obj.enemyType}`;
+            } else {
+                current = (state.stats?.kills || 0) - (snap.kills || 0);
+                text = `Zabij ${target} nepřátel`;
+            }
+            break;
+        case 'explore':
+            const visited = state.world?.visitedLocations || [];
+            if (obj.locationId) {
+                current = visited.includes(obj.locationId) ? 1 : 0;
+                target = 1;
+                const loc = (typeof WORLD_LOCATIONS !== 'undefined') ? WORLD_LOCATIONS.find(l => l.id === obj.locationId) : null;
+                text = `Navštiv ${loc?.name || obj.locationId}`;
+            } else {
+                const newVisits = visited.filter(l => !(snap.visitedLocations || []).includes(l));
+                current = newVisits.length;
+                text = `Prozkoumej ${target} nových lokací`;
+            }
+            break;
+        case 'collect':
+            const inv = state.inv || [];
+            const count = inv.filter(it => it.id === obj.itemId).reduce((s, it) => s + (it.count || 1), 0);
+            current = count;
+            const item = (typeof ITEMS !== 'undefined') ? ITEMS.find(it => it.id === obj.itemId) : null;
+            text = `Sežeň ${target}× ${item?.name || obj.itemId}`;
+            break;
+        case 'talk':
+            const visits = state.npcRelations?.[obj.npcId]?.visitCount || 0;
+            current = visits - (snap.npcVisits || 0);
+            target = 1;
+            const npc = (typeof FRIENDLY_NPCS !== 'undefined') ? FRIENDLY_NPCS.find(n => n.id === obj.npcId) : null;
+            text = `Promluv s ${npc?.name || obj.npcId}`;
+            break;
+        default:
+            current = 0; target = 1; text = quest.goal || '???';
+    }
+    
+    current = Math.max(0, Math.min(current, target));
+    return { done: current >= target, current, target, text, pct: Math.floor(current / target * 100) };
+}
+
 async function showAIQuestPanel() {
     if (!AI_ENGINE.enabled) { notifyWarning('AI off', 'Admin musí nastavit AI.'); return; }
     if (!state.aiQuests) state.aiQuests = [];
     
-    // Aktivní questy
     let questsHtml = '';
     if (state.aiQuests.length > 0) {
         questsHtml = state.aiQuests.map((q, i) => {
+            const prog = getAIQuestProgress(q);
             const done = q.completed;
-            const now = Date.now();
-            const canComplete = !q.canCompleteAfter || now >= q.canCompleteAfter;
-            const minsLeft = q.canCompleteAfter ? Math.max(0, Math.ceil((q.canCompleteAfter - now) / 60000)) : 0;
-            const elapsed = Math.floor((now - q.createdAt) / 60000);
+            const pct = prog.pct || 0;
+            const barColor = done ? '#4caf50' : pct >= 100 ? '#ff9800' : '#7b1fa2';
             
-            return `<div style="background:${done?'#0a1a0a':'#1a1a1a'};border:1px solid ${done?'#4caf50':canComplete?'#ff9800':'#333'};border-radius:8px;padding:0.8rem;margin-bottom:0.5rem">
+            return `<div style="background:${done?'#0a1a0a':'#1a1a1a'};border:1px solid ${done?'#4caf50':pct>=100?'#ff9800':'#333'};border-radius:8px;padding:0.8rem;margin-bottom:0.5rem">
                 <div style="display:flex;justify-content:space-between;align-items:center">
                     <div style="color:${done?'#8bc34a':'#ce93d8'};font-weight:bold;font-size:0.95rem">${done?'✅':'📜'} ${escapeHtml(q.name)}</div>
                     <span style="color:#ffd700;font-size:0.75rem">${q.xpReward} XP + ${q.moneyReward} 💰</span>
                 </div>
                 ${q.npc ? `<div style="color:#7986cb;font-size:0.75rem;margin-top:0.2rem">👤 ${escapeHtml(q.npc)}</div>` : ''}
                 <div style="color:#999;font-size:0.8rem;margin:0.3rem 0">${escapeHtml(q.desc)}</div>
-                <div style="color:#ff9800;font-size:0.8rem;font-weight:bold">🎯 ${escapeHtml(q.goal)}</div>
-                <div style="color:#555;font-size:0.7rem;margin-top:0.3rem">⏱️ ${elapsed} min od zadání ${q.durationMin ? '/ ~' + q.durationMin + ' min' : ''}</div>
+                <div style="color:#ff9800;font-size:0.8rem;font-weight:bold">🎯 ${escapeHtml(prog.text)}</div>
+                <div style="background:#0a0a0a;height:8px;border-radius:4px;margin:0.4rem 0;overflow:hidden">
+                    <div style="height:100%;width:${pct}%;background:${barColor};border-radius:4px;transition:width 0.3s"></div>
+                </div>
+                <div style="color:#555;font-size:0.7rem">${prog.current}/${prog.target} (${pct}%)</div>
                 ${done ? `<button class="btn" onclick="claimAIQuest(${i})" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#4caf50,#2e7d32);font-weight:bold">🎁 Vyzvednout odměnu!</button>` 
-                       : canComplete ? `<button class="btn" onclick="completeAIQuest(${i})" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#ff9800,#e65100)">✓ Splněno — odevzdat</button>`
-                       : `<button class="btn" disabled style="width:100%;margin-top:0.5rem;background:#222;color:#666;cursor:not-allowed">⏳ Odevzdat za ${minsLeft} min</button>`}
+                       : prog.done ? `<button class="btn" onclick="completeAIQuest(${i})" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#ff9800,#e65100)">✅ Cíl splněn — odevzdat!</button>`
+                       : `<div style="text-align:center;color:#666;font-size:0.75rem;margin-top:0.3rem">⏳ Plň úkol...</div>`}
             </div>`;
         }).join('');
     } else {
         questsHtml = '<div style="text-align:center;padding:1rem;color:#555">Žádné aktivní AI questy. Vygeneruj nový!</div>';
     }
     
-    const canGenerate = state.aiQuests.length < 3;
+    const canGenerate = state.aiQuests.length < 1;
     showModal('📜 AI Questy', `
         <div style="margin-bottom:0.5rem">${questsHtml}</div>
         ${canGenerate ? `<button class="btn" onclick="generateNewAIQuest()" style="width:100%;background:linear-gradient(135deg,#9c27b0,#6a1b9a);padding:0.8rem;font-weight:bold">
-            🎲 Vygenerovat nový quest (max 3)
-        </button>` : '<div style="text-align:center;color:#888;font-size:0.8rem">Max 3 questy najednou. Dokonči nebo zahoď stávající.</div>'}
-        ${state.aiQuests.length > 0 ? `<button class="btn" onclick="clearAIQuests()" style="width:100%;margin-top:0.3rem;background:#3a1a1a;font-size:0.8rem">🗑️ Zahodit všechny questy</button>` : ''}
+            🎲 Vygenerovat AI quest
+        </button>` : '<div style="text-align:center;color:#888;font-size:0.8rem">Max 3 questy najednou.</div>'}
+        ${state.aiQuests.length > 0 ? `<button class="btn" onclick="clearAIQuests()" style="width:100%;margin-top:0.3rem;background:#3a1a1a;font-size:0.8rem">🗑️ Zahodit všechny</button>` : ''}
         <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#333">← Zavřít</button>
     `);
 }
 
 async function generateNewAIQuest() {
     if (!state.aiQuests) state.aiQuests = [];
-    if (state.aiQuests.length >= 3) { notifyWarning('Max questů', 'Dokonči stávající questy.'); return; }
+    if (state.aiQuests.length >= 1) { notifyWarning('Máš quest', 'Dokonči aktuální quest před generováním dalšího.'); return; }
     
     notifyInfo('📜', 'Generuji quest...');
     const c = getAICtx();
     const baseXP = Math.floor(50 + c.lvl * 15 + Math.random() * c.lvl * 10);
     const baseMoney = Math.floor(30 + c.lvl * 10 + Math.random() * c.lvl * 8);
     
-    // Různé typy questů pro variaci
-    const questTypes = ['kill','explore','collect','talk','deliver','investigate'];
-    const randomType = questTypes[Math.floor(Math.random() * questTypes.length)];
+    // Dostupné cíle z hry
+    const enemies = (typeof ENEMIES !== 'undefined') ? ENEMIES.filter(e => {
+        const z = c.zone; return (z === 'deadly' || e.tier <= 4) && (z !== 'safe' || e.tier <= 2);
+    }).slice(0, 10) : [];
+    const enemyList = enemies.map(e => `${e.id}:${e.name}`).join(', ');
     
-    const npcNames = (typeof FRIENDLY_NPCS !== 'undefined') ? FRIENDLY_NPCS.slice(0,12).map(n => n.name).join(', ') : '';
-    const locations = WORLD_LOCATIONS ? WORLD_LOCATIONS.filter(l => l.zone === c.zone || l.zone === 'safe').slice(0,8).map(l => l.name).join(', ') : '';
+    const nearbyLocs = (typeof WORLD_LOCATIONS !== 'undefined') ? WORLD_LOCATIONS.filter(l => {
+        return l.zone === c.zone || l.zone === 'safe';
+    }).filter(l => !(state.world?.visitedLocations || []).includes(l.id)).slice(0, 8) : [];
+    const locList = nearbyLocs.map(l => `${l.id}:${l.name}`).join(', ');
+    
+    const collectItems = ['herbs','metal','scrap','wood','cloth','chemicals','food','water','ammo_9mm','medkit'];
+    const npcList = (typeof FRIENDLY_NPCS !== 'undefined') ? FRIENDLY_NPCS.slice(0, 15).map(n => `${n.id}:${n.name}`).join(', ') : '';
     
     const result = await AI_ENGINE.generate(`${AI_BASE}
-Vygeneruj JEDEN quest typu "${randomType}". Odpověz PŘESNĚ v tomto formátu (každý řádek zvlášť):
+Vygeneruj JEDEN quest. Odpověz PŘESNĚ v tomto formátu:
 
-NÁZEV: [dramatický název, 3-5 slov, česky]
-ZADAVATEL: [jméno NPC z: ${npcNames}]
-POPIS: [2-3 věty — CO se stalo, PROČ je to důležité]
-CÍL: [PŘESNÝ úkol — např. "Zabij 5 mutantů v Bažinách" nebo "Dones 3 byliny Babičce Martě"]
-DOBA: [15-60 minut]
+NÁZEV: [dramatický název, 3-5 slov]
+ZADAVATEL: [id NPC z: ${npcList}]
+POPIS: [2-3 věty — příběh questu]
+TYP: [jedno z: kill|explore|collect|talk]
+CÍL_ID: [ID cíle — enemy_id pro kill, location_id pro explore, item_id pro collect, npc_id pro talk]
+CÍL_POČET: [číslo — kolik zabít/sebrat/prozkoumat]
 
-Hráč "${c.name}" lvl ${c.lvl}, třída ${c.cls||'přeživší'}, lokace "${c.loc}" (${c.zone} zóna).
-Lokace: ${locations}
-MUSÍŠ uvést všech 5 řádků (NÁZEV, ZADAVATEL, POPIS, CÍL, DOBA). Quest musí být KONKRÉTNÍ.`, 'Nový quest', null, 600);
+Hráč "${c.name}" lvl ${c.lvl}, třída ${c.cls||'přeživší'}, "${c.loc}" (${c.zone}).
+
+DOSTUPNÍ NEPŘÁTELÉ: ${enemyList}
+NENAVŠTÍVENÉ LOKACE: ${locList}
+SBĚRATELNÉ ITEMY: ${collectItems.join(', ')}
+NPC: ${npcList}
+
+PŘÍKLADY:
+TYP: kill / CÍL_ID: mutant / CÍL_POČET: 5
+TYP: explore / CÍL_ID: ${nearbyLocs[0]?.id || 'abandoned_factory'} / CÍL_POČET: 1
+TYP: collect / CÍL_ID: herbs / CÍL_POČET: 3
+TYP: talk / CÍL_ID: grandma_marta / CÍL_POČET: 1
+
+MUSÍŠ uvést všech 6 řádků. CÍL_ID musí být z poskytnutých seznamů!`, 'Quest', null, 500);
     
     if (result) {
         const lines = result.split('\n').map(l => l.trim()).filter(l => l);
-        let name = '', desc = '', goal = '', npc = '', durationMin = 30;
+        let name='', desc='', npcName='', questType='', targetId='', targetCount=1;
         
         for (const line of lines) {
             if (line.match(/^NÁZEV:/i)) name = line.replace(/^NÁZEV:\s*/i, '').trim();
-            else if (line.match(/^ZADAVATEL:/i)) npc = line.replace(/^ZADAVATEL:\s*/i, '').trim();
+            else if (line.match(/^ZADAVATEL:/i)) npcName = line.replace(/^ZADAVATEL:\s*/i, '').trim();
             else if (line.match(/^POPIS:/i)) desc = line.replace(/^POPIS:\s*/i, '').trim();
-            else if (line.match(/^CÍL:/i)) goal = line.replace(/^CÍL:\s*/i, '').trim();
-            else if (line.match(/^DOBA:/i)) {
-                const m = line.match(/(\d+)/);
-                if (m) durationMin = Math.max(15, Math.min(60, parseInt(m[1])));
-            }
-            // Fallback: pokud popis/cíl pokračuje na dalším řádku bez prefixu
-            else if (desc && !goal && !line.match(/^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]+:/)) desc += ' ' + line;
-            else if (goal && !line.match(/^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]+:/)) goal += ' ' + line;
+            else if (line.match(/^TYP:/i)) questType = line.replace(/^TYP:\s*/i, '').trim().toLowerCase().split(/[\s\/|,]/)[0];
+            else if (line.match(/^CÍL_ID:/i)) targetId = line.replace(/^CÍL_ID:\s*/i, '').trim().split(/[\s\/|,]/)[0];
+            else if (line.match(/^CÍL_POČET:/i)) { const m = line.match(/(\d+)/); if (m) targetCount = Math.max(1, Math.min(20, parseInt(m[1]))); }
+            else if (desc && !questType) desc += ' ' + line;
         }
         
-        // Fallback pokud AI nevrátila správný formát
-        if (!name) name = 'Úkol z pustiny';
-        if (!desc) desc = result.substring(0, 200); // Použij celou odpověď jako popis
-        if (!goal) goal = 'Splň úkol a vrať se.';
+        // Validace typu
+        if (!['kill','explore','collect','talk'].includes(questType)) questType = 'kill';
         
-        const canCompleteAfter = Date.now() + durationMin * 60 * 1000;
+        // Snapshot aktuálního stavu pro tracking
+        const snapshot = {
+            kills: state.stats?.kills || 0,
+            killsByType: state.stats?.killsByType?.[targetId] || 0,
+            visitedLocations: [...(state.world?.visitedLocations || [])],
+            npcVisits: state.npcRelations?.[targetId]?.visitCount || 0
+        };
+        
+        // Objective
+        const objective = { type: questType, count: targetCount };
+        if (questType === 'kill') { objective.enemyType = targetId; if (targetCount <= 1) objective.count = 3; }
+        else if (questType === 'explore') { objective.locationId = targetId; objective.count = 1; }
+        else if (questType === 'collect') { objective.itemId = targetId; }
+        else if (questType === 'talk') { objective.npcId = targetId; objective.count = 1; }
+        
+        if (!name) name = 'Úkol z pustiny';
+        if (!desc) desc = result.substring(0, 200);
         
         state.aiQuests.push({
             name: name.substring(0, 60),
             desc: desc.substring(0, 300),
-            goal: goal.substring(0, 200),
-            npc: npc.substring(0, 30),
+            goal: '',
+            npc: npcName.substring(0, 30),
             xpReward: baseXP,
             moneyReward: baseMoney,
             completed: false,
             createdAt: Date.now(),
-            canCompleteAfter: canCompleteAfter,
-            durationMin: durationMin,
-            location: c.loc
+            objective: objective,
+            snapshot: snapshot
         });
         
-        notifySuccess('📜 Nový quest!', name);
+        const prog = getAIQuestProgress(state.aiQuests[state.aiQuests.length - 1]);
+        notifySuccess('📜 Nový quest!', `${name} — ${prog.text}`);
         saveGame();
         showAIQuestPanel();
     } else {
@@ -124632,15 +124741,14 @@ MUSÍŠ uvést všech 5 řádků (NÁZEV, ZADAVATEL, POPIS, CÍL, DOBA). Quest m
 function completeAIQuest(index) {
     if (!state.aiQuests?.[index]) return;
     const quest = state.aiQuests[index];
+    const prog = getAIQuestProgress(quest);
     
-    // Časový zámek
-    if (quest.canCompleteAfter && Date.now() < quest.canCompleteAfter) {
-        const minsLeft = Math.ceil((quest.canCompleteAfter - Date.now()) / 60000);
-        notifyWarning('⏳ Ještě ne', `Quest můžeš odevzdat za ${minsLeft} minut. Jdi plnit úkol!`);
+    if (!prog.done) {
+        notifyWarning('⏳ Nesplněno', `${prog.text}: ${prog.current}/${prog.target}`);
         return;
     }
     
-    state.aiQuests[index].completed = true;
+    quest.completed = true;
     saveGame();
     showAIQuestPanel();
     notifySuccess('✅ Quest splněn!', 'Vyzvedni odměnu.');
@@ -124650,19 +124758,16 @@ function claimAIQuest(index) {
     if (!state.aiQuests?.[index] || !state.aiQuests[index].completed) return;
     const quest = state.aiQuests[index];
     
-    // Skutečné odměny!
     addXP(quest.xpReward);
     addMoney(quest.moneyReward);
     
     notifySuccess(`🎁 +${quest.xpReward} XP, +${quest.moneyReward} 💰`, quest.name);
     addLog(`📜 Quest splněn: ${quest.name} (+${quest.xpReward} XP, +${quest.moneyReward} 💰)`, '📜');
     
-    // Odstraň quest
     state.aiQuests.splice(index, 1);
     saveGame();
     renderFull();
     
-    // Znovu otevři panel pokud ještě jsou questy
     if (state.aiQuests.length > 0) {
         setTimeout(() => showAIQuestPanel(), 300);
     }
