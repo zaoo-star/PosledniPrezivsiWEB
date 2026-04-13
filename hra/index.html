@@ -55923,6 +55923,9 @@ function openFullscreenMap() {
                 checkDailyQuests();
             }
             
+            // Poplatek za cizí dílnu (1× za session)
+            if (typeof chargeLandCraftFee === 'function') chargeLandCraftFee();
+            
             // Přidej do herního deníku
             addLog(`🔨 Vyrobeno: ${recipe.icon} ${recipe.name}${bulkAmount > 1 ? ' (' + bulkAmount + 'x)' : ''}${isDoubleCraft ? ' (2x!)' : ''}`, '🔨', 'craft', {
                 items: [{ id: recipeId, count: (isDoubleCraft ? 2 : 1) * bulkAmount }],
@@ -103807,8 +103810,8 @@ Pozdrav ho 1-2 větami podle kontextu. Zmiň co děláš. Bez uvozovek, bez *akc
                 return;
             }
             
-            // Odečti poplatek
-            if (!isOwner && fee > 0) {
+            // Odečti poplatek (kromě workshop — ten se platí až při otevření)
+            if (!isOwner && fee > 0 && buildingId !== 'workshop') {
                 state.money -= fee;
                 
                 // Celý poplatek jde na konto majitele — daň se strhne až při výběru
@@ -103852,7 +103855,7 @@ Pozdrav ho 1-2 větami podle kontextu. Zmiň co děláš. Bez uvozovek, bez *akc
             if (buildingId === 'repair_shop') {
                 showLandRepairShop(locationId, isOwner);
             } else if (buildingId === 'workshop') {
-                showLandWorkshop(locationId, isOwner);
+                showLandWorkshop(locationId, isOwner, fee);
             } else if (buildingId === 'rest_stop') {
                 useLandRestStop(locationId, isOwner, fee);
             } else if (buildingId === 'campfire') {
@@ -104224,16 +104227,56 @@ Pozdrav ho 1-2 větami podle kontextu. Zmiň co děláš. Bez uvozovek, bez *akc
         }
         
         // Dílna na pozemku (crafting)
-        function showLandWorkshop(locationId, isOwner) {
+        function showLandWorkshop(locationId, isOwner, fee) {
             let content = `<div style="text-align: center; margin-bottom: 1rem;">
-                <p style="color: ${isOwner ? '#4caf50' : '#ff9800'};">${isOwner ? '✅ Tvoje dílna - crafting zdarma!' : '⚒️ Dílna na cizím pozemku'}</p>
+                <p style="color: ${isOwner ? '#4caf50' : '#ff9800'};">${isOwner ? '✅ Tvoje dílna - crafting zdarma!' : `⚒️ Dílna na cizím pozemku (${fee} 💰)`}</p>
             </div>`;
             
-            // Otevři standardní crafting tab
             content += '<p style="color: #aaa; text-align: center;">Dílna ti umožňuje craftit předměty vyžadující dílnu.</p>';
-            content += `<button class="btn" onclick="closeModal(); window._landWorkshopAccess = true; switchTab('crafting'); renderFull();" style="width: 100%; background: #4CAF50; margin-top: 0.5rem;">⚒️ Otevřít crafting</button>`;
+            content += `<button class="btn" onclick="openLandCrafting('${locationId}', ${isOwner}, ${fee})" style="width: 100%; background: #4CAF50; margin-top: 0.5rem;">⚒️ Otevřít crafting${!isOwner && fee > 0 ? ` (${fee} 💰)` : ''}</button>`;
             content += '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zavřít</button>';
             showModal('⚒️ Dílna', content);
+        }
+        
+        async function openLandCrafting(locationId, isOwner, fee) {
+            // Nastav pending fee — strhne se až při skutečném craftu
+            if (!isOwner && fee > 0) {
+                window._landCraftFee = { locationId, fee, charged: false };
+            } else {
+                window._landCraftFee = null;
+            }
+            
+            closeModal();
+            window._landWorkshopAccess = true;
+            switchTab('crafting');
+            renderFull();
+        }
+        window.openLandCrafting = openLandCrafting;
+        
+        // Strhne poplatek za cizí dílnu (volá se z craftItem po úspěšném craftu)
+        async function chargeLandCraftFee() {
+            const pending = window._landCraftFee;
+            if (!pending || pending.charged) return;
+            pending.charged = true;
+            
+            const fee = pending.fee;
+            if ((state.money || 0) < fee) return;
+            state.money -= fee;
+            
+            try {
+                const landRef = firebaseDB.ref('landOwnership/' + pending.locationId);
+                const snap = await landRef.once('value');
+                const land = snap.val();
+                if (land) {
+                    await landRef.update({
+                        totalEarnings: (land.totalEarnings || 0) + fee,
+                        pendingEarnings: (land.pendingEarnings || 0) + fee,
+                        visitors: (land.visitors || 0) + 1
+                    });
+                }
+            } catch(e) {}
+            
+            notifyInfo('💰', `Poplatek za dílnu: ${fee} 💰`);
         }
         
         // Odpočívadlo
