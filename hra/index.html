@@ -79788,6 +79788,18 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
         }
         
         function endCombat() {
+            // [FIX] Vrať nevystřelené náboje ze zásobníku zpět do inventáře
+            try {
+                const cs = window.combatState;
+                if (cs?.units) {
+                    const playerUnit = cs.units.find(u => u.team === 'player' && !u.isCompanion);
+                    if (playerUnit && playerUnit.magazine > 0 && state.equipped?.weapon?.ammoType) {
+                        addAmmo(state.equipped.weapon.ammoType, playerUnit.magazine);
+                        console.log(`🔄 Vráceno ${playerUnit.magazine}x ${state.equipped.weapon.ammoType} ze zásobníku`);
+                    }
+                }
+            } catch(e) { console.error('Ammo return error:', e); }
+            
             window.combatState = null;
             delete state.activeCombat;
             saveGame(true); // Uložit že boj skončil (tiše)
@@ -124031,18 +124043,18 @@ _rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
 _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>50)this.cache.delete(this.cache.keys().next().value);},
 async callGemini(sys,msg,maxTok){if(!this.geminiKey)return null;try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':this.geminiKey},body:JSON.stringify({system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]})});if(!r.ok){console.error('Gemini HTTP:',r.status,await r.text().catch(()=>''));return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');return null;}return text;}catch(e){console.error('Gemini:',e);return null;}},
-async callClaude(sys,msg,maxTok){if(!this.claudeProxy)return null;try{const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});if(!r.ok){console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){console.error('Claude:',e);return null;}},
+async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});if(!r.ok){console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){console.error('Claude:',e);return null;}},
 async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
-// Claude primární pro kvalitu, Gemini fallback
+// Claude Sonnet pro kvalitu, Gemini fallback
 let r=null;
-if(this.claudeProxy)r=await this.callClaude(sys,msg,maxTok);
+if(this.claudeProxy)r=await this.callClaude(sys,msg,maxTok,'claude-sonnet-4-5-20250514');
 if(!r&&this.geminiKey)r=await this.callGemini(sys,msg,maxTok);
 if(r&&ck)this._sc(ck,r);if(!r&&!this._apiFailNotified||!r&&Date.now()-(this._apiFailNotified||0)>300000){this._apiFailNotified=Date.now();if(typeof notifyInfo==='function'&&this.requestCount>2)notifyInfo('🤖 AI nedostupná','Servery neodpovídají. Hra pokračuje bez AI.');}return r;},
-// Gemini primární (levné features), Claude fallback
+// Gemini primární (levné features), Claude Haiku fallback
 async generateFast(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
 let r=null;
 if(this.geminiKey)r=await this.callGemini(sys,msg,maxTok);
-if(!r&&this.claudeProxy)r=await this.callClaude(sys,msg,maxTok);
+if(!r&&this.claudeProxy)r=await this.callClaude(sys,msg,maxTok,'claude-haiku-4-5-20251001');
 if(r&&ck)this._sc(ck,r);return r;}
 };
 const AI_BASE=`Jsi AI v české post-apokalyptické RPG "Poslední Přeživší" (posledniprezivsi.cz). Odpovídej ČESKY, drsným stylem pustiny. Nikdy nezmiňuj že jsi AI. Délku odpovědi urči podle dalších instrukcí — pokud není řečeno jinak, piš 3-5 vět.
@@ -124332,18 +124344,18 @@ async function generateNewAIQuest() {
     const npcNames = (typeof FRIENDLY_NPCS !== 'undefined') ? FRIENDLY_NPCS.slice(0,12).map(n => n.name).join(', ') : '';
     const locations = WORLD_LOCATIONS ? WORLD_LOCATIONS.filter(l => l.zone === c.zone || l.zone === 'safe').slice(0,8).map(l => l.name).join(', ') : '';
     
-    const result = await AI_ENGINE.generateFast(`${AI_BASE}
-Jsi quest designer. Vygeneruj JEDEN quest typu "${randomType}". Odpověz PŘESNĚ v tomto formátu:
+    const result = await AI_ENGINE.generate(`${AI_BASE}
+Vygeneruj JEDEN quest typu "${randomType}". Odpověz PŘESNĚ v tomto formátu (každý řádek zvlášť):
 
 NÁZEV: [dramatický název, 3-5 slov, česky]
 ZADAVATEL: [jméno NPC z: ${npcNames}]
-POPIS: [2-3 věty — CO se stalo, PROČ je to důležité, jaký je kontext příběhu. Buď konkrétní a dramatický.]
-CÍL: [PŘESNÝ úkol — např. "Zabij 5 mutantů v Bažinách", "Dones 3 léčivé byliny Babičce Martě", "Prozkoumej Opuštěný bunkr a najdi deníky", "Promluv s Pašerákem Radkem o zásilce", "Dostav balíček munice na Checkpoint"]
-DOBA: [odhadovaný čas splnění: 15-60 minut]
+POPIS: [2-3 věty — CO se stalo, PROČ je to důležité]
+CÍL: [PŘESNÝ úkol — např. "Zabij 5 mutantů v Bažinách" nebo "Dones 3 byliny Babičce Martě"]
+DOBA: [15-60 minut]
 
 Hráč "${c.name}" lvl ${c.lvl}, třída ${c.cls||'přeživší'}, lokace "${c.loc}" (${c.zone} zóna).
-Dostupné lokace: ${locations}
-Quest musí být KONKRÉTNÍ — žádné vágní "prozkoumej pustinu". Uveď PŘESNÁ místa a jména NPC.`, 'Nový quest', null, 500);
+Lokace: ${locations}
+MUSÍŠ uvést všech 5 řádků (NÁZEV, ZADAVATEL, POPIS, CÍL, DOBA). Quest musí být KONKRÉTNÍ.`, 'Nový quest', null, 600);
     
     if (result) {
         const lines = result.split('\n').map(l => l.trim()).filter(l => l);
@@ -124358,6 +124370,9 @@ Quest musí být KONKRÉTNÍ — žádné vágní "prozkoumej pustinu". Uveď P�
                 const m = line.match(/(\d+)/);
                 if (m) durationMin = Math.max(15, Math.min(60, parseInt(m[1])));
             }
+            // Fallback: pokud popis/cíl pokračuje na dalším řádku bez prefixu
+            else if (desc && !goal && !line.match(/^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]+:/)) desc += ' ' + line;
+            else if (goal && !line.match(/^[A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ]+:/)) goal += ' ' + line;
         }
         
         // Fallback pokud AI nevrátila správný formát
@@ -124721,7 +124736,7 @@ async function sendNpcReply(npcAuthor, npcOrigMsg) {
 Jsi "${npcAuthor}". ${profile.style}
 Hráč "${getPlayerName()}" ti napsal v chatu: "${playerMsg}"
 Tvá předchozí zpráva byla: "${npcOrigMsg}"
-Odpověz 1-2 větami (max 25 slov). NEVYMÝŠLEJ si. NEZADÁVEJ úkoly. Hovorová čeština.`, 'NPC reply', null, 150);
+Odpověz 2-3 větami. Reaguj na to co hráč napsal. Buď konkrétní — jmenuj lokace, NPC, itemy z hry. NEVYMÝŠLEJ si. NEZADÁVEJ úkoly. Hovorová čeština. Bez *akcí*.`, 'NPC reply', null, 250);
     
     if (response) {
         // Počkej 2-5s aby to vypadalo přirozeně
@@ -124730,7 +124745,7 @@ Odpověz 1-2 větami (max 25 slov). NEVYMÝŠLEJ si. NEZADÁVEJ úkoly. Hovorov�
         try {
             await firebaseDB.ref('chat/messages').push({
                 author: npcAuthor,
-                text: response.replace(/"/g, '').substring(0, 200),
+                text: response.replace(/"/g, '').replace(/\*/g, '').substring(0, 300),
                 timestamp: firebase.database.ServerValue.TIMESTAMP,
                 level: 99,
                 npc: true,
@@ -125119,23 +125134,31 @@ async function sendNpcChat(npcId) {
     const histStr = _npcChatHistory[npcId].slice(-8).map(h => `${h.r}: ${h.t}`).join('\n');
     
     const response = await AI_ENGINE.generate(`${AI_BASE}
-Jsi NPC "${npc?.name||npcId}" v post-apokalyptické RPG. ${role}
-Důvěra hráče k tobě: ${trust}. ${trust>50?'Jste blízcí přátelé.':trust>20?'Znáte se.':'Sotva se znáte.'}
-Hráč "${c.name}" lvl ${c.lvl}, lokace "${c.loc}", ${c.zone} zóna, den ${c.day}.
+Jsi "${npc?.name||npcId}". ${role}
+
+TVŮJ VZTAH S HRÁČEM:
+Důvěra: ${trust}/100. ${trust>80?'Jste staří přátelé, věříš mu bezmezně.':trust>50?'Jste blízcí přátelé, občas si zažertujete.':trust>20?'Znáte se, ale ještě mu úplně nevěříš.':'Neznáš ho, buď opatrný a odměřený.'}
+${trust>50?'Můžeš prozradit tajemství, nabídnout speciální služby, být osobnější.':'Drž si odstup, mluv obecněji.'}
+
+STAV HRÁČE:
+"${c.name}" lvl ${c.lvl}, třída ${c.cls||'žádná'}, lokace "${c.loc}" (${c.zone} zóna), den ${c.day}, ${c.tod}.
+HP: ${c.hp}/${c.maxHp}. ${c.hp < c.maxHp*0.3 ? '⚠️ TĚŽCE ZRANĚNÝ — všimni si toho a reaguj!' : c.hp < c.maxHp*0.6 ? 'Lehce zraněný.' : 'V pořádku.'}
 
 Konverzace:
 ${histStr}
 
 PRAVIDLA:
-1. Jsi ${npc?.name||'NPC'}, ŽIVÝ ČLOVĚK v pustině. NE robot, NE AI. Mluv přirozeně — používej hovorovou češtinu, zkratky, citoslovce, nadávky (mírné), humor.
-2. NIKDY nezmiňuj "hra", "quest", "level", "XP", "damage", "HP", "skill" ani jiné herní termíny. Místo toho říkej: "zkušenosti", "síla", "zranění", "zdraví", "dovednost".
-3. NEVYMÝŠLEJ si NPC, lokace, itemy ani události co nejsou ve tvých znalostech výše. Pokud nevíš, řekni "To nevím" nebo "O tom jsem neslyšel".
-4. Reaguj na to co hráč říká — odpovídej na otázky, nabízej pomoc, ptej se zpět, buď zvědavý.
-5. Pokud se ptá na služby, řekni KONKRÉTNĚ co nabízíš (ceny, podmínky). Pokud se ptá na drby, řekni co víš o jiných NPC.
-6. Pokud tě uráží — ${trust>50?'ber to s humorem, jste přátelé':'buď naštvaný, odmítej mluvit'}.
-7. Měj VLASTNÍ názory, emoce, nálady. Občas buď unavený, naštvaný, veselý, smutný.
+1. Jsi ŽIVÝ ČLOVĚK. Mluv přirozeně — hovorová čeština, zkratky, citoslovce, humor, vlastní názory a emoce.
+2. NIKDY nezmiňuj herní termíny (quest, XP, level, damage, HP, skill). Říkej: "zkušenosti", "síla", "zranění", "zdraví".
+3. NEVYMÝŠLEJ si NPC, lokace ani itemy co nejsou ve tvých znalostech. Pokud nevíš, řekni to.
+4. Reaguj na to co hráč říká. Odpovídej na otázky, nabízej pomoc, ptej se zpět.
+5. Pokud se ptá na služby — řekni KONKRÉTNĚ co nabízíš, za kolik, za jakých podmínek.
+6. Pokud se ptá na drby — řekni co víš o KONKRÉTNÍCH NPC (vztahy, konflikty, tajemství).
+7. Pokud se ptá na svět — dávej KONKRÉTNÍ tipy (kam jít, čemu se vyhnout, co hledat).
+8. Pamatuj si kontext konverzace — navazuj na předchozí repliky, neopakuj se.
+9. NEPOUŽÍVEJ hvězdičkové akce (*kašlu*, *sedím*). Žádné RP popisy akcí.
 
-Odpověz 2-4 věty.`, msg, null, 500);
+Odpověz 3-5 vět. Buď užitečný, konkrétní a zajímavý.`, msg, null, 600);
     
     // Odstraň "přemýšlí"
     const thinking = document.getElementById('npcThinking');
@@ -125229,12 +125252,12 @@ setInterval(async () => {
             localStorage.setItem('_lastCompanionComment', String(now));
             const c = getAICtx();
             const comment = await AI_ENGINE.generateFast(`${AI_BASE}
-Jsi společník "${comp.name}" (${comp.type || 'člověk'}). Řekni JEDNU krátkou větu — komentář k situaci.
+Jsi společník "${comp.name}" (${comp.type || 'člověk'}). Řekni 1-2 věty — komentář k aktuální situaci.
 Hráč "${c.name}" lvl ${c.lvl}, lokace "${c.loc}" (${c.zone}), ${c.tod}, den ${c.day}.
-HP hráče: ${c.hp}/${c.maxHp}. Hlad: ${state.status?.hunger?.toFixed(0)||'?'}%. Žízeň: ${state.status?.thirst?.toFixed(0)||'?'}%.
+HP: ${c.hp}/${c.maxHp}. Hlad: ${state.status?.hunger?.toFixed(0)||'?'}%. Žízeň: ${state.status?.thirst?.toFixed(0)||'?'}%.
 ${state.status?.hunger < 20 ? 'Hráč hladoví!' : ''} ${state.status?.thirst < 20 ? 'Hráč má žízeň!' : ''} ${c.hp < c.maxHp * 0.3 ? 'Hráč je zraněný!' : ''}
 ${c.zone === 'deadly' ? 'Jste v smrtelné zóně!' : c.zone === 'danger' ? 'Nebezpečná zóna.' : ''}
-MAX 1 věta. Krátká, přirozená, jako by to řekl normální člověk vedle tebe. Žádné uvozovky.`, 'Komentář', null, 150);
+Piš jako ${comp.type === 'dog' ? 'věrný pes (štěkej, vrč, čenichej)' : comp.type === 'crow' ? 'havran (krákorej, pozoruj z výšky)' : comp.type === 'cat' ? 'kočka (mňoukej, buď nezávislá)' : 'normální člověk'}. Hovorová čeština. Bez uvozovek. NEVYMÝŠLEJ si místa ani NPC.`, 'Komentář', null, 250);
             if (comment) {
                 notifyInfo(`💬 ${comp.name}`, comment.replace(/"/g,''));
                 addLog(`💬 ${comp.name}: "${comment.replace(/"/g,'')}"`, comp.icon || '🧑');
@@ -125243,101 +125266,7 @@ MAX 1 věta. Krátká, přirozená, jako by to řekl normální člověk vedle t
     }
 }, 60000); // Kontrola každou minutu
 
-// 🗣️ AI NPC CHAT — NPC občas napíšou do veřejného chatu
-let _lastNpcChat = parseInt(localStorage.getItem('_lastNpcChat') || '0');
-setInterval(async () => {
-    if (!AI_ENGINE.enabled || !firebaseDB) return;
-    if (Date.now() - _lastUserActivity > 600000) return; // Hráč neaktivní
-    if (Date.now() - _lastNpcChat < 1800000) return; // Max 1x za 30 min
-    if (Math.random() > 0.3) return; // 30% šance při každé kontrole
-    
-    // Ověř že jiný hráč neposlal NPC zprávu nedávno
-    try {
-        const lastSnap = await firebaseDB.ref('chat/lastNpcMessage').once('value');
-        const lastTime = lastSnap.val() || 0;
-        if (Date.now() - lastTime < 1800000) { _lastNpcChat = Date.now(); return; }
-    } catch(e) { return; }
-    
-    _lastNpcChat = Date.now();
-    localStorage.setItem('_lastNpcChat', String(_lastNpcChat));
-    
-    const npcAuthors = [
-        { name: '📻 Radio Pustina', style: 'sarkastický moderátor rádia, hlásí zprávy a vtipkuje' },
-        { name: '👵 Babička Marta', style: 'moudrá bylinkářka, starostlivá, mateřská, občas plísní' },
-        { name: '🔨 Kovář Ivan', style: 'rázný kovář, mluví o zbraních a oceli, bývalý voják, strohý' },
-        { name: '🎖️ Kapitán Novák', style: 'vojenský velitel, stručný, důrazný, hledá dceru' },
-        { name: '🃏 Rosa', style: 'tajemná věštkyně, mluví v hádankách a metaforách' },
-        { name: '⚗️ Koudy', style: 'unavený vědec, skeptický, pracuje na léku, bratr Koryho' },
-        { name: '🔥 Kory', style: 'charismatický rebel, naléhavý, přesvědčivý, bratr Koudyho' },
-        { name: '🤪 Bláznivý Jirka', style: 'šílený tulák, blábolí nesmysly ale občas řekne pravdu' }
-    ];
-    
-    // 30% šance že dva NPC spolu mluví místo jednoho
-    const isConversation = Math.random() < 0.3 && npcAuthors.length >= 2;
-    
-    if (isConversation) {
-        // Dva NPC se baví/hádají
-        const shuffled = npcAuthors.sort(() => Math.random() - 0.5);
-        const npc1 = shuffled[0], npc2 = shuffled[1];
-        const topics = ['kdo je lepší vůdce','zda je Kory nebezpečný','kvalita zbraní','počasí v pustině','kdo přežije nejdéle','jestli existuje lék na radiaci','co je za horizontem','zda jsou mutanti inteligentní'];
-        const topic = topics[Math.floor(Math.random() * topics.length)];
-        
-        const msg1 = await AI_ENGINE.generate(`${AI_BASE}
-Jsi "${npc1.name}" (${npc1.style}). Oslovíš "${npc2.name}" v chatu na téma: ${topic}.
-MAX 1-2 věty (max 25 slov). Bez *akcí*. NEVYMÝŠLEJ si. NEZADÁVEJ úkoly. Hovorová čeština. Bez uvozovek.`, 'NPC conv', null, 120);
-        
-        if (msg1 && firebaseDB) {
-            try {
-                await firebaseDB.ref('chat/messages').push({ author: npc1.name, text: msg1.replace(/"/g,'').replace(/\*/g,'').substring(0,300), timestamp: firebase.database.ServerValue.TIMESTAMP, level: 99, npc: true, system: true, rankName: 'NPC', rankColor: '#9c27b0' });
-                
-                // Druhý NPC odpoví za 3-8 sekund
-                await new Promise(r => setTimeout(r, 3000 + Math.random() * 5000));
-                
-                const msg2 = await AI_ENGINE.generate(`Jsi "${npc2.name}" (${npc2.style}). "${npc1.name}" napsal: "${msg1.substring(0,80)}"
-MAX 1-2 věty (max 25 slov). Bez *akcí*. NEVYMÝŠLEJ si. Hovorová čeština. Bez uvozovek.`, "NPC conv reply", null, 120);
-                
-                if (msg2) {
-                    await firebaseDB.ref("chat/messages").push({ author: npc2.name, text: msg2.replace(/"/g,"").replace(/\*/g,"").substring(0,300), timestamp: firebase.database.ServerValue.TIMESTAMP, level: 99, npc: true, system: true, rankName: "NPC", rankColor: "#9c27b0" });
-                }
-                await firebaseDB.ref('chat/lastNpcMessage').set(Date.now());
-            } catch(e) {}
-        }
-    } else {
-        const npc = npcAuthors[Math.floor(Math.random() * npcAuthors.length)];
-    const c = getAICtx();
-    
-    const msg = await AI_ENGINE.generate(`${AI_BASE}
-Jsi "${npc.name}" — ${npc.style}. Píšeš VEŘEJNOU zprávu do chatu osady.
-
-PRAVIDLA:
-1. Piš 2-3 věty (30-50 slov).
-2. NEPOUŽÍVEJ hvězdičkové akce (*sedím*, *kašlu*). Žádné RP.
-3. NEVYMÝŠLEJ si. NEZADÁVEJ úkoly. Neslibuj odměny.
-4. Je to VEŘEJNÝ chat — piš všem, ne konkrétnímu hráči.
-5. Zmiňuj KONKRÉTNÍ NPC a lokace z hry.
-6. Hovorová čeština. Bez uvozovek.
-
-DOBRÉ: "U vodního mlýna se potulujou mutanti, dneska jich bylo víc než jindy. Kdybych byl na vašem místě, šel bych oklikou přes les."
-ŠPATNÉ: "*sedím u ohně* Ahoj miláčku, přines mi byliny a dostaneš léčbu."
-Den ${c.day}, ${c.tod}.`, 'NPC chat', null, 250);
-    
-    if (msg && firebaseDB) {
-        try {
-            await firebaseDB.ref('chat/messages').push({
-                author: npc.name,
-                text: msg.replace(/"/g, '').replace(/\*/g, '').substring(0, 400),
-                timestamp: firebase.database.ServerValue.TIMESTAMP,
-                level: 99,
-                npc: true,
-                system: true,
-                rankName: 'NPC',
-                rankColor: '#9c27b0'
-            });
-            await firebaseDB.ref('chat/lastNpcMessage').set(Date.now());
-        } catch(e) { console.error('NPC chat error:', e); }
-    }
-    } // end else (single NPC)
-}, 300000); // Kontrola každých 5 min
+// 🗣️ AI NPC CHAT — VYPNUTO (šetříme tokeny)
 
 // 💌 NPC DOPISY (1x za 2 hodiny)
 let _lastNpcLetter = 0;
@@ -125360,6 +125289,90 @@ setInterval(() => {
         if (typeof aiWeeklyChronicle === 'function') aiWeeklyChronicle().catch(() => {});
     }
 }, 120000); // Kontrola každé 2 min
+
+// 📊 DENNÍ STATISTIKY — jednou denně systémová zpráva do chatu
+async function checkDailyStats() {
+    if (!firebaseDB) return;
+    try {
+        const snap = await firebaseDB.ref('shared/dailyStats').once('value');
+        const last = snap.val();
+        if (last?.timestamp && Date.now() - last.timestamp < 82800000) return; // < 23h → skip
+        
+        // Sbírej data
+        const now = Date.now();
+        const dayStart = now - 86400000; // 24h zpět
+        
+        // Hráči online (aktivní za posledních 24h)
+        let onlineCount = 0, topKiller = '', topKills = 0, totalKills = 0, newPlayers = 0;
+        const playersSnap = await firebaseDB.ref('players').once('value');
+        const players = playersSnap.val() || {};
+        for (const [uid, p] of Object.entries(players)) {
+            if (!p || typeof p !== 'object') continue;
+            if ((p.lastSeen || 0) > dayStart) onlineCount++;
+            if ((p.createdAt || 0) > dayStart) newPlayers++;
+            const kills = p.stats?.kills || p.kills || 0;
+            totalKills += kills;
+            if (kills > topKills) { topKills = kills; topKiller = p.name || p.char?.name || 'Neznámý'; }
+        }
+        
+        // Smrti (hřbitov)
+        let deathCount = 0;
+        const deathNames = [];
+        const graveyardSnap = await firebaseDB.ref('graveyard').orderByChild('timestamp').startAt(dayStart).once('value');
+        graveyardSnap.forEach(s => {
+            const g = s.val();
+            if (g?.timestamp > dayStart) { deathCount++; if (g.name && deathNames.length < 3) deathNames.push(g.name); }
+        });
+        
+        // Chat zprávy
+        let msgCount = 0;
+        const chatSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').startAt(dayStart).limitToLast(200).once('value');
+        chatSnap.forEach(s => { const m = s.val(); if (m && !m.system) msgCount++; });
+        
+        // Kasa
+        let treasury = 0;
+        try { const kasaSnap = await firebaseDB.ref('politics/treasury').once('value'); treasury = kasaSnap.val() || 0; } catch(e) {}
+        
+        // Šéf
+        let mayor = '';
+        try { const mayorSnap = await firebaseDB.ref('politics/mayor').once('value'); mayor = mayorSnap.val()?.name || ''; } catch(e) {}
+        
+        // Herní den
+        const gameDay = state.time?.days || '?';
+        
+        // Sestav zprávu
+        let statsMsg = `📊 Den ${gameDay} v Pustině: `;
+        statsMsg += `${onlineCount} přeživších aktivních. `;
+        if (newPlayers > 0) statsMsg += `${newPlayers} nových tváří. `;
+        if (msgCount > 0) statsMsg += `${msgCount} zpráv v chatu. `;
+        if (deathCount > 0) {
+            statsMsg += `${deathCount}× smrt${deathNames.length ? ' (RIP ' + deathNames.join(', ') + ')' : ''}. `;
+        } else {
+            statsMsg += 'Nikdo neumřel — slušný den! ';
+        }
+        if (topKiller && topKills > 0) statsMsg += `Nejaktivnější: ${topKiller} (${topKills} killů). `;
+        if (treasury > 0) statsMsg += `Kasa: ${treasury}💰. `;
+        if (mayor) statsMsg += `Šéf: ${mayor}.`;
+        
+        // Pošli do chatu
+        await firebaseDB.ref('chat/messages').push({
+            author: '📊 Pustina',
+            text: statsMsg.trim(),
+            timestamp: firebase.database.ServerValue.TIMESTAMP,
+            system: true,
+            level: 99,
+            rankName: 'Systém',
+            rankColor: '#64b5f6'
+        });
+        
+        // Ulož timestamp
+        await firebaseDB.ref('shared/dailyStats').set({ timestamp: now, day: gameDay });
+        console.log('📊 Denní statistiky odeslány');
+    } catch(e) { console.error('Daily stats error:', e); }
+}
+// Spusť při startu + kontrola každou hodinu
+setTimeout(checkDailyStats, 15000);
+setInterval(checkDailyStats, 3600000);
 
 </script>
     <script>
