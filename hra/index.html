@@ -31053,6 +31053,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <p style="margin: 0.2rem 0; font-size: 0.8rem; color: #aaa;">☢️ Sniž radiaci → RadAway pomůže</p>
                             <p style="margin: 0.2rem 0; font-size: 0.8rem; color: #aaa;">🍫 Čokoláda, alkohol → přímý boost nálady</p>
                         </div>
+                        ${state.intoxication?.addiction > 0 ? `
+                        <div style="margin-top: 0.5rem; padding: 0.6rem; background: #2a1a0a; border: 1px solid #ff9800; border-radius: 6px;">
+                            <p style="margin: 0; font-size: 0.85rem; color: #ff9800; font-weight: bold;">🍺 Závislost na alkoholu: ${Math.round(state.intoxication.addiction * 10) / 10}/10</p>
+                            ${state.intoxication.addiction >= 3 ? `<p style="margin: 0.2rem 0 0 0; font-size: 0.8rem; color: #f44336;">⚠️ Abstinenční příznaky: -15 nálada, -5 energie/h</p>` : ''}
+                            <p style="margin: 0.2rem 0 0 0; font-size: 0.78rem; color: #aaa;">Léčba: Nepij alkohol (klesá sama za ~${Math.ceil(state.intoxication.addiction * 12)}h) nebo navštiv Medika v osadě (100💰).</p>
+                        </div>
+                        ` : ''}
                     ` : ''}
                 </div>
                 
@@ -35143,6 +35150,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             }
                             if (state.buffs?.withdrawal && state.buffs.withdrawal.until > now) {
                                 activeBuffs.push({ icon: '🤮', name: 'Abstinence', value: '-15 nálada', time: Math.ceil((state.buffs.withdrawal.until - now) / 60000), color: '#9e9e9e' });
+                            }
+                            if (state.intoxication?.addiction >= 1 && !(state.buffs?.withdrawal?.until > now)) {
+                                activeBuffs.push({ icon: '🍺', name: 'Závislost', value: `${Math.round(state.intoxication.addiction * 10) / 10}/10`, time: 0, color: '#ff9800' });
                             }
                             if (state.buffs?.allStats && state.buffs.allStats.until > now) {
                                 activeBuffs.push({ icon: '✨', name: 'Vše', value: `+${state.buffs.allStats.value}`, time: Math.ceil((state.buffs.allStats.until - now) / 60000), color: '#ffd700' });
@@ -72592,6 +72602,9 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
                         <button class="btn" onclick="event.stopPropagation(); medicHealInjuries(${settlerIdx});" style="width: 100%; background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);">
                             🩹 Ošetřit zranění
                         </button>
+                        ${state.intoxication?.addiction > 0 ? `<button class="btn" onclick="event.stopPropagation(); medicCureAddiction(${settlerIdx});" style="width: 100%; background: linear-gradient(135deg, #ff9800 0%, #e65100 100%); margin-top: 0.5rem;">
+                            🍺 Vyléčit závislost (100💰)
+                        </button>` : ''}
                         <p style="font-size: 0.75rem; color: #888; margin: 0.5rem 0 0 0; text-align: center;">Vyšší úroveň medika = lepší léčení</p>
                     </div>
                 ` : ''}
@@ -72734,6 +72747,36 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
             renderFull();
         }
         
+        // Medik - léčba závislosti na alkoholu (100💰)
+        function medicCureAddiction(settlerIdx) {
+            const settler = state.settlement.settlers[settlerIdx];
+            if (!settler || settler.type !== 'medic_s') return;
+            
+            if (!state.intoxication || state.intoxication.addiction <= 0) {
+                notifyWarning('🩺', 'Nemáš závislost na alkoholu.');
+                return;
+            }
+            
+            const cost = 100;
+            if (getMoney() < cost) {
+                notifyWarning('💰', `Léčba závislosti stojí ${cost} peněz.`);
+                return;
+            }
+            
+            removeMoney(cost);
+            state.intoxication.addiction = 0;
+            if (state.buffs?.withdrawal) delete state.buffs.withdrawal;
+            state.intoxication.withdrawalNotified = false;
+            
+            SoundSystem.play('heal');
+            notifySuccess('✅ Závislost vyléčena!', `${settler.name} tě zbavil závislosti na alkoholu za ${cost}💰.`);
+            addLog(`💉 Medik ${settler.name} vyléčil závislost na alkoholu`, '🩺');
+            
+            showSettlerDetail(settlerIdx);
+            renderFull();
+        }
+        window.medicCureAddiction = medicCureAddiction;
+
         // Medik - ošetření zranění (ZDARMA)
         function medicHealInjuries(settlerIdx) {
             const settler = state.settlement.settlers[settlerIdx];
@@ -88688,9 +88731,13 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
                 
                 // Pokles závislosti: -0.1 za den bez pití
                 if (timeSinceDrink > 24 * 60 * 60 * 1000 && state.intoxication.addiction > 0) {
-                    if (!state.intoxication._lastDecay || Date.now() - state.intoxication._lastDecay > 24 * 60 * 60 * 1000) {
-                        state.intoxication.addiction = Math.max(0, state.intoxication.addiction - 0.5);
+                    if (!state.intoxication._lastDecay || Date.now() - state.intoxication._lastDecay > 12 * 60 * 60 * 1000) {
+                        state.intoxication.addiction = Math.max(0, state.intoxication.addiction - 1);
                         state.intoxication._lastDecay = Date.now();
+                        if (state.intoxication.addiction <= 0) {
+                            addLog('✅ Závislost na alkoholu pominula!', '🍺');
+                            delete state.buffs?.withdrawal;
+                        }
                     }
                 }
                 
@@ -88699,10 +88746,9 @@ Hráč "${state.char?.name||'přeživší'}" přichází. Důvěra: ${relation.t
                     if (!state.buffs) state.buffs = {};
                     if (!state.buffs.withdrawal || state.buffs.withdrawal.until < Date.now()) {
                         state.buffs.withdrawal = { until: Date.now() + 60 * 60 * 1000 }; // 1h cyklus
-                        // Postihy z abstinence - nálada řeší mood formula výše jako modifikátor
-                        state.status.energy = Math.max(5, (state.status.energy || 50) - 10);
+                        state.status.energy = Math.max(10, (state.status.energy || 50) - 5);
                         if (!state.intoxication.withdrawalNotified) {
-                            addLog('🥴 Abstinenční příznaky... třesou se ti ruce, potřebuješ drink!', '🍺');
+                            addLog('🥴 Abstinenční příznaky — sniž závislost: nepij alkohol, nebo navštiv Medika v osadě.', '🍺');
                             state.intoxication.withdrawalNotified = true;
                         }
                     }
@@ -124832,18 +124878,36 @@ Kontext: ${ctx}`, 'Nástěnka', null, 600);
 // 💀 HŘBITOV EPITAFŮ
 // =============================================
 async function aiGenerateEpitaph() {
-    if (!AI_ENGINE.enabled) return;
-    if (window._epitaphGenerated) return; // Jen 1x per session
+    if (window._epitaphGenerated) return;
     window._epitaphGenerated = true;
     const c = getAICtx();
-    const epitaph = await AI_ENGINE.generateFast(`Napiš krátký epitaf (1-2 věty) na náhrobek přeživšího.
+    
+    // Vždy zapiš na hřbitov — s nebo bez AI
+    const defaultEpitaphs = [
+        'Odpočívej v pokoji, přeživší.',
+        'Pustina si vybrala další oběť.',
+        'Další jméno na seznamu mrtvých.',
+        'Přežil déle než většina. Ale ne dost.',
+        'Ticho je jediné, co po něm zbylo.'
+    ];
+    let epitaph = defaultEpitaphs[Math.floor(Math.random() * defaultEpitaphs.length)];
+    
+    // Zkus AI epitaf
+    if (AI_ENGINE.enabled) {
+        try {
+            const aiEpitaph = await AI_ENGINE.generateFast(`Napiš krátký epitaf (1-2 věty) na náhrobek přeživšího.
 "${c.name}", level ${c.lvl}, přežil ${c.day} dní. Zabití: ${c.kills}. Třída: ${c.cls||'přeživší'}.
-Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině.`, 'Epitaf', null, 150);
-    if (epitaph && firebaseDB) {
+Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině. Bez uvozovek.`, 'Epitaf', null, 150);
+            if (aiEpitaph) epitaph = aiEpitaph.replace(/"/g, '').substring(0, 200);
+        } catch(e) {}
+    }
+    
+    // VŽDY zapiš do Firebase
+    if (firebaseDB) {
         try { await firebaseDB.ref('graveyard').push({
             name: c.name, level: c.lvl, days: c.day, kills: c.kills,
-            epitaph: epitaph.substring(0,200), timestamp: Date.now(), cls: c.cls||''
-        }); } catch(e){}
+            epitaph: epitaph, timestamp: Date.now(), cls: c.cls||''
+        }); } catch(e) {}
     }
 }
 
@@ -125298,66 +125362,77 @@ async function checkDailyStats() {
         const last = snap.val();
         if (last?.timestamp && Date.now() - last.timestamp < 82800000) return; // < 23h → skip
         
-        // Sbírej data
         const now = Date.now();
-        const dayStart = now - 86400000; // 24h zpět
+        const dayStart = now - 86400000;
         
-        // Hráči online (aktivní za posledních 24h)
-        let onlineCount = 0, topKiller = '', topKills = 0, totalKills = 0, newPlayers = 0;
-        const playersSnap = await firebaseDB.ref('players').once('value');
-        const players = playersSnap.val() || {};
-        for (const [uid, p] of Object.entries(players)) {
-            if (!p || typeof p !== 'object') continue;
-            if ((p.lastSeen || 0) > dayStart) onlineCount++;
-            if ((p.createdAt || 0) > dayStart) newPlayers++;
-            const kills = p.stats?.kills || p.kills || 0;
-            totalKills += kills;
-            if (kills > topKills) { topKills = kills; topKiller = p.name || p.char?.name || 'Neznámý'; }
-        }
+        // Aktuálně online hráči
+        let onlineCount = 0;
+        try {
+            const onlineSnap = await firebaseDB.ref('online').once('value');
+            const onlineData = onlineSnap.val() || {};
+            onlineCount = Object.keys(onlineData).length;
+        } catch(e) {}
         
-        // Smrti (hřbitov)
+        // Leaderboard — top killer, celkové statistiky
+        let topKiller = '', topKills = 0, totalPlayers = 0, maxLevel = 0, topLevelPlayer = '';
+        try {
+            const lbSnap = await firebaseDB.ref('leaderboard').once('value');
+            const lb = lbSnap.val() || {};
+            for (const [k, p] of Object.entries(lb)) {
+                if (!p || typeof p !== 'object') continue;
+                totalPlayers++;
+                const kills = p.kills || 0;
+                if (kills > topKills) { topKills = kills; topKiller = p.name || 'Neznámý'; }
+                const lvl = p.level || 1;
+                if (lvl > maxLevel) { maxLevel = lvl; topLevelPlayer = p.name || 'Neznámý'; }
+            }
+        } catch(e) {}
+        
+        // Smrti (hřbitov) — posledních 24h
         let deathCount = 0;
         const deathNames = [];
-        const graveyardSnap = await firebaseDB.ref('graveyard').orderByChild('timestamp').startAt(dayStart).once('value');
-        graveyardSnap.forEach(s => {
-            const g = s.val();
-            if (g?.timestamp > dayStart) { deathCount++; if (g.name && deathNames.length < 3) deathNames.push(g.name); }
-        });
+        try {
+            const graveyardSnap = await firebaseDB.ref('graveyard').orderByChild('timestamp').startAt(dayStart).once('value');
+            graveyardSnap.forEach(s => {
+                const g = s.val();
+                if (g?.timestamp > dayStart) { deathCount++; if (g.name && deathNames.length < 3) deathNames.push(g.name); }
+            });
+        } catch(e) {}
         
-        // Chat zprávy
+        // Chat zprávy za 24h
         let msgCount = 0;
-        const chatSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').startAt(dayStart).limitToLast(200).once('value');
-        chatSnap.forEach(s => { const m = s.val(); if (m && !m.system) msgCount++; });
+        try {
+            const chatSnap = await firebaseDB.ref('chat/messages').orderByChild('timestamp').startAt(dayStart).limitToLast(200).once('value');
+            chatSnap.forEach(s => { const m = s.val(); if (m && !m.system) msgCount++; });
+        } catch(e) {}
         
-        // Kasa
-        let treasury = 0;
-        try { const kasaSnap = await firebaseDB.ref('politics/treasury').once('value'); treasury = kasaSnap.val() || 0; } catch(e) {}
-        
-        // Šéf
-        let mayor = '';
+        // Kasa + Šéf
+        let treasury = 0, mayor = '';
+        try { const kasaSnap = await firebaseDB.ref('politics/treasury').once('value'); treasury = Math.floor(kasaSnap.val() || 0); } catch(e) {}
         try { const mayorSnap = await firebaseDB.ref('politics/mayor').once('value'); mayor = mayorSnap.val()?.name || ''; } catch(e) {}
         
-        // Herní den
-        const gameDay = state.time?.days || '?';
+        // Herní den — z leaderboardu nebo state
+        const gameDay = state.time?.days || last?.day || '?';
         
         // Sestav zprávu
-        let statsMsg = `📊 Den ${gameDay} v Pustině: `;
-        statsMsg += `${onlineCount} přeživších aktivních. `;
-        if (newPlayers > 0) statsMsg += `${newPlayers} nových tváří. `;
-        if (msgCount > 0) statsMsg += `${msgCount} zpráv v chatu. `;
+        let parts = [`📊 Den ${gameDay} v Pustině:`];
+        parts.push(`${onlineCount} online, ${totalPlayers} registrovaných.`);
+        if (msgCount > 0) parts.push(`${msgCount} zpráv v chatu.`);
         if (deathCount > 0) {
-            statsMsg += `${deathCount}× smrt${deathNames.length ? ' (RIP ' + deathNames.join(', ') + ')' : ''}. `;
+            parts.push(`${deathCount}× smrt${deathNames.length ? ' (RIP ' + deathNames.join(', ') + ')' : ''}.`);
         } else {
-            statsMsg += 'Nikdo neumřel — slušný den! ';
+            parts.push('Nikdo neumřel!');
         }
-        if (topKiller && topKills > 0) statsMsg += `Nejaktivnější: ${topKiller} (${topKills} killů). `;
-        if (treasury > 0) statsMsg += `Kasa: ${treasury}💰. `;
-        if (mayor) statsMsg += `Šéf: ${mayor}.`;
+        if (topKiller && topKills > 0) parts.push(`Top killer: ${topKiller} (${topKills}).`);
+        if (topLevelPlayer && maxLevel > 1) parts.push(`Nejvyšší level: ${topLevelPlayer} (${maxLevel}).`);
+        if (treasury > 0) parts.push(`Kasa: ${treasury}💰.`);
+        if (mayor) parts.push(`Šéf: ${mayor}.`);
         
-        // Pošli do chatu
+        const statsMsg = parts.join(' ');
+        
         await firebaseDB.ref('chat/messages').push({
             author: '📊 Pustina',
-            text: statsMsg.trim(),
+            text: statsMsg,
             timestamp: firebase.database.ServerValue.TIMESTAMP,
             system: true,
             level: 99,
@@ -125365,7 +125440,6 @@ async function checkDailyStats() {
             rankColor: '#64b5f6'
         });
         
-        // Ulož timestamp
         await firebaseDB.ref('shared/dailyStats').set({ timestamp: now, day: gameDay });
         console.log('📊 Denní statistiky odeslány');
     } catch(e) { console.error('Daily stats error:', e); }
