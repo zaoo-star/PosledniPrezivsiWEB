@@ -35448,6 +35448,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.discoveredSecrets) state.discoveredSecrets = [];
             if (!state.reputation) state.reputation = { traders: 0, military: 0, scientists: 0, survivors: 0, raiders: 0 };
             if (!state.factions) state.factions = {};
+            if (!state.base) state.base = [];
             if (state.money === undefined) state.money = 0;
             // [FIX] Patch companion a class ikony
             try { if (typeof patchCompanionIcons === 'function') patchCompanionIcons(); } catch(e) {}
@@ -54877,7 +54878,7 @@ function openFullscreenMap() {
         // === CRAFTING ===
         // Helper: má hráč přístup k dílně? (vlastní, klanová, nebo land workshop)
         function hasWorkshopAccess() {
-            if (state.base.includes('workshop')) return true;
+            if (state.base?.includes('workshop')) return true;
             if (window._landWorkshopAccess) return true;
             // Klanová dílna
             const loc = state.world?.currentLocation;
@@ -100379,6 +100380,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <button class="btn wl-btn" onclick="showSettlementBoard()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;min-width:45%"><span style="font-size:0.7rem;color:#8bc34a">📰 NÁSTĚNKA</span></button>
                 </div>` : ''}
                 
+                <div style="display: flex; gap: 3px; margin-bottom: 4px;">
+                    <button class="btn wl-btn" onclick="showHallOfFame()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif"><span style="font-size:0.7rem;color:#ffd700">🏅 SÍŇ SLÁVY</span></button>
+                </div>
+                
                 <!-- OBNOVIT HRU -->
                 <button class="btn wl-btn wl-scratch wl-dirt" onclick="location.reload()" style="width: 100%; background: #0a0a0a; padding: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; margin-bottom: 0.4rem; ">
                     <span style="font-size: 0.75rem; color: #666;">OBNOVIT HRU</span>
@@ -124403,7 +124408,7 @@ _rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
 _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>50)this.cache.delete(this.cache.keys().next().value);},
 async callGemini(sys,msg,maxTok){if(!this.geminiKey)return null;try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':this.geminiKey},body:JSON.stringify({system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]})});if(!r.ok){console.error('Gemini HTTP:',r.status,await r.text().catch(()=>''));return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');return null;}if(finish==='MAX_TOKENS'&&text){return text.replace(/[,\s]+$/,'')+'...';}return text;}catch(e){console.error('Gemini:',e);return null;}},
-async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});if(!r.ok){console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){console.error('Claude:',e);return null;}},
+async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),10000);const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]}),signal:ctrl.signal});clearTimeout(tid);if(!r.ok){console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){console.error('Claude:',e.name==='AbortError'?'timeout 10s':e);return null;}},
 async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;if(!this._rate())return null;if(ck){const c=this._gc(ck);if(c){this.requestCount--;return c;}}
 // Claude Sonnet pro kvalitu, Gemini fallback
 let r=null;
@@ -124488,7 +124493,7 @@ const NPC_GAME_ROLES = {
 };
 async function aiNpcDialog(npcId,topic){if(!AI_ENGINE.enabled)return null;const npc=FRIENDLY_NPCS.find(n=>n.id===npcId);if(!npc)return null;const c=getAICtx(),trust=state.npcRelations?.[npcId]?.trust||0,d=NPC_DIALOGUES[npcId],sample=d?.topics?.[topic]?.lines?.[0]||'';
 const role=NPC_GAME_ROLES[npcId]||'';
-return await AI_ENGINE.generate(`${AI_BASE}
+return await AI_ENGINE.generateFast(`${AI_BASE}
 Jsi "${npc.name}". Osobnost: ${npc.personality||'?'}. Pozadí: ${npc.background||'?'}.
 HERNÍ ROLE: ${role}
 Důvěra hráče: ${trust}%. ${trust<30?'Buď odměřený, nenabízej služby.':trust<70?'Buď přátelský, zmíň co můžeš nabídnout.':'Buď vřelý, nabídni vše co máš, sdílej tajemství.'}
@@ -124499,7 +124504,7 @@ ${c.comp>0?c.comp+' společníků.':'Je sám.'}
 ${sample?'Inspiruj se stylem (NEKOPÍRUJ): '+sample:''}
 Odpověz 3-5 větami jako ${npc.name}. Reaguj na konkrétní téma. Pokud se ptá na služby, řekni co nabízíš a za jakých podmínek. Buď konkrétní a zajímavý, NIKDY neodpovídej jednou větou.`,topic||'Pozdrav',`npc_${npcId}_${topic}_${Math.floor(trust/25)}`,500);}async function aiGameMaster(ev,ex){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generateFast(`Jsi vypravěč. Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}" — ${c.locDesc}. ${c.zone} zóna, ${c.tod}, den ${c.day}. ${c.comp>0?c.comp+' společníků.':'Sám.'} ${ex||''}\n2-3 věty co vidí/slyší/cítí.`,ev,`gm_${ev}_${c.loc}_${c.tod}`);}
 let _aiHist=[];
-async function aiCompanionChat(msg){if(!AI_ENGINE.enabled)return null;const c=getAICtx();const r=await AI_ENGINE.generate(`${AI_BASE}
+async function aiCompanionChat(msg){if(!AI_ENGINE.enabled)return null;const c=getAICtx();const r=await AI_ENGINE.generateFast(`${AI_BASE}
 Jsi "Průvodce Pustinou" — tajemný hlas v hlavě přeživšího. Pomáháš přežít v post-apokalyptické RPG hře "Poslední Přeživší".
 
 PRAVIDLA:
@@ -124516,7 +124521,7 @@ ${c.comp>0?c.comp+' společníků.':'Je sám.'} Zabití: ${c.kills}. Questy: ${c
 ${_aiHist.length>0?'Poslední konverzace:\n'+_aiHist.slice(-6).map(h=>h.r+': '+h.t).join('\n'):''}
 
 Odpověz 3-5 větami. Buď užitečný, konkrétní, sarkastický ale přátelský. NIKDY neodpovídej jednou větou.`,msg,null,600);if(r){_aiHist.push({r:'Hráč',t:msg},{r:'Průvodce',t:r});if(_aiHist.length>20)_aiHist=_aiHist.slice(-12);}return r;}
-async function aiGenerateQuest(){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generate(`${AI_BASE}\nVygeneruj JEDEN quest. Formát:\nNÁZEV: [název]\nPOPIS: [1-2 věty]\nCÍL: [kill/explore/collect]\nODMĚNA: [XP + peníze]\nHráč lvl ${c.lvl}, "${c.loc}" ${c.zone}, den ${c.day}.`,'Generuj quest',null);}
+async function aiGenerateQuest(){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generateFast(`${AI_BASE}\nVygeneruj JEDEN quest. Formát:\nNÁZEV: [název]\nPOPIS: [1-2 věty]\nCÍL: [kill/explore/collect]\nODMĚNA: [XP + peníze]\nHráč lvl ${c.lvl}, "${c.loc}" ${c.zone}, den ${c.day}.`,'Generuj quest',null);}
 function showAIChatPanel(){if(!AI_ENGINE.enabled){notifyWarning('AI nedostupná','Admin musí nastavit AI klíč v 🤖 AI Nastavení.');return;}let h=_aiHist.map(x=>`<div style="margin:0.4rem 0;text-align:${x.r==='Hráč'?'right':'left'}"><div style="display:inline-block;max-width:85%;padding:0.5rem 0.8rem;border-radius:12px;background:${x.r==='Hráč'?'#1a3a2a':'#1a1a2a'};border:1px solid ${x.r==='Hráč'?'#2a5a3a':'#2a2a4a'}"><div style="color:${x.r==='Hráč'?'#8bc34a':'#ce93d8'};font-size:0.7rem;font-weight:bold">${x.r==='Hráč'?'🧑 Ty':'🔮 Průvodce'}</div><div style="color:#ddd;font-size:0.85rem;margin-top:0.2rem">${escapeHtml(x.t)}</div></div></div>`).join('');if(!h)h='<div style="text-align:center;padding:2rem;color:#555"><div style="font-size:2rem">🔮</div><p>Průvodce čeká na zprávu...</p></div>';showModal('🔮 Průvodce Pustinou',`<div id="aiH" style="max-height:45vh;overflow-y:auto;padding:0.5rem">${h}</div><div style="display:flex;gap:0.5rem"><input type="text" id="aiIn" placeholder="Napiš zprávu..." maxlength="200" style="flex:1;background:#0d0d0d;border:1px solid #333;border-radius:8px;padding:0.6rem;color:#fff;font-family:inherit" onkeypress="if(event.key==='Enter')sendAIChat()"><button class="btn" onclick="sendAIChat()" style="background:linear-gradient(135deg,#7b1fa2,#4a148c);padding:0.6rem 1rem">🔮</button></div><div style="display:flex;gap:0.3rem;margin-top:0.5rem;flex-wrap:wrap"><button class="btn" onclick="quickAI('Co bych měl dělat?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">💡 Rady</button><button class="btn" onclick="quickAI('Pověz o tomhle místě')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">🗺️ Místo</button><button class="btn" onclick="quickAI('Jaké nebezpečí hrozí?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">⚠️ Nebezpečí</button><button class="btn" onclick="quickAI('Vyprávěj příběh')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">📖 Příběh</button><button class="btn" onclick="aiQuestlineUI()" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">📜 Quest</button></div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);setTimeout(()=>{const el=document.getElementById('aiH');if(el)el.scrollTop=el.scrollHeight;},100);}
 let _aiChatCooldown = 0;
 async function sendAIChat(){
@@ -124526,14 +124531,14 @@ async function sendAIChat(){
 function quickAI(t){const i=document.getElementById('aiIn');if(i){i.value=t;sendAIChat();}}
 async function showAIAdminPanel(){if(!isAdmin()&&!isStaff())return;let cfg={};try{const s=await firebaseDB.ref('settings/aiConfig').once('value');cfg=s.val()||{};}catch(e){}showModal('🤖 AI Nastavení',`<div style="padding:0.5rem"><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Gemini API klíč:</label><input type="password" id="aiK" value="${cfg.geminiKey||''}" placeholder="AIzaSy..." style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:#555;font-size:0.7rem;margin:0.2rem 0">aistudio.google.com → Get API key</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Claude Proxy (volitelné):</label><input type="text" id="aiP" value="${cfg.claudeProxy||''}" placeholder="https://proxy/claude" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Model:</label><select id="aiM" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><option value="gemini-2.5-flash" ${cfg.model==='gemini-2.5-flash'?'selected':''}>Gemini 2.5 Flash</option><option value="gemini-2.0-flash" ${cfg.model==='gemini-2.0-flash'?'selected':''}>Gemini 2.0 Flash</option></select></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Max req/hráč/h:</label><input type="number" id="aiR" value="${cfg.maxReqPerHour||30}" min="5" max="100" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="background:#1a2a1a;padding:0.5rem;border-radius:6px;margin-bottom:1rem"><div style="color:${AI_ENGINE.enabled?'#8bc34a':'#f44336'};font-weight:bold">${AI_ENGINE.enabled?'✅ AKTIVNÍ':'❌ NEAKTIVNÍ'}</div><div style="color:#888;font-size:0.8rem">Req: ${AI_ENGINE.requestCount}/${AI_ENGINE.maxReq}</div></div><button class="btn" onclick="saveAICfg()" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.7rem;font-weight:bold">💾 Uložit</button><button class="btn" onclick="testAI()" style="width:100%;margin-top:0.3rem;background:#7b1fa2">🧪 Test</button><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:0.3rem;background:#333">← Zpět</button></div>`);}
 async function saveAICfg(){if(!isAdmin()&&!isStaff())return;try{await firebaseDB.ref('settings/aiConfig').set({geminiKey:document.getElementById('aiK')?.value?.trim()||null,claudeProxy:document.getElementById('aiP')?.value?.trim()||null,model:document.getElementById('aiM')?.value||'gemini-2.5-flash',maxReqPerHour:parseInt(document.getElementById('aiR')?.value)||30});await AI_ENGINE.init();notifySuccess('✅ Uloženo!',AI_ENGINE.enabled?'AI aktivní':'Neaktivní');showAIAdminPanel();}catch(e){notifyWarning('Chyba',e.message);}}
-async function testAI(){if(!AI_ENGINE.enabled){notifyWarning('AI off','Nastav klíč.');return;}notifyInfo('🧪','Testuji...');const r=await AI_ENGINE.generate('Jsi test. Odpověz česky jednou větou.','Řekni něco o apokalypse.',null);r?notifySuccess('✅ Funguje!',r.substring(0,100)):notifyWarning('❌ Nefunguje','Zkontroluj klíč.');}
+async function testAI(){if(!AI_ENGINE.enabled){notifyWarning('AI off','Nastav klíč.');return;}notifyInfo('🧪','Testuji...');const r=await AI_ENGINE.generateFast('Jsi test. Odpověz česky jednou větou.','Řekni něco o apokalypse.',null);r?notifySuccess('✅ Funguje!',r.substring(0,100)):notifyWarning('❌ Nefunguje','Zkontroluj klíč.');}
 window.showAIChatPanel=showAIChatPanel;window.sendAIChat=sendAIChat;window.quickAI=quickAI;window.showAIAdminPanel=showAIAdminPanel;window.saveAICfg=saveAICfg;window.testAI=testAI;
 
 // 💀 AI DEATH NARRATIVE
 async function aiDeathNarrative(deathReason) {
     if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
-    return await AI_ENGINE.generate(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE}
 Jsi vypravěč smrti. Napiš dramatický, krátký nekrolog (3-4 věty) pro mrtvého přeživšího.
 Hráč "${c.name}", level ${c.lvl}, třída ${c.cls||'přeživší'}, přežil ${c.day} dní.
 Příčina smrti: ${deathReason}. Lokace: "${c.loc}". Zbraň: ${c.weapon}.
@@ -124594,7 +124599,13 @@ POVINNÝ FORMÁT — dodržuj VŠECHNY sekce:
 PRAVIDLA: NEVYMÝŠLEJ si NPC ani lokace. Používej POUZE jména z tvých znalostí. Bez markdown. Česky, vtipně, sarkasticky. Každá sekce musí být obsažena!
 Kontext: ${radioCtx}.`, 'Vysílej', null, 1500);
         
-        // Ulož do Firebase pro ostatní
+        // Fallback na generateFast pokud generate selže
+        if (!news) {
+            news = await AI_ENGINE.generateFast(`${AI_BASE}
+Jsi hlasatel Radio Pustina. Vysílej krátké zprávy (5-8 vět). Zprávy o NPC, počasí, varování, tip dne. Česky, sarkasticky. Bez markdown.
+Den ${c.day}, ${c.tod}.`, 'Radio FB', null, 800);
+        }
+        
         if (news && firebaseDB) {
             try { await firebaseDB.ref('shared/radio').set({ text: news, timestamp: Date.now(), day: c.day }); } catch(e) {}
         }
@@ -124609,7 +124620,9 @@ Kontext: ${radioCtx}.`, 'Vysílej', null, 1500);
             </div>
             ${(typeof isAdmin==='function'&&isAdmin())?'<button class="btn" onclick="showAIRadio(true)" style="width:100%;margin-top:0.3rem;background:#7b1fa2;font-size:0.8rem">🔄 Vygenerovat nové vysílání (admin)</button>':''}
             <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#333">📻 Vypnout rádio</button>`);
-    } else { notifyWarning('📻', 'Jen šum...'); closeModal(); }
+    } else {
+        showModal('📻 Rádio', `<div style="text-align:center;padding:1rem;color:#888"><p>📻 Jen šum... nepodařilo se naladit.</p></div>${(typeof isAdmin==='function'&&isAdmin())?'<button class="btn" onclick="showAIRadio(true)" style="width:100%;margin-top:0.5rem;background:#7b1fa2">🔄 Zkusit znovu</button>':''}<button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#333">← Zavřít</button>`);
+    }
 }
 
 // 🗡️ LEGENDARY ITEM LORE
@@ -125200,7 +125213,7 @@ async function sendNpcReply(npcAuthor, npcOrigMsg) {
     const profile = NPC_CHAT_PROFILES[npcAuthor];
     if (!profile || !AI_ENGINE.enabled) return;
     
-    const response = await AI_ENGINE.generate(`${AI_BASE}
+    const response = await AI_ENGINE.generateFast(`${AI_BASE}
 Jsi "${npcAuthor}". ${profile.style}
 Hráč "${getPlayerName()}" ti napsal v chatu: "${playerMsg}"
 Tvá předchozí zpráva byla: "${npcOrigMsg}"
@@ -125292,8 +125305,15 @@ POVINNÝ FORMÁT — napiš VŠECHNY sekce:
 
 PRAVIDLA: NEVYMÝŠLEJ si místa ani postavy co nejsou ve hře. Používej POUZE NPC a lokace z tvých znalostí. Česky, stručně, jako reálná nástěnka v osadě. Bez markdown (žádné **tučné**, žádné #nadpisy). Piš čísla se závorkou: 1) 2) 3).
 Kontext: ${ctx}`, 'Nástěnka', null, 1200);
+        
+        // Fallback na generateFast pokud generate selže
+        if (!board) {
+            board = await AI_ENGINE.generateFast(`${AI_BASE}
+Napiš denní vývěsku osady (5-8 bodů). Počasí, varování, nabídky NPC, tip dne, vtip. Česky, stručně. Bez markdown.
+Kontext: ${ctx}`, 'Nástěnka FB', null, 800);
+        }
+        
         boardDay = state.time?.days || 0;
-        // Ulož do Firebase pro ostatní hráče
         if (board && firebaseDB) {
             try { await firebaseDB.ref('shared/board').set({ text: board, day: boardDay, timestamp: Date.now() }); } catch(e) {}
         }
@@ -125304,7 +125324,9 @@ Kontext: ${ctx}`, 'Nástěnka', null, 1200);
             <div style="text-align:center;color:#8bc34a;font-weight:bold;letter-spacing:2px;margin-bottom:0.8rem">📰 DENNÍ VÝVĚSKA — Den ${boardDay||'?'}</div>
             <div style="color:#ccc;font-size:0.85rem;line-height:1.8;white-space:pre-wrap">${escapeHtml(board)}</div>
         </div>${(typeof isAdmin==='function'&&isAdmin())?'<button class="btn" onclick="showSettlementBoard(true)" style="width:100%;margin-top:0.3rem;background:#7b1fa2;font-size:0.8rem">🔄 Vygenerovat novou (admin)</button>':''}<button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#333">← Zavřít</button>`);
-    } else closeModal();
+    } else {
+        showModal('📰 Nástěnka', `<div style="text-align:center;padding:1rem;color:#888"><p>⚠️ Nepodařilo se vygenerovat nástěnku.</p><p style="font-size:0.75rem">AI možná není dostupná. Zkus to znovu.</p></div>${(typeof isAdmin==='function'&&isAdmin())?'<button class="btn" onclick="showSettlementBoard(true)" style="width:100%;margin-top:0.5rem;background:#7b1fa2">🔄 Zkusit znovu</button>':''}<button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#333">← Zavřít</button>`);
+    }
 }
 
 // =============================================
@@ -125656,7 +125678,7 @@ async function sendNpcChat(npcId) {
         }
     } catch(e) {}
     
-    const response = await AI_ENGINE.generateFast(`${AI_BASE}
+    const response = await AI_ENGINE.generate(`${AI_BASE}
 Jsi "${npc?.name||npcId}". ${role}
 
 CO PRÁVĚ DĚLÁŠ: ${scheduleInfo || 'Jsi na svém obvyklém místě.'}
