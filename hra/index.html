@@ -122173,23 +122173,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             try {
-                // [FIX] Transaction místo read+set — zabraní dvojitému vyzvednutí při současném přístupu
                 const storageRef = firebaseDB.ref(`clans/${locationId}/clanStorage/${itemKey}`);
-                let actualTransferCount = transferCount;
-                const transResult = await storageRef.transaction(current => {
-                    if (current === undefined) return; // Abort only on undefined
-                    if (current === null) return null; // Already deleted
-                    const currentCount = current.count || 1;
-                    actualTransferCount = Math.min(transferCount, currentCount);
-                    if (actualTransferCount <= 0) return current; // Nic k vyzvednutí, ponech beze změny
-                    const remaining = currentCount - actualTransferCount;
-                    if (remaining <= 0) return null; // Smazat záznam
-                    return { ...current, count: remaining };
-                });
+                const snap = await storageRef.once('value');
+                const serverItem = snap.val();
                 
-                if (!transResult.committed || actualTransferCount <= 0) {
+                if (!serverItem || !serverItem.id) {
                     notifyWarning('Chyba', 'Předmět již není ve skladu');
                     return;
+                }
+                
+                const serverCount = serverItem.count || 1;
+                const actualTransferCount = Math.min(transferCount, serverCount);
+                if (actualTransferCount <= 0) {
+                    notifyWarning('Chyba', 'Nic k vyzvednutí');
+                    return;
+                }
+                
+                const remaining = serverCount - actualTransferCount;
+                if (remaining <= 0) {
+                    await storageRef.remove();
+                } else {
+                    await storageRef.update({ count: remaining });
                 }
                 
                 // Přidej do inventáře - power_armor a jedinečné itemy se nikdy nestackují
