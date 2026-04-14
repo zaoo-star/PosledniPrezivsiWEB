@@ -4097,7 +4097,7 @@
                     trade_items: { name: 'Obchodník', desc: 'Prodej 3 věci' },
                     buy_items: { name: 'Nákupčí', desc: 'Kup 2 věci' },
                     feed_companion: { name: 'Krmitel', desc: 'Nakrm společníka' },
-                    heal_self: { name: 'Přeživší', desc: 'Vyléč se 50 HP' }
+                    heal_self: { name: 'Přeživší', desc: 'Vyleč se 50 HP' }
                 },
                 events: {
                     ambush: 'Přepadení!',
@@ -4629,7 +4629,7 @@
             
             notifyLowHealth: function() {
                 this.send('❤️ Kritické zdraví!', {
-                    body: 'Tvé HP je velmi nízké! Vyléč se!',
+                    body: 'Tvé HP je velmi nízké! Vyleč se!',
                     tag: 'low-health',
                     renotify: true
                 });
@@ -12191,8 +12191,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'story_master', name: 'Mistr příběhu', icon: '📖', desc: 'Dokonči 10 questů', check: () => (state.mainQuest?.completedQuests?.length || 0) >= 10, reward: { xp: 500, money: 1000 } },
             
             // Nemoci
-            { id: 'disease_survivor', name: 'Překonal jsem', icon: '🦠', desc: 'Vyléč se z první nemoci', check: () => (state.diseases?.totalCured || 0) >= 1, reward: { xp: 50, money: 80 } },
-            { id: 'plague_doctor', name: 'Morový doktor', icon: '🏥', desc: 'Vyléč se z 10 nemocí', check: () => (state.diseases?.totalCured || 0) >= 10, reward: { xp: 250, money: 400 } },
+            { id: 'disease_survivor', name: 'Překonal jsem', icon: '🦠', desc: 'Vyleč se z první nemoci', check: () => (state.diseases?.totalCured || 0) >= 1, reward: { xp: 50, money: 80 } },
+            { id: 'plague_doctor', name: 'Morový doktor', icon: '🏥', desc: 'Vyleč se z 10 nemocí', check: () => (state.diseases?.totalCured || 0) >= 10, reward: { xp: 250, money: 400 } },
             { id: 'iron_constitution', name: 'Železná konstituce', icon: '💪', desc: 'Přežij 3 radiační bouře', check: () => (state.stats?.radstormsSurvived || 0) >= 3, reward: { xp: 200, money: 300 } },
             
             // Speciální výzvy
@@ -12808,7 +12808,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
               target: 1, progressKey: 'fedCompanion',
               check: () => (state.dailyQuests.progress?.fedCompanion || 0) >= 1, 
               reward: () => { addXP(20); addMoney(30); } },
-            { id: 'heal_self', name: 'Přeživší', desc: 'Vyléč se 50 HP', icon: '💚', 
+            { id: 'heal_self', name: 'Přeživší', desc: 'Vyleč se 50 HP', icon: '💚', 
               target: 50, progressKey: 'healed',
               check: () => (state.dailyQuests.progress?.healed || 0) >= 50, 
               reward: () => { addMoney(50); } },
@@ -95124,11 +95124,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 .limitToLast(100)
                 .on('value', (snapshot) => {
                     const data = snapshot.val() || {};
-                    chatMessages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
+                    chatMessages = Object.entries(data).map(([k,v]) => ({...v, _key: k, reactions: _chatReactionsCache[k] || {}})).sort((a, b) => a.timestamp - b.timestamp);
                     
                     // Zkontroluj nové zprávy pro notifikaci
                     checkNewChatMessages();
                 });
+            // Start reactions listener
+            listenChatReactions();
+            // Load pinned message
+            firebaseDB.ref('shared/pinnedChat').on('value', snap => {
+                _pinnedChatMsg = snap.val();
+            });
+            // Load poll
+            listenChatPoll();
         }
         
         // === KLAN CHAT ===
@@ -95296,6 +95304,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Sanitizace textu
             const sanitizedText = escapeHtml(text.trim().substring(0, 300));
             if (!sanitizedText) return;
+            
+            // 🗳️ ANKETA příkaz: /anketa Otázka | Možnost1 | Možnost2 | Možnost3
+            if (text.trim().startsWith('/anketa ')) {
+                const parts = text.trim().substring(8).split('|').map(p => p.trim()).filter(p => p);
+                if (parts.length < 3) { notifyWarning('Anketa', 'Formát: /anketa Otázka | Možnost1 | Možnost2'); return; }
+                const question = parts[0].substring(0, 100);
+                const options = parts.slice(1, 5).map(o => o.substring(0, 50));
+                try {
+                    await firebaseDB.ref('shared/chatPoll').set({
+                        question, options, votes: {},
+                        author: playerName, timestamp: Date.now()
+                    });
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🗳️ ANKETA',
+                        text: `${playerName} vytvořil anketu: "${question}" — hlasuj dole v chatu!`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true, level: 99, rankName: 'Systém', rankColor: '#2196f3'
+                    });
+                    notifySuccess('🗳️', 'Anketa vytvořena!');
+                    showChatModal();
+                } catch(e) { notifyWarning('Chyba', 'Nepodařilo se vytvořit anketu'); }
+                return;
+            }
             
             // Inkrementuj počet odeslaných zpráv
             state.stats = state.stats || {};
@@ -95467,6 +95498,85 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         
+        // 👍 CHAT REACTIONS
+        async function chatReact(msgKey, emoji) {
+            if (!firebaseDB || !msgKey) return;
+            const myName = getPlayerName();
+            const ref = firebaseDB.ref(`chat/reactions/${msgKey}/${emoji}/${myName}`);
+            try {
+                const snap = await ref.once('value');
+                if (snap.exists()) { await ref.remove(); }
+                else { await ref.set(true); }
+                // Refresh chat
+                if (typeof renderFull === 'function') renderFull();
+            } catch(e) { console.error('React error:', e); }
+        }
+        window.chatReact = chatReact;
+        
+        // Load reactions into messages
+        let _chatReactionsCache = {};
+        let _chatReactionsListener = null;
+        function listenChatReactions() {
+            if (_chatReactionsListener || !firebaseDB) return;
+            _chatReactionsListener = firebaseDB.ref('chat/reactions').on('value', snap => {
+                _chatReactionsCache = snap.val() || {};
+            });
+        }
+        
+        // 📌 PINNED MESSAGE
+        let _pinnedChatMsg = null;
+        async function pinChatMessage(msgKey, text, author) {
+            if (!firebaseDB) return;
+            if (!isAdmin() && !isStaff() && !isMayor()) return;
+            try {
+                await firebaseDB.ref('shared/pinnedChat').set({
+                    text: (text || '').substring(0, 200),
+                    author: author || '',
+                    pinnedBy: getPlayerName(),
+                    timestamp: Date.now(),
+                    msgKey: msgKey
+                });
+                notifySuccess('📌', 'Zpráva připnuta');
+            } catch(e) {}
+        }
+        async function unpinChatMessage() {
+            if (!firebaseDB) return;
+            if (!isAdmin() && !isStaff() && !isMayor()) return;
+            try { await firebaseDB.ref('shared/pinnedChat').remove(); notifySuccess('📌', 'Odepnuto'); } catch(e) {}
+        }
+        window.pinChatMessage = pinChatMessage;
+        window.unpinChatMessage = unpinChatMessage;
+        
+        // 🗳️ CHAT POLL
+        let _chatPoll = null;
+        function listenChatPoll() {
+            if (!firebaseDB) return;
+            firebaseDB.ref('shared/chatPoll').on('value', snap => { _chatPoll = snap.val(); });
+        }
+        async function votePoll(optionIndex) {
+            if (!firebaseDB || !_chatPoll) return;
+            const myName = getPlayerName();
+            try {
+                await firebaseDB.ref(`shared/chatPoll/votes/${myName}`).set(optionIndex);
+                showChatModal();
+            } catch(e) {}
+        }
+        async function closePoll() {
+            if (!firebaseDB) return;
+            if (!isAdmin() && !isStaff()) return;
+            try { await firebaseDB.ref('shared/chatPoll').remove(); showChatModal(); } catch(e) {}
+        }
+        window.votePoll = votePoll;
+        window.closePoll = closePoll;
+        
+        // 🔇 FILTER SYSTEM MESSAGES
+        window._chatHideSystem = false;
+        function toggleChatSystemFilter() {
+            window._chatHideSystem = !window._chatHideSystem;
+            renderFull();
+        }
+        window.toggleChatSystemFilter = toggleChatSystemFilter;
+        
         function replyToPlayer(playerName, msgIndex) {
             const chatInput = document.getElementById('chatInput');
             if (!chatInput) return;
@@ -95575,7 +95685,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (quoteMatch) {
                 const qAuthor = quoteMatch[1];
                 const qText = quoteMatch[2].length > 60 ? quoteMatch[2].substring(0, 57) + '...' : quoteMatch[2];
-                quoteHtml = `<div style="border-left:3px solid #9c27b0;padding:0.3rem 0.5rem;margin-bottom:0.4rem;background:rgba(156,39,176,0.15);border-radius:0 6px 6px 0;font-size:0.75rem;line-height:1.3;max-width:100%;overflow:hidden;"><div style="color:#bb86fc;font-weight:bold;font-size:0.7rem;margin-bottom:0.1rem;">↩ ${escapeHtml(qAuthor)}</div><div style="color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(qText)}</div></div>`;
+                quoteHtml = `<div style="border-left:3px solid #8a6a30;padding:0.3rem 0.5rem;margin-bottom:0.4rem;background:rgba(100,80,30,0.15);border-radius:0 2px 2px 0;font-size:0.75rem;line-height:1.3;max-width:100%;overflow:hidden;"><div style="color:#c0a040;font-weight:bold;font-size:0.7rem;margin-bottom:0.1rem;">↩ ${escapeHtml(qAuthor)}</div><div style="color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(qText)}</div></div>`;
                 bodyText = quoteMatch[3] || '';
             }
             
@@ -95637,6 +95747,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 window._chatMsgTexts = [];
                 window._npcMsgs = [];
                 chatMessages.slice(-50).forEach((msg, _msgIdx) => {
+                    // Inject reactions from cache
+                    if (msg._key && _chatReactionsCache[msg._key]) msg.reactions = _chatReactionsCache[msg._key];
+                    
                     window._chatMsgTexts.push(msg.text || '');
                     if (msg.npc) window._npcMsgs[_msgIdx] = { author: msg.author, text: (msg.text||'').substring(0,80) };
                     const isMe = msg.author === myName;
@@ -95698,6 +95811,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         msg.author === '👑 VYHLÁŠKA ŠÉFA' ||
                         msg.author?.includes('SYSTÉM');
                     
+                    // Filter: skryj systémové zprávy
+                    if (window._chatHideSystem && isSystemMessage) return;
+                    
                     // Klikatelné jméno pro menu, celá zpráva pro rychlou odpověď
                     let authorHtml;
                     if (isMe) {
@@ -95737,7 +95853,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     messagesHtml += `
                         <div style="margin-bottom: 0.5rem; ${isMe ? 'text-align: right;' : ''}">
-                            <div ${messageClickHandler} style="display: inline-block; max-width: 80%; background: ${isMe ? '#1a3a1a' : isSystemMessage ? systemBgColor : staffRole ? '#2a1a1a' : '#2a2a2a'}; padding: 0.5rem 0.8rem; border-radius: 12px; ${isMe ? 'border-bottom-right-radius: 4px;' : 'border-bottom-left-radius: 4px;'} ${isSystemMessage ? `border: 1px solid ${systemBorderColor};` : staffRole ? `border: 1px solid ${staffRoleData.color};` : ''} ${!isMe && !isSystemMessage ? 'cursor: pointer; transition: background 0.2s;' : ''}" ${!isMe && !isSystemMessage ? `onmouseover="this.style.background='#3a3a3a'" onmouseout="this.style.background='${staffRole ? '#2a1a1a' : '#2a2a2a'}'"` : ''}>
+                            <div ${messageClickHandler} style="display: inline-block; max-width: 80%; background: ${isMe ? 'linear-gradient(135deg,#1a2a10,#0d1508)' : isSystemMessage ? systemBgColor : staffRole ? '#1a0a0a' : 'linear-gradient(135deg,#1a1810,#0d0d08)'}; padding: 0.5rem 0.8rem; border-radius: 2px; ${isMe ? 'border-right: 3px solid #4a7a30;' : isSystemMessage ? `border-left: 3px solid ${systemBorderColor};` : staffRole ? `border-left: 3px solid ${staffRoleData.color};` : 'border-left: 3px solid #3a3020;'} ${!isMe && !isSystemMessage ? 'cursor: pointer; transition: background 0.2s;' : ''}" ${!isMe && !isSystemMessage ? `onmouseover="this.style.background='#2a2818'" onmouseout="this.style.background='linear-gradient(135deg,#1a1810,#0d0d08)'"` : ''}>
                                 <div style="font-size: 0.7rem; margin-bottom: 0.2rem;">
                                     ${authorHtml}
                                     ${!isSystemMessage ? `<span style="color: ${msgRankColor}; font-size: 0.65rem; margin-left: 0.3rem;">[${msgRankName}]</span>
@@ -95745,7 +95861,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                     <span style="color: #444; margin-left: 0.5rem;">${time}</span>
                                 </div>
                                 <div class="chat-msg-text" style="color: ${isSystemMessage ? systemMsgColor : '#ddd'};">${formatChatMessage(msg.text, myName)}</div>
-                                ${''}
+                                ${msg._key ? `<div style="display:flex;gap:0.15rem;margin-top:0.25rem;flex-wrap:wrap;">
+                                    ${['👍','😂','💀','❤️','🔥'].map(e => {
+                                        const r = msg.reactions?.[e] || {};
+                                        const cnt = Object.keys(r).length;
+                                        const iMine = r[myName];
+                                        return cnt > 0 || !isSystemMessage ? `<button onclick="event.stopPropagation();chatReact('${msg._key}','${e}')" style="background:${iMine?'#1a2a10':'#0d0d08'};border:1px solid ${iMine?'#4a7a30':'#2a2010'};border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#a09070;line-height:1.2;${cnt===0?'opacity:0.25;':''}display:inline-flex;align-items:center;gap:0.1rem;">${e}${cnt>0?'<span style=\"font-size:0.55rem;color:#c0a050;\">'+cnt+'</span>':''}</button>` : '';
+                                    }).join('')}
+                                    ${(typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) ? `<button onclick="event.stopPropagation();pinChatMessage('${msg._key}','${escapeHtml((msg.text||'').substring(0,200)).replace(/'/g,"\\'")}','${escapeHtml(msg.author||'').replace(/'/g,"\\'")}');showChatModal();" style="background:#1a1505;border:1px solid #2a2010;border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#888;line-height:1.2;opacity:0.4;" title="Připnout">📌</button>` : ''}
+                                </div>` : ''}
                             </div>
                         </div>
                     `;
@@ -95767,7 +95891,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             showModal('💬 Chat přeživších', `
                 <!-- Moje hodnost (kompaktní) -->
-                <div style="background: linear-gradient(135deg, #1a1a2a, #0a0a1a); padding: 0.3rem 0.5rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid ${myRank.color}40; display: flex; align-items: center; justify-content: space-between; gap: 0.4rem;">
+                <div style="background: linear-gradient(135deg, #1a1508, #0a0a05); padding: 0.3rem 0.5rem; border-radius: 2px; margin-bottom: 0.4rem; border: 1px solid ${myRank.color}40; border-left: 3px solid ${myRank.color}; display: flex; align-items: center; justify-content: space-between; gap: 0.4rem;">
                     <div style="display: flex; align-items: center; gap: 0.3rem;">
                         <span style="color: ${myRank.color}; font-size: 0.9rem;">${myRank.icon}</span>
                         <span style="color: ${myRank.color}; font-weight: bold; font-size: 0.8rem;">${myRankName}</span>
@@ -95832,12 +95956,32 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     </div>`;
                 })()}
                 
+                <!-- 📌 PINNED MESSAGE + FILTER + ONLINE -->
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;padding:0.2rem 0.4rem;background:#0a0805;border:1px solid #2a2010;border-radius:2px;">
+                    <span style="color:#6a8a40;font-size:0.65rem;font-family:'Share Tech Mono',monospace;">📡 ${(() => { const now = Date.now(); const recent = chatMessages.filter(m => !m.system && m.timestamp > now - 600000); return new Set(recent.map(m => m.author)).size; })()} na frekvenci</span>
+                    <button onclick="toggleChatSystemFilter()" style="background:${window._chatHideSystem?'#1a0a05':'#0a0805'};border:1px solid ${window._chatHideSystem?'#8a3020':'#2a2010'};color:${window._chatHideSystem?'#c06040':'#6a6050'};padding:0.15rem 0.4rem;border-radius:2px;font-size:0.6rem;cursor:pointer;font-family:'Share Tech Mono',monospace;">
+                        ${window._chatHideSystem ? '🔇 Filtr ON' : '📢 Vše'}
+                    </button>
+                </div>
+                
+                ${(() => {
+                    try {
+                        const pin = _pinnedChatMsg;
+                        if (pin?.text) return '<div style="background:#1a1505;border-left:3px solid #c0a030;border-right:1px solid #3a3020;border-top:1px solid #3a3020;border-bottom:1px solid #3a3020;border-radius:2px;padding:0.3rem 0.5rem;margin-bottom:0.3rem;display:flex;align-items:center;gap:0.4rem;">' +
+                            '<span style="font-size:0.8rem;">📌</span>' +
+                            '<div style="flex:1;font-size:0.7rem;color:#c0a030;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-family:\'Share Tech Mono\',monospace;">' + escapeHtml(pin.text) + '</div>' +
+                            ((typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) || (typeof isMayor === 'function' && isMayor()) ? '<button onclick="unpinChatMessage();showChatModal();" style="background:none;border:none;color:#666;cursor:pointer;font-size:0.7rem;">✕</button>' : '') +
+                            '</div>';
+                        return '';
+                    } catch(e) { return ''; }
+                })()}
+                
                 <!-- ZÁLOŽKY: Globální / Klan / Admin klan chaty -->
-                <div style="display: flex; gap: 0; margin-bottom: 0.4rem; background: #0a0a0a; border-radius: 8px; overflow: hidden; border: 1px solid #1a1a1a;">
-                    <button onclick="window._activeChatTab='global'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='global'?'#1a3a1a':'transparent'}; color: ${_activeChatTab==='global'?'#8bc34a':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='global'?'bold':'normal'}; border-right: 1px solid #1a1a1a; font-size: 0.85rem;">
+                <div style="display: flex; gap: 0; margin-bottom: 0.4rem; background: #080805; border-radius: 2px; overflow: hidden; border: 1px solid #3a3020;">
+                    <button onclick="window._activeChatTab='global'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='global'?'linear-gradient(180deg,#1a2a10,#0a1505)':'transparent'}; color: ${_activeChatTab==='global'?'#8bc34a':'#555'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='global'?'bold':'normal'}; border-right: 1px solid #2a2010; font-size: 0.85rem; font-family: 'Share Tech Mono', monospace; ${_activeChatTab==='global'?'border-bottom:2px solid #8bc34a;':''}">
                         🌍 Globální
                     </button>
-                    <button onclick="window._activeChatTab='clan'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='clan'?'#1a0a2a':'transparent'}; color: ${_activeChatTab==='clan'?'#ce93d8':'#666'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='clan'?'bold':'normal'}; font-size: 0.85rem; position: relative; ${isStaff()?'border-right:1px solid #1a1a1a;':''}">
+                    <button onclick="window._activeChatTab='clan'; showChatModal();" style="flex:1; padding: 0.5rem; background: ${_activeChatTab==='clan'?'linear-gradient(180deg,#1a0a20,#0a0510)':'transparent'}; color: ${_activeChatTab==='clan'?'#ce93d8':'#555'}; border: none; cursor: pointer; font-weight: ${_activeChatTab==='clan'?'bold':'normal'}; font-size: 0.85rem; font-family: 'Share Tech Mono', monospace; position: relative; ${isStaff()?'border-right:1px solid #2a2010;':''} ${_activeChatTab==='clan'?'border-bottom:2px solid #ce93d8;':''}">
                         ⚔️ Klan ${clanChatUnread > 0 && _activeChatTab !== 'clan' ? `<span style="position:absolute; top:4px; right:8px; background:#e91e63; color:#fff; border-radius:50%; width:16px; height:16px; font-size:0.6rem; display:flex; align-items:center; justify-content:center;">${clanChatUnread}</span>` : ''}
                     </button>
                     ${isStaff() ? `
@@ -95952,22 +96096,46 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ` : `
                 <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
-                    <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: #0a0a0a; border-radius: 8px; padding: 0.8rem; position: relative;">
+                    <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
                         ${messagesHtml}
                     </div>
                     
                 </div>
                 
+                ${(() => {
+                    const poll = _chatPoll;
+                    if (!poll?.question || !poll?.options) return '';
+                    const _pMyName = getPlayerName();
+                    const myVote = poll.votes?.[_pMyName];
+                    const totalVotes = poll.votes ? Object.keys(poll.votes).length : 0;
+                    const voteCounts = {};
+                    if (poll.votes) Object.values(poll.votes).forEach(v => { voteCounts[v] = (voteCounts[v]||0) + 1; });
+                    return '<div style="background:#0d0a05;border:1px solid #5a4a20;border-left:3px solid #c0a030;border-radius:2px;padding:0.5rem;margin-top:0.4rem;">' +
+                        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">' +
+                        '<span style="color:#c0a030;font-weight:bold;font-size:0.8rem;font-family:\'Share Tech Mono\',monospace;">🗳️ ' + escapeHtml(poll.question) + '</span>' +
+                        '<span style="color:#6a5a30;font-size:0.6rem;">' + totalVotes + ' hlasů</span></div>' +
+                        poll.options.map((opt, i) => {
+                            const cnt = voteCounts[i] || 0;
+                            const pct = totalVotes > 0 ? Math.round(cnt / totalVotes * 100) : 0;
+                            const isMyVote = myVote === i;
+                            return '<button onclick="votePoll(' + i + ')" style="width:100%;background:#0a0805;border:1px solid ' + (isMyVote?'#4a7a30':'#2a2010') + ';border-radius:2px;padding:0.3rem 0.5rem;margin-bottom:0.2rem;cursor:pointer;text-align:left;position:relative;overflow:hidden;color:#a09070;font-size:0.75rem;font-family:\'Share Tech Mono\',monospace;">' +
+                                '<div style="position:absolute;left:0;top:0;height:100%;width:' + pct + '%;background:' + (isMyVote?'rgba(76,120,48,0.25)':'rgba(100,80,30,0.15)') + ';transition:width 0.3s;"></div>' +
+                                '<span style="position:relative;z-index:1;">' + (isMyVote?'✓ ':'') + escapeHtml(opt) + (totalVotes>0?' ('+pct+'%)':'') + '</span></button>';
+                        }).join('') +
+                        ((typeof isAdmin==='function'&&isAdmin())||(typeof isStaff==='function'&&isStaff())||(typeof isMayor==='function'&&isMayor()) ? '<button onclick="closePoll()" style="background:none;border:none;color:#5a4a30;cursor:pointer;font-size:0.6rem;margin-top:0.1rem;">✕ Zavřít anketu</button>' : '') +
+                        '</div>';
+                })()}
+                
                 <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
-                    <input type="text" id="chatInput" placeholder="${'Napiš zprávu...'}" maxlength="200"
-                        style="flex: 1; padding: 0.6rem; background: #1a1a1a; border: 1px solid #444; border-radius: 8px; color: #fff;"
+                    <input type="text" id="chatInput" placeholder="${'Vysílej zprávu...'}" maxlength="200"
+                        style="flex: 1; padding: 0.6rem; background: #0a0805; border: 1px solid #3a3020; border-radius: 2px; color: #c0b080; font-family: 'Share Tech Mono', monospace; font-size: 0.85rem;"
                         onkeypress="if(event.key==='Enter') sendChatFromInput()">
-                    <button class="btn" onclick="sendChatFromInput()" style="background: #4CAF50; padding: 0.6rem 1rem;">📤</button>
+                    <button class="btn" onclick="sendChatFromInput()" style="background: linear-gradient(135deg,#3a5a20,#2a4015); padding: 0.6rem 1rem; border: 1px solid #4a7a30; border-radius: 2px; font-family: 'Share Tech Mono', monospace;">📡</button>
                 </div>
                 
                 `}
                 
-                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zavřít</button>
+                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: linear-gradient(135deg,#1a1510,#0d0a08); border: 1px solid #3a3020; border-radius: 2px; color: #8a7a60; font-family: 'Share Tech Mono', monospace;">← ZAVŘÍT</button>
             `);
             
             // Scrollni dolů a nastav touch handler
@@ -101049,7 +101217,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         ${report.screenshot ? `
                         <div style="margin-top: 0.8rem;">
                             <div style="color: #888; font-size: 0.75rem; margin-bottom: 0.3rem;">📸 SCREENSHOT:</div>
-                            <img src="${report.screenshot}" style="max-width:100%;max-height:300px;border-radius:6px;border:1px solid #333;cursor:pointer" onclick="window.open(this.src,'_blank')">
+                            <img src="${report.screenshot}" style="max-width:100%;max-height:300px;border-radius:6px;border:1px solid #333;cursor:pointer" onclick="window.open(this.src,'_blank')" onerror="this.outerHTML='<div style=\\'color:#c62828;font-size:0.75rem;\\'>⚠️ Screenshot se nepodařilo načíst</div>'">
                         </div>
                         ` : ''}
                         
@@ -101109,19 +101277,42 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const reader = new FileReader();
             reader.onload = function(e) {
+                const rawData = e.target.result;
+                
                 // Komprese — resize na max 800px, JPEG 0.6
                 const img = new Image();
                 img.onload = function() {
-                    const canvas = document.createElement('canvas');
-                    let w = img.width, h = img.height;
-                    const maxDim = 800;
-                    if (w > maxDim || h > maxDim) {
-                        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
-                        else { w = Math.round(w * maxDim / h); h = maxDim; }
+                    try {
+                        const canvas = document.createElement('canvas');
+                        let w = img.width, h = img.height;
+                        if (w === 0 || h === 0) throw new Error('Invalid image dimensions');
+                        const maxDim = 800;
+                        if (w > maxDim || h > maxDim) {
+                            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+                            else { w = Math.round(w * maxDim / h); h = maxDim; }
+                        }
+                        canvas.width = w; canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+                        
+                        // Ověř že canvas není prázdný (černý)
+                        const testData = ctx.getImageData(0, 0, Math.min(w, 10), Math.min(h, 10)).data;
+                        let allBlack = true;
+                        for (let i = 0; i < testData.length; i += 4) {
+                            if (testData[i] > 5 || testData[i+1] > 5 || testData[i+2] > 5) { allBlack = false; break; }
+                        }
+                        
+                        if (allBlack && rawData.length < 500000) {
+                            // Canvas vykreslil černý obraz — použij originál
+                            _bugScreenshotData = rawData;
+                        } else {
+                            _bugScreenshotData = canvas.toDataURL('image/jpeg', 0.6);
+                        }
+                    } catch(err) {
+                        // Canvas selhal — použij originál (oříznutý na 500KB)
+                        console.warn('Screenshot canvas error:', err);
+                        _bugScreenshotData = rawData;
                     }
-                    canvas.width = w; canvas.height = h;
-                    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-                    _bugScreenshotData = canvas.toDataURL('image/jpeg', 0.6);
                     
                     const preview = document.getElementById('bugScreenPreview');
                     const imgEl = document.getElementById('bugScreenImg');
@@ -101130,7 +101321,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (imgEl) imgEl.src = _bugScreenshotData;
                     if (btn) { btn.textContent = '✅ Screenshot přiložen'; btn.style.borderColor = '#4caf50'; }
                 };
-                img.src = e.target.result;
+                img.onerror = function() {
+                    // Obrázek nelze dekódovat (HEIC atd.) — ulož surový soubor
+                    _bugScreenshotData = rawData;
+                    const preview = document.getElementById('bugScreenPreview');
+                    const imgEl = document.getElementById('bugScreenImg');
+                    const btn = document.getElementById('bugScreenBtn');
+                    if (preview) preview.style.display = 'block';
+                    if (imgEl) imgEl.src = _bugScreenshotData;
+                    if (btn) { btn.textContent = '✅ Screenshot přiložen (originál)'; btn.style.borderColor = '#ff9800'; }
+                };
+                img.src = rawData;
             };
             reader.readAsDataURL(file);
         }
