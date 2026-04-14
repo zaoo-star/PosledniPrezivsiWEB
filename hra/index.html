@@ -27257,6 +27257,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     <button class="btn" onclick="renameCompanion('${comp.uniqueId || comp.id}')" style="background: #2196f3; font-size: 0.75rem; padding: 0.4rem;">✏️ ${currentLang === "en" ? "Name" : "Jméno"}</button>
                                     <button class="btn" onclick="confirmDismissCompanion('${comp.uniqueId || comp.id}')" style="background: #333; font-size: 0.75rem; padding: 0.4rem;">👋 ${currentLang === "en" ? "Dismiss" : "Pryč"}</button>
                                 </div>
+                                ${comp.id === 'medic_npc' ? (() => {
+                                    const _mHurtP = state.char?.hp < state.char?.maxHp;
+                                    const _mHurtC = (state.companions||[]).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp||80));
+                                    const _mTotal = (_mHurtP ? 1 : 0) + _mHurtC.length;
+                                    const _mStims = state.inv?.filter(i => i.id === 'stimpak' || i.id === 'stimpack').reduce((s,i) => s + (i.count||1), 0) || 0;
+                                    if (_mTotal > 0) return '<button class="btn" onclick="medicHealParty()" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#1a4a1a,#0a2a0a);border:1px solid #4a7a30;font-family:\'Share Tech Mono\',monospace;">🏥 Vyléčit partu (' + _mTotal + ' zraněných, ' + Math.min(_mTotal, _mStims) + '/' + _mTotal + ' stimpaků)</button>';
+                                    return '<div style="margin-top:0.5rem;padding:0.4rem;background:#1a1a1a;border-radius:4px;font-size:0.75rem;color:#555;text-align:center;">🏥 Všichni zdraví — medik odpočívá</div>';
+                                })() : ''}
                                 ${comp.id === 'engineer_npc' ? (comp.skills?.includes('masterwork') ? `
                                     <button class="btn" onclick="technicianUpgradeEquipment()" style="width: 100%; margin-top: 0.5rem; background: linear-gradient(135deg, #ff9800, #f57c00);">
                                         ⚡ Vylepšit vybavení (+5 DMG/DEF, 20⚙️)
@@ -71834,6 +71842,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                         // Tlačítko zbourání
                         html += '<button onclick="event.stopPropagation(); demolishBuilding(\'' + building.id + '\')" style="margin-top: 0.4rem; padding: 0.3rem 0.5rem; background: linear-gradient(135deg, #8b0000 0%, #5a0000 100%); border: none; color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.65rem; width: 100%;">🏗️ Zbourat</button>';
+                        // Ošetřovna — tlačítko léčení celé party
+                        if (building.id === 'infirmary') {
+                            const _hurtCount = (state.char?.hp < state.char?.maxHp ? 1 : 0) + ((state.companions||[]).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp||80)).length);
+                            if (_hurtCount > 0) {
+                                html += '<button onclick="event.stopPropagation(); infirmaryHealAll()" style="margin-top: 0.3rem; padding: 0.4rem 0.5rem; background: linear-gradient(135deg, #1a4a1a, #0a2a0a); border: 1px solid #4a7a30; color: #8bc34a; border-radius: 4px; cursor: pointer; font-size: 0.75rem; width: 100%; font-family:\'Share Tech Mono\',monospace;">🏥 Vyléčit partu (' + _hurtCount + ' zraněných)</button>';
+                            }
+                        }
                     } else {
                         const costText = Object.entries(building.cost).map(([res, amt]) => {
                             const icons = {
@@ -125685,7 +125700,19 @@ function getNpcChatActions(npcId, trust) {
         case 'doc_harris':
         case 'healer_zora':
             if (state.char?.hp < state.char?.maxHp)
-                actions.push({ text: `💊 Vyléčit (${Math.max(20, Math.floor((state.char?.maxHp||100)*0.3))}p)`, action: `npcHealPlayer('${npcId}')` });
+                actions.push({ text: `💊 Vyléčit mě (${Math.max(20, Math.floor((state.char?.maxHp||100)*0.3))}p)`, action: `npcHealPlayer('${npcId}')` });
+            {
+                const _hurtComps = (state.companions||[]).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp||80));
+                const _playerHurt = state.char?.hp < state.char?.maxHp;
+                const _totalHurt = (_playerHurt ? 1 : 0) + _hurtComps.length;
+                if (_totalHurt >= 2) {
+                    const _pCost = _playerHurt ? Math.max(20, Math.floor((state.char?.maxHp||100)*0.3)) : 0;
+                    const _cCost = t >= 50 ? 0 : _hurtComps.length * 40;
+                    actions.push({ text: `🏥 Vyléčit VŠECHNY (${_pCost + _cCost}p)`, action: `npcHealAll('${npcId}')` });
+                }
+                if (_hurtComps.length > 0 && !_playerHurt)
+                    actions.push({ text: `🐾 Vyléčit společníky (${t>=50?'zdarma':_hurtComps.length*40+'p'})`, action: `npcHealCompanion('${npcId}')` });
+            }
             break;
         case 'blacksmith_ivan':
             if (t >= 50) actions.push({ text: '🔨 Vylepšit zbraň/zbroj', action: `closeModal();openShop()` });
@@ -125740,6 +125767,117 @@ function npcBuyDrink() {
     closeModal();
     saveGame();
 }
+function npcHealAll(npcId) {
+    const trust = state.npcRelations?.[npcId]?.trust || 0;
+    const healerName = npcId === 'healer_zora' ? 'Zora' : 'Dr. Harris';
+    
+    // Spočítej kdo potřebuje léčení
+    const playerHurt = state.char?.hp < state.char?.maxHp;
+    const hurtComps = (state.companions || []).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp || 80));
+    const totalHurt = (playerHurt ? 1 : 0) + hurtComps.length;
+    
+    if (totalHurt === 0) { notifyInfo('Všichni zdraví', 'Nikdo nepotřebuje léčení!'); return; }
+    
+    // Cena: hráč = 30% maxHP, společníci = 40p (zdarma při trust 50+)
+    const playerCost = playerHurt ? Math.max(20, Math.floor((state.char?.maxHp || 100) * 0.3)) : 0;
+    const compCost = trust >= 50 ? 0 : hurtComps.length * 40;
+    const totalCost = playerCost + compCost;
+    
+    if ((state.money || 0) < totalCost) { 
+        notifyWarning('Málo peněz', `Léčení celé party stojí ${totalCost}p.`); 
+        return; 
+    }
+    
+    state.money -= totalCost;
+    if (playerHurt) state.char.hp = state.char.maxHp;
+    hurtComps.forEach(c => { c.hp = c.maxHp || 80; });
+    
+    const parts = [];
+    if (playerHurt) parts.push('tebe');
+    if (hurtComps.length > 0) parts.push(`${hurtComps.length} společník${hurtComps.length > 1 ? 'y' : 'a'}`);
+    
+    notifySuccess(`💊 Celá parta vyléčena!`, `${healerName} vyléčil ${parts.join(' + ')} za ${totalCost}p.`);
+    closeModal();
+    saveGame();
+}
+function infirmaryHealAll() {
+    // Ošetřovna v osadě — léčení za byliny (5 herbs za osobu), nebo zdarma 1× denně
+    const hurtPlayer = state.char?.hp < state.char?.maxHp;
+    const hurtComps = (state.companions || []).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp || 80));
+    const totalHurt = (hurtPlayer ? 1 : 0) + hurtComps.length;
+    
+    if (totalHurt === 0) { notifyInfo('Všichni zdraví!', 'Nikdo nepotřebuje léčení.'); return; }
+    
+    const herbCost = totalHurt * 3;
+    const herbs = (state.resources?.herbs || 0) + (state.settlement?.resources?.herbs || 0);
+    
+    if (herbs < herbCost) {
+        notifyWarning('Málo bylin', `Potřebuješ ${herbCost} bylin (${totalHurt} × 3). Máš: ${herbs}.`);
+        return;
+    }
+    
+    // Odečti byliny (nejdřív z osady, pak z hráče)
+    let remaining = herbCost;
+    if (state.settlement?.resources?.herbs > 0) {
+        const fromSettlement = Math.min(state.settlement.resources.herbs, remaining);
+        state.settlement.resources.herbs -= fromSettlement;
+        remaining -= fromSettlement;
+    }
+    if (remaining > 0) {
+        state.resources.herbs = (state.resources.herbs || 0) - remaining;
+    }
+    
+    // Vyléč všechny
+    if (hurtPlayer) state.char.hp = state.char.maxHp;
+    hurtComps.forEach(c => { c.hp = c.maxHp || 80; });
+    
+    notifySuccess('🏥 Ošetřovna', `Celá parta vyléčena! (${totalHurt} × 3 bylin = ${herbCost} 🌿)`);
+    saveGame();
+    if (typeof showBuildingsModal === 'function') showBuildingsModal();
+}
+function medicHealParty() {
+    // Medik společník — použije stimpacky z inventáře k vyléčení party
+    const hurtPlayer = state.char?.hp < state.char?.maxHp;
+    const hurtComps = (state.companions || []).filter(c => !c.isDead && c.hp !== undefined && c.hp < (c.maxHp || 80));
+    const totalHurt = (hurtPlayer ? 1 : 0) + hurtComps.length;
+    
+    if (totalHurt === 0) { notifyInfo('Všichni zdraví!', 'Nikdo nepotřebuje léčení.'); return; }
+    
+    // Spočítej stimpacky
+    const stimItem = state.inv?.find(i => i.id === 'stimpak' || i.id === 'stimpack');
+    const stimCount = stimItem ? (stimItem.count || 1) : 0;
+    
+    if (stimCount === 0) {
+        notifyWarning('Žádné stimpacky!', 'Medik potřebuje stimpacky z tvého inventáře.');
+        return;
+    }
+    
+    const toUse = Math.min(totalHurt, stimCount);
+    let healed = 0;
+    
+    // Spotřebuj stimpacky
+    if (stimItem.count) stimItem.count -= toUse;
+    else state.inv.splice(state.inv.indexOf(stimItem), 1);
+    if (stimItem.count <= 0) state.inv.splice(state.inv.indexOf(stimItem), 1);
+    
+    // Vyléč — nejdřív hráče, pak společníky
+    if (hurtPlayer && healed < toUse) {
+        state.char.hp = state.char.maxHp;
+        healed++;
+    }
+    for (const c of hurtComps) {
+        if (healed >= toUse) break;
+        c.hp = c.maxHp || 80;
+        healed++;
+    }
+    
+    notifySuccess('🏥 Medik léčí!', `Vyléčil ${healed} ${healed === 1 ? 'osobu' : healed < 5 ? 'osoby' : 'osob'} (${toUse}× Stimpak).`);
+    saveGame();
+    showCompanionsInfo();
+}
+window.medicHealParty = medicHealParty;
+window.infirmaryHealAll = infirmaryHealAll;
+window.npcHealAll = npcHealAll;
 window.npcHealPlayer = npcHealPlayer;
 window.npcHealCompanion = npcHealCompanion;
 window.npcBuyDrink = npcBuyDrink;
