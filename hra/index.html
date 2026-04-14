@@ -95505,10 +95505,24 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const ref = firebaseDB.ref(`chat/reactions/${msgKey}/${emoji}/${myName}`);
             try {
                 const snap = await ref.once('value');
-                if (snap.exists()) { await ref.remove(); }
-                else { await ref.set(true); }
-                // Refresh chat
-                if (typeof renderFull === 'function') renderFull();
+                if (snap.exists()) { 
+                    await ref.remove(); 
+                } else { 
+                    await ref.set(true);
+                    // Notifikace autorovi (pokud to není moje zpráva)
+                    const msg = chatMessages.find(m => m._key === msgKey);
+                    if (msg && msg.author && msg.author !== myName && !msg.system) {
+                        try {
+                            await firebaseDB.ref('notifications/' + msg.author).push({
+                                type: 'chat_reaction',
+                                from: myName,
+                                emoji: emoji,
+                                text: (msg.text || '').substring(0, 50),
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
+                        } catch(e) {}
+                    }
+                }
             } catch(e) { console.error('React error:', e); }
         }
         window.chatReact = chatReact;
@@ -95516,10 +95530,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // Load reactions into messages
         let _chatReactionsCache = {};
         let _chatReactionsListener = null;
+        let _reactionsRenderPending = false;
         function listenChatReactions() {
             if (_chatReactionsListener || !firebaseDB) return;
             _chatReactionsListener = firebaseDB.ref('chat/reactions').on('value', snap => {
                 _chatReactionsCache = snap.val() || {};
+                chatMessages.forEach(m => { if (m._key) m.reactions = _chatReactionsCache[m._key] || {}; });
+                // Debounced re-render if chat is open
+                if (!_reactionsRenderPending) {
+                    _reactionsRenderPending = true;
+                    setTimeout(() => {
+                        _reactionsRenderPending = false;
+                        const chatContainer = document.getElementById('chatMessagesContainer');
+                        if (chatContainer) {
+                            const scrollPos = chatContainer.scrollTop;
+                            const wasAtBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < 50;
+                            showChatModal();
+                            setTimeout(() => {
+                                const c = document.getElementById('chatMessagesContainer');
+                                if (c) c.scrollTop = wasAtBottom ? c.scrollHeight : scrollPos;
+                            }, 50);
+                        }
+                    }, 500);
+                }
             });
         }
         
