@@ -95999,9 +95999,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             chatListener = firebaseDB.ref('chat/messages')
                 .orderByChild('timestamp')
                 .limitToLast(100)
-                .on('value', (snapshot) => {
+                .on('value', async (snapshot) => {
                     const data = snapshot.val() || {};
                     chatMessages = Object.entries(data).map(([k,v]) => ({...v, _key: k, reactions: _chatReactionsCache[k] || {}})).sort((a, b) => a.timestamp - b.timestamp);
+                    
+                    // Připnutá zpráva — pokud není v posledních 100, donahrát z Firebase
+                    if (_pinnedChatMsg?.msgKey && !chatMessages.some(m => m._key === _pinnedChatMsg.msgKey)) {
+                        try {
+                            const pinSnap = await firebaseDB.ref('chat/messages/' + _pinnedChatMsg.msgKey).once('value');
+                            const pinMsg = pinSnap.val();
+                            if (pinMsg) {
+                                chatMessages.push({...pinMsg, _key: _pinnedChatMsg.msgKey, _isPinned: true, reactions: _chatReactionsCache[_pinnedChatMsg.msgKey] || {}});
+                                chatMessages.sort((a, b) => a.timestamp - b.timestamp);
+                            }
+                        } catch(e) {}
+                    }
                     
                     // Zkontroluj nové zprávy pro notifikaci
                     checkNewChatMessages();
@@ -96223,7 +96235,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 msgCount: state.stats.chatMessagesSent,
                 rankName: rankName,
                 rankColor: rank.color,
-                clanName: myClanName || null  // Přidej klan do zprávy
+                clanName: myClanName || null,  // Přidej klan do zprávy
+                goldNick: state.superAbility?.active ? true : null  // ⚡ Super schopnost — zlatý nick
             };
             
             try {
@@ -96326,6 +96339,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         </button>
                         <button class="btn" onclick="closeChatPlayerMenu(); adminQuickBan('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #b71c1c 0%, #7f0000 100%); padding: 0.6rem;">
                             🚫 Ban
+                        </button>
+                        <button class="btn" onclick="closeChatPlayerMenu(); adminGrantSuperAbility('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); padding: 0.6rem; color: #000;">
+                            ⚡ Super schopnost
                         </button>
                     ` : ''}
                     
@@ -96436,6 +96452,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.pinChatMessage = pinChatMessage;
         window.unpinChatMessage = unpinChatMessage;
         
+        function scrollToPinnedMessage(msgKey) {
+            if (!msgKey) return;
+            const el = document.querySelector('[data-msg-key="' + msgKey + '"]');
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // Bliknutí pro zvýraznění
+                el.style.outline = '2px solid #c0a030';
+                el.style.background = '#2a2510';
+                setTimeout(() => { el.style.outline = ''; el.style.background = ''; }, 2000);
+            } else {
+                notifyInfo('📌', 'Zpráva už není v chatu (příliš stará).');
+            }
+        }
+        window.scrollToPinnedMessage = scrollToPinnedMessage;
+        
         // 🗑️ DELETE MESSAGE
         async function deleteChatMessage(msgKey) {
             if (!firebaseDB || !msgKey) return;
@@ -96451,6 +96482,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 await firebaseDB.ref('chat/messages/' + msgKey).remove();
                 // Smaž i reakce
                 await firebaseDB.ref('chat/reactions/' + msgKey).remove();
+                // Pokud je to připnutá zpráva, odepni ji
+                if (_pinnedChatMsg?.msgKey === msgKey) {
+                    await firebaseDB.ref('shared/pinnedChat').remove();
+                }
                 showChatModal();
             } catch(e) { notifyWarning('Chyba', 'Nepodařilo se smazat'); }
         }
@@ -96780,7 +96815,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // VIP barva
                     const vipColor = getVIPColor(msg.author);
                     const isRainbow = vipColor === 'rainbow';
-                    const authorColor = isMe ? '#8bc34a' : staffRoleData ? staffRoleData.color : vipColor || '#aaa';
+                    const authorColor = isMe ? '#8bc34a' : staffRoleData ? staffRoleData.color : vipColor || (msg.goldNick ? '#ffd700' : '#aaa');
+                    const goldNickStyle = msg.goldNick && !isMe ? 'text-shadow: 0 0 6px #ffd700, 0 0 2px #ff9800;' : '';
                     const rainbowStyle = isRainbow ? 'background: linear-gradient(90deg, #ff0000, #ff9800, #ffff00, #00ff00, #00bcd4, #9c27b0); -webkit-background-clip: text; -webkit-text-fill-color: transparent;' : '';
                     
                     // Staff badge (Admin/Mod/Helper)
@@ -96847,7 +96883,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             ? `<span style="color: ${msgColor}; font-weight: bold;">${escapeHtml(msg.author)}</span>`
                             : `<span onclick="event.stopPropagation(); ${clickAction};" style="color: ${msgColor}; font-weight: bold; cursor: pointer; text-decoration: underline;">${escapeHtml(msg.author)}</span>`;
                     } else {
-                        authorHtml = `${factionPrefix}<span onclick="event.stopPropagation(); showChatPlayerMenu('${escapeHtml(msg.author).replace(/'/g, "\'")}', event)" style="color: ${isRainbow ? '#ff0000' : authorColor}; ${rainbowStyle} font-weight: bold; cursor: pointer; text-decoration: underline; text-decoration-style: dotted;">${escapeHtml(msg.author)}</span>${staffBadge}${vipBadge}${politicsBadge}${clanBadge}`;
+                        authorHtml = `${factionPrefix}<span onclick="event.stopPropagation(); showChatPlayerMenu('${escapeHtml(msg.author).replace(/'/g, "\'")}', event)" style="color: ${isRainbow ? '#ff0000' : authorColor}; ${rainbowStyle} ${goldNickStyle} font-weight: bold; cursor: pointer; text-decoration: underline; text-decoration-style: dotted;">${msg.goldNick ? '🌟 ' : ''}${escapeHtml(msg.author)}</span>${staffBadge}${vipBadge}${politicsBadge}${clanBadge}`;
                     }
                     
                     // Kliknutí na zprávu (ne na jméno) = rychlá odpověď (ne pro systémové zprávy)
@@ -96869,7 +96905,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const systemBorderColor = isWarZoneMsg ? '#f44336' : isPustinaMsg ? '#4caf50' : isClanSysMsg ? '#7b1fa2' : isPoliticsMsg ? '#7986CB' : '#ffd700';
                     
                     messagesHtml += `
-                        <div style="margin-bottom: 0.5rem; ${isMe ? 'text-align: right;' : ''}">
+                        <div data-msg-key="${msg._key||''}" style="margin-bottom: 0.5rem; ${isMe ? 'text-align: right;' : ''}${msg._isPinned ? 'border: 1px solid #c0a030; border-radius: 3px; padding: 0.2rem;' : ''}">
                             <div ${messageClickHandler} style="display: inline-block; max-width: 80%; background: ${isMe ? 'linear-gradient(135deg,#1a2a10,#0d1508)' : isSystemMessage ? systemBgColor : staffRole ? '#1a0a0a' : 'linear-gradient(135deg,#1a1810,#0d0d08)'}; padding: 0.5rem 0.8rem; border-radius: 2px; ${isMe ? 'border-right: 3px solid #4a7a30;' : isSystemMessage ? `border-left: 3px solid ${systemBorderColor};` : staffRole ? `border-left: 3px solid ${staffRoleData.color};` : 'border-left: 3px solid #3a3020;'} ${!isMe && !isSystemMessage ? 'cursor: pointer; transition: background 0.2s;' : ''}" ${!isMe && !isSystemMessage ? `onmouseover="this.style.background='#2a2818'" onmouseout="this.style.background='linear-gradient(135deg,#1a1810,#0d0d08)'"` : ''}>
                                 <div style="font-size: 0.7rem; margin-bottom: 0.2rem;">
                                     ${authorHtml}
@@ -96985,7 +97021,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ${(() => {
                     try {
                         const pin = _pinnedChatMsg;
-                        if (pin?.text) return '<div style="background:#1a1505;border-left:3px solid #c0a030;border-right:1px solid #3a3020;border-top:1px solid #3a3020;border-bottom:1px solid #3a3020;border-radius:2px;padding:0.3rem 0.5rem;margin-bottom:0.3rem;display:flex;align-items:center;gap:0.4rem;">' +
+                        if (pin?.text) return '<div onclick="scrollToPinnedMessage(\'' + (pin.msgKey||'') + '\')" style="cursor:pointer;background:#1a1505;border-left:3px solid #c0a030;border-right:1px solid #3a3020;border-top:1px solid #3a3020;border-bottom:1px solid #3a3020;border-radius:2px;padding:0.3rem 0.5rem;margin-bottom:0.3rem;display:flex;align-items:center;gap:0.4rem;" title="Klikni pro skok na zprávu">' +
                             '<span style="font-size:0.8rem;">📌</span>' +
                             '<div style="flex:1;font-size:0.7rem;color:#c0a030;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-family:\'Share Tech Mono\',monospace;">' + escapeHtml(pin.text) + '</div>' +
                             ((typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) || (typeof isMayor === 'function' && isMayor()) ? '<button onclick="unpinChatMessage();showChatModal();" style="background:none;border:none;color:#666;cursor:pointer;font-size:0.7rem;">✕</button>' : '') +
@@ -101650,6 +101686,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <button class="btn wl-btn" onclick="showHallOfFame()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif"><span style="font-size:0.7rem;color:#ffd700">🏅 SÍŇ SLÁVY</span></button>
                 </div>
                 
+                <div style="display: flex; gap: 3px; margin-bottom: 4px;">
+                    <button class="btn wl-btn" onclick="showSuperAbility()" style="flex:1;background:${state.superAbility?.active ? 'linear-gradient(180deg, #1a1505 0%, #0a0a04 100%)' : '#0a0a0a'};padding:0.3rem;font-family:'Rajdhani',sans-serif;${state.superAbility?.active ? 'border:1px solid #ff9800;' : ''}"><span style="font-size:0.7rem;color:${state.superAbility?.active ? '#ffd700' : '#666'}">${state.superAbility?.active ? '⚡ SUPER SCHOPNOST ✓' : '⚡ SUPER SCHOPNOST'}</span></button>
+                </div>
+                
                 <!-- OBNOVIT HRU -->
                 <button class="btn wl-btn wl-scratch wl-dirt" onclick="location.reload()" style="width: 100%; background: #0a0a0a; padding: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; margin-bottom: 0.4rem; ">
                     <span style="font-size: 0.75rem; color: #666;">OBNOVIT HRU</span>
@@ -101715,6 +101755,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <button class="btn wl-btn wl-scratch" onclick="showHallOfFame()" style="width: 100%; background: #0a0a0a; padding: 0.45rem 0.6rem; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; ">
                             <span style="font-size: 1rem;">🏅</span>
                             <span style="font-size: 0.7rem; color: #8a6a9a;">SÍŇ SLÁVY</span>
+                        </button>
+                        
+                        <button class="btn wl-btn wl-scratch" onclick="showSuperAbility()" style="width: 100%; background: ${state.superAbility?.active ? 'linear-gradient(180deg, #2a1a0a 0%, #1a0a04 100%)' : '#0a0a0a'}; padding: 0.45rem 0.6rem; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; border: ${state.superAbility?.active ? '1px solid #ff9800' : 'none'};">
+                            <span style="font-size: 1rem;">⚡</span>
+                            <span style="font-size: 0.7rem; color: ${state.superAbility?.active ? '#ffd700' : '#666'};">${state.superAbility?.active ? '⚡ SUPER SCHOPNOST — AKTIVNÍ!' : 'SUPER SCHOPNOST'}</span>
                         </button>
                         
                     </div>
@@ -107557,6 +107602,222 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         // === SÍŇ SLÁVY - PŘISPĚVATELÉ ===
+        
+        // === ⚡ SUPER SCHOPNOST ===
+        function showSuperAbility() {
+            const sa = state.superAbility || {};
+            const isActive = sa.active === true;
+            
+            // Admin/staff mají super schopnost automaticky (pro testování)
+            if (!isActive && (typeof isAdmin === 'function' && isAdmin())) {
+                state.superAbility = { active: true, teleportLast: 0, refillLast: 0, healLast: 0, buildLast: 0 };
+                saveGame();
+                showSuperAbility();
+                return;
+            }
+            
+            if (!isActive) {
+                // Nemá aktivní — ukázat info o koupi
+                showPostApoModal('⚡ Super schopnost', `
+                    <div style="text-align:center;padding:0.5rem;">
+                        <div style="font-size:3rem;margin-bottom:0.5rem;">⚡</div>
+                        <h3 style="color:#ffd700;margin-bottom:0.5rem;">Super schopnost přeživšího</h3>
+                        <p style="color:#a09070;font-size:0.85rem;margin-bottom:1rem;">Jednorázový balíček schopností za podporu hry!</p>
+                        
+                        <div style="background:#0d0a05;border:1px solid #3a3020;border-radius:2px;padding:0.6rem;margin-bottom:0.5rem;text-align:left;">
+                            <div style="color:#c0a060;font-size:0.8rem;font-weight:bold;margin-bottom:0.4rem;">📦 Obsah balíčku (vše 1× denně!):</div>
+                            <div style="font-size:0.75rem;color:#a09070;line-height:1.6;">
+                                🌀 <strong style="color:#64b5f6;">Teleport</strong> — okamžitý přesun na libovolnou lokaci<br>
+                                🍖 <strong style="color:#8bc34a;">Doplnění statu</strong> — hlad, žízeň nebo energie na 100%<br>
+                                🏥 <strong style="color:#ef5350;">Full heal party</strong> — ty + všichni společníci na plné HP<br>
+                                ⚡ <strong style="color:#ff9800;">Okamžitá stavba</strong> — dokonči jednu stavbu ihned<br>
+                                🌟 <strong style="color:#ffd700;">Zlatý nick</strong> — tvé jméno v chatu svítí zlatě!
+                            </div>
+                            <div style="font-size:0.65rem;color:#666;margin-top:0.3rem;">Každá schopnost se obnoví 24h po použití — navždy!</div>
+                        </div>
+                        
+                        <div style="background:#1a1505;border:2px solid #ffd700;border-radius:2px;padding:0.6rem;margin-bottom:0.5rem;">
+                            <div style="color:#ffd700;font-size:1.2rem;font-weight:bold;">💰 120 Kč</div>
+                            <div style="color:#c0a060;font-size:0.8rem;margin:0.3rem 0;font-family:monospace;letter-spacing:1px;">3103143163/0800</div>
+                            <div style="color:#666;font-size:0.6rem;">Česká spořitelna</div>
+                            <div style="background:#0d0a05;border:1px solid #3a3020;border-radius:2px;padding:0.4rem;margin-top:0.4rem;">
+                                <div style="color:#ff9800;font-size:0.75rem;font-weight:bold;">📝 Do zprávy pro příjemce napiš:</div>
+                                <div style="color:#ffd700;font-size:0.9rem;font-weight:bold;margin-top:0.2rem;">SCHOPNOST TvůjNick</div>
+                                <div style="color:#555;font-size:0.6rem;margin-top:0.2rem;">Např: "SCHOPNOST Airee" — abych poznal že jde o Super schopnost</div>
+                            </div>
+                        </div>
+                        
+                        <p style="color:#555;font-size:0.65rem;">Po přijetí platby ti admin aktivuje balíček do 24 hodin. Schopnosti používáš každý den, navždy!</p>
+                    </div>
+                `, [{ text: '← Zpět', color: '#333', callback: () => closeModal() }]);
+                return;
+            }
+            
+            // Aktivní — ukázat dostupné schopnosti
+            const now = Date.now();
+            const DAY = 24 * 60 * 60 * 1000;
+            const teleportUsed = sa.teleportLast && (now - sa.teleportLast) < DAY;
+            const refillUsed = sa.refillLast && (now - sa.refillLast) < DAY;
+            const healUsed = sa.healLast && (now - sa.healLast) < DAY;
+            const buildUsed = sa.buildLast && (now - sa.buildLast) < DAY;
+            const allUsed = teleportUsed && refillUsed && healUsed && buildUsed;
+            
+            function cdText(last) {
+                if (!last) return '';
+                const left = DAY - (now - last);
+                if (left <= 0) return '';
+                const h = Math.floor(left / 3600000);
+                const m = Math.ceil((left % 3600000) / 60000);
+                return '(za ' + h + 'h ' + m + 'min)';
+            }
+            
+            showPostApoModal('⚡ Super schopnost', `
+                <div style="text-align:center;padding:0.3rem;">
+                    <div style="font-size:2.5rem;">⚡</div>
+                    <h3 style="color:#ffd700;margin:0.3rem 0;">Tvoje super schopnosti</h3>
+                    ${allUsed ? '<p style="color:#555;font-size:0.8rem;">Dnes vše využito — zítra můžeš znovu! 🌟 Zlatý nick zůstává.</p>' : '<p style="color:#a09070;font-size:0.75rem;">Každá schopnost 1× za 24 hodin</p>'}
+                </div>
+                
+                <div style="display:grid;gap:0.3rem;margin-top:0.5rem;">
+                    <button onclick="useSuperTeleport()" style="width:100%;background:${teleportUsed?'#0a0a0a':'#0a1a2a'};border:1px solid ${teleportUsed?'#222':'#2196f3'};border-radius:2px;padding:0.5rem;cursor:${teleportUsed?'default':'pointer'};text-align:left;color:${teleportUsed?'#444':'#64b5f6'};font-family:'Share Tech Mono',monospace;font-size:0.8rem;${teleportUsed?'opacity:0.5;':''}">
+                        ${teleportUsed ? '⏳' : '🌀'} Teleport na libovolnou lokaci ${teleportUsed ? cdText(sa.teleportLast) : ''}
+                    </button>
+                    <button onclick="useSuperRefill()" style="width:100%;background:${refillUsed?'#0a0a0a':'#0a1a0a'};border:1px solid ${refillUsed?'#222':'#4caf50'};border-radius:2px;padding:0.5rem;cursor:${refillUsed?'default':'pointer'};text-align:left;color:${refillUsed?'#444':'#8bc34a'};font-family:'Share Tech Mono',monospace;font-size:0.8rem;${refillUsed?'opacity:0.5;':''}">
+                        ${refillUsed ? '⏳' : '🍖'} Doplnit stat na 100% ${refillUsed ? cdText(sa.refillLast) : ''}
+                    </button>
+                    <button onclick="useSuperHeal()" style="width:100%;background:${healUsed?'#0a0a0a':'#2a0a0a'};border:1px solid ${healUsed?'#222':'#f44336'};border-radius:2px;padding:0.5rem;cursor:${healUsed?'default':'pointer'};text-align:left;color:${healUsed?'#444':'#ef5350'};font-family:'Share Tech Mono',monospace;font-size:0.8rem;${healUsed?'opacity:0.5;':''}">
+                        ${healUsed ? '⏳' : '🏥'} Full heal celé party ${healUsed ? cdText(sa.healLast) : ''}
+                    </button>
+                    <button onclick="useSuperBuild()" style="width:100%;background:${buildUsed?'#0a0a0a':'#1a1a0a'};border:1px solid ${buildUsed?'#222':'#ff9800'};border-radius:2px;padding:0.5rem;cursor:${buildUsed?'default':'pointer'};text-align:left;color:${buildUsed?'#444':'#ff9800'};font-family:'Share Tech Mono',monospace;font-size:0.8rem;${buildUsed?'opacity:0.5;':''}">
+                        ${buildUsed ? '⏳' : '⚡'} Okamžitě dokončit stavbu ${buildUsed ? cdText(sa.buildLast) : ''}
+                    </button>
+                    <div style="background:#1a1505;border:1px solid #ffd700;border-radius:2px;padding:0.4rem;text-align:center;color:#ffd700;font-size:0.75rem;">
+                        🌟 Zlatý nick v chatu — permanentní!
+                    </div>
+                </div>
+            `, [{ text: '← Zpět', color: '#333', callback: () => closeModal() }]);
+        }
+        
+        // 🌀 Super Teleport
+        function useSuperTeleport() {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.teleportLast || 0) < 86400000) return;
+            
+            const locations = WORLD_LOCATIONS.filter(l => l.id !== state.world?.currentLocation);
+            let html = '<div style="max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">';
+            locations.forEach(loc => {
+                const visited = state.world?.visitedLocations?.includes(loc.id);
+                html += '<button onclick="superTeleportTo(\'' + loc.id + '\')" style="width:100%;background:#0d0d08;border:1px solid #2a2010;border-radius:2px;padding:0.4rem;margin-bottom:0.2rem;cursor:pointer;text-align:left;color:#c0b080;font-family:\'Share Tech Mono\',monospace;font-size:0.8rem;">' +
+                    loc.icon + ' ' + loc.name + ' <span style="color:#555;font-size:0.65rem;">(' + loc.zone + ')' + (visited ? ' ✓' : '') + '</span></button>';
+            });
+            html += '</div>';
+            showPostApoModal('🌀 Super Teleport', html, [{ text: '← Zpět', color: '#333', callback: () => showSuperAbility() }]);
+        }
+        function superTeleportTo(locationId) {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.teleportLast || 0) < 86400000) return;
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            if (!loc) return;
+            
+            if (state.world.traveling) {
+                state.world.traveling = false;
+                state.world.travelTo = null;
+                state.world.scheduledEvents = [];
+                if (state.map) state.map.traveling = false;
+            }
+            state.world.currentLocation = locationId;
+            if (!state.world.visitedLocations.includes(locationId)) state.world.visitedLocations.push(locationId);
+            state.map.inBase = (locationId === 'shelter');
+            state.superAbility.teleportLast = Date.now();
+            
+            closeModal();
+            saveGame();
+            renderFull();
+            notifySuccess('🌀 Super Teleport!', loc.icon + ' ' + loc.name);
+            addLog('🌀 Super Teleport: ' + loc.name, '⚡');
+        }
+        
+        // 🍖 Super Refill
+        function useSuperRefill() {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.refillLast || 0) < 86400000) return;
+            
+            const stats = [
+                { id: 'hunger', name: '🍖 Hlad', current: Math.round(state.status?.hunger || 0) },
+                { id: 'thirst', name: '💧 Žízeň', current: Math.round(state.status?.thirst || 0) },
+                { id: 'energy', name: '⚡ Energie', current: Math.round(state.status?.energy || 0) },
+            ];
+            let html = '<p style="color:#a09070;font-size:0.8rem;text-align:center;margin-bottom:0.5rem;">Vyber stat k doplnění na 100%:</p>';
+            stats.forEach(s => {
+                html += '<button onclick="superRefillStat(\'' + s.id + '\')" style="width:100%;background:#0d0d08;border:1px solid #3a3020;border-radius:2px;padding:0.5rem;margin-bottom:0.3rem;cursor:pointer;text-align:left;color:#c0b080;font-family:\'Share Tech Mono\',monospace;font-size:0.85rem;">' +
+                    s.name + ' <span style="color:' + (s.current < 30 ? '#f44336' : s.current < 60 ? '#ff9800' : '#8bc34a') + ';">' + s.current + '%</span> → <span style="color:#8bc34a;">100%</span></button>';
+            });
+            showPostApoModal('🍖 Super Refill', html, [{ text: '← Zpět', color: '#333', callback: () => showSuperAbility() }]);
+        }
+        function superRefillStat(statId) {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.refillLast || 0) < 86400000) return;
+            if (!state.status) state.status = {};
+            state.status[statId] = 100;
+            state.superAbility.refillLast = Date.now();
+            closeModal();
+            saveGame();
+            renderFull();
+            const names = { hunger: '🍖 Hlad', thirst: '💧 Žízeň', energy: '⚡ Energie' };
+            notifySuccess('🍖 Super Refill!', (names[statId] || statId) + ' na 100%!');
+        }
+        
+        // 🏥 Super Heal
+        function useSuperHeal() {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.healLast || 0) < 86400000) return;
+            state.char.hp = state.char.maxHp;
+            if (state.companions) state.companions.filter(c => !c.isDead).forEach(c => { c.hp = c.maxHp || 80; });
+            state.superAbility.healLast = Date.now();
+            closeModal();
+            saveGame();
+            renderFull();
+            const healed = 1 + (state.companions?.filter(c => !c.isDead).length || 0);
+            notifySuccess('🏥 Super Heal!', 'Celá parta (' + healed + ') na plné HP!');
+        }
+        
+        // ⚡ Super Build
+        function useSuperBuild() {
+            if (!state.superAbility?.active || Date.now() - (state.superAbility.buildLast || 0) < 86400000) return;
+            if (!state.buildQueue || state.buildQueue.length === 0) {
+                notifyWarning('Žádná stavba', 'Nemáš žádnou stavbu ve frontě.');
+                return;
+            }
+            // Dokonči první stavbu okamžitě
+            const build = state.buildQueue[0];
+            build.startTime = Date.now() - build.duration - 1000; // Force completion
+            state.superAbility.buildLast = Date.now();
+            closeModal();
+            processBuildQueue();
+            saveGame();
+            renderFull();
+            notifySuccess('⚡ Okamžitá stavba!', build.icon + ' ' + build.name + ' dokončena!');
+        }
+        
+        window.showSuperAbility = showSuperAbility;
+        window.useSuperTeleport = useSuperTeleport;
+        window.superTeleportTo = superTeleportTo;
+        window.useSuperRefill = useSuperRefill;
+        window.superRefillStat = superRefillStat;
+        window.useSuperHeal = useSuperHeal;
+        window.useSuperBuild = useSuperBuild;
+        
+        // Admin: Aktivuj super schopnost hráči (přes pendingRewards)
+        async function adminGrantSuperAbility(playerName) {
+            if (!isAdmin() && !isStaff()) return;
+            if (!playerName) {
+                playerName = prompt('Nick hráče pro Super schopnost:');
+                if (!playerName) return;
+            }
+            try {
+                await firebaseDB.ref('players/' + playerName + '/superAbility').set({
+                    active: true, teleportLast: 0, refillLast: 0, healLast: 0, buildLast: 0,
+                    grantedBy: getPlayerName(), grantedAt: Date.now()
+                });
+                notifySuccess('⚡ Super schopnost', 'Aktivováno pro ' + playerName);
+            } catch(e) { notifyWarning('Chyba', e.message); }
+        }
+        window.adminGrantSuperAbility = adminGrantSuperAbility;
         async function showHallOfFame() {
             // Seznam přispěvatelů - načítá se z Firebase + hardcoded legendy
             let donors = [];
@@ -107944,6 +108205,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <div>
                             <div style="font-weight: bold;">Síň slávy</div>
                             <div style="font-size: 0.75rem; opacity: 0.8;">Přidat/odebrat hráče</div>
+                        </div>
+                    </button>
+                    
+                    <button class="btn" onclick="adminGrantSuperAbility()" style="background: linear-gradient(135deg, #ffd700 0%, #ff6f00 100%); color: #000; padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">⚡</span>
+                        <div>
+                            <div style="font-weight: bold;">Super schopnost</div>
+                            <div style="font-size: 0.75rem; opacity: 0.6;">Aktivovat balíček hráči (120 Kč)</div>
                         </div>
                     </button>
                     
@@ -110803,7 +111072,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 }
                 
-                // === 2b. Kontrola pendingMoney (peníze z prodeje pozemků) ===
+                // === 2b. Kontrola superAbility (koupená super schopnost) ===
+                try {
+                    const saSnap = await firebaseDB.ref('players/' + safeName + '/superAbility').once('value');
+                    const saData = saSnap.val();
+                    if (saData?.active && !state.superAbility?.active) {
+                        state.superAbility = { active: true, teleportLast: 0, refillLast: 0, healLast: 0, buildLast: 0 };
+                        await firebaseDB.ref('players/' + safeName + '/superAbility').remove();
+                        notifySuccess('⚡ SUPER SCHOPNOST AKTIVOVÁNA!', '🌀 Teleport, 🍖 Refill, 🏥 Heal, ⚡ Stavba, 🌟 Zlatý nick — vše připraveno!');
+                        addLog('⚡ Super schopnost aktivována!', '🌟');
+                        saveGame();
+                    }
+                } catch(e) { console.log('SuperAbility check:', e); }
+                
+                // === 2c. Kontrola pendingMoney (peníze z prodeje pozemků) ===
                 const pendingMoneySnap = await firebaseDB.ref(`players/${safeName}/pendingMoney`).once('value');
                 const pendingMoney = pendingMoneySnap.val() || 0;
                 if (pendingMoney > 0) {
