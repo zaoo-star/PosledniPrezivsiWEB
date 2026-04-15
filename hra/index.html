@@ -75682,6 +75682,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             return;
                         }
                         if (cs.manualCompanions) {
+                            // Auto-select attack pro společníka — předvypočítej cíle
+                            cs.selectedAction = 'attack';
+                            calculateValidTargets(unit);
+                            cs.log.push(`🐾 ${unit.name} — tvůj tah! Klikni na nepřítele.`);
                             renderHeroesCombatUI();
                         } else {
                             cs._turnLocked = true;
@@ -103917,7 +103921,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Ulož do obou inboxů přes chat/private
                 console.log('📤 Odesílám SZ:', msg);
                 await firebaseDB.ref('chat/private/' + myName).push(msg);
-                await firebaseDB.ref('chat/private/' + toName).push(msg);
+                try {
+                    await firebaseDB.ref('chat/private/' + toName).push(msg);
+                } catch (e2) {
+                    console.error('📤 Zápis do inboxu příjemce selhal:', e2);
+                    // Fallback: ulož do notifications
+                    try {
+                        await firebaseDB.ref('notifications/' + toName).push({
+                            type: 'private_message',
+                            from: myName,
+                            text: msg.text,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+                    } catch(e3) {}
+                }
+                
+                // Notifikace příjemci
+                try {
+                    await firebaseDB.ref('notifications/' + toName).push({
+                        type: 'pm',
+                        from: myName,
+                        text: '💬 Nová soukromá zpráva',
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                } catch(e4) {}
                 
                 input.value = '';
                 notifySuccess('✓ Odesláno', 'Zpráva odeslána');
@@ -107771,6 +107798,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!state.superAbility?.active || Date.now() - (state.superAbility.healLast || 0) < 86400000) return;
             state.char.hp = state.char.maxHp;
             if (state.companions) state.companions.filter(c => !c.isDead).forEach(c => { c.hp = c.maxHp || 80; });
+            if (state.injuries?.active) state.injuries.active = [];
             state.superAbility.healLast = Date.now();
             closeModal();
             saveGame();
@@ -126148,7 +126176,11 @@ function npcHealPlayer(npcId) {
     if ((state.money || 0) < cost) { notifyWarning('Málo peněz', `Léčení stojí ${cost} peněz.`); return; }
     state.money -= cost;
     state.char.hp = state.char.maxHp;
-    notifySuccess('💊 Vyléčen!', `${npcId === 'healer_zora' ? 'Zora' : 'Dr. Harris'} tě vyléčil za ${cost}p.`);
+    // Vyléč i zranění (modřiny, řezné rány, výrony, popáleniny, otřes, zlomeniny)
+    if (state.injuries?.active) {
+        state.injuries.active = [];
+    }
+    notifySuccess('💊 Vyléčen!', `${npcId === 'healer_zora' ? 'Zora' : 'Dr. Harris'} tě vyléčil za ${cost}p. Všechna zranění ošetřena!`);
     closeModal();
     saveGame();
 }
@@ -126199,12 +126231,13 @@ function npcHealAll(npcId) {
     state.money -= totalCost;
     if (playerHurt) state.char.hp = state.char.maxHp;
     hurtComps.forEach(c => { c.hp = c.maxHp || 80; });
+    if (state.injuries?.active) state.injuries.active = [];
     
     const parts = [];
     if (playerHurt) parts.push('tebe');
     if (hurtComps.length > 0) parts.push(`${hurtComps.length} společník${hurtComps.length > 1 ? 'y' : 'a'}`);
     
-    notifySuccess(`💊 Celá parta vyléčena!`, `${healerName} vyléčil ${parts.join(' + ')} za ${totalCost}p.`);
+    notifySuccess(`💊 Celá parta vyléčena!`, `${healerName} vyléčil ${parts.join(' + ')} za ${totalCost}p. Zranění ošetřena!`);
     closeModal();
     saveGame();
 }
@@ -126238,8 +126271,9 @@ function infirmaryHealAll() {
     // Vyléč všechny
     if (hurtPlayer) state.char.hp = state.char.maxHp;
     hurtComps.forEach(c => { c.hp = c.maxHp || 80; });
+    if (state.injuries?.active) state.injuries.active = [];
     
-    notifySuccess('🏥 Ošetřovna', `Celá parta vyléčena! (${totalHurt} × 3 bylin = ${herbCost} 🌿)`);
+    notifySuccess('🏥 Ošetřovna', `Celá parta vyléčena! Zranění ošetřena! (${totalHurt} × 3 bylin = ${herbCost} 🌿)`);
     saveGame();
     if (typeof showBuildingsModal === 'function') showBuildingsModal();
 }
@@ -126278,8 +126312,10 @@ function medicHealParty() {
         c.hp = c.maxHp || 80;
         healed++;
     }
+    // Stimpak léčí všechna zranění
+    if (hurtPlayer && state.injuries?.active) state.injuries.active = [];
     
-    notifySuccess('🏥 Medik léčí!', `Vyléčil ${healed} ${healed === 1 ? 'osobu' : healed < 5 ? 'osoby' : 'osob'} (${toUse}× Stimpak).`);
+    notifySuccess('🏥 Medik léčí!', `Vyléčil ${healed} ${healed === 1 ? 'osobu' : healed < 5 ? 'osoby' : 'osob'} (${toUse}× Stimpak). Zranění ošetřena!`);
     saveGame();
     showCompanionsInfo();
 }
