@@ -96505,7 +96505,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.pinChatMessage = pinChatMessage;
         window.unpinChatMessage = unpinChatMessage;
         
-        function scrollToPinnedMessage(msgKey) {
+        async function scrollToPinnedMessage(msgKey) {
             if (!msgKey) return;
             const el = document.querySelector('[data-msg-key="' + msgKey + '"]');
             if (el) {
@@ -96515,7 +96515,36 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 el.style.background = '#2a2510';
                 setTimeout(() => { el.style.outline = ''; el.style.background = ''; }, 2000);
             } else {
-                notifyInfo('📌', 'Zpráva už není v chatu (příliš stará).');
+                // Zpráva není v DOM — donačti z Firebase a zobraz v modalu
+                if (!firebaseDB) { notifyInfo('📌', 'Nelze načíst.'); return; }
+                try {
+                    const snap = await firebaseDB.ref('chat/messages/' + msgKey).once('value');
+                    const msg = snap.val();
+                    if (!msg) {
+                        // Fallback: použij text z pin dat
+                        const p = _pinnedChatMsg || {};
+                        showModal('📌 Připnutá zpráva', `
+                            <div style="background:#1a1505;border-left:3px solid #c0a030;padding:1rem;border-radius:4px;">
+                                <div style="color:#c0a060;font-weight:bold;margin-bottom:0.4rem;">${escapeHtml(p.author || '?')}</div>
+                                <div style="color:#ddd;white-space:pre-wrap;">${escapeHtml(p.text || 'Zpráva nenalezena')}</div>
+                                ${p.timestamp ? `<div style="color:#666;font-size:0.7rem;margin-top:0.5rem;">Připnuto: ${new Date(p.timestamp).toLocaleString('cs-CZ')}</div>` : ''}
+                            </div>
+                            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#333;">✓ Zavřít</button>
+                        `);
+                        return;
+                    }
+                    const when = msg.timestamp ? new Date(msg.timestamp).toLocaleString('cs-CZ') : '';
+                    showModal('📌 Připnutá zpráva', `
+                        <div style="background:#1a1505;border-left:3px solid #c0a030;padding:1rem;border-radius:4px;">
+                            <div style="color:#c0a060;font-weight:bold;margin-bottom:0.4rem;">${escapeHtml(msg.author || msg.name || '?')}</div>
+                            <div style="color:#ddd;white-space:pre-wrap;">${escapeHtml(msg.text || msg.message || '')}</div>
+                            ${when ? `<div style="color:#666;font-size:0.7rem;margin-top:0.5rem;">${when}</div>` : ''}
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#333;">✓ Zavřít</button>
+                    `);
+                } catch(e) {
+                    notifyInfo('📌', 'Chyba načítání.');
+                }
             }
         }
         window.scrollToPinnedMessage = scrollToPinnedMessage;
@@ -97203,7 +97232,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ` : `
                 <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
-                    <div id="chatMessagesContainer" style="max-height: 45vh; min-height: 200px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
+                    <div id="chatMessagesContainer" style="max-height: ${_chatPoll?.question ? '32vh' : '45vh'}; min-height: 150px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
                         ${messagesHtml}
                     </div>
                     
@@ -127316,7 +127345,8 @@ Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině
     if (firebaseDB) {
         try { await firebaseDB.ref('graveyard').push({
             name: c.name, level: c.lvl, days: c.day, kills: c.kills,
-            epitaph: epitaph, timestamp: Date.now(), cls: c.cls||''
+            epitaph: epitaph, timestamp: Date.now(), cls: c.cls||'',
+            cause: state.stats?.lastDeathCause || ''
         }); } catch(e) {}
     }
 }
@@ -127324,16 +127354,31 @@ Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině
 async function showGraveyard() {
     showModal('💀 Hřbitov', '<div style="text-align:center;padding:1rem;color:#888">Načítám náhrobky...</div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#333">← Zavřít</button>');
     try {
-        const snap = await firebaseDB.ref('graveyard').orderByChild('timestamp').limitToLast(20).once('value');
+        const snap = await firebaseDB.ref('graveyard').orderByChild('timestamp').limitToLast(30).once('value');
         let graves = []; snap.forEach(s => graves.push(s.val()));
         graves.reverse();
-        const html = graves.map(g => `<div style="background:#0a0a0a;border:1px solid #555;border-radius:6px;padding:0.6rem;margin-bottom:0.4rem;text-align:center">
-            <div style="color:#888;font-size:0.9rem;font-weight:bold">✝ ${escapeHtml(g.name||'?')}</div>
-            <div style="color:#555;font-size:0.7rem">Lvl ${g.level||1} | ${g.days||0} dní | ${g.kills||0} zabití</div>
-            <div style="color:#b0a070;font-style:italic;font-size:0.8rem;margin-top:0.3rem">"${escapeHtml(g.epitaph||'Odpočívej v pokoji.')}"</div>
-        </div>`).join('') || '<p style="color:#666;text-align:center">Hřbitov je prázdný.</p>';
-        showModal('💀 Hřbitov přeživších', `<div style="max-height:60vh;overflow-y:auto">${html}</div>
-            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);
+        const total = graves.length;
+        const html = `
+            <div style="text-align:center;margin-bottom:0.5rem;">
+                <div style="font-size:2rem;margin-bottom:0.2rem;">⚰️</div>
+                <div style="color:#888;font-size:0.75rem;">${total} náhrobk${total === 1 ? '' : total < 5 ? 'y' : 'ů'} v pustině</div>
+            </div>
+        ` + (graves.map((g, i) => {
+            const date = g.timestamp ? new Date(g.timestamp).toLocaleDateString('cs-CZ', {day:'numeric',month:'numeric'}) : '';
+            const cause = g.cause || g.deathCause || '';
+            const causeText = cause ? `<div style="color:#c06040;font-size:0.65rem;">† ${escapeHtml(cause)}</div>` : '';
+            return `<div style="background:#0a0805;border:1px solid #3a3020;border-left:3px solid #5a3020;border-radius:2px;padding:0.5rem;margin-bottom:0.3rem;font-family:'Share Tech Mono',monospace;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="color:#c0a060;font-size:0.85rem;font-weight:bold;">✝ ${escapeHtml(g.name||'?')}</span>
+                    <span style="color:#444;font-size:0.6rem;">${date}</span>
+                </div>
+                <div style="color:#666;font-size:0.65rem;margin-top:0.15rem;">Lvl ${g.level||1} • ${g.cls||'přeživší'} • ${g.days||0} dní • ${g.kills||0} zabití</div>
+                ${causeText}
+                <div style="color:#8a7a50;font-style:italic;font-size:0.75rem;margin-top:0.25rem;border-top:1px solid #1a1505;padding-top:0.2rem;">"${escapeHtml(g.epitaph||'Odpočívej v pokoji.')}"</div>
+            </div>`;
+        }).join('') || '<p style="color:#555;text-align:center;padding:1rem;">Hřbitov je prázdný. Zatím nikdo nezemřel... nebo se to nezaznamenalo.</p>');
+        showModal('💀 Hřbitov přeživších', `<div style="max-height:65vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">${html}</div>
+            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333;font-family:'Share Tech Mono',monospace;">← Zavřít</button>`);
     } catch(e) { closeModal(); }
 }
 
