@@ -93506,13 +93506,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         let cloudSyncListener = null;
         let syncPaused = false; // Pauza během lokálních akcí
         
-        // Auto-save každé 2 minuty
+        // Auto-save každých 30 sekund (dříve 2 min)
         safeSetInterval(() => {
             if (currentUser && !currentUser.isAnonymous && !syncPaused) {
                 saveCloudSave();
                 lastCloudSaveTime = Date.now();
             }
-        }, 2 * 60 * 1000);
+        }, 30 * 1000);
+        
+        // Auto-save když se hra minimalizuje/zavírá (mobil → přepnutí na PC)
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && currentUser && !currentUser.isAnonymous && !syncPaused) {
+                console.log('📱 Aplikace schována — cloud save');
+                saveCloudSave();
+                lastCloudSaveTime = Date.now();
+            }
+        });
+        
+        // Auto-save před zavřením stránky
+        window.addEventListener('beforeunload', () => {
+            if (currentUser && !currentUser.isAnonymous && !syncPaused) {
+                try { saveCloudSave(); } catch(e) {}
+            }
+        });
         
         // Kontrola nevyzvednutých odměn každých 5 minut
         safeSetInterval(() => {
@@ -93660,7 +93676,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cloudLevel = cloudData.state?.char?.level || 1;
             const localDays = state.time?.days || 0;
             
-            // Jen jednoduchá notifikace místo otravného modalu
+            // Pokud je cloud MÍRNĚ novější (<2 minuty), automaticky aplikuj (sync mezi zařízeními)
+            // Pokud je výrazně novější (hráč se vrátil po dlouhé době), zeptej se
+            const cloudAge = Date.now() - cloudTime;
+            const autoApply = cloudAge < 120000; // <2 minuty = automaticky (čerstvá změna)
+            
+            if (autoApply && cloudLevel >= (state.char?.level || 1)) {
+                // Auto-apply novější cloud save (probíhá sync z druhého zařízení)
+                console.log('☁️ Auto-apply novější cloud save');
+                notifyInfo('☁️ Synchronizuji', `Den ${cloudDays}, Lvl ${cloudLevel}`);
+                syncPaused = true;
+                loadCloudSave(true).then(() => {
+                    setTimeout(() => syncPaused = false, 5000);
+                }).catch(e => {
+                    console.error('Auto-sync selhal:', e);
+                    syncPaused = false;
+                });
+                return;
+            }
+            
+            // Jinak jen notifikace
             notifyInfo(
                 '☁️ Novější cloud save',
                 `Den ${cloudDays}, Lvl ${cloudLevel} • Synchronizuj v Online sekci`
