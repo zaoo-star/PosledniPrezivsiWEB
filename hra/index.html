@@ -113473,56 +113473,59 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
-                // [FIX #6/7/8] Atomický join přes transaction — race-safe
+                // [FIX] Nahrazeno: transakce byla nespolehlivá (vracela committed:false, txResult:null
+                // při prázdné lokální cache). Nový přístup: přečíst stůl → logika → atomický write.
                 let txResult = null;
-                let txCommitted = false;
-                const txOutcome = await firebaseDB.ref(`pokerTables/${tableId}`).transaction((t) => {
-                    if (!t) return;
+                
+                try {
+                    // 1. Načti aktuální stav stolu
+                    const currentSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                    const t = currentSnap.val();
+                    if (!t) {
+                        notifyWarning('Stůl neexistuje', 'Možná byl smazán. Obnov lobby.');
+                        return;
+                    }
                     
-                    // Check full v rámci transakce
+                    // 2. Kontroly
                     const playerCount = Object.keys(t.players || {}).length;
                     if (playerCount >= t.maxPlayers) {
                         txResult = { error: 'full' };
-                        return;
-                    }
-                    // Check už u stolu
-                    if (t.players && t.players[myName]) {
+                    } else if (t.players && t.players[myName]) {
                         txResult = { error: 'already_joined' };
-                        return;
+                    } else {
+                        // 3. Najdi volné místo
+                        const takenSeats = Object.values(t.players || {}).map(p => p.seat);
+                        let seat = null;
+                        for (let i = 0; i < t.maxPlayers; i++) {
+                            if (!takenSeats.includes(i)) { seat = i; break; }
+                        }
+                        if (seat === null) {
+                            txResult = { error: 'no_seat' };
+                        } else {
+                            // 4. Zapiš hráče PŘÍMO pod jeho klíč (ne celý stůl)
+                            // To zabrání race condition s jinými hráči
+                            const playerData = {
+                                name: myName,
+                                seat: seat,
+                                chips: buyIn,
+                                initialBuyIn: buyIn,
+                                joinedAt: Date.now(),
+                                status: 'active',
+                                currentBet: 0,
+                                totalBetInHand: 0,
+                                actedThisRound: false,
+                                hasCards: false
+                            };
+                            await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).set(playerData);
+                            await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
+                            txResult = { success: true };
+                        }
                     }
-                    
-                    // Find free seat atomicky
-                    const takenSeats = Object.values(t.players || {}).map(p => p.seat);
-                    let seat = null;
-                    for (let i = 0; i < t.maxPlayers; i++) {
-                        if (!takenSeats.includes(i)) { seat = i; break; }
-                    }
-                    if (seat === null) {
-                        txResult = { error: 'no_seat' };
-                        return;
-                    }
-                    
-                    // Přidej hráče
-                    if (!t.players) t.players = {};
-                    t.players[myName] = {
-                        name: myName,
-                        seat: seat,
-                        chips: buyIn,
-                        initialBuyIn: buyIn,
-                        joinedAt: Date.now(),
-                        status: 'active',
-                        currentBet: 0,
-                        totalBetInHand: 0,
-                        actedThisRound: false,
-                        hasCards: false
-                    };
-                    t.lastActivity = Date.now();
-                    txResult = { success: true };
-                    return t;
-                });
-                
-                // [FIX] Transaction outcome check - zjistit jestli commit skutečně proběhl
-                txCommitted = txOutcome?.committed === true;
+                } catch (joinErr) {
+                    console.error('🎰 Poker join write error:', joinErr);
+                    notifyWarning('Chyba připojení', joinErr.message || 'Síťová chyba');
+                    return;
+                }
                 
                 if (txResult?.error === 'full') {
                     notifyWarning('Plný stůl', '');
@@ -113549,7 +113552,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 if (!verifySnap.exists()) {
-                    console.error('🎰 Poker join: Player not in Firebase after tx', { txCommitted, txResult });
+                    console.error('🎰 Poker join: Player not in Firebase after write', { txResult });
                     notifyWarning('Připojení selhalo', 'Zkus to prosím znovu');
                     return;
                 }
