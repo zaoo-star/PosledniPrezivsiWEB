@@ -113515,6 +113515,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Firebase zapsal úspěšně → odečti peníze
                 state.money = myMoney - buyIn;
                 addPokerDailyBuyIn(buyIn);
+                // [FIX] Nastav _currentPokerTable OKAMŽITĚ - aby cleanup věděl že jsme u stolu
+                // (pokud uživatel zavře modal než openPokerTable skončí)
+                _currentPokerTable = tableId;
                 saveGame();
                 openPokerTable(tableId);
                 
@@ -114189,6 +114192,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             try {
                 const tablesSnap = await firebaseDB.ref('pokerTables').once('value');
                 const tables = tablesSnap.val() || {};
+                
+                // [FIX] Orphaned chips recovery: najdi stoly kde sedím ale _currentPokerTable není nastavený
+                // → vrať mi chips (peníze byly odečteny ale leavePokerTable se nespustil)
+                const myNameForCheck = getPlayerName();
+                let orphanRefund = 0;
+                let orphanRefundDaily = 0;
+                for (const [tId, t] of Object.entries(tables)) {
+                    const me = t.players?.[myNameForCheck];
+                    if (me && tId !== _currentPokerTable) {
+                        // Jsem u stolu ale nevím o něm → orphan
+                        orphanRefund += (me.chips || 0);
+                        // Pokud chips === initialBuyIn, vrátit i daily limit
+                        if (me.initialBuyIn && me.chips === me.initialBuyIn) {
+                            orphanRefundDaily += me.initialBuyIn;
+                        }
+                        try { await firebaseDB.ref(`pokerTables/${tId}/players/${myNameForCheck}`).remove(); } catch(e) {}
+                        // Pokud je stůl teď prázdný, smaž ho
+                        const remainingPlayers = Object.keys(t.players || {}).filter(n => n !== myNameForCheck);
+                        if (remainingPlayers.length === 0) {
+                            try { await firebaseDB.ref(`pokerTables/${tId}`).remove(); } catch(e) {}
+                            delete tables[tId];
+                        }
+                    }
+                }
+                if (orphanRefund > 0) {
+                    state.money = (state.money || 0) + orphanRefund;
+                    if (orphanRefundDaily > 0) {
+                        state._pokerDailyBuyIn = Math.max(0, (state._pokerDailyBuyIn || 0) - orphanRefundDaily);
+                    }
+                    saveGame();
+                    notifyInfo('💰 Vráceno', `+${orphanRefund}💰 (opuštěný stůl)`);
+                }
                 
                 // Cleanup starých (neaktivních > 5min, bez hráčů)
                 const now = Date.now();
