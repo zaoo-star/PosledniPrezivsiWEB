@@ -113381,6 +113381,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [NEW] Check admin lock
+            try {
+                const lockSnap = await firebaseDB.ref('shared/pokerLock').once('value');
+                const lock = lockSnap.val();
+                const isAdm = (typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff());
+                if (lock?.locked && !isAdm) {
+                    notifyWarning('🔒 Poker uzamčen', 'Admin momentálně zakázal novou hru');
+                    return;
+                }
+            } catch(e) {}
+            
             const level = POKER_CONFIG.blindLevels.find(l => l.id === blindLevelId);
             if (!level) return;
             
@@ -113429,6 +113440,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [NEW] Check admin lock
+            try {
+                const lockSnap = await firebaseDB.ref('shared/pokerLock').once('value');
+                const lock = lockSnap.val();
+                const isAdm = (typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff());
+                if (lock?.locked && !isAdm) {
+                    notifyWarning('🔒 Poker uzamčen', 'Admin zakázal nové připojování');
+                    return;
+                }
+            } catch(e) {}
+            
             try {
                 const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
                 const table = snap.val();
@@ -113453,7 +113475,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // [FIX #6/7/8] Atomický join přes transaction — race-safe
                 let txResult = null;
-                await firebaseDB.ref(`pokerTables/${tableId}`).transaction((t) => {
+                let txCommitted = false;
+                const txOutcome = await firebaseDB.ref(`pokerTables/${tableId}`).transaction((t) => {
                     if (!t) return;
                     
                     // Check full v rámci transakce
@@ -113498,6 +113521,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return t;
                 });
                 
+                // [FIX] Transaction outcome check - zjistit jestli commit skutečně proběhl
+                txCommitted = txOutcome?.committed === true;
+                
                 if (txResult?.error === 'full') {
                     notifyWarning('Plný stůl', '');
                     return;
@@ -113512,11 +113538,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
+                // [FIX] KRITICKÁ KONTROLA: transakce musí být commited A txResult musí být success
+                // Jinak NEODEČÍTEJ peníze (dříve se peníze odečetly i při tiché chybě)
+                if (!txCommitted || !txResult?.success) {
+                    console.error('🎰 Poker join: Transaction not committed', { txCommitted, txResult });
+                    notifyWarning('Připojení selhalo', 'Zkus to prosím znovu');
+                    return;
+                }
+                
+                // [FIX] Double-check: ověř že hráč je skutečně ve Firebase
+                const verifySnap = await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).once('value');
+                if (!verifySnap.exists()) {
+                    console.error('🎰 Poker join: Player not in Firebase after tx');
+                    notifyWarning('Připojení selhalo', 'Hráč nebyl zapsán — peníze nebyly odečteny');
+                    return;
+                }
+                
                 // Firebase zapsal úspěšně → odečti peníze
                 state.money = myMoney - buyIn;
                 addPokerDailyBuyIn(buyIn);
-                // [FIX] Nastav _currentPokerTable OKAMŽITĚ - aby cleanup věděl že jsme u stolu
-                // (pokud uživatel zavře modal než openPokerTable skončí)
+                // Nastav _currentPokerTable OKAMŽITĚ - aby cleanup věděl že jsme u stolu
                 _currentPokerTable = tableId;
                 saveGame();
                 openPokerTable(tableId);
@@ -113590,6 +113631,62 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 console.error('leavePokerTable:', e);
             }
         }
+        
+        // [NEW] Admin: Zamkni/odemkni poker globálně
+        async function toggleAdminPokerLock() {
+            if (!firebaseDB) return;
+            const isAdm = (typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff());
+            if (!isAdm) { notifyWarning('❌ Nejsi admin', ''); return; }
+            
+            try {
+                const snap = await firebaseDB.ref('shared/pokerLock').once('value');
+                const current = snap.val();
+                
+                if (current?.locked) {
+                    // Odemknout
+                    if (!confirm('🔓 Odemknout poker pro všechny hráče?')) return;
+                    await firebaseDB.ref('shared/pokerLock').remove();
+                    // Chat oznámení
+                    try {
+                        await firebaseDB.ref('chat/messages').push({
+                            author: '🎰 SYSTÉM',
+                            text: '🔓 Poker byl odemčen! Můžete znovu hrát.',
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            system: true
+                        });
+                    } catch(e) {}
+                    notifySuccess('🔓 Odemčeno', 'Poker je opět dostupný');
+                } else {
+                    // Zamknout
+                    const reason = prompt('Důvod zamčení (volitelné):', '') || '';
+                    if (reason === null) return; // Cancel
+                    if (!confirm('🔒 Zamknout poker? Hráči se nebudou moci připojit k novým hrám.')) return;
+                    await firebaseDB.ref('shared/pokerLock').set({
+                        locked: true,
+                        by: getPlayerName(),
+                        reason: reason.substring(0, 100),
+                        at: Date.now()
+                    });
+                    // Chat oznámení
+                    try {
+                        await firebaseDB.ref('chat/messages').push({
+                            author: '🎰 SYSTÉM',
+                            text: '🔒 Poker byl dočasně zamčen adminem' + (reason ? ' (' + reason + ')' : '') + '. Aktivní hry doběhnou.',
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            system: true
+                        });
+                    } catch(e) {}
+                    notifySuccess('🔒 Zamčeno', 'Noví hráči se nebudou moci připojit');
+                }
+                
+                // Refresh lobby
+                showPokerLobby();
+            } catch(e) {
+                console.error('toggleAdminPokerLock:', e);
+                notifyWarning('Chyba', e.message);
+            }
+        }
+        window.toggleAdminPokerLock = toggleAdminPokerLock;
         
         // ═══════════════════════════════════════════════════════════════
         // HERNÍ LOGIKA
@@ -114239,6 +114336,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const dailyBuyIn = getPokerDailyBuyIn();
                 const remainingLimit = POKER_CONFIG.maxDailyBuyIn - dailyBuyIn;
                 
+                // [NEW] Admin poker lock
+                let pokerLocked = false;
+                let lockedBy = '';
+                let lockReason = '';
+                try {
+                    const lockSnap = await firebaseDB.ref('shared/pokerLock').once('value');
+                    const lockData = lockSnap.val();
+                    if (lockData && lockData.locked) {
+                        pokerLocked = true;
+                        lockedBy = lockData.by || 'Admin';
+                        lockReason = lockData.reason || '';
+                    }
+                } catch(e) {}
+                const isAdm = (typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff());
+                
                 let tablesHtml = '';
                 const tableList = Object.values(tables).sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
                 
@@ -114250,13 +114362,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const level = POKER_CONFIG.blindLevels.find(l => l.id === t.blindLevel);
                         const full = playerCount >= t.maxPlayers;
                         const stateLabel = t.state === 'playing' ? '🎴 Hra' : t.state === 'showdown' ? '🏆 Výsledky' : '⏳ Čekání';
+                        // [NEW] Zablokovat join když je poker zamčený (kromě adminů)
+                        const joinBlocked = pokerLocked && !isAdm;
+                        const clickHandler = full ? '' : (joinBlocked 
+                            ? `onclick="notifyWarning('🔒 Poker uzamčen', 'Admin zakázal nové připojování')"` 
+                            : `onclick="showPokerJoinDialog('${t.id}')"`);
+                        const cursorStyle = full || joinBlocked ? 'default' : 'pointer';
+                        const opacityStyle = (full || joinBlocked) ? 'opacity:0.5;' : '';
                         return `
-                            <div style="background:#0d1510;border:1px solid ${level?.color || '#333'}44;border-radius:6px;padding:0.5rem;margin-bottom:0.4rem;cursor:${full?'default':'pointer'};${full?'opacity:0.5;':''}" ${full?'':`onclick="showPokerJoinDialog('${t.id}')"`}>
+                            <div style="background:#0d1510;border:1px solid ${level?.color || '#333'}44;border-radius:6px;padding:0.5rem;margin-bottom:0.4rem;cursor:${cursorStyle};${opacityStyle}" ${clickHandler}>
                                 <div style="display:flex;justify-content:space-between;align-items:center;">
                                     <div>
                                         <div style="color:${level?.color || '#4caf50'};font-weight:bold;font-size:0.85rem;">${level?.name || t.blindLevel}</div>
                                         <div style="color:#888;font-size:0.7rem;">SB: ${t.smallBlind}💰 / BB: ${t.bigBlind}💰 • ${stateLabel}</div>
-                                        <div style="color:#666;font-size:0.65rem;">Hráči: ${playerCount}/${t.maxPlayers}${full?' • PLNO':''}</div>
+                                        <div style="color:#666;font-size:0.65rem;">Hráči: ${playerCount}/${t.maxPlayers}${full?' • PLNO':''}${joinBlocked && !full ? ' • 🔒' : ''}</div>
                                     </div>
                                     <div style="text-align:right;">
                                         <div style="color:#ffd700;font-size:0.8rem;">💰 ${t.pot || 0}</div>
@@ -114268,16 +114387,34 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }).join('');
                 }
                 
-                // Vytvoř stůl tlačítka
+                // Vytvoř stůl tlačítka — zablokované když je poker zamčený (kromě adminů)
+                const createDisabled = pokerLocked && !isAdm;
                 const createButtons = POKER_CONFIG.blindLevels.map(l => `
-                    <button class="btn" onclick="createPokerTable('${l.id}')" style="background:linear-gradient(135deg,${l.color}33,${l.color}11);border:1px solid ${l.color}66;padding:0.5rem;color:#fff;">
+                    <button class="btn" onclick="${createDisabled ? `notifyWarning('🔒 Poker uzamčen', 'Admin momentálně zakázal novou hru')` : `createPokerTable('${l.id}')`}" style="background:linear-gradient(135deg,${l.color}33,${l.color}11);border:1px solid ${l.color}66;padding:0.5rem;color:#fff;${createDisabled ? 'opacity:0.4;cursor:not-allowed;' : ''}">
                         <div style="font-size:0.85rem;font-weight:bold;color:${l.color};">${l.name}</div>
                         <div style="font-size:0.7rem;color:#888;">SB ${l.sb} / BB ${l.bb}</div>
                         <div style="font-size:0.65rem;color:#666;">Min buy-in: ${l.minBuyIn}💰</div>
                     </button>
                 `).join('');
                 
+                // [NEW] Lock banner
+                const lockBanner = pokerLocked ? `
+                    <div style="background:linear-gradient(135deg,#3a1a1a,#2a0a0a);border:2px solid #f44336;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
+                        <div style="color:#f44336;font-weight:bold;font-size:0.85rem;">🔒 POKER UZAMČEN</div>
+                        <div style="color:#ff9800;font-size:0.7rem;margin-top:0.2rem;">Zamkl: ${lockedBy}${lockReason ? ` • ${lockReason}` : ''}</div>
+                        <div style="color:#aaa;font-size:0.65rem;margin-top:0.2rem;">Nelze vytvořit nebo se připojit ke stolu. Aktivní hry doběhnou.</div>
+                    </div>
+                ` : '';
+                
+                // [NEW] Admin lock toggle tlačítko
+                const adminLockBtn = isAdm ? `
+                    <button class="btn" onclick="toggleAdminPokerLock()" style="width:100%;background:${pokerLocked ? '#2e7d32' : '#c62828'};font-size:0.75rem;margin-bottom:0.3rem;">
+                        ${pokerLocked ? '🔓 ADMIN: Odemknout poker' : '🔒 ADMIN: Zamknout poker'}
+                    </button>
+                ` : '';
+                
                 showModal('🃏 Pokerová herna', `
+                    ${lockBanner}
                     <div style="background:#1a1a0a;padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;font-size:0.75rem;">
                         <div style="color:#ffd700;">💰 Máš: ${state.money || 0}💰</div>
                         <div style="color:#888;">Denní limit buy-in: ${remainingLimit}/${POKER_CONFIG.maxDailyBuyIn}💰</div>
@@ -114289,11 +114426,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         ${tablesHtml}
                     </div>
                     
-                    <div style="color:#ffd700;font-size:0.75rem;margin-bottom:0.3rem;font-weight:bold;">➕ VYTVOŘIT NOVÝ STŮL</div>
+                    <div style="color:#ffd700;font-size:0.75rem;margin-bottom:0.3rem;font-weight:bold;">➕ VYTVOŘIT NOVÝ STŮL ${createDisabled ? '<span style="color:#f44336;">(zamčeno)</span>' : ''}</div>
                     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.3rem;margin-bottom:0.5rem;">
                         ${createButtons}
                     </div>
                     
+                    ${adminLockBtn}
                     <button class="btn" onclick="showPokerLobby()" style="width:100%;background:#333;font-size:0.75rem;margin-bottom:0.3rem;">🔄 Obnovit</button>
                     <button class="btn" onclick="closeModal()" style="width:100%;background:#555;">Zavřít</button>
                 `);
