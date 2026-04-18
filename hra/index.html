@@ -15473,7 +15473,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.5.9';
+        const GAME_VERSION = '3.6.0';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -39850,6 +39850,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 state.world.currentLocation = 'shelter';
             }
             
+            // === [FIX] COMPANION QUEST ITEM - auto-pickup check
+            // Spuštěno při každém rendrování mapy (po příchodu, po refreshi, atd.)
+            if (typeof checkCompanionQuestItemPickup === 'function') {
+                setTimeout(() => checkCompanionQuestItemPickup(), 300);
+            }
+            
             // === NAČTI FRAKČNÍ TERITORIA DO CACHE ===
             // Načteme teritoria pro zobrazení barev na mapě (refresh každých 10s nebo při prvním načtení)
             const shouldRefreshCache = !window.territoryCache || 
@@ -45109,77 +45115,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 // === [FIX] COMPANION QUEST ITEM - auto-pickup při příchodu ===
-                // Fallback pro případ že exploreLocation pickup selže (cache, race condition, atd.)
-                // Pokud hráč má aktivního společníka s questem vyžadujícím item na této lokaci,
-                // item se automaticky přidá do inventáře ihned při příchodu.
-                try {
-                    const _arrLoc = state.world.currentLocation;
-                    state.companions?.forEach(_comp => {
-                        if (_comp.isDead) return;
-                        const _qData = COMPANION_QUESTS[_comp.id];
-                        if (!_qData) return;
-                        
-                        // 1. Pokud nemá aktivní quest, zkus aktivovat
-                        if (!_comp.activeQuest) {
-                            if (!_comp.completedQuests) _comp.completedQuests = [];
-                            for (const _chap of _qData.chapters) {
-                                if (_comp.completedQuests.includes(_chap.id)) continue;
-                                if (checkCompanionQuestTrigger(_comp.id, _chap)) {
-                                    triggerCompanionQuest(_comp.id, _chap);
-                                    break;
-                                }
-                            }
-                        }
-                        if (!_comp.activeQuest) return;
-                        
-                        // 2. Pro každý item objective ověř jestli odpovídá této lokaci
-                        const _chapter = _qData.chapters.find(c => c.id === _comp.activeQuest.id);
-                        if (!_chapter) return;
-                        
-                        _chapter.objectives.forEach((_obj, _idx) => {
-                            if (_obj.type !== 'item' || !_obj.target) return;
-                            if (_comp.activeQuest.objectives[_idx]?.completed) return;
-                            
-                            const _spawnLoc = QUEST_ITEM_LOCATIONS[_obj.target] || _chapter.trigger?.location;
-                            if (_spawnLoc !== _arrLoc) return;
-                            
-                            // Item patří na tuto lokaci a není splněn
-                            const _item = QUEST_ITEMS.find(i => i.id === _obj.target);
-                            if (!_item) return;
-                            if (state.inv.some(i => i.id === _obj.target)) return; // Už má
-                            
-                            // 3. PICKUP
-                            state.inv.push({..._item, count: 1, weight: 0});
-                            _comp.activeQuest.objectives[_idx].completed = true;
-                            _comp.activeQuest.objectives[_idx].manuallyCompleted = true;
-                            
-                            // Cleanup spawn
-                            if (state.world.questItemSpawns?.[_obj.target]) {
-                                delete state.world.questItemSpawns[_obj.target];
-                            }
-                            
-                            notifySuccess(`📜 ${_comp.name || 'Společník'}`, `Nalezen: ${_item.name}!`);
-                            addLog(`📜 Nalezen quest předmět: ${_item.name}`, '🐾');
-                            
-                            // Zobraz modal s drobným zpožděním
-                            const _fComp = _comp;
-                            const _fItem = _item;
-                            setTimeout(() => {
-                                showModal(`📜 ${_fComp.name || 'Společník'} - Quest předmět!`, `
-                                    <div style="text-align: center;">
-                                        <div style="font-size: 4rem; margin-bottom: 1rem;">${_fItem.icon}</div>
-                                        <h3 style="color: #ffd700;">${_fItem.name}</h3>
-                                        <p style="color: #888;">${_fItem.desc || ''}</p>
-                                        <p style="color: #8bc34a; margin-top: 1rem;">Předmět přidán do inventáře!</p>
-                                    </div>
-                                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #ffd700; color: #000;">✓ Výborně!</button>
-                                `);
-                            }, 1200);
-                        });
-                    });
-                } catch (_e) {
-                    console.error('Companion quest pickup on arrival error:', _e);
-                }
+                // Voláno se zpožděním aby se překreslila lokace
+                setTimeout(() => {
+                    if (typeof checkCompanionQuestItemPickup === 'function') {
+                        checkCompanionQuestItemPickup();
+                    }
+                }, 500);
                 
                 // === RADIO RESCUE - kontrola při příchodu na lokaci ===
                 if (state.radioRescue && state.radioRescue.locationId === state.world.currentLocation) {
@@ -47112,6 +47053,97 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             `);
         }
         window.confirmFleeExploration = confirmFleeExploration;
+
+        // === [FIX] GLOBAL HELPER: Companion quest item auto-pickup ===
+        // Voláno z více míst: travel complete, exploreLocation, renderWorldMap.
+        // Stoprocentně spolehlivé - použít addItemToInventory (stejně jako dárky/admin).
+        function checkCompanionQuestItemPickup() {
+            try {
+                const _arrLoc = state.world.currentLocation;
+                if (!_arrLoc || !state.companions) return;
+                
+                state.companions.forEach(_comp => {
+                    if (_comp.isDead) return;
+                    const _qData = COMPANION_QUESTS[_comp.id];
+                    if (!_qData) return;
+                    
+                    // 1. Pokud nemá aktivní quest, zkus aktivovat
+                    if (!_comp.activeQuest) {
+                        if (!_comp.completedQuests) _comp.completedQuests = [];
+                        for (const _chap of _qData.chapters) {
+                            if (_comp.completedQuests.includes(_chap.id)) continue;
+                            if (checkCompanionQuestTrigger(_comp.id, _chap)) {
+                                triggerCompanionQuest(_comp.id, _chap);
+                                break;
+                            }
+                        }
+                    }
+                    if (!_comp.activeQuest) return;
+                    
+                    // 2. Pro každý item objective ověř jestli odpovídá této lokaci
+                    const _chapter = _qData.chapters.find(c => c.id === _comp.activeQuest.id);
+                    if (!_chapter) return;
+                    
+                    _chapter.objectives.forEach((_obj, _idx) => {
+                        if (_obj.type !== 'item' || !_obj.target) return;
+                        if (_comp.activeQuest.objectives[_idx]?.completed) return;
+                        
+                        const _spawnLoc = QUEST_ITEM_LOCATIONS[_obj.target] || _chapter.trigger?.location;
+                        if (_spawnLoc !== _arrLoc) return;
+                        
+                        // Item patří na tuto lokaci a není splněn
+                        const _item = QUEST_ITEMS.find(i => i.id === _obj.target);
+                        if (!_item) return;
+                        if (state.inv.some(i => i.id === _obj.target)) {
+                            // Už má - jen označ objective
+                            _comp.activeQuest.objectives[_idx].completed = true;
+                            _comp.activeQuest.objectives[_idx].manuallyCompleted = true;
+                            return;
+                        }
+                        
+                        // 3. PICKUP - použít addItemToInventory (stejně jako dárky/admin odměny)
+                        const _giftItem = {..._item, count: 1, weight: 0};
+                        const _added = addItemToInventory(_giftItem, 1, true); // silent=true
+                        
+                        if (_added !== false) {
+                            _comp.activeQuest.objectives[_idx].completed = true;
+                            _comp.activeQuest.objectives[_idx].manuallyCompleted = true;
+                            
+                            // Cleanup spawn
+                            if (state.world.questItemSpawns?.[_obj.target]) {
+                                delete state.world.questItemSpawns[_obj.target];
+                            }
+                            
+                            notifySuccess(`📜 ${_comp.name || 'Společník'}`, `Nalezen: ${_item.name}!`);
+                            addLog(`📜 Nalezen quest předmět: ${_item.name}`, '🐾');
+                            
+                            // Save state
+                            try { saveGame(); } catch(e) {}
+                            
+                            // Zobraz modal s drobným zpožděním
+                            const _fComp = _comp;
+                            const _fItem = _item;
+                            setTimeout(() => {
+                                try {
+                                    showModal(`📜 ${_fComp.name || 'Společník'} - Quest předmět!`, `
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 4rem; margin-bottom: 1rem;">${_fItem.icon}</div>
+                                            <h3 style="color: #ffd700;">${_fItem.name}</h3>
+                                            <p style="color: #888;">${_fItem.desc || ''}</p>
+                                            <p style="color: #8bc34a; margin-top: 1rem;">Předmět přidán do inventáře!</p>
+                                        </div>
+                                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #ffd700; color: #000;">✓ Výborně!</button>
+                                    `);
+                                } catch(e) {}
+                            }, 1200);
+                        }
+                    });
+                });
+            } catch (_e) {
+                console.error('checkCompanionQuestItemPickup error:', _e);
+            }
+        }
+        window.checkCompanionQuestItemPickup = checkCompanionQuestItemPickup;
 
         function exploreLocation(skipLimitCheck = false) {
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
