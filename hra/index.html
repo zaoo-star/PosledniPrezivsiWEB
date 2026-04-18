@@ -64406,8 +64406,8 @@ function openFullscreenMap() {
             
             // Kartograf Ludvík - rychlejší cestování
             const ludvik = state.npcRelations['cartographer_ludvik'];
-            if (ludvik?.trust >= 50) bonuses.travelSpeedBonus = 0.05; // -5% čas cestování
-            if (ludvik?.trust >= 100) bonuses.travelSpeedBonus = 0.10; // -10% čas cestování
+            if (ludvik?.trust >= 50) bonuses.travelSpeedBonus = 0.10; // -10% čas cestování
+            if (ludvik?.trust >= 100) bonuses.travelSpeedBonus = 0.20; // -20% čas cestování
             
             // Švadlena Lidka - bonus DEF zbroje
             const lidka = state.npcRelations['tailor_lidka'];
@@ -72857,7 +72857,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     });
                     const levelOk = (building.level || 1) <= state.settlement.level;
                     const inBase = state.world.currentLocation === 'shelter' || state.world.currentLocation === 'settlement';
-                    const canBuildLocation = inBase; // Musíš být v osadě pro zadání stavby
+                    // [FIX] Hráč může stavět i na dálku přes rádio (pokud má stavitele + rádio + nebyl dnes použit)
+                    const remoteAllowed = !inBase && hasBuilder && hasRadio && !remoteUsedToday;
+                    const canBuildLocation = inBase || remoteAllowed;
                     const needsPower = building.requiresPower;
                     const hasPowerForIt = needsPower ? (powerBalance >= 0 || !hasBuilding) : true;
                     const canBuild = canAfford && levelOk && canBuildLocation && !isBuilding;
@@ -72954,9 +72956,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         } else if (!levelOk) {
                             html += '<div style="color: #ff9800; font-size: 0.7rem;">🔒 ' + ('Potřeba level') + ' ' + building.level + '</div>';
                         } else if (!canBuildLocation) {
-                            html += '<div style="color: #ff9800; font-size: 0.7rem;">🏠 Dojdi do osady pro zadání</div>';
+                            if (!inBase && hasBuilder && hasRadio && remoteUsedToday) {
+                                html += '<div style="color: #c62828; font-size: 0.7rem;">📻 Dnes už rozkaz použit</div>';
+                            } else if (!inBase && hasBuilder && !hasRadio) {
+                                html += '<div style="color: #ff9800; font-size: 0.7rem;">📻 Seženi rádio pro dálkový rozkaz</div>';
+                            } else {
+                                html += '<div style="color: #ff9800; font-size: 0.7rem;">🏠 Dojdi do osady pro zadání</div>';
+                            }
                         } else {
-                            html += '<button class="btn" onclick="buildUnifiedBuilding(\'' + building.id + '\');" ' + (!canBuild ? 'disabled' : '') + ' style="width: 100%; font-size: 0.7rem; padding: 0.3rem; ' + (!canBuild ? 'opacity: 0.5;' : '') + '">🔨 ' + ('Stavět') + '</button>';
+                            const btnLabel = remoteAllowed ? '📻 Stavět na dálku' : '🔨 Stavět';
+                            html += '<button class="btn" onclick="buildUnifiedBuilding(\'' + building.id + '\');" ' + (!canBuild ? 'disabled' : '') + ' style="width: 100%; font-size: 0.7rem; padding: 0.3rem; ' + (!canBuild ? 'opacity: 0.5;' : '') + (remoteAllowed ? ' background: linear-gradient(135deg,#ff9800,#e65100);' : '') + '">' + btnLabel + '</button>';
                         }
                     }
                     html += '</div>';
@@ -113504,13 +113513,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         } else {
                             // 4. Zapiš hráče PŘÍMO pod jeho klíč (ne celý stůl)
                             // To zabrání race condition s jinými hráči
+                            // [FIX] Pokud stůl právě hraje, nový hráč čeká na další ruku (sitting_out)
+                            const isHandInProgress = t.state === 'playing' || t.state === 'dealing';
                             const playerData = {
                                 name: myName,
                                 seat: seat,
                                 chips: buyIn,
                                 initialBuyIn: buyIn,
                                 joinedAt: Date.now(),
-                                status: 'active',
+                                status: isHandInProgress ? 'sitting_out' : 'active',
                                 currentBet: 0,
                                 totalBetInHand: 0,
                                 actedThisRound: false,
@@ -113579,8 +113590,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             try {
                 const snap = await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).once('value');
                 const player = snap.val();
+                
+                // Získej stav stolu pro zjištění, zda hra probíhá
+                const tableStateSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const tableState = tableStateSnap.val();
+                const isHandInProgress = tableState?.state === 'playing' || tableState?.state === 'dealing';
+                const playerInHand = player?.hasCards && isHandInProgress;
+                
                 if (player) {
-                    // Vrať chips do peněz hráče
+                    // Vrať hráčovi jeho nevsazené chips do peněz
                     state.money = (state.money || 0) + (player.chips || 0);
                     
                     // [FIX] Pokud hráč nehrál ani jednu ruku (chips === buyIn), vrátit daily limit
@@ -113588,7 +113606,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         state._pokerDailyBuyIn = Math.max(0, (state._pokerDailyBuyIn || 0) - player.initialBuyIn);
                     }
                     
-                    await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).remove();
+                    if (playerInHand) {
+                        // [FIX] Hráč je uprostřed ruky - označ jako folded a nech v DB
+                        // aby jeho peníze v potu nezmizely ze side pot výpočtu.
+                        // Označ 'left: true' aby se po ruce smazal.
+                        await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).update({
+                            status: 'folded',
+                            chips: 0,
+                            hasCards: false,
+                            left: true, // flag pro cleanup po ruce
+                            actedThisRound: true
+                        });
+                        // Pokud byl na tahu, předej dál
+                        if (tableState.currentTurn === myName) {
+                            const nextPlayer = findNextActivePokerPlayer(tableState, myName);
+                            await firebaseDB.ref(`pokerTables/${tableId}`).update({
+                                currentTurn: nextPlayer,
+                                turnStartTime: Date.now(),
+                                lastAction: `${myName} opustil stůl a složil 🂠`
+                            });
+                        }
+                    } else {
+                        // Není uprostřed ruky - bezpečné odstranit
+                        await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).remove();
+                    }
                     saveGame();
                 }
                 
@@ -113711,8 +113752,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
-            const players = Object.values(table.players || {}).filter(p => p.status !== 'sitting_out');
-            if (players.length < 2) { notifyWarning('Málo hráčů', 'Potřeba alespoň 2'); return; }
+            // [FIX] Noví hráči (sitting_out z předchozí ruky) s chips se zahrnou do nové ruky
+            const players = Object.values(table.players || {}).filter(p => (p.chips || 0) > 0);
+            if (players.length < 2) { notifyWarning('Málo hráčů', 'Potřeba alespoň 2 s chips'); return; }
             
             // Shuffle deck
             const deck = shufflePokerDeck(createPokerDeck());
@@ -113739,8 +113781,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Rotate dealer
             const newDealerIdx = ((table.dealerPos || 0) + 1) % sortedPlayers.length;
             const dealerPlayer = sortedPlayers[newDealerIdx];
-            const sbIdx = (newDealerIdx + 1) % sortedPlayers.length;
-            const bbIdx = (newDealerIdx + 2) % sortedPlayers.length;
+            
+            // [FIX] Heads-up (2 hráči) má speciální pravidla:
+            // - Dealer = Small Blind, druhý = Big Blind, Dealer má první tah preflop
+            // 3+ hráčů: Dealer, poté SB, pak BB, první akce hráč po BB
+            const isHeadsUp = sortedPlayers.length === 2;
+            const sbIdx = isHeadsUp ? newDealerIdx : (newDealerIdx + 1) % sortedPlayers.length;
+            const bbIdx = isHeadsUp ? (newDealerIdx + 1) % sortedPlayers.length : (newDealerIdx + 2) % sortedPlayers.length;
             const sbPlayer = sortedPlayers[sbIdx];
             const bbPlayer = sortedPlayers[bbIdx];
             
@@ -113755,8 +113802,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             playerUpdates[`players/${bbPlayer.name}/currentBet`] = bbAmount;
             playerUpdates[`players/${bbPlayer.name}/totalBetInHand`] = bbAmount;
             
-            // První akce: hráč po BB
-            const firstActIdx = (bbIdx + 1) % sortedPlayers.length;
+            // První akce preflop:
+            // - Heads-up: dealer (=SB) začíná
+            // - 3+ hráčů: hráč po BB začíná
+            const firstActIdx = isHeadsUp ? newDealerIdx : (bbIdx + 1) % sortedPlayers.length;
             const firstActPlayer = sortedPlayers[firstActIdx];
             
             await firebaseDB.ref(`pokerTables/${tableId}`).update({
@@ -113827,23 +113876,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const minRaise = (table.currentBet || 0) * 2 || table.bigBlind;
                         const total = Math.max(minRaise, raiseAmount || minRaise);
                         const actualRaise = Math.min(total - me.currentBet, me.chips);
+                        const newMyBet = me.currentBet + actualRaise;
                         table.players[myName].chips = me.chips - actualRaise;
-                        table.players[myName].currentBet = me.currentBet + actualRaise;
+                        table.players[myName].currentBet = newMyBet;
                         table.players[myName].totalBetInHand = (me.totalBetInHand || 0) + actualRaise;
                         table.players[myName].actedThisRound = true;
                         table.pot = (table.pot || 0) + actualRaise;
-                        table.currentBet = me.currentBet + actualRaise;
-                        // [FIX] Raise resetuje actedThisRound ostatním aktivním → musí znovu reagovat
-                        Object.keys(table.players).forEach(n => {
-                            if (n !== myName && table.players[n].status === 'active') {
-                                table.players[n].actedThisRound = false;
-                            }
-                        });
+                        // [FIX] Pouze pokud nová sázka JE vyšší než current bet, aktualizuj currentBet
+                        // (allin pod current bet je jen dorovnání se zbývajícími chips)
+                        const isActualRaise = newMyBet > (table.currentBet || 0);
+                        if (isActualRaise) {
+                            table.currentBet = newMyBet;
+                            // Raise resetuje actedThisRound ostatním aktivním → musí znovu reagovat
+                            Object.keys(table.players).forEach(n => {
+                                if (n !== myName && table.players[n].status === 'active') {
+                                    table.players[n].actedThisRound = false;
+                                }
+                            });
+                        }
                         if (actualRaise >= me.chips) {
                             table.players[myName].status = 'allin';
                             actionDesc = `${myName} jde ALL-IN 💥 (${actualRaise}💰)`;
                         } else {
-                            actionDesc = `${myName} navyšuje na ${me.currentBet + actualRaise}💰`;
+                            actionDesc = `${myName} navyšuje na ${newMyBet}💰`;
                         }
                     } else if (action === 'allin') {
                         const chips = me.chips;
@@ -114050,6 +114105,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const sorted = [...contributions].sort((a, b) => a.bet - b.bet);
             
             let prevLevel = 0;
+            let forfeitedPool = 0; // [FIX] Peníze z levelů bez eligible se kumulují do dalšího potu
             for (let i = 0; i < sorted.length; i++) {
                 const currentLevel = sorted[i].bet;
                 if (currentLevel === prevLevel) continue;
@@ -114060,10 +114116,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     .filter(c => c.bet >= currentLevel && !c.folded)
                     .map(c => c.name);
                 
-                if (potSize > 0 && eligible.length > 0) {
-                    pots.push({ amount: potSize, eligible });
+                if (potSize > 0) {
+                    if (eligible.length > 0) {
+                        // Přičti forfeited pool z předchozích levelů bez eligible
+                        pots.push({ amount: potSize + forfeitedPool, eligible });
+                        forfeitedPool = 0;
+                    } else {
+                        // [FIX] Žádný eligible → přidat do forfeited poolu, čeká na další pot s eligible
+                        forfeitedPool += potSize;
+                    }
                 }
                 prevLevel = currentLevel;
+            }
+            
+            // [FIX] Pokud zůstal forfeited pool a žádný pot neexistuje, přidat k poslednímu
+            if (forfeitedPool > 0 && pots.length > 0) {
+                pots[pots.length - 1].amount += forfeitedPool;
             }
             
             return pots;
@@ -114113,8 +114181,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Aplikuj rake jen na celkový pot (jednou)
                 const winPerPlayer = Math.floor(pot.amount / winners.length);
-                winners.forEach(w => {
-                    winningsPerPlayer[w.name] = (winningsPerPlayer[w.name] || 0) + winPerPlayer;
+                const remainder = pot.amount - (winPerPlayer * winners.length);
+                winners.forEach((w, idx) => {
+                    // [FIX] Odd chip: zbytek (1-2 chips) dostane první winner v pořadí podle seatu
+                    const extra = idx === 0 ? remainder : 0;
+                    winningsPerPlayer[w.name] = (winningsPerPlayer[w.name] || 0) + winPerPlayer + extra;
                 });
                 
                 potResults.push({
@@ -114186,7 +114257,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const s2 = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
                 const t2 = s2.val();
                 if (!t2) return;
-                const withChips = Object.values(t2.players || {}).filter(p => p.chips > 0);
+                
+                // [FIX] Smaž hráče co odešli uprostřed ruky (left: true)
+                const leftPlayerCleanup = {};
+                Object.entries(t2.players || {}).forEach(([name, p]) => {
+                    if (p.left) {
+                        leftPlayerCleanup[`players/${name}`] = null;
+                    }
+                });
+                if (Object.keys(leftPlayerCleanup).length > 0) {
+                    await firebaseDB.ref(`pokerTables/${tableId}`).update(leftPlayerCleanup);
+                }
+                
+                // Znovu načti po cleanupu
+                const s3 = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const t3 = s3.val();
+                if (!t3) return;
+                const withChips = Object.values(t3.players || {}).filter(p => p.chips > 0);
                 if (withChips.length >= 2) {
                     // 🔒 Vyčisti privátní karty předchozí ruky
                     await firebaseDB.ref(`pokerHands/${tableId}`).remove().catch(() => {});
@@ -114200,7 +114287,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     });
                     // Resetuj flagy hráčům
                     const cleanups = {};
-                    Object.keys(t2.players || {}).forEach(n => {
+                    Object.keys(t3.players || {}).forEach(n => {
                         cleanups[`players/${n}/hasCards`] = false;
                     });
                     await firebaseDB.ref(`pokerTables/${tableId}`).update(cleanups);
@@ -114246,13 +114333,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const t = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
                 const td = t.val();
                 if (!td) return;
+                
+                // [FIX] Smaž hráče co odešli uprostřed ruky (left: true)
                 const cleanups = {};
-                Object.keys(td.players || {}).forEach(n => {
-                    cleanups[`players/${n}/hasCards`] = false;
+                Object.entries(td.players || {}).forEach(([name, p]) => {
+                    if (p.left) {
+                        cleanups[`players/${name}`] = null;
+                    } else {
+                        cleanups[`players/${name}/hasCards`] = false;
+                    }
                 });
                 await firebaseDB.ref(`pokerTables/${tableId}`).update(cleanups);
                 
-                const withChips = Object.values(td.players || {}).filter(p => p.chips > 0);
+                // Znovu načti po cleanupu
+                const t2 = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const td2 = t2.val();
+                if (!td2) return;
+                const withChips = Object.values(td2.players || {}).filter(p => p.chips > 0);
                 if (withChips.length >= 2) {
                     setTimeout(() => startPokerHand(tableId), 3000);
                 }
