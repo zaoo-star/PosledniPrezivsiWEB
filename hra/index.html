@@ -1110,6 +1110,11 @@
             50% { transform: scale(1.05); opacity: 0.85; }
         }
         
+        @keyframes pokerPulse {
+            0%, 100% { box-shadow: 0 0 5px rgba(76, 175, 80, 0.3), inset 0 0 10px rgba(45, 138, 45, 0.2); border-color: #2d8a2d; }
+            50% { box-shadow: 0 0 12px rgba(76, 175, 80, 0.6), inset 0 0 15px rgba(45, 138, 45, 0.4); border-color: #4caf50; }
+        }
+        
         @keyframes nav-dot-pulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50% { opacity: 0.3; transform: scale(0.7); }
@@ -3010,6 +3015,17 @@
     
     <!-- Notification Container -->
     <div id="notificationContainer"></div>
+    
+    <!-- 🃏 Poker mini-indikátor (zobrazí se jen když je hráč u stolu a modal minimalizovaný) -->
+    <div id="pokerMiniIndicator" style="display:none;position:fixed;bottom:70px;right:10px;z-index:9990;background:linear-gradient(135deg,#1a3a2a,#0a2510);border:2px solid #4caf50;border-radius:8px;padding:0.4rem 0.7rem;cursor:pointer;box-shadow:0 2px 8px rgba(76,175,80,0.4);animation:pokerPulse 2s infinite;" onclick="if(state._activePokerTable){openPokerTable(state._activePokerTable);}">
+        <div style="display:flex;align-items:center;gap:0.4rem;">
+            <span style="font-size:1.1rem;">🃏</span>
+            <div>
+                <div style="color:#4caf50;font-size:0.7rem;font-weight:bold;">U POKER STOLU</div>
+                <div style="color:#ffd700;font-size:0.6rem;" id="pokerMiniStatus">Klikni pro návrat</div>
+            </div>
+        </div>
+    </div>
     
     <div class="container">
         <header>
@@ -15473,7 +15489,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.7.0';
+        const GAME_VERSION = '3.7.3';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -103338,7 +103354,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 <!-- 🃏 TEXAS HOLD'EM POKER -->
                 <div style="display: flex; gap: 3px; margin-bottom: 4px;">
-                    <button class="btn wl-btn wl-scratch" onclick="showPokerLobby()" style="flex:1;background:linear-gradient(180deg, #0a1510 0%, #050a08 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #1a4a2a;"><span style="font-size:0.7rem;color:#4caf50">🃏 TEXAS HOLD'EM POKER${(window._pokerActivePlayers || 0) > 0 ? ` <span style="color:#ffd700">(${window._pokerActivePlayers} hr${window._pokerActivePlayers === 1 ? 'áč' : window._pokerActivePlayers < 5 ? 'áči' : 'áčů'})</span>` : ''}</span></button>
+                    ${(() => {
+                        const playerCount = window._pokerActivePlayers || 0;
+                        const atTable = state._activePokerTable && typeof _currentPokerTable !== 'undefined' && _currentPokerTable;
+                        if (atTable) {
+                            // Jsem u stolu - tlačítko otevře můj stůl, zelená s "● U STOLU"
+                            return `<button class="btn wl-btn wl-scratch" onclick="openPokerTable('${state._activePokerTable}')" style="flex:1;background:linear-gradient(180deg, #0a2510 0%, #051a08 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #2d8a2d;animation:pokerPulse 2s infinite;"><span style="font-size:0.7rem;color:#4caf50;font-weight:bold;">🃏 POKER — ● U STOLU ${playerCount > 0 ? `<span style="color:#ffd700">(${playerCount})</span>` : ''}</span></button>`;
+                        }
+                        return `<button class="btn wl-btn wl-scratch" onclick="showPokerLobby()" style="flex:1;background:linear-gradient(180deg, #0a1510 0%, #050a08 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #1a4a2a;"><span style="font-size:0.7rem;color:#4caf50">🃏 TEXAS HOLD'EM POKER${playerCount > 0 ? ` <span style="color:#ffd700">(${playerCount} hr${playerCount === 1 ? 'áč' : playerCount < 5 ? 'áči' : 'áčů'})</span>` : ''}</span></button>`;
+                    })()}
                 </div>
                 
                 <!-- OBNOVIT HRU -->
@@ -113684,14 +113708,58 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const tables = snapshot.val() || {};
                     let totalPlayers = 0;
                     let totalTables = 0;
-                    Object.values(tables).forEach(table => {
+                    const myName = getPlayerName();
+                    
+                    Object.entries(tables).forEach(([tableId, table]) => {
                         if (!table) return;
-                        const playerCount = Object.keys(table.players || {}).length;
+                        const playerNames = Object.keys(table.players || {});
+                        const playerCount = playerNames.length;
                         if (playerCount > 0) {
                             totalPlayers += playerCount;
                             totalTables++;
                         }
+                        
+                        // [NEW] Detekce nových hráčů u MÉHO stolu (když jsem creator a jsem u něj)
+                        if (table.createdBy === myName && playerNames.includes(myName)) {
+                            const prevCount = window._myTablePlayerCount?.[tableId] || 0;
+                            if (playerCount > prevCount && prevCount >= 1) {
+                                // Někdo nový se připojil
+                                const newPlayers = playerNames.filter(n => 
+                                    n !== myName && !(window._myTablePlayerNames?.[tableId] || []).includes(n)
+                                );
+                                if (newPlayers.length > 0) {
+                                    const joinedName = newPlayers[0];
+                                    // Notifikace
+                                    if (typeof notifySuccess === 'function') {
+                                        notifySuccess('🃏 Hráč u stolu!', `${joinedName} se připojil k tvému pokeru`);
+                                    }
+                                    // Pokud nejsem zrovna u stolu (jen host), ukaž tlačítko
+                                    if (_currentPokerTable !== tableId) {
+                                        setTimeout(() => {
+                                            if (typeof showModal === 'function' && !document.querySelector('.modal-backdrop')) {
+                                                showModal('🃏 Hráč se připojil!', `
+                                                    <div style="text-align:center;padding:1rem;">
+                                                        <div style="font-size:3rem;">🎰</div>
+                                                        <p style="color:#ffd700;font-weight:bold;margin-bottom:0.3rem;">${escapeHtml(joinedName)} čeká u tvého stolu!</p>
+                                                        <p style="color:#888;font-size:0.8rem;">Chceš se vrátit a zahrát si?</p>
+                                                    </div>
+                                                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;">
+                                                        <button class="btn" onclick="closeModal();" style="background:#555;">Později</button>
+                                                        <button class="btn" onclick="closeModal(); openPokerTable('${tableId}');" style="background:linear-gradient(135deg,#1a5a1a,#2d8a2d);">🎮 Ke stolu</button>
+                                                    </div>
+                                                `);
+                                            }
+                                        }, 500);
+                                    }
+                                }
+                            }
+                            window._myTablePlayerCount = window._myTablePlayerCount || {};
+                            window._myTablePlayerNames = window._myTablePlayerNames || {};
+                            window._myTablePlayerCount[tableId] = playerCount;
+                            window._myTablePlayerNames[tableId] = playerNames;
+                        }
                     });
+                    
                     const prev = window._pokerActivePlayers;
                     window._pokerActivePlayers = totalPlayers;
                     window._pokerActiveTables = totalTables;
@@ -113701,6 +113769,64 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 });
             } catch(e) { console.warn('Poker count listener setup:', e); }
+        }
+        
+        // [NEW] Heartbeat - udržuje tvoji přítomnost u stolu (každých 30s)
+        // Cleanup detekuje stoly kde creator je déle než 5 min offline a nikdo tam není
+        function setupPokerHeartbeat() {
+            if (window._pokerHeartbeatSetup) return;
+            window._pokerHeartbeatSetup = true;
+            
+            // Heartbeat každých 30s
+            setInterval(async () => {
+                if (!firebaseDB || !_currentPokerTable) return;
+                const myName = getPlayerName();
+                try {
+                    await firebaseDB.ref(`pokerTables/${_currentPokerTable}/players/${myName}/lastSeen`)
+                        .set(Date.now());
+                } catch(e) {}
+            }, 30000);
+            
+            // Cleanup zombie stolů každých 2 min (jen první hráč co je online)
+            setInterval(async () => {
+                if (!firebaseDB || !multiplayerEnabled) return;
+                try {
+                    const snap = await firebaseDB.ref('pokerTables').once('value');
+                    const tables = snap.val() || {};
+                    const now = Date.now();
+                    const ZOMBIE_THRESHOLD = 5 * 60 * 1000; // 5 minut
+                    
+                    for (const [tableId, table] of Object.entries(tables)) {
+                        if (!table || !table.players) continue;
+                        const playerNames = Object.keys(table.players);
+                        
+                        // Pokud je stůl prázdný → smaž
+                        if (playerNames.length === 0) {
+                            await firebaseDB.ref(`pokerTables/${tableId}`).remove();
+                            continue;
+                        }
+                        
+                        // Pokud má 1 hráče a ten je starý (lastSeen > 5min nebo neexistuje)
+                        if (playerNames.length === 1) {
+                            const player = table.players[playerNames[0]];
+                            const lastSeen = player.lastSeen || table.createdAt || table.lastActivity || 0;
+                            if (now - lastSeen > ZOMBIE_THRESHOLD) {
+                                console.log(`🃏 Auto-cleanup zombie stolu ${tableId} (osamělý hráč ${playerNames[0]} offline ${Math.floor((now-lastSeen)/60000)}min)`);
+                                await firebaseDB.ref(`pokerTables/${tableId}`).remove();
+                                // Chat notifikace
+                                try {
+                                    await firebaseDB.ref('chat/messages').push({
+                                        author: '🃏 POKER',
+                                        text: `⏱️ Poker stůl (${playerNames[0]}) automaticky zrušen - nikdo se nepřipojil`,
+                                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                        system: true
+                                    });
+                                } catch(chatErr) {}
+                            }
+                        }
+                    }
+                } catch(e) { console.warn('Poker zombie cleanup:', e); }
+            }, 120000); // každé 2 min
         }
         
         // [NEW] Auto-reconnect do poker stolu po refreshi
@@ -113764,6 +113890,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         setTimeout(() => {
             setupPokerPlayerCountListener();
             autoReconnectPokerTable();
+            setupPokerHeartbeat();
         }, 3000);
         
         // Helper: získat denní buy-in
@@ -114095,6 +114222,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 saveGame();
                 _myPokerHoleCards = null;
                 _watchdogTriggered = false;
+                // [NEW] Skryj mini indikátor
+                try { const ind = document.getElementById('pokerMiniIndicator'); if (ind) ind.style.display = 'none'; } catch(e) {}
                 
                 // Pokud zbyl 0 nebo 1 hráč, smaž stůl
                 const tableSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
@@ -115391,6 +115520,65 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!table) { leavePokerTable(); return; }
                 renderPokerTable(table);
                 
+                // [NEW] Update poker mini indikátor (floating badge)
+                try {
+                    const indicator = document.getElementById('pokerMiniIndicator');
+                    const statusEl = document.getElementById('pokerMiniStatus');
+                    if (indicator) {
+                        const modalOpen = !!document.querySelector('.modal-backdrop');
+                        // Zobraz indikátor pouze když: jsem u stolu AND modal je zavřený
+                        if (_currentPokerTable && !modalOpen) {
+                            indicator.style.display = 'block';
+                            // Status text
+                            if (statusEl) {
+                                const myName = getPlayerName();
+                                const myPlayer = table.players?.[myName];
+                                if (table.currentTurn === myName && table.state === 'playing') {
+                                    statusEl.innerHTML = '<span style="color:#ff9800;font-weight:bold;">⚡ TVŮJ TAH!</span>';
+                                } else if (table.state === 'showdown') {
+                                    statusEl.textContent = '🏆 Showdown...';
+                                } else if (myPlayer?.chips) {
+                                    const playerCount = Object.keys(table.players || {}).length;
+                                    statusEl.innerHTML = `💰 ${myPlayer.chips} | ${playerCount} hr.`;
+                                } else {
+                                    statusEl.textContent = 'Klikni pro návrat';
+                                }
+                            }
+                        } else {
+                            indicator.style.display = 'none';
+                        }
+                    }
+                } catch(e) {}
+                try {
+                    const myName = getPlayerName();
+                    if (table.currentTurn === myName && table.state === 'playing') {
+                        const modalOpen = !!document.querySelector('.modal-backdrop');
+                        const alreadyNotifiedKey = `${tableId}_${table.turnStartTime}`;
+                        if (!modalOpen && window._lastPokerTurnNotified !== alreadyNotifiedKey) {
+                            window._lastPokerTurnNotified = alreadyNotifiedKey;
+                            if (typeof notifySuccess === 'function') {
+                                notifySuccess('🃏 Tvůj tah u pokeru!', 'Klikni pro otevření stolu');
+                            }
+                        }
+                    }
+                    // [NEW] Notifikace o showdown výsledku (když modal minimalizovaný)
+                    if (table.state === 'showdown' && table.lastWinner) {
+                        const modalOpen = !!document.querySelector('.modal-backdrop');
+                        const showdownKey = `${tableId}_showdown_${table.lastActivity}`;
+                        if (!modalOpen && window._lastShowdownNotified !== showdownKey) {
+                            window._lastShowdownNotified = showdownKey;
+                            if (typeof notifyInfo === 'function') {
+                                const wonByMe = table.lastWinner === myName || (table.lastWinner || '').includes(myName);
+                                if (wonByMe) {
+                                    notifySuccess(`🏆 Vyhrál jsi!`, `+${table.lastWinAmount}💰 (${table.lastWinHand || 'pot'})`);
+                                } else {
+                                    notifyInfo(`🃏 ${table.lastWinner} vyhrál`, `${table.lastWinAmount}💰 s ${table.lastWinHand || 'rukou'}`);
+                                }
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
                 // 🛡️ Fix 2: Watchdog — jakýkoliv klient u stolu může vynutit auto-fold
                 // pokud hráč na tahu je přes timeout neaktivní (např. zavřel okno)
                 if (table.state === 'playing' && table.currentTurn && table.turnStartTime) {
@@ -115605,7 +115793,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 <!-- ACTIONS -->
                 <div style="margin-bottom:0.3rem;">${actionsHtml}</div>
                 
-                <button class="btn" onclick="if(confirm('Opustit stůl? Chips se převedou na peníze.'))leavePokerTable();" style="width:100%;background:#555;font-size:0.7rem;">🚪 Odejít</button>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;">
+                    <button class="btn" onclick="if(confirm('Minimalizovat stůl?\\n\\nZavře se okno pokru, ale zůstáváš u stolu. Dostaneš notifikaci když:\\n• je tvůj tah\\n• někdo vyhraje\\n• nový hráč se připojí\\n\\nPro návrat klikni na zelené tlačítko v Online sekci.')) { closeModal(); notifyInfo('🃏 Poker pokračuje', 'Dostaneš notifikaci když se něco stane.'); }" style="background:#1a3a2a;border:1px solid #2d8a2d;color:#8bc34a;font-size:0.7rem;">📥 Minimalizovat</button>
+                    <button class="btn" onclick="if(confirm('Opustit stůl?\\n\\nChips budou převedeny zpět na peníze. Tato akce je nevratná.\\n\\nPokud jsi uprostřed ruky, karty se automaticky složí.'))leavePokerTable();" style="background:#555;font-size:0.7rem;">🚪 Odejít</button>
+                </div>
             `);
         }
         
@@ -131195,10 +131386,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
 })();
 
 // ======== 🤖 AI ENGINE ========
-const AI_ENGINE={geminiKey:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:30,lastReset:Date.now(),enabled:false,
+const AI_ENGINE={geminiKey:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:60,lastReset:Date.now(),enabled:false,
 // [FIX AI] Telemetrie — sleduj co a kolik
 _stats:{geminiCalls:0,geminiFails:0,geminiTokens:0,claudeCalls:0,claudeFails:0,cacheHits:0,cacheMisses:0},
-async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.geminiKey)this.geminiKey=c.geminiKey;if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.model=c.model||this.model;this.maxReq=c.maxReqPerHour||30;this.enabled=!!(this.geminiKey||this.claudeProxy);console.log('🤖 AI:',this.enabled?'ON':'OFF',this.model);}
+async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.geminiKey)this.geminiKey=c.geminiKey;if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.model=c.model||this.model;this.maxReq=c.maxReqPerHour||60;this.enabled=!!(this.geminiKey||this.claudeProxy);console.log('🤖 AI:',this.enabled?'ON':'OFF',this.model);}
 // [FIX AI] Načti cache z localStorage (přežije reload)
 try{const saved=localStorage.getItem('aiCache_v1');if(saved){const arr=JSON.parse(saved);const now=Date.now();arr.forEach(([k,v])=>{if(v&&v.t&&(now-v.t)<this.cacheTTL)this.cache.set(k,v);});console.log('🤖 AI cache restored:',this.cache.size,'entries');}}catch(e){}
 }catch(e){console.error('🤖 AI init error:',e);}},
@@ -131310,6 +131501,12 @@ OBCHOD: NPC obchody s fixními cenami (sleva při trustu). Tržiště (hráč-hr
 LEGENDARY ZBRANĚ: Plamenomet, Gaussova puška, Rotační kulomet, Plazmová puška, Červené páčidlo, Zirael, B.F.G. 9000, Čepel Leviatana (72DMG), Titanovo Dělo (burst fire). Set items pro každou třídu.
 
 HERNÍ MECHANIKY: Hlad, žízeň, energie, radiace — klesají v čase. Spánek obnovuje energii/HP. Voda se sbírá na 4 místech. Nemoci (chřipka, infekce, radiační nemoc). Zranění (modřiny, řezné rány, zlomeniny). Počasí ovlivňuje gameplay.`;
+
+// [OPTIMIZATION] Krátký kontext pro AI funkce co nepotřebují kompletní lore
+// AI_BASE má ~3300 znaků (~900 input tokenů), AI_BASE_LITE má ~200 znaků (~60 tokenů)
+// Úspora ~840 tokenů per call × desítky volání = tisíce tokenů ušetřeno
+const AI_BASE_LITE = `Jsi postava v české post-apokalyptické RPG "Poslední Přeživší". Odpovídej ČESKY, drsným stylem pustiny. Nikdy nezmiňuj že jsi AI. Odpovídej v charakteru, 2-5 vět pokud není uvedeno jinak.`;
+
 
 function getNpcServiceContext(npcId, trust) {
     const t = trust || 0;
@@ -131962,7 +132159,7 @@ const keyPlaceholder=hasKey?('•'.repeat(20)+cfg.geminiKey.slice(-4)):'AIzaSy..
 // [FIX AI] Získej statistiky pro monitoring
 const stats=AI_ENGINE.getStats?.()||{};
 const statsHtml=`<div style="background:#0a1a2a;border:1px solid #2196f3;padding:0.6rem;border-radius:6px;margin-bottom:1rem;font-size:0.75rem;"><div style="color:#64b5f6;font-weight:bold;margin-bottom:0.3rem;">📊 STATISTIKY (od loadu)</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;color:#aaa;"><div>Gemini: ${stats.geminiCalls||0} calls, ${stats.geminiFails||0} fails</div><div>Claude: ${stats.claudeCalls||0} calls, ${stats.claudeFails||0} fails</div><div>Tokens: ${stats.geminiTokens||0}</div><div>Cache: ${stats.cacheHits||0}/${(stats.cacheHits||0)+(stats.cacheMisses||0)} (${stats.cacheRate||0}%)</div><div style="grid-column:span 2;color:${stats.failRate>20?'#ff5722':'#8bc34a'};">Fail rate: ${stats.failRate||0}% · Cache: ${stats.cacheSize||0} entries</div></div></div>`;
-showModal('🤖 AI Nastavení',`<div style="padding:0.5rem"><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Gemini API klíč:</label><input type="password" id="aiK" value="" placeholder="${keyPlaceholder}" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:${hasKey?'#8bc34a':'#555'};font-size:0.7rem;margin:0.2rem 0">${hasKey?'✅ Klíč je nastavený (prázdné = beze změny). Vlož nový pro přepis.':'aistudio.google.com → Get API key'}</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Claude Proxy (volitelné):</label><input type="text" id="aiP" value="${cfg.claudeProxy||''}" placeholder="https://proxy/claude" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Model:</label><select id="aiM" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><option value="gemini-2.5-flash" ${cfg.model==='gemini-2.5-flash'?'selected':''}>Gemini 2.5 Flash</option><option value="gemini-2.0-flash" ${cfg.model==='gemini-2.0-flash'?'selected':''}>Gemini 2.0 Flash</option></select></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Max req/hráč/h:</label><input type="number" id="aiR" value="${cfg.maxReqPerHour||30}" min="5" max="100" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="background:#1a2a1a;padding:0.5rem;border-radius:6px;margin-bottom:1rem"><div style="color:${AI_ENGINE.enabled?'#8bc34a':'#f44336'};font-weight:bold">${AI_ENGINE.enabled?'✅ AKTIVNÍ':'❌ NEAKTIVNÍ'}</div><div style="color:#888;font-size:0.8rem">Req: ${AI_ENGINE.requestCount}/${AI_ENGINE.maxReq}</div></div>${statsHtml}<button class="btn" onclick="saveAICfg()" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.7rem;font-weight:bold">💾 Uložit</button><button class="btn" onclick="testAI()" style="width:100%;margin-top:0.3rem;background:#7b1fa2">🧪 Test</button><button class="btn" onclick="clearAICache()" style="width:100%;margin-top:0.3rem;background:#ff6f00">🗑️ Vyčistit cache</button><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:0.3rem;background:#333">← Zpět</button></div>`);}
+showModal('🤖 AI Nastavení',`<div style="padding:0.5rem"><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Gemini API klíč:</label><input type="password" id="aiK" value="" placeholder="${keyPlaceholder}" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:${hasKey?'#8bc34a':'#555'};font-size:0.7rem;margin:0.2rem 0">${hasKey?'✅ Klíč je nastavený (prázdné = beze změny). Vlož nový pro přepis.':'aistudio.google.com → Get API key'}</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Claude Proxy (volitelné):</label><input type="text" id="aiP" value="${cfg.claudeProxy||''}" placeholder="https://proxy/claude" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Model:</label><select id="aiM" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><option value="gemini-2.5-flash" ${cfg.model==='gemini-2.5-flash'?'selected':''}>Gemini 2.5 Flash</option><option value="gemini-2.0-flash" ${cfg.model==='gemini-2.0-flash'?'selected':''}>Gemini 2.0 Flash</option></select></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Max req/hráč/h:</label><input type="number" id="aiR" value="${cfg.maxReqPerHour||60}" min="5" max="200" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="background:#1a2a1a;padding:0.5rem;border-radius:6px;margin-bottom:1rem"><div style="color:${AI_ENGINE.enabled?'#8bc34a':'#f44336'};font-weight:bold">${AI_ENGINE.enabled?'✅ AKTIVNÍ':'❌ NEAKTIVNÍ'}</div><div style="color:#888;font-size:0.8rem">Req: ${AI_ENGINE.requestCount}/${AI_ENGINE.maxReq}</div></div>${statsHtml}<button class="btn" onclick="saveAICfg()" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.7rem;font-weight:bold">💾 Uložit</button><button class="btn" onclick="testAI()" style="width:100%;margin-top:0.3rem;background:#7b1fa2">🧪 Test</button><button class="btn" onclick="clearAICache()" style="width:100%;margin-top:0.3rem;background:#ff6f00">🗑️ Vyčistit cache</button><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:0.3rem;background:#333">← Zpět</button></div>`);}
 // [FIX AI] Manuální vyčištění cache (pro admina pokud se něco pokazí)
 function clearAICache(){AI_ENGINE.cache.clear();AI_ENGINE._stats={geminiCalls:0,geminiFails:0,geminiTokens:0,claudeCalls:0,claudeFails:0,cacheHits:0,cacheMisses:0};try{localStorage.removeItem('aiCache_v1');}catch(e){}notifySuccess('🗑️ Cache vyčištěna','Statistiky resetovány');showAIAdminPanel();}
 async function saveAICfg(){if(!isAdmin()&&!isStaff())return;try{
@@ -131981,7 +132178,7 @@ window.showAIChatPanel=showAIChatPanel;window.sendAIChat=sendAIChat;window.quick
 async function aiDeathNarrative(deathReason) {
     if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Jsi vypravěč smrti. Napiš dramatický, krátký nekrolog (3-4 věty) pro mrtvého přeživšího.
 Hráč "${c.name}", level ${c.lvl}, třída ${c.cls||'přeživší'}, přežil ${c.day} dní.
 Příčina smrti: ${deathReason}. Lokace: "${c.loc}". Zbraň: ${c.weapon}.
@@ -132066,7 +132263,7 @@ async function aiLegendaryLore(item) {
     if (!AI_ENGINE.enabled || !item) return null;
     // [FIX AI] Shared Firebase cache — lore legendárního itemu je stejné pro všechny, 7 dní TTL
     const itemSafe = (item.id || 'unknown').replace(/[.#$\/\[\]]/g, '_');
-    return await AI_ENGINE.generateShared(`${AI_BASE}
+    return await AI_ENGINE.generateShared(`${AI_BASE_LITE}
 Napiš krátký příběh/lore (2-3 věty) pro legendární předmět "${item.name}" (${item.type}, ${item.desc || ''}).
 Styl: epický, tajemný, post-apokalyptický. Kdo ho vyrobil? Kolik lidí kvůli němu zemřelo? Jakou má historii?`, 'Příběh předmětu', `shared/ai/itemLore/${itemSafe}`, 250, 604800000);
 }
@@ -132372,7 +132569,7 @@ async function aiTravelEvent() {
     // [FIX AI] Cache podle lokace+zóny+denní doby — stejné místo stejnou denní dobu = stejný event (30min TTL)
     // Ušetří Gemini calls při opakovaném cestování do stejných lokací
     const cacheKey = `travel_${c.loc}_${c.zone}_${c.tod}_lvl${Math.floor(c.lvl/5)}`;
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Vygeneruj KRÁTKOU náhodnou příhodu (3-4 věty) co hráč potká na cestě.
 Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}", ${c.zone} zóna, ${c.tod}.
 Typ příhod: potká cizince, najde něco zajímavého, uslyší zvuk, uvidí stopu, najde zprávu, potká zvíře.
@@ -132389,7 +132586,7 @@ async function aiBossTaunt(bossName, bossHpPct, playerHpPct, round) {
     // Typicky 16 buckets (4 boss HP × 4 player HP) × počet bossů = hodně úspora
     const bossSafe = (bossName || 'boss').replace(/[.#$\/\[\]]/g, '_');
     const sharedPath = `shared/ai/bossTaunts/${bossSafe}/${Math.floor(bossHpPct/25)}_${Math.floor(playerHpPct/25)}`;
-    return await AI_ENGINE.generateShared(`${AI_BASE}
+    return await AI_ENGINE.generateShared(`${AI_BASE_LITE}
 Jsi "${bossName}" — obrovská bestie v boji. Řekni JEDNU krátkou větu (provokace, výhružka, posměch).
 Tvé HP: ${bossHpPct}%. Hráčovo HP: ${playerHpPct}%. Kolo: ${round}.
 ${bossHpPct > 70 ? 'Jsi silný, posmívej se.' : bossHpPct > 30 ? 'Jsi zraněný ale stále nebezpečný.' : 'Jsi téměř mrtvý — buď zoufalý nebo šílený.'}
@@ -132401,7 +132598,7 @@ MAX 1 věta. Drsnější = lepší. Žádné uvozovky.`, 'Taunt', sharedPath, 15
 async function aiPostCombatNarrative(enemyNames, rounds) {
     if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Napiš epický popis vítězné bitvy (3-4 věty).
 Hráč "${c.name}" (${c.cls||'přeživší'}, zbraň: ${c.weapon}) porazil: ${enemyNames.join(', ')}.
 Boj trval ${rounds} kol. ${c.comp > 0 ? c.comp + ' společníků pomáhalo.' : 'Bojoval sám.'}
@@ -132425,7 +132622,7 @@ async function aiDream() {
     if (state.status?.radiation > 50) events.push('Vysoká radiace.');
     if (state.companions?.length > 0) events.push(`Má ${state.companions.length} společníků.`);
     const evStr = events.join(' ') || 'Klidný den.';
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Jsi vypravěč snů. Napiš krátký, surreálný sen (3-5 vět) pro hráče "${c.name}" lvl ${c.lvl}.
 Co zažil: ${evStr}. Lokace: "${c.loc}". Den ${c.day}. Třída: ${c.cls||'přeživší'}.
 Sen reflektuje hráčovy zážitky, ale zkresleně — jako opravdový sen. Symbolismus, zvláštní obrazy, nečekané zvraty.
@@ -132437,7 +132634,7 @@ async function aiDungeonNarrator(dungeonName, floorName, floorNum, enemies) {
     if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
     const enemyNames = (enemies || []).join(', ');
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Jsi vypravěč dungeonu. Popiš co hráč vidí/slyší/cítí na patře (2-3 věty).
 Dungeon: "${dungeonName}", patro ${floorNum}: "${floorName}".
 Nepřátelé na patře: ${enemyNames}.
@@ -133073,7 +133270,7 @@ async function showGraveyard() {
 // =============================================
 async function aiDungeonDiary(dungeonName, floorName, floorNum) {
     if (!AI_ENGINE.enabled) return null;
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Napiš krátký deníkový zápis (3-4 věty) od mrtvého přeživšího nalezeného v dungeonu.
 Dungeon: "${dungeonName}", patro: "${floorName}" (#${floorNum}).
 Styl: osobní deník, poslední zápis před smrtí. Zmíň co viděl, čeho se bál, proč tam šel.
@@ -133125,7 +133322,7 @@ async function aiNpcLetter() {
     // Vyber akci
     const action = npc.actions[Math.floor(Math.random()*npc.actions.length)];
     
-    const letter = await AI_ENGINE.generateFast(`${AI_BASE}
+    const letter = await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Jsi "${npc.name}" (${npc.style}). Napiš krátký dopis (2-3 věty) hráči "${c.name}".
 Důvěra: ${trust}. Důvod: ${action.desc}. Den ${c.day}.
 ${action.type==='fetch'?`Potřebuješ ${action.amount}x "${action.item}". Popiš proč.`:''}
@@ -133257,7 +133454,7 @@ async function aiTravelEncounter() {
     if (!AI_ENGINE.enabled) return null;
     if (Math.random() > 0.15) return null; // 15% šance
     const c = getAICtx();
-    return await AI_ENGINE.generateFast(`${AI_BASE}
+    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Vygeneruj krátké náhodné setkání na cestě (3-4 věty). Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}", ${c.zone}.
 Na konci nabídni DVĚ volby: [A] akce (riskantní) nebo [B] akce (bezpečná). Formát:
 ...popis setkání...
@@ -133271,17 +133468,26 @@ Na konci nabídni DVĚ volby: [A] akce (riskantní) nebo [B] akce (bezpečná). 
 async function aiWeeklyChronicle() {
     if (!AI_ENGINE.enabled) return;
     const c = getAICtx();
-    const chronicle = await AI_ENGINE.generate(`${AI_BASE}
+    const chronicle = await AI_ENGINE.generate(`${AI_BASE_LITE}
 Napiš KAPITOLU kroniky přeživšího (5-8 vět). Jako kronikář zapiš co se stalo za posledních 7 dní.
 Hráč "${c.name}" lvl ${c.lvl}, třída ${c.cls||'přeživší'}. Den ${c.day}. HP: ${c.hp}/${c.maxHp}.
 Zabití celkem: ${c.kills}. Peníze: ${c.money}. Společníci: ${c.comp}. Lokace: "${c.loc}".
 ${state.stats?.bossKills?'Bossů poraženo: '+state.stats.bossKills+'.':''}
 ${state.stats?.deaths?'Úmrtí: '+state.stats.deaths+'.':''}
-Piš jako historická kronika — 3. osoba, vzletný styl. Kapitola ${Math.ceil((c.day||1)/7)}.`, 'Kronika', null, 600);
+Piš jako historická kronika — 3. osoba, vzletný styl. Kapitola ${Math.ceil((c.day||1)/7)}.`, 'Kronika', null, 1200);
     
     if (chronicle) {
         if (!state.chronicle) state.chronicle = [];
-        state.chronicle.push({ day: c.day, chapter: Math.ceil((c.day||1)/7), text: chronicle.substring(0,500), timestamp: Date.now() });
+        // [FIX] Truncation z 500→2000 znaků - 5-8 vět česky má běžně 500-1200 znaků
+        // Dříve se kroniky usekávaly uprostřed věty
+        let cleaned = chronicle.trim();
+        if (cleaned.length > 2000) {
+            // Najdi poslední tečku před 2000
+            const cut = cleaned.substring(0, 2000);
+            const lastPunc = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
+            cleaned = lastPunc > 100 ? cut.substring(0, lastPunc + 1) : cut;
+        }
+        state.chronicle.push({ day: c.day, chapter: Math.ceil((c.day||1)/7), text: cleaned, timestamp: Date.now() });
         if (state.chronicle.length > 20) state.chronicle = state.chronicle.slice(-20);
         notifySuccess('📊 Nová kapitola kroniky!', `Kapitola ${Math.ceil((c.day||1)/7)}`);
         saveGame();
@@ -133515,7 +133721,7 @@ setInterval(async () => {
             _lastCompanionComment = now;
             localStorage.setItem('_lastCompanionComment', String(now));
             const c = getAICtx();
-            const comment = await AI_ENGINE.generateFast(`${AI_BASE}
+            const comment = await AI_ENGINE.generateFast(`${AI_BASE_LITE}
 Jsi společník "${comp.name}" (${comp.type || 'člověk'}). Řekni 1-2 věty — komentář k aktuální situaci.
 Hráč "${c.name}" lvl ${c.lvl}, lokace "${c.loc}" (${c.zone}), ${c.tod}, den ${c.day}.
 HP: ${c.hp}/${c.maxHp}. Hlad: ${state.status?.hunger?.toFixed(0)||'?'}%. Žízeň: ${state.status?.thirst?.toFixed(0)||'?'}%.
