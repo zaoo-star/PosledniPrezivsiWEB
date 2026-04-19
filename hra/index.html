@@ -15520,7 +15520,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.8';
+        const GAME_VERSION = '3.9.12';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -16680,7 +16680,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { thirstSlowdown: 0.05 }, // -5% spotřeba vody (během vlády)
                     effectDesc: '-5% spotřeba vody (po dobu vlády)',
-                    minDays: 3 // dostupné až den 3+
+                    minDays: 1
                 },
                 {
                     id: 'repair_roads',
@@ -16691,7 +16691,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { travelSpeedBonus: 0.05 },
                     effectDesc: '+5% rychlost cestování (po dobu vlády)',
-                    minDays: 3
+                    minDays: 1
                 },
                 {
                     id: 'build_watchtower',
@@ -16702,7 +16702,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { ambushReductionBonus: 0.10 },
                     effectDesc: '-10% přepadení (po dobu vlády)',
-                    minDays: 3
+                    minDays: 1
                 },
                 {
                     id: 'open_library',
@@ -16713,7 +16713,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { xpBonusPermanent: 0.05 },
                     effectDesc: '+5% XP (po dobu vlády)',
-                    minDays: 4
+                    minDays: 1
                 },
                 {
                     id: 'train_medics',
@@ -16724,7 +16724,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { healingBonusPermanent: 0.10 },
                     effectDesc: '+10% účinnost léčiv (po dobu vlády)',
-                    minDays: 4
+                    minDays: 1
                 },
                 {
                     id: 'trade_guild',
@@ -16735,7 +16735,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     durationHours: 72,
                     effect: { shopDiscountPermanent: 0.05, sellBonusPermanent: 0.05 },
                     effectDesc: '-5% ceny, +5% prodej (po dobu vlády)',
-                    minDays: 5
+                    minDays: 1
                 }
             ],
             
@@ -17348,6 +17348,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // === POLITIKA GLOBAL VARIABLES ===
         let currentMayor = null;
         let _cachedPublicMoney = 0;
+        let _cachedMayorPriority = null; // [FIX] Sdílené přes Firebase pro všechny hráče
         let mayorElection = null;
         window.mayorElection = null; // Globální reference pro game loop
         let cachedPoliticalEffects = null;
@@ -74404,7 +74405,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Chat oznámení
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `💰 Šéf ${mayor.name} obdržel denní plat: ${mayorIncome} 💰 (1% z veřejné kasy)`,
+                    text: `💰 DENNÍ PLAT ŠÉFA: 👑 ${mayor.name} obdržel ${mayorIncome}💰 (1% z veřejné kasy ${publicMoney}💰). 💡 Plat se vyplácí 1× denně a pokračuje po celou dobu vlády. Veřejná kasa se plní z daní všech hráčů.`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -113323,6 +113324,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 _cachedPublicMoney = snapshot.val() || 0;
             });
             
+            // [FIX] Listener na prioritu šéfa (bonusy/penality platí pro VŠECHNY hráče)
+            firebaseDB.ref('mayorPriority').on('value', (snapshot) => {
+                _cachedMayorPriority = snapshot.val() || null;
+                console.log('👑 Mayor priority updated:', _cachedMayorPriority);
+            });
+            
             // Inicializace cache
             refreshPoliticalEffectsCache();
             
@@ -113431,17 +113438,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // Kontrola kasy
-            const publicMoney = state.publicMoney || 0;
+            // [FIX] Použij _cachedPublicMoney (z 'politics/publicMoney' Firebase listeneru)
+            // state.publicMoney je nepoužívaný a nesynchronizuje se
+            const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
             if (publicMoney < project.cost) {
                 const chybi = project.cost - publicMoney;
                 notifyWarning('💰 Málo peněz v kase', `Potřeba ${project.cost}💰, v kase je ${publicMoney}💰. Chybí ${chybi}💰. Peníze v kase rostou z daní osadníků a grantů.`);
                 return;
             }
             
-            // Odečti z kasy
+            // [FIX] Odečti z kasy přes správnou cestu: politics/publicMoney (ne publicMoney)
             if (typeof firebaseDB !== 'undefined' && firebaseDB) {
-                firebaseDB.ref('publicMoney').set(firebase.database.ServerValue.increment(-project.cost))
+                firebaseDB.ref('politics/publicMoney').transaction(current => (current || 0) - project.cost)
                     .catch(e => console.warn('🔇 Firebase:', e?.message || e));
+            }
+            // Aktualizuj local cache (listener to brzy přepíše Firebase hodnotou)
+            if (typeof _cachedPublicMoney !== 'undefined') {
+                _cachedPublicMoney = publicMoney - project.cost;
             }
             state.publicMoney = publicMoney - project.cost;
             
@@ -113466,6 +113479,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (typeof firebaseDB !== 'undefined' && firebaseDB) {
                 firebaseDB.ref(`mayorInvestments/active/${projectId}`).set(inv.active[projectId])
                     .catch(e => console.warn('🔇 Firebase:', e?.message || e));
+                
+                // [NEW] Chat notifikace pro všechny
+                firebaseDB.ref('chat/messages').push({
+                    author: '🏛️ POLITIKA',
+                    text: `🏗️ INVESTIČNÍ PROJEKT: ${project.icon} "${project.name}"\n\n📝 ${project.desc}\n\n👑 Spustil: ${state.char?.name || 'Šéf'} za ${project.cost}💰 z veřejné kasy. ⏱️ Dokončení za ${project.durationHours}h.\n\n🎁 Po dokončení: ${project.effectDesc} — bonus platí pro všechny hráče po celou dobu vlády šéfa!`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
+                }).catch(e => console.warn('🔇', e));
             }
             
             saveGame();
@@ -113504,6 +113525,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (typeof firebaseDB !== 'undefined' && firebaseDB) {
                         firebaseDB.ref(`mayorInvestments/active/${id}`).remove().catch(e => console.warn('🔇', e));
                         firebaseDB.ref(`mayorInvestments/completed/${id}`).set(inv.completed[id]).catch(e => console.warn('🔇', e));
+                        
+                        // [NEW] Chat notifikace o dokončení - jen 1× (guard přes tento prefix)
+                        const completionKey = 'investment_finished_' + id + '_' + (data.startedByTerm || 0);
+                        firebaseDB.ref('mayorInvestments/_announced/' + completionKey).transaction(current => {
+                            if (current) return; // Už oznámeno
+                            return true;
+                        }, (err, committed) => {
+                            if (!err && committed) {
+                                firebaseDB.ref('chat/messages').push({
+                                    author: '🏛️ POLITIKA',
+                                    text: `✅ PROJEKT DOKONČEN: ${project.icon} "${project.name}"! \n\n👑 Vybudoval: ${data.startedBy || 'Šéf'}. 🎁 Nový bonus pro celou Pustinu: ${project.effectDesc}. Platí po celou dobu aktuální vlády šéfa!`,
+                                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                    system: true
+                                }).catch(e => console.warn('🔇', e));
+                            }
+                        });
                     }
                 }
             });
@@ -113549,9 +113586,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.getInvestmentBonuses = getInvestmentBonuses;
         
         // [NEW #8] ŠÉFOVA PRIORITA
+        // [FIX] Funguje pro VŠECHNY hráče přes Firebase cache _cachedMayorPriority
+        // (jinak ostatní hráči neviděli bonusy/penality priority)
         function getMayorPriority() {
-            if (!isMayor()) return null;
-            const priorityId = state.mayorPriority || null;
+            // Preferuj cached z Firebase (sdílené všem hráčům)
+            const priorityId = (typeof _cachedMayorPriority !== 'undefined' && _cachedMayorPriority) 
+                ? _cachedMayorPriority 
+                : (state.mayorPriority || null);
             if (!priorityId) return null;
             return MAYOR_SYSTEM.priorities.find(p => p.id === priorityId);
         }
@@ -113685,7 +113726,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const inv = getMayorInvestments();
             const now = Date.now();
-            const publicMoney = state.publicMoney || 0;
+            // [FIX] Používej _cachedPublicMoney z Firebase listeneru, ne state.publicMoney
+            // (state.publicMoney se nesynchronizuje, Firebase listener ukládá do _cachedPublicMoney)
+            const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
             const daysPlayed = state.time?.days || 1;
             
             const projectCards = MAYOR_SYSTEM.investments.map(project => {
@@ -116590,13 +116633,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             try {
-                const [snap, moneySnap] = await Promise.all([
+                const [snap, moneySnap, prioSnap] = await Promise.all([
                     firebaseDB.ref('politics/activeEvents').once('value'),
-                    firebaseDB.ref('politics/publicMoney').once('value')
+                    firebaseDB.ref('politics/publicMoney').once('value'),
+                    firebaseDB.ref('mayorPriority').once('value')
                 ]);
                 cachedPoliticalEffects = snap.val() || {};
                 _cachedPublicMoney = moneySnap.val() || 0;
-                console.log('🏛️ Political effects cache refreshed:', Object.keys(cachedPoliticalEffects));
+                _cachedMayorPriority = prioSnap.val() || null;
+                console.log('🏛️ Political effects cache refreshed:', Object.keys(cachedPoliticalEffects), '| Priority:', _cachedMayorPriority);
             } catch (e) {
                 console.error('Failed to refresh political effects:', e);
                 cachedPoliticalEffects = null;
@@ -118865,7 +118910,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             try {
                 await firebaseDB.ref('chat/messages').push({
                     author: `👑 VYHLÁŠKA ŠÉFA`,
-                    text: `📜 ${text}`,
+                    text: `📜 OFICIÁLNÍ VYHLÁŠKA PUSTINY\n\n"${text}"\n\n— 👑 ${getPlayerName()}, Šéf Pustiny`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true,
                     decree: true,
@@ -118936,7 +118981,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `📊 Šéf ${getPlayerName()} změnil daňovou sazbu na ${(newRate * 100).toFixed(1)}%`,
+                    text: `📊 NOVÁ DAŇOVÁ SAZBA: ${(newRate * 100).toFixed(1)}% 👑 Šéf ${getPlayerName()} upravil sazbu. 💡 Každý hráč zaplatí ${(newRate * 100).toFixed(1)}% svých peněz denně do veřejné kasy — ta pak financuje investice, granty a platy šéfa.`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -119201,7 +119246,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `🎯 LOV: Šéf vyhlásil lov na ${target}y! +50% XP a loot za jejich zabití po dobu 4 hodin!`,
+                    text: `🎯 LOV NA ${target.toUpperCase()}! 👑 Šéf ${getPlayerName()} vyhlásil odměnu z veřejné kasy (${cost}💰). Každý lovec dostane +50% XP a +50% šanci na extra loot při zabití ${target}ů. ⏱️ Platnost: 4 hodiny od teď. 💡 Vyraz do pustiny, najdi je a sklidíš dvojitý bonus!`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -120347,10 +120392,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Chat zpráva o útoku - JEN pokud transakce prošla (boss nebyl mrtvý/neaktivní)
                 if (txActuallyApplied) {
+                    // [NEW] Info o HP bosse pro detailnější zprávu
+                    const currentHp = raidDataAfter.currentHp || 0;
+                    const maxHp = raidDataAfter.maxHp || currentHp;
+                    const hpPercent = maxHp > 0 ? Math.round((currentHp / maxHp) * 100) : 0;
+                    const participantsCount = raidDataAfter.participants ? Object.keys(raidDataAfter.participants).length : 1;
+                    const bossName = raidDataAfter.bossName || 'Boss';
+                    
+                    // Vizuální HP bar v textu
+                    const barLen = 10;
+                    const filled = Math.round((hpPercent / 100) * barLen);
+                    const hpBar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+                    
                     await firebaseDB.ref('chat/messages').push({
                         author: '🐉 RAID',
                         text: (() => {
                             const d = formatNumber(damageDealt);
+                            const hp = formatNumber(currentHp);
                             const n = getPlayerName();
                             const lines = [
                                 `⚔️ ${n} se vrhá do boje — ${d} DMG! Bestie řve bolestí!`,
@@ -120376,7 +120434,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 `⚡ Blesk z čistého nebe! ${n} zasahuje za ${d} DMG!`,
                                 `☠️ ${n} dokazuje proč přežil apokalypsu — ${d} DMG!`,
                             ];
-                            return lines[Math.floor(Math.random() * lines.length)];
+                            const actionLine = lines[Math.floor(Math.random() * lines.length)];
+                            return `${actionLine}\n\n🐉 ${bossName}: ${hp} HP (${hpPercent}%) [${hpBar}] • ⚔️ ${participantsCount} lovců`;
                         })(),
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         system: true
@@ -123166,7 +123225,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 await firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `📢 DENNÍ ROZHODNUTÍ 📢\n\n${decision.icon} ${decision.name}\n\n${decision.desc}\n\n👑 Šéf Pustiny musí rozhodnout!`,
+                    text: `📢 DENNÍ ROZHODNUTÍ: ${decision.icon} "${decision.name}"\n\n📜 ${decision.desc}\n\n👑 Šéf Pustiny ${currentMayor.name} musí rozhodnout během dne. Jeho volba ovlivní celou komunitu — bonusy/penality se projeví všem hráčům. 💡 Šéf najde rozhodnutí v panelu Politika.`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 });
@@ -124605,7 +124664,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     await firebaseDB.ref('tombola/reminders').remove();
                     await firebaseDB.ref('chat/messages').push({
                         author: '🎟️ TOMBOLA',
-                        text: `❌ Tombola "${tombola.name}" skončila bez účastníků. Nikdo nevyhrál.`,
+                        text: `❌ TOMBOLA SKONČILA: "${tombola.name}" skončila bez účastníků. Nikdo si nekoupil lístek, takže nikdo nevyhrál. 💡 Příští tombolu podpoř — výhra čeká na někoho aktivnějšího!`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP, system: true
                     });
                     return;
@@ -124839,10 +124898,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const tombola = snap.val();
                 
                 if (tombola) {
-                    // Oznámení v chatu
+                    // Oznámení v chatu - detailnější
+                    const participantCount = tombola.tickets ? Object.keys(tombola.tickets).length : 0;
                     await firebaseDB.ref('chat/messages').push({
                         author: '🎟️ TOMBOLA',
-                        text: `Tombola "${tombola.name}" byla zrušena administrátorem.`,
+                        text: `❌ TOMBOLA ZRUŠENA: "${tombola.name}" byla zrušena administrátorem. Lístky se nevrátí. Pokud se zúčastnilo ${participantCount} hráčů — omlouváme se za nepříjemnosti.`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         system: true
                     });
@@ -125174,25 +125234,50 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     notifySuccess('🎟️ Lístek koupen!', `Máš ${finalCount} lístků`);
                     addLog(`Koupen lístek do tomboly "${escapeHtml(tombola.name)}" za ${totalCost} 💰`, '🎟️');
                     
-                    // Chat oznámení - jen jednou za hráče (při prvním nákupu)
-                    if (wasNewParticipant) {
-                        try {
-                            const timeLeft = Math.max(0, tombola.endsAt - Date.now());
+                    // Chat oznámení - globální throttle 1× za hodinu (jako u jiných systémů)
+                    // Místo per-player oznámení (spam) pošleme souhrn max 1× za hodinu
+                    try {
+                        const HOUR_MS = 60 * 60 * 1000;
+                        const lastNotifySnap = await firebaseDB.ref('tombola/lastChatNotify').once('value');
+                        const lastNotify = lastNotifySnap.val() || 0;
+                        const now = Date.now();
+                        
+                        if (now - lastNotify >= HOUR_MS) {
+                            // Spočítej celkový počet účastníků a lístků
+                            const ticketsSnap = await firebaseDB.ref('tombola/active/tickets').once('value');
+                            const allTickets = ticketsSnap.val() || {};
+                            const participantCount = Object.keys(allTickets).length;
+                            const totalTickets = Object.values(allTickets).reduce((sum, t) => sum + (t.count || 0), 0);
+                            
+                            const timeLeft = Math.max(0, tombola.endsAt - now);
                             const hoursLeft = Math.floor(timeLeft / 3600000);
                             const minsLeft = Math.floor((timeLeft % 3600000) / 60000);
                             const timeStr = hoursLeft > 0 ? `${hoursLeft}h ${minsLeft}m` : `${minsLeft} min`;
                             
+                            // Cena výhry (balanc)
+                            const prizeInfo = tombola.prize || '';
+                            const prizeLines = [];
+                            if (typeof tombola.prize === 'object' && tombola.prize !== null) {
+                                if (tombola.prize.money) prizeLines.push(`💰 ${tombola.prize.money}`);
+                                if (tombola.prize.xp) prizeLines.push(`⭐ ${tombola.prize.xp} XP`);
+                                if (tombola.prize.item) prizeLines.push(`🎁 ${tombola.prize.item}`);
+                            } else if (typeof tombola.prize === 'string') {
+                                prizeLines.push(tombola.prize);
+                            }
+                            const prizeText = prizeLines.length ? ' | Výhra: ' + prizeLines.join(', ') : '';
+                            
                             await firebaseDB.ref('chat/messages').push({
                                 author: '🎰 TOMBOLA',
-                                text: `🎟️ ${myName} se účastní tomboly "${tombola.name}"! ⏱️ Zbývá: ${timeStr}`,
+                                text: `🎰 TOMBOLA: "${tombola.name}" běží! 👥 ${participantCount} účastníků • 🎟️ ${totalTickets} lístků ve hře • ⏱️ Zbývá ${timeStr}${prizeText}`,
                                 timestamp: firebase.database.ServerValue.TIMESTAMP,
                                 system: true
                             });
-                            
-                            // Označ že chat notifikace byla odeslána
-                            await firebaseDB.ref('tombola/active/tickets/' + sanitizedName + '/chatNotified').set(true);
-                        } catch(e) { console.error('Tombola chat error:', e); }
-                    }
+                            await firebaseDB.ref('tombola/lastChatNotify').set(now);
+                        }
+                        
+                        // Označ že hráč byl zahrnut (pro interní tracking)
+                        await firebaseDB.ref('tombola/active/tickets/' + sanitizedName + '/chatNotified').set(true);
+                    } catch(e) { console.error('Tombola chat error:', e); }
                     
                     // Refresh zobrazení
                     showTombola();
@@ -133782,7 +133867,24 @@ function showNpcLetters() {
                 actionHtml = `<div style="margin-top:0.5rem"><button onclick="acceptLetterGift(${idx})" style="padding:0.3rem 0.6rem;background:#8bc34a;border:none;border-radius:4px;color:#fff;cursor:pointer;font-family:inherit;font-size:0.75rem">🎁 Přijmout dárek</button></div>`;
             }
         } else if (l.actionDone) {
-            actionHtml = '<div style="color:#4caf50;font-size:0.7rem;margin-top:0.3rem">✅ Splněno</div>';
+            // Pro splněné buy_info dopisy: buď ukázat informaci nebo tlačítko doptat se
+            if (l.action?.type === 'buy_info') {
+                if (l.secretRevealed && l.secretText) {
+                    actionHtml = `<div style="margin-top:0.4rem;padding:0.5rem;background:linear-gradient(135deg,#2a1a2a,#1a0a1a);border-left:3px solid #ce93d8;border-radius:4px;">
+                        <div style="color:#ce93d8;font-weight:bold;font-size:0.7rem;margin-bottom:0.2rem;">🤫 Tajná informace:</div>
+                        <div style="color:#e0d0e0;font-style:italic;font-size:0.78rem;line-height:1.5;">${escapeHtml(l.secretText)}</div>
+                    </div>`;
+                } else {
+                    actionHtml = `<div style="margin-top:0.3rem;padding:0.4rem;background:#1a1a2a;border:1px solid #4a4a6a;border-radius:6px">
+                        <div style="color:#ce93d8;font-size:0.7rem;margin-bottom:0.3rem;">✅ Zaplaceno • Doptat se na obsah informace:</div>
+                        <button onclick="revealLetterSecret(${idx})" style="padding:0.3rem 0.6rem;background:#7b1fa2;border:none;border-radius:4px;color:#fff;cursor:pointer;font-family:inherit;font-size:0.75rem;">
+                            🤫 Získat informaci
+                        </button>
+                    </div>`;
+                }
+            } else {
+                actionHtml = '<div style="color:#4caf50;font-size:0.7rem;margin-top:0.3rem">✅ Splněno</div>';
+            }
         }
         return `<div style="background:${l.read?'#0a0a0a':'#1a1a2a'};border:1px solid ${l.read?'#333':'#7986cb'};border-radius:8px;padding:0.8rem;margin-bottom:0.4rem" onclick="state.npcLetters[${idx}].read=true;this.style.background='#0a0a0a';this.style.borderColor='#333'">
             <div style="display:flex;justify-content:space-between"><span style="color:#ce93d8;font-weight:bold">${l.icon} ${escapeHtml(l.from)}</span><span style="color:#555;font-size:0.7rem">${new Date(l.timestamp).toLocaleDateString('cs')}</span></div>
@@ -133803,11 +133905,87 @@ function acceptLetterFetch(idx) {
     if (removed < a.amount) { notifyWarning('❌','Nemáš dost!'); return; }
     _applyLetterReward(l, a);
 }
-function acceptLetterBuy(idx) {
+async function acceptLetterBuy(idx) {
     const l = state.npcLetters[idx]; if (!l?.action) return;
     if ((state.money||0) < l.action.cost) { notifyWarning('❌','Nemáš dost peněz!'); return; }
     state.money -= l.action.cost;
-    _applyLetterReward(l, l.action);
+    
+    // Aplikuj reward (trust, xp, item)
+    _applyLetterRewardSilent(l, l.action);
+    saveGame();
+    
+    // Generuj tajnou informaci a označ odhalenou
+    await _revealBuyInfoSecret(idx);
+}
+
+// [NEW] Odhal informaci z buy_info dopisu - použitelné i retroaktivně
+async function revealLetterSecret(idx) {
+    const l = state.npcLetters[idx];
+    if (!l || l.action?.type !== 'buy_info') return;
+    if (l.secretRevealed) return;
+    await _revealBuyInfoSecret(idx);
+}
+window.revealLetterSecret = revealLetterSecret;
+
+async function _revealBuyInfoSecret(idx) {
+    const l = state.npcLetters[idx];
+    if (!l) return;
+    const from = l.from;
+    let secret = null;
+    closeModal();
+    
+    if (AI_ENGINE?.enabled && typeof AI_ENGINE.generateFast === 'function') {
+        notifyInfo('💭', from + ' ti šeptá...');
+        try {
+            const c = (typeof getAICtx === 'function') ? getAICtx() : { name: state.char?.name || 'ty', day: state.time?.days || 1 };
+            const promptBase = (typeof AI_BASE_LITE !== 'undefined') ? AI_BASE_LITE : '';
+            secret = await AI_ENGINE.generateFast(`${promptBase}
+Jsi "${from}" (šibalský pašerák). Hráč ti zaplatil za tajnou informaci.
+Šeptáš mu krátký zajímavý drb ze světa Pustiny (2-3 věty). Může být o:
+- poklad/skrýš v konkrétní lokaci (šachta, laborka, továrna, sklep)
+- nájezdnické hnízdo/past kde se dá něco získat
+- tajemství o NPC (Starý obchodník, Kovář Ivan, Kapitán Novák, Rosa, Babička Marta)
+- drb o mutantech/bossích/radiaci
+- užitečný tip pro hraní (kde se najde vzácný item, jak zlevnit opravy atd.)
+
+NEVYMÝŠLEJ si konkrétní čísla/statistiky. Piš česky, přirozeně, šibalským tónem. Bez markdown. Konči — ${from}`, 'Dopis-tajemství', null, 350);
+        } catch(e) { console.warn('Letter secret gen error:', e); }
+    }
+    
+    // Ulož odhalenou informaci do dopisu (pro příště)
+    const secretText = secret ? secret.substring(0, 400) : `${from} se mlčky usměje a přikývne. "Časy jsou těžké, ale důvěra je klíč. Uvidíme se příště." — ${from}`;
+    l.secretRevealed = true;
+    l.secretText = secretText;
+    saveGame();
+    
+    showModal('💌 ' + from + ' ti šeptá', `
+        <div style="padding:0.5rem;">
+            <div style="background:linear-gradient(135deg,#2a1a2a,#1a0a1a);border-left:3px solid #ce93d8;border-radius:4px;padding:0.7rem;margin-bottom:0.5rem;">
+                <div style="color:#ce93d8;font-weight:bold;font-size:0.8rem;margin-bottom:0.3rem;">🤫 Tajná informace:</div>
+                <div style="color:#e0d0e0;font-style:italic;font-size:0.85rem;line-height:1.6;">${escapeHtml(secretText)}</div>
+            </div>
+            <div style="background:#1a2a1a;border:1px solid #3a5a3a;border-radius:4px;padding:0.4rem;font-size:0.75rem;color:#8bc34a;">
+                ✅ Informace získána — zapamatuj si ji, může se hodit!
+            </div>
+        </div>
+        <button class="btn" onclick="closeModal(); showNpcLetters();" style="width:100%;margin-top:0.5rem;background:#555;">← Zpět na dopisy</button>
+    `);
+}
+
+// Aplikuj reward bez notifikace + zavření modalu (pro buy_info které má vlastní modal)
+function _applyLetterRewardSilent(l, a) {
+    if (a.reward?.trust && l.npcId) {
+        state.npcRelations = state.npcRelations || {};
+        state.npcRelations[l.npcId] = state.npcRelations[l.npcId] || { trust:0 };
+        state.npcRelations[l.npcId].trust = Math.min(200, (state.npcRelations[l.npcId].trust||0) + a.reward.trust);
+    }
+    if (a.reward?.money) state.money = (state.money||0) + a.reward.money;
+    if (a.reward?.xp && typeof addXP === 'function') addXP(a.reward.xp);
+    if (a.reward?.item) {
+        const itemDef = ITEMS?.find(it => it.id === a.reward.item);
+        if (itemDef) { state.inv.push({...itemDef}); }
+    }
+    l.actionDone = true;
 }
 function acceptLetterVisit(idx) {
     const l = state.npcLetters[idx]; if (!l?.action) return;
