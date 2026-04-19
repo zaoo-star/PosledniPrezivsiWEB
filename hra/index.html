@@ -15520,7 +15520,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.12';
+        const GAME_VERSION = '3.9.14';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -32594,10 +32594,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <span class="tab-icon">🏛️</span>
                         ${'Frakce'}
                     </div>
+                    <!-- AI Quest tab vypnutý podle požadavku
                     <div class="quest-tab" onclick="switchQuestTab('ai')" id="tab-btn-ai">
                         <span class="tab-icon">🤖</span>
                         AI <span style="color: #9c27b0;">${(state.aiQuests||[]).filter(q=>!q.completed).length > 0 ? '(' + (state.aiQuests||[]).filter(q=>!q.completed).length + ')' : ''}</span>
                     </div>
+                    -->
                 </div>
                 
                 <!-- DENNÍ ÚKOLY -->
@@ -63577,7 +63579,8 @@ function openFullscreenMap() {
         // === PŘEVTĚLENÍ - ZMĚNA POVOLÁNÍ ===
         function getClassChangeCost() {
             const level = state.char?.level || 1;
-            return 5000 + (level * 500);
+            // [ZLEVNĚNO] Dříve 5000 + 500*level, nyní jen 500*level podle požadavku
+            return 500 * level;
         }
         
         function showClassChange() {
@@ -74389,15 +74392,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Datum už bylo zapsáno v transakci výše
                 
                 // Pokud jsem šéf, přidej rovnou do peněženky
-                if (mayor.name === getPlayerName()) {
+                // [FIX] Robustní porovnání jména (trim + toLowerCase) - dříve "Zaoo" vs "Zaoo " nefungovalo
+                const mayorNameClean = (mayor.name || '').trim().toLowerCase();
+                const myNameClean = (getPlayerName() || '').trim().toLowerCase();
+                if (mayorNameClean && mayorNameClean === myNameClean) {
                     addMoney(mayorIncome);
                     saveGame(true);
                     addLog(`👑 Denní plat šéfa: +${mayorIncome} 💰 (1% z kasy)`, '🏛️');
                     notifySuccess('💰 Denní plat', `+${mayorIncome} 💰 z veřejné kasy`);
+                    console.log('👑 Plat přidán přímo do peněženky:', mayorIncome);
                 } else {
                     // Šéf není online — uložit k vyzvednutí [FIX] atomický increment
                     const mayorIncomeRef = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
                     await mayorIncomeRef.set(firebase.database.ServerValue.increment(mayorIncome));
+                    console.log('👑 Plat uložen k vyzvednutí:', mayor.name, mayorIncome);
                 }
                 
                 // Log do treasury je již součástí removeFromPublicTreasury výše
@@ -74686,7 +74694,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         
                         await firebaseDB.ref('chat/messages').push({
                             author: '⚔️ KLANY',
-                            text: `📊 Denní sčítání území! ${chatLines}${leaderText}`,
+                            text: `📊 DENNÍ SČÍTÁNÍ ÚZEMÍ ${chatLines}${leaderText}. 💡 Klan s nejvíce územími získává denní bonusy. Útoč na neutrální území v mapě nebo přepadni jiný klan pro rozšíření vlivu.`,
                             timestamp: firebase.database.ServerValue.TIMESTAMP,
                             system: true
                         });
@@ -96739,9 +96747,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 try {
                     const _loc = WORLD_LOCATIONS.find(l => l.id === locationId);
                     const _ci = getClanWarInfo(faction);
+                    const _clanTotalTerritories = Object.values(state.worldTerritories || {}).filter(t => t.owner === faction).length + 1;
                     await firebaseDB.ref('chat/messages').push({
                         author: '⚔️ KLANY',
-                        text: `🏴 [${_ci?.name || faction}] obsadil neutrální území: ${_loc?.icon || ''} ${_loc?.name || locationId}`,
+                        text: `🏴 NOVÉ ÚZEMÍ: Klan [${_ci?.name || faction}] obsadil neutrální lokaci ${_loc?.icon || ''} "${_loc?.name || locationId}"! Nyní vlastní ${_clanTotalTerritories} území v Pustině. 💡 Klan ovládá území = bonusy při cestování pro členy + riziko útoku od soupeřů.`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         system: true
                     });
@@ -115983,6 +115992,49 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 } catch(e) {}
                 
+                // [NEW] AUTO-START: Pokud je stav 'waiting' a jsou aspoň 2 hráči s chipy,
+                // automaticky spusť handu po 5s — nezávisí na klikání tlačítka "Rozdat karty"
+                try {
+                    if (table.state === 'waiting') {
+                        const activePlayers = Object.values(table.players || {}).filter(p => p.chips > 0);
+                        if (activePlayers.length >= 2) {
+                            // Použij Firebase lock — pouze jeden klient spustí
+                            const autoStartKey = `${tableId}_autostart_${table.lastActivity || 0}`;
+                            if (window._pokerAutoStartPending !== autoStartKey) {
+                                window._pokerAutoStartPending = autoStartKey;
+                                console.log('🎴 Auto-start: 2+ hráčů detekováno, spustím handu za 5s...');
+                                setTimeout(async () => {
+                                    try {
+                                        // Re-check přes Firebase že stále čekáme a jsme 2+
+                                        const recheckSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                                        const rt = recheckSnap.val();
+                                        if (!rt || rt.state !== 'waiting') return;
+                                        const stillActive = Object.values(rt.players || {}).filter(p => p.chips > 0);
+                                        if (stillActive.length < 2) return;
+                                        
+                                        // Pouze nejstarší hráč u stolu spustí handu (nejmenší joinedAt)
+                                        // Tím se zajistí že jen jeden klient volá startPokerHand
+                                        const sortedByJoin = Object.entries(rt.players || {})
+                                            .filter(([_, p]) => p.chips > 0)
+                                            .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0));
+                                        const leader = sortedByJoin[0]?.[0];
+                                        if (leader === getPlayerName()) {
+                                            console.log('🎴 Auto-start: Jsem leader, spouštím handu');
+                                            if (typeof startPokerHand === 'function') {
+                                                await startPokerHand(tableId);
+                                            }
+                                        } else {
+                                            console.log('🎴 Auto-start: Leader je', leader, '— čekám');
+                                        }
+                                    } catch(e) {
+                                        console.warn('🎴 Auto-start error:', e?.message || e);
+                                    }
+                                }, 5000);
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
                 // 🛡️ Fix 2: Watchdog — jakýkoliv klient u stolu může vynutit auto-fold
                 // pokud hráč na tahu je přes timeout neaktivní (např. zavřel okno)
                 if (table.state === 'playing' && table.currentTurn && table.turnStartTime) {
@@ -116130,9 +116182,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             let actionsHtml = '';
             if (table.state === 'waiting') {
                 if (players.length >= 2 && players.some(p => p.chips > 0)) {
-                    actionsHtml = `<button class="btn" onclick="startPokerHand('${table.id}')" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);">🎴 Rozdat karty</button>`;
+                    // [NEW] Auto-start - zobrazí informaci místo tlačítka
+                    actionsHtml = `<div style="text-align:center;padding:0.5rem;background:linear-gradient(135deg,#1a2a1a,#0a1a0a);border:1px solid #4caf50;border-radius:6px;">
+                        <div style="color:#4caf50;font-weight:bold;">🎴 Hra začne automaticky...</div>
+                        <div style="color:#888;font-size:0.75rem;margin-top:0.2rem;">Jsou 2+ hráči u stolu. Karty se rozdají do 5 sekund.</div>
+                    </div>`;
                 } else {
-                    actionsHtml = `<div style="text-align:center;color:#888;padding:0.5rem;">Čekám na více hráčů... (${players.length}/2)</div>`;
+                    actionsHtml = `<div style="text-align:center;color:#888;padding:0.5rem;">⏳ Čekám na více hráčů... (${players.length}/2 s chipy)</div>`;
                 }
             } else if (isMyTurn && me?.status === 'active') {
                 const canCheck = callAmount === 0;
@@ -122702,7 +122758,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Oznámení
                     await firebaseDB.ref('chat/messages').push({
                         author: '🏛️ VOLBY',
-                        text: `🎉 Admin vyhlásil výsledky! Novým Šéfem Pustiny je 👑 ${winner}!\n📊 Výsledky: ${resultsText}`,
+                        text: `🎉 VOLBY UKONČENY! 👑 Novým Šéfem Pustiny je ${winner}!\n\n📊 Finální výsledky:\n${resultsText}\n\n💡 Nový šéf má nyní kontrolu nad veřejnou kasou, může vyhlašovat LOV, stavět projekty a další. Volební období trvá několik dní. Povez šéfovi co chceš aby udělal pro komunitu!`,
                         timestamp: firebase.database.ServerValue.TIMESTAMP,
                         system: true
                     });
@@ -132592,8 +132648,8 @@ ${c.comp>0?c.comp+' společníků.':'Je sám.'} Zabití: ${c.kills}. Questy: ${c
 ${_aiHist.length>0?'Poslední konverzace:\n'+_aiHist.slice(-6).map(h=>h.r+': '+h.t).join('\n'):''}
 
 Odpověz 3-5 větami. Buď užitečný, konkrétní, sarkastický ale přátelský. NIKDY neodpovídej jednou větou.`,msg,null,600);if(r){_aiHist.push({r:'Hráč',t:msg},{r:'Průvodce',t:r});if(_aiHist.length>20)_aiHist=_aiHist.slice(-12);}return r;}
-async function aiGenerateQuest(){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generateFast(`${AI_BASE}\nVygeneruj JEDEN quest. Formát:\nNÁZEV: [název]\nPOPIS: [1-2 věty]\nCÍL: [kill/explore/collect]\nODMĚNA: [XP + peníze]\nHráč lvl ${c.lvl}, "${c.loc}" ${c.zone}, den ${c.day}.`,'Generuj quest',null);}
-function showAIChatPanel(){if(!AI_ENGINE.enabled){notifyWarning('AI nedostupná','Admin musí nastavit AI klíč v 🤖 AI Nastavení.');return;}let h=_aiHist.map(x=>`<div style="margin:0.4rem 0;text-align:${x.r==='Hráč'?'right':'left'}"><div style="display:inline-block;max-width:85%;padding:0.5rem 0.8rem;border-radius:12px;background:${x.r==='Hráč'?'#1a3a2a':'#1a1a2a'};border:1px solid ${x.r==='Hráč'?'#2a5a3a':'#2a2a4a'}"><div style="color:${x.r==='Hráč'?'#8bc34a':'#ce93d8'};font-size:0.7rem;font-weight:bold">${x.r==='Hráč'?'🧑 Ty':'🔮 Průvodce'}</div><div style="color:#ddd;font-size:0.85rem;margin-top:0.2rem">${escapeHtml(x.t)}</div></div></div>`).join('');if(!h)h='<div style="text-align:center;padding:2rem;color:#555"><div style="font-size:2rem">🔮</div><p>Průvodce čeká na zprávu...</p></div>';showModal('🔮 Průvodce Pustinou',`<div id="aiH" style="max-height:45vh;overflow-y:auto;padding:0.5rem">${h}</div><div style="display:flex;gap:0.5rem"><input type="text" id="aiIn" placeholder="Napiš zprávu..." maxlength="200" style="flex:1;background:#0d0d0d;border:1px solid #333;border-radius:8px;padding:0.6rem;color:#fff;font-family:inherit" onkeypress="if(event.key==='Enter')sendAIChat()"><button class="btn" onclick="sendAIChat()" style="background:linear-gradient(135deg,#7b1fa2,#4a148c);padding:0.6rem 1rem">🔮</button></div><div style="display:flex;gap:0.3rem;margin-top:0.5rem;flex-wrap:wrap"><button class="btn" onclick="quickAI('Co bych měl dělat?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">💡 Rady</button><button class="btn" onclick="quickAI('Pověz o tomhle místě')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">🗺️ Místo</button><button class="btn" onclick="quickAI('Jaké nebezpečí hrozí?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">⚠️ Nebezpečí</button><button class="btn" onclick="quickAI('Vyprávěj příběh')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">📖 Příběh</button><button class="btn" onclick="aiQuestlineUI()" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">📜 Quest</button></div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);setTimeout(()=>{const el=document.getElementById('aiH');if(el)el.scrollTop=el.scrollHeight;},100);}
+async function aiGenerateQuest(){return null;/* AI questy vypnuty podle požadavku */}
+function showAIChatPanel(){if(!AI_ENGINE.enabled){notifyWarning('AI nedostupná','Admin musí nastavit AI klíč v 🤖 AI Nastavení.');return;}let h=_aiHist.map(x=>`<div style="margin:0.4rem 0;text-align:${x.r==='Hráč'?'right':'left'}"><div style="display:inline-block;max-width:85%;padding:0.5rem 0.8rem;border-radius:12px;background:${x.r==='Hráč'?'#1a3a2a':'#1a1a2a'};border:1px solid ${x.r==='Hráč'?'#2a5a3a':'#2a2a4a'}"><div style="color:${x.r==='Hráč'?'#8bc34a':'#ce93d8'};font-size:0.7rem;font-weight:bold">${x.r==='Hráč'?'🧑 Ty':'🔮 Průvodce'}</div><div style="color:#ddd;font-size:0.85rem;margin-top:0.2rem">${escapeHtml(x.t)}</div></div></div>`).join('');if(!h)h='<div style="text-align:center;padding:2rem;color:#555"><div style="font-size:2rem">🔮</div><p>Průvodce čeká na zprávu...</p></div>';showModal('🔮 Průvodce Pustinou',`<div id="aiH" style="max-height:45vh;overflow-y:auto;padding:0.5rem">${h}</div><div style="display:flex;gap:0.5rem"><input type="text" id="aiIn" placeholder="Napiš zprávu..." maxlength="200" style="flex:1;background:#0d0d0d;border:1px solid #333;border-radius:8px;padding:0.6rem;color:#fff;font-family:inherit" onkeypress="if(event.key==='Enter')sendAIChat()"><button class="btn" onclick="sendAIChat()" style="background:linear-gradient(135deg,#7b1fa2,#4a148c);padding:0.6rem 1rem">🔮</button></div><div style="display:flex;gap:0.3rem;margin-top:0.5rem;flex-wrap:wrap"><button class="btn" onclick="quickAI('Co bych měl dělat?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">💡 Rady</button><button class="btn" onclick="quickAI('Pověz o tomhle místě')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">🗺️ Místo</button><button class="btn" onclick="quickAI('Jaké nebezpečí hrozí?')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">⚠️ Nebezpečí</button><button class="btn" onclick="quickAI('Vyprávěj příběh')" style="background:#222;font-size:0.75rem;padding:0.3rem 0.5rem">📖 Příběh</button></div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);setTimeout(()=>{const el=document.getElementById('aiH');if(el)el.scrollTop=el.scrollHeight;},100);}
 let _aiChatCooldown = 0;
 async function sendAIChat(){
     if (Date.now() - _aiChatCooldown < 5000) { notifyWarning('⏳', 'Počkej pár sekund...'); return; }
@@ -134052,23 +134108,39 @@ async function aiWeeklyChronicle() {
     if (!AI_ENGINE.enabled) return;
     const c = getAICtx();
     const chronicle = await AI_ENGINE.generate(`${AI_BASE_LITE}
-Napiš KAPITOLU kroniky přeživšího (5-8 vět). Jako kronikář zapiš co se stalo za posledních 7 dní.
-Hráč "${c.name}" lvl ${c.lvl}, třída ${c.cls||'přeživší'}. Den ${c.day}. HP: ${c.hp}/${c.maxHp}.
-Zabití celkem: ${c.kills}. Peníze: ${c.money}. Společníci: ${c.comp}. Lokace: "${c.loc}".
-${state.stats?.bossKills?'Bossů poraženo: '+state.stats.bossKills+'.':''}
-${state.stats?.deaths?'Úmrtí: '+state.stats.deaths+'.':''}
-Piš jako historická kronika — 3. osoba, vzletný styl. Kapitola ${Math.ceil((c.day||1)/7)}.`, 'Kronika', null, 1200);
+Napiš KAPITOLU kroniky přeživšího (10-15 vět, rozvitě a dramaticky). Jako kronikář zapiš co se stalo za posledních 7 dní v pustině.
+
+DŮLEŽITÉ: Piš DLOUHÝ text — minimálně 8 plných vět, ideálně 12-15 vět. Nevyprávěj zkratkovitě.
+Popiš nálady, počasí, detaily soubojů, pocity postavy, drobné zážitky, úvahy o přežití, vztahy se společníky. Využij atmosféru post-apokalyptické pustiny.
+
+FAKTA O POSTAVĚ:
+Jméno: "${c.name}" (${c.cls||'přeživší'}, level ${c.lvl})
+Den: ${c.day}, kapitola ${Math.ceil((c.day||1)/7)}
+HP: ${c.hp}/${c.maxHp}
+Zabito nepřátel celkem: ${c.kills}
+Peníze: ${c.money} caps
+Společníci: ${c.comp}
+Aktuální lokace: "${c.loc}"
+${state.stats?.bossKills ? 'Bossů poraženo: '+state.stats.bossKills+'.' : ''}
+${state.stats?.deaths ? 'Úmrtí postavy: '+state.stats.deaths+'.' : ''}
+
+Styl: historická kronika, 3. osoba, vzletný až dramatický tón. Představ si že to bude číst někdo za 100 let. Dodej barvu, emoce, detaily prostředí.
+Konči otevřeně — jako kdyby kapitola pokračovala dál.`, 'Kronika', null, 2500);
     
     if (chronicle) {
         if (!state.chronicle) state.chronicle = [];
-        // [FIX] Truncation z 500→2000 znaků - 5-8 vět česky má běžně 500-1200 znaků
-        // Dříve se kroniky usekávaly uprostřed věty
         let cleaned = chronicle.trim();
-        if (cleaned.length > 2000) {
-            // Najdi poslední tečku před 2000
-            const cut = cleaned.substring(0, 2000);
+        // Odstraň případné markdown headers (**Kapitola...**)  
+        cleaned = cleaned.replace(/^\*\*[^*]+\*\*\s*/m, '').trim();
+        // Truncation z 2000→4000 (dlouhá kapitola může mít 1500-3000 znaků)
+        if (cleaned.length > 4000) {
+            const cut = cleaned.substring(0, 4000);
             const lastPunc = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
             cleaned = lastPunc > 100 ? cut.substring(0, lastPunc + 1) : cut;
+        }
+        // [NEW] Varuj pokud AI vrátila málo - retry nebo upozornění
+        if (cleaned.length < 300) {
+            console.warn('⚠️ Kronika: AI vrátila jen', cleaned.length, 'znaků - krátký text');
         }
         state.chronicle.push({ day: c.day, chapter: Math.ceil((c.day||1)/7), text: cleaned, timestamp: Date.now() });
         if (state.chronicle.length > 20) state.chronicle = state.chronicle.slice(-20);
