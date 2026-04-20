@@ -15535,7 +15535,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.16';
+        const GAME_VERSION = '3.9.18';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -134218,14 +134218,23 @@ Na konci nabídni DVĚ volby: [A] akce (riskantní) nebo [B] akce (bezpečná). 
 // =============================================
 // 📊 TÝDENNÍ KRONIKA
 // =============================================
-async function aiWeeklyChronicle() {
-    if (!AI_ENGINE.enabled) return;
+async function aiWeeklyChronicle(forceRegenerate = false, replaceIndex = null) {
+    if (!AI_ENGINE.enabled) {
+        if (forceRegenerate) notifyWarning('❌ AI nedostupná', 'Admin musí nastavit AI klíč.');
+        return;
+    }
     const c = getAICtx();
-    const chronicle = await AI_ENGINE.generate(`${AI_BASE_LITE}
-Napiš KAPITOLU kroniky přeživšího (10-15 vět, rozvitě a dramaticky). Jako kronikář zapiš co se stalo za posledních 7 dní v pustině.
+    
+    const buildPrompt = (extraEmphasis) => `${AI_BASE_LITE}
+Napiš DLOUHOU KAPITOLU kroniky přeživšího — minimum 12 vět, ideálně 15-20 vět.
+${extraEmphasis}
 
-DŮLEŽITÉ: Piš DLOUHÝ text — minimálně 8 plných vět, ideálně 12-15 vět. Nevyprávěj zkratkovitě.
-Popiš nálady, počasí, detaily soubojů, pocity postavy, drobné zážitky, úvahy o přežití, vztahy se společníky. Využij atmosféru post-apokalyptické pustiny.
+POVINNÉ ČÁSTI KAPITOLY (každou musíš pokrýt alespoň 2-3 větami):
+1. ÚVOD — co se dělo za poslední týden, jaká byla nálada a počasí
+2. KLÍČOVÝ OKAMŽIK — konkrétní událost, která se stala (boj, objev, setkání, krize)
+3. VZTAHY — něco o společnících nebo obyvatelech pustiny, interakce
+4. VNITŘNÍ ÚVAHA — co si postava myslela, co se naučila, čeho se bojí
+5. ZÁVĚR — pohled dopředu, co bude dál, nejasné tušení
 
 FAKTA O POSTAVĚ:
 Jméno: "${c.name}" (${c.cls||'přeživší'}, level ${c.lvl})
@@ -134238,40 +134247,194 @@ Aktuální lokace: "${c.loc}"
 ${state.stats?.bossKills ? 'Bossů poraženo: '+state.stats.bossKills+'.' : ''}
 ${state.stats?.deaths ? 'Úmrtí postavy: '+state.stats.deaths+'.' : ''}
 
-Styl: historická kronika, 3. osoba, vzletný až dramatický tón. Představ si že to bude číst někdo za 100 let. Dodej barvu, emoce, detaily prostředí.
-Konči otevřeně — jako kdyby kapitola pokračovala dál.`, 'Kronika', null, 2500);
+Styl: historická kronika, 3. osoba, vzletný až dramatický tón. Post-apokalyptická atmosféra.
+NEZAČÍNEJ nadpisem typu "**Kapitola X**" — rovnou začni vyprávěním.
+Piš souvislý text v odstavcích, ne bullet-listy.
+Minimální délka: 800 znaků. Pokud napíšeš méně, úkol není splněn!`;
+    
+    let chronicle = await AI_ENGINE.generate(buildPrompt('Napiš ROZVITĚ, BOHATĚ, DETAILNĚ. Nepiš stručně ani v bodech!'), 'Kronika', null, 3000);
+    
+    // Retry pokud AI vrátila moc krátký text (méně než 500 znaků = pravděpodobně usekáno)
+    if (chronicle && chronicle.trim().length < 500) {
+        console.warn('⚠️ Kronika: AI vrátila krátký text ('+chronicle.trim().length+' znaků), zkouším znovu s důraznějším promptem');
+        const retry = await AI_ENGINE.generate(
+            buildPrompt('🚨 DŮLEŽITÉ: Předchozí pokus byl PŘÍLIŠ KRÁTKÝ. Napiš teď DELŠÍ, DETAILNĚJŠÍ text — minimum 1000 znaků!'),
+            'Kronika-retry', null, 3000
+        );
+        if (retry && retry.trim().length > chronicle.trim().length) {
+            chronicle = retry;
+        }
+    }
     
     if (chronicle) {
         if (!state.chronicle) state.chronicle = [];
         let cleaned = chronicle.trim();
-        // Odstraň případné markdown headers (**Kapitola...**)  
+        // Odstraň případné markdown headers (**Kapitola...**) na začátku
         cleaned = cleaned.replace(/^\*\*[^*]+\*\*\s*/m, '').trim();
+        // Odstraň všechen markdown (**bold** → bold)
+        cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+        cleaned = cleaned.replace(/\*([^*]+)\*/g, '$1');
         // Truncation z 2000→4000 (dlouhá kapitola může mít 1500-3000 znaků)
         if (cleaned.length > 4000) {
             const cut = cleaned.substring(0, 4000);
             const lastPunc = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
             cleaned = lastPunc > 100 ? cut.substring(0, lastPunc + 1) : cut;
         }
-        // [NEW] Varuj pokud AI vrátila málo - retry nebo upozornění
-        if (cleaned.length < 300) {
-            console.warn('⚠️ Kronika: AI vrátila jen', cleaned.length, 'znaků - krátký text');
+        // Log statistika
+        console.log('📊 Kronika uložena:', cleaned.length, 'znaků, den', c.day, forceRegenerate ? '(REGENERACE)' : '');
+        
+        // Regenerace existující kapitoly vs. přidání nové
+        if (forceRegenerate && replaceIndex !== null && replaceIndex >= 0 && replaceIndex < state.chronicle.length) {
+            // Zachovej původní den/kapitolu, přepiš jen text
+            const orig = state.chronicle[replaceIndex];
+            state.chronicle[replaceIndex] = { 
+                day: orig.day, 
+                chapter: orig.chapter, 
+                text: cleaned, 
+                timestamp: Date.now(),
+                regenerated: true
+            };
+            notifySuccess('🔄 Kapitola přegenerována!', `Kapitola ${orig.chapter} — Den ${orig.day} (${cleaned.length} znaků)`);
+        } else {
+            state.chronicle.push({ day: c.day, chapter: Math.ceil((c.day||1)/7), text: cleaned, timestamp: Date.now() });
+            if (state.chronicle.length > 20) state.chronicle = state.chronicle.slice(-20);
+            notifySuccess('📊 Nová kapitola kroniky!', `Kapitola ${Math.ceil((c.day||1)/7)} (${cleaned.length} znaků)`);
         }
-        state.chronicle.push({ day: c.day, chapter: Math.ceil((c.day||1)/7), text: cleaned, timestamp: Date.now() });
-        if (state.chronicle.length > 20) state.chronicle = state.chronicle.slice(-20);
-        notifySuccess('📊 Nová kapitola kroniky!', `Kapitola ${Math.ceil((c.day||1)/7)}`);
         saveGame();
+        
+        // Pokud regenerace - refresh zobrazení
+        if (forceRegenerate && typeof showChronicle === 'function') {
+            setTimeout(() => showChronicle(), 300);
+        }
     }
 }
 
 function showChronicle() {
-    if (!state.chronicle?.length) { notifyInfo('📊','Kronika je prázdná. První zápis přijde po 7 dnech.'); return; }
-    const html = state.chronicle.map(ch => `<div style="background:#0a0a0a;border-left:2px solid #ffd700;padding:0.8rem;margin-bottom:0.5rem;border-radius:0 6px 6px 0">
-        <div style="color:#ffd700;font-weight:bold;font-size:0.8rem">📊 Kapitola ${ch.chapter} — Den ${ch.day}</div>
-        <div style="color:#b0a070;font-style:italic;line-height:1.6;font-size:0.85rem;margin-top:0.3rem">${escapeHtml(ch.text)}</div>
-    </div>`).join('');
-    showModal('📊 Kniha přeživšího', `<div style="max-height:60vh;overflow-y:auto">${html}</div>
+    if (!state.chronicle?.length) { 
+        // [NEW] I prázdná kronika ukazuje admin tlačítko "Vygenerovat teď"
+        if (isStaff()) {
+            showModal('📊 Kniha přeživšího', `
+                <div style="text-align:center;padding:2rem;color:#888;">
+                    <div style="font-size:3rem;">📊</div>
+                    <p>Kronika je prázdná. První zápis přijde po 7 dnech.</p>
+                </div>
+                <div style="background:#1a1a2a;border:1px solid #4a4a6a;border-radius:6px;padding:0.7rem;margin:0.5rem 0;">
+                    <div style="color:#ce93d8;font-size:0.75rem;margin-bottom:0.4rem;">🛠️ Admin/Staff akce:</div>
+                    <button class="btn" onclick="regenerateChronicleChapter(null, true)" style="width:100%;background:linear-gradient(135deg,#7b1fa2,#4a148c);font-size:0.85rem;">
+                        ✨ Vygenerovat první kapitolu teď
+                    </button>
+                </div>
+                <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>
+            `);
+            return;
+        }
+        notifyInfo('📊','Kronika je prázdná. První zápis přijde po 7 dnech.'); 
+        return; 
+    }
+    // Novější kapitoly nahoře
+    const reversed = state.chronicle.slice().reverse();
+    const staffView = isStaff();
+    
+    const html = reversed.map((ch, revIdx) => {
+        const text = ch.text || '';
+        const textLen = text.length;
+        const escText = escapeHtml(text);
+        // Index v původním poli (před reverse) - pro regenerate
+        const origIdx = state.chronicle.length - 1 - revIdx;
+        // Pokud je text dlouhý (>400 znaků), zobrazíme výchozí preview a rozbalovací tlačítko
+        const isLong = textLen > 400;
+        const chapterId = `chronicle-${revIdx}`;
+        const regenTag = ch.regenerated ? '<span style="color:#ce93d8;font-size:0.6rem;margin-left:0.3rem;">🔄 regen</span>' : '';
+        
+        return `<div style="background:#0a0a0a;border-left:3px solid #ffd700;padding:0.9rem;margin-bottom:0.6rem;border-radius:0 6px 6px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                <div style="color:#ffd700;font-weight:bold;font-size:0.85rem;">📊 Kapitola ${ch.chapter} — Den ${ch.day}${regenTag}</div>
+                <div style="color:#555;font-size:0.65rem;">${textLen} znaků</div>
+            </div>
+            <div id="${chapterId}" style="color:#b0a070;font-style:italic;line-height:1.7;font-size:0.82rem;white-space:pre-wrap;${isLong ? 'max-height:4.5rem;overflow:hidden;position:relative;' : ''}">${escText}${isLong ? '<div style="position:absolute;bottom:0;left:0;right:0;height:1.5rem;background:linear-gradient(transparent,#0a0a0a);"></div>' : ''}</div>
+            <div style="display:flex;gap:0.3rem;margin-top:0.4rem;flex-wrap:wrap;">
+                ${isLong ? `<button onclick="toggleChronicleChapter('${chapterId}', this)" style="background:#2a2a1a;border:1px solid #5a4a2a;border-radius:4px;color:#ffd700;padding:0.3rem 0.7rem;font-size:0.72rem;cursor:pointer;font-family:inherit;">📖 Rozbalit</button>` : ''}
+                ${staffView ? `<button onclick="regenerateChronicleChapter(${origIdx})" style="background:#2a1a3a;border:1px solid #7b1fa2;border-radius:4px;color:#ce93d8;padding:0.3rem 0.7rem;font-size:0.72rem;cursor:pointer;font-family:inherit;">🔄 Regenerovat (admin)</button>` : ''}
+                ${staffView ? `<button onclick="deleteChronicleChapter(${origIdx})" style="background:#2a1010;border:1px solid #c62828;border-radius:4px;color:#ef5350;padding:0.3rem 0.7rem;font-size:0.72rem;cursor:pointer;font-family:inherit;">🗑️ Smazat (admin)</button>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+    
+    const staffAddBtn = staffView ? `
+        <div style="background:#1a1a2a;border:1px solid #4a4a6a;border-radius:6px;padding:0.5rem;margin-bottom:0.5rem;text-align:center;">
+            <button class="btn" onclick="regenerateChronicleChapter(null, true)" style="width:100%;background:linear-gradient(135deg,#7b1fa2,#4a148c);font-size:0.8rem;padding:0.5rem;">
+                ✨ Vygenerovat NOVOU kapitolu pro Den ${state.time?.days || '?'}
+            </button>
+            <div style="color:#777;font-size:0.65rem;margin-top:0.3rem;">Admin/staff: okamžitá regenerace bez čekání 7 dní</div>
+        </div>` : '';
+    
+    showModal('📊 Kniha přeživšího', `${staffAddBtn}<div style="max-height:60vh;overflow-y:auto;padding:0 0.2rem;">${html}</div>
         <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#333">← Zavřít</button>`);
 }
+
+// [NEW ADMIN] Regenerovat konkrétní kapitolu (nebo vytvořit novou pokud createNew)
+async function regenerateChronicleChapter(origIdx, createNew = false) {
+    if (!isStaff()) { notifyWarning('❌ Přístup odepřen', 'Pouze pro staff'); return; }
+    if (!AI_ENGINE.enabled) { notifyWarning('❌ AI nedostupná', 'Admin musí nastavit AI klíč.'); return; }
+    
+    if (createNew) {
+        // Vytvoř novou kapitolu jako kdyby byl týdenní tik
+        closeModal();
+        notifyInfo('🔄 Generuji...', 'AI píše novou kapitolu, chvilku vydrž.');
+        await aiWeeklyChronicle(false);
+        return;
+    }
+    
+    // Regenerace existující kapitoly (přepíše text)
+    if (origIdx === null || origIdx < 0 || origIdx >= (state.chronicle || []).length) return;
+    const orig = state.chronicle[origIdx];
+    if (!confirm(`🔄 Regenerovat kapitolu ${orig.chapter} (Den ${orig.day})?\n\nAI vytvoří nový text — starý bude přepsán.\n\nPokračovat?`)) return;
+    
+    closeModal();
+    notifyInfo('🔄 Generuji...', `Regenerace kapitoly ${orig.chapter}...`);
+    await aiWeeklyChronicle(true, origIdx);
+}
+window.regenerateChronicleChapter = regenerateChronicleChapter;
+
+// [NEW ADMIN] Smazat konkrétní kapitolu
+function deleteChronicleChapter(origIdx) {
+    if (!isStaff()) { notifyWarning('❌ Přístup odepřen', 'Pouze pro staff'); return; }
+    if (origIdx === null || origIdx < 0 || origIdx >= (state.chronicle || []).length) return;
+    const orig = state.chronicle[origIdx];
+    if (!confirm(`🗑️ Smazat kapitolu ${orig.chapter} (Den ${orig.day})?\n\nTato akce je nevratná.`)) return;
+    state.chronicle.splice(origIdx, 1);
+    saveGame();
+    notifySuccess('🗑️ Smazáno', `Kapitola ${orig.chapter} odstraněna`);
+    closeModal();
+    setTimeout(() => showChronicle(), 200);
+}
+window.deleteChronicleChapter = deleteChronicleChapter;
+
+// Rozbalit/sbalit jednotlivou kapitolu kroniky
+function toggleChronicleChapter(elementId, btn) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const isExpanded = el.getAttribute('data-expanded') === '1';
+    if (isExpanded) {
+        el.style.maxHeight = '4.5rem';
+        el.style.overflow = 'hidden';
+        el.setAttribute('data-expanded', '0');
+        // Obnov fadeout
+        const fade = document.createElement('div');
+        fade.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:1.5rem;background:linear-gradient(transparent,#0a0a0a);';
+        el.appendChild(fade);
+        btn.innerHTML = '📖 Rozbalit celou kapitolu';
+    } else {
+        el.style.maxHeight = 'none';
+        el.style.overflow = 'visible';
+        el.setAttribute('data-expanded', '1');
+        // Odstraň fadeout
+        const fadeEls = el.querySelectorAll('div[style*="linear-gradient"]');
+        fadeEls.forEach(f => f.remove());
+        btn.innerHTML = '📘 Sbalit';
+    }
+}
+window.toggleChronicleChapter = toggleChronicleChapter;
 
 // =============================================
 // 🏆 ACHIEVEMENT PŘÍBĚHY
