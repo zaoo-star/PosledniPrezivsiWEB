@@ -1380,6 +1380,13 @@
         /* Chat container - zajisti scroll na mobilech */
         #chatMessagesContainer {
             scroll-behavior: smooth;
+            /* [FIX] Zabránit pull-to-refresh v chatu - stejný přístup jako detail osadníka */
+            -webkit-overflow-scrolling: touch !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            touch-action: pan-y !important;
+            overscroll-behavior: contain !important;
+            overscroll-behavior-y: contain !important;
         }
         
         /* Terminálový typewriter efekt */
@@ -1400,13 +1407,6 @@
         @keyframes blink-cursor {
             0%, 100% { opacity: 1; }
             50% { opacity: 0; }
-        }
-            -webkit-overflow-scrolling: touch !important;
-            overflow-y: auto !important;
-            overflow-x: hidden !important;
-            touch-action: pan-y !important;
-            overscroll-behavior: contain !important;
-            overscroll-behavior-y: contain !important;
         }
         
         /* Všechny scrollovatelné kontejnery v modálech */
@@ -15535,7 +15535,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.21';
+        const GAME_VERSION = '3.9.24';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -38988,41 +38988,68 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Globální ochrana: blokuj pull-to-refresh (WebView/APK/PWA)
         (function() {
             var _startY = 0;
+            var _startTarget = null;
             document.addEventListener('touchstart', function(e) {
                 _startY = e.touches[0].pageY;
+                _startTarget = e.target;
             }, { passive: true });
             document.addEventListener('touchmove', function(e) {
                 var dy = e.touches[0].pageY - _startY;
                 if (dy <= 0) return; // scroll dolů = vždy OK
                 
-                // [FIX] Uvnitř modalu: kontroluj zda je v scrollovatelném elementu A nahoře
-                // Pokud ANO → blokuj refresh (user chce scrollnout nahoru v chatu, prohlížeč to bere jako pull-to-refresh)
+                // [FIX Airee] Pokud jsme v chatu, nech to na CSS (overscroll-behavior: contain)
+                // Chat má vlastní ochranu a globální touchmove handler chybně blokoval scroll nahoru
+                if (_startTarget && _startTarget.closest && _startTarget.closest('#chatMessagesContainer')) {
+                    return;
+                }
+                
+                // [FIX Zaoo] Zjisti zda jsme v modalu (včetně chatu)
                 var isInModal = document.getElementById('npcModalOverlay') 
                     || document.getElementById('postApoModalOverlay')
                     || (document.getElementById('modal') && document.getElementById('modal').classList.contains('show'));
                 
-                // Pokud jsme uvnitř scrollovatelného elementu → povol scroll, ale blokuj pull-to-refresh pokud je nahoře
-                var t = e.target;
+                // [FIX BUG Zaoo] V modalu VŽDY blokuj pull-to-refresh celé stránky
+                // Scroll uvnitř modalu funguje nativně (overscroll-behavior: contain)
+                // Toto jen zabrání refreshi prohlížeče při pull na horním okraji
+                if (isInModal) {
+                    // Najdi scrollable parent od cíle dotyku
+                    var t = _startTarget;
+                    var foundScroll = false;
+                    while (t && t !== document.documentElement && t !== document.body) {
+                        if (t.scrollHeight > t.clientHeight + 2) {
+                            var oy = window.getComputedStyle(t).overflowY;
+                            if (oy === 'auto' || oy === 'scroll') {
+                                foundScroll = true;
+                                // Pokud je scroll nahoře A user tahá dolů → blokuj refresh prohlížeče
+                                // Browser stejně nescrolluje (nic nahoru), takže to jen brání refreshi
+                                if (t.scrollTop <= 1) {
+                                    e.preventDefault();
+                                }
+                                break;
+                            }
+                        }
+                        t = t.parentElement;
+                    }
+                    // V modalu ale mimo scrollable element → blokuj refresh vždy
+                    if (!foundScroll) {
+                        e.preventDefault();
+                    }
+                    return;
+                }
+                
+                // Mimo modal: kontroluj stránku samotnou
+                var t = _startTarget;
                 while (t && t !== document.documentElement) {
                     if (t.scrollHeight > t.clientHeight + 2) {
                         var oy = window.getComputedStyle(t).overflowY;
                         if (oy === 'auto' || oy === 'scroll') {
-                            // [FIX] Pokud je scrollable element úplně nahoře → blokuj pull-to-refresh
-                            // Jinak povol normální scroll
-                            if (t.scrollTop <= 0) {
+                            if (t.scrollTop <= 1) {
                                 e.preventDefault();
                             }
                             return;
                         }
                     }
                     t = t.parentElement;
-                }
-                
-                // Mimo scrollovatelné elementy
-                if (isInModal) {
-                    // V modalu mimo scrollable → blokuj refresh
-                    e.preventDefault();
-                    return;
                 }
                 
                 // Nic scrollovatelného + stránka nahoře → blokuj refresh
@@ -99175,7 +99202,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ` : `
                 <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
-                    <div id="chatMessagesContainer" style="max-height: ${_chatPoll?.question ? '32vh' : '45vh'}; min-height: 150px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
+                    <div id="chatMessagesContainer" style="max-height: ${_chatPoll?.question ? '32vh' : '45vh'}; min-height: 150px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overscroll-behavior-y: contain; touch-action: pan-y; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
                         ${messagesHtml}
                     </div>
                     
@@ -116246,19 +116273,50 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                         const stillActive = Object.values(rt.players || {}).filter(p => p.chips > 0);
                                         if (stillActive.length < 2) return;
                                         
-                                        // Pouze nejstarší hráč u stolu spustí handu (nejmenší joinedAt)
-                                        // Tím se zajistí že jen jeden klient volá startPokerHand
-                                        const sortedByJoin = Object.entries(rt.players || {})
-                                            .filter(([_, p]) => p.chips > 0)
-                                            .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0));
-                                        const leader = sortedByJoin[0]?.[0];
+                                        // [FIX BUG] Použij STEJNOU leader logiku jako má startPokerHand:
+                                        // 1. Pokud je creator stále u stolu → leader = creator
+                                        // 2. Jinak → leader = hráč s nejnižším seat
+                                        const creatorStillAtTable = !!(rt.createdBy && rt.players?.[rt.createdBy] && (rt.players[rt.createdBy].chips || 0) > 0);
+                                        const playersSorted = Object.values(rt.players || {}).filter(p => (p.chips || 0) > 0).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                                        const leader = creatorStillAtTable ? rt.createdBy : playersSorted[0]?.name;
+                                        
                                         if (leader === getPlayerName()) {
-                                            console.log('🎴 Auto-start: Jsem leader, spouštím handu');
+                                            console.log('🎴 Auto-start: Jsem leader (' + (creatorStillAtTable ? 'creator' : 'seat#0') + '), spouštím handu');
                                             if (typeof startPokerHand === 'function') {
                                                 await startPokerHand(tableId);
                                             }
                                         } else {
-                                            console.log('🎴 Auto-start: Leader je', leader, '— čekám');
+                                            console.log('🎴 Auto-start: Leader je', leader, '(' + (creatorStillAtTable ? 'creator' : 'seat#0') + ') — čekám');
+                                            
+                                            // [FIX] FALLBACK: Pokud je creator offline/idle a nespustil handu do 15s,
+                                            // přejde vedení na dalšího hráče (seat#0)
+                                            if (creatorStillAtTable && leader !== getPlayerName()) {
+                                                setTimeout(async () => {
+                                                    try {
+                                                        const recheck2 = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                                                        const rt2 = recheck2.val();
+                                                        if (!rt2 || rt2.state !== 'waiting') return;
+                                                        const still2 = Object.values(rt2.players || {}).filter(p => (p.chips || 0) > 0);
+                                                        if (still2.length < 2) return;
+                                                        
+                                                        // Fallback leader = seat#0 (ignoruj creatora)
+                                                        const sorted2 = Object.values(rt2.players || {}).filter(p => (p.chips || 0) > 0).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                                                        const fallbackLeader = sorted2[0]?.name;
+                                                        if (fallbackLeader === getPlayerName()) {
+                                                            console.log('🎴 Auto-start FALLBACK: Creator idle 15s, beru vedení');
+                                                            // Přepiš createdBy ve Firebase aby startPokerHand prošel
+                                                            await firebaseDB.ref(`pokerTables/${tableId}/createdBy`).set(fallbackLeader);
+                                                            await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
+                                                            // Teď volám startPokerHand
+                                                            if (typeof startPokerHand === 'function') {
+                                                                await startPokerHand(tableId);
+                                                            }
+                                                        }
+                                                    } catch(e) {
+                                                        console.warn('🎴 Auto-start fallback error:', e?.message || e);
+                                                    }
+                                                }, 15000); // 15s dodatečný timeout
+                                            }
                                         }
                                     } catch(e) {
                                         console.warn('🎴 Auto-start error:', e?.message || e);
@@ -116417,9 +116475,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (table.state === 'waiting') {
                 if (players.length >= 2 && players.some(p => p.chips > 0)) {
                     // [NEW] Auto-start - zobrazí informaci místo tlačítka
+                    // Zjisti kdo je leader (creator nebo seat#0) pro zobrazení
+                    const creatorAtTable = !!(table.createdBy && table.players?.[table.createdBy] && (table.players[table.createdBy].chips || 0) > 0);
+                    const sortedPl = players.filter(p => (p.chips || 0) > 0).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                    const leaderName = creatorAtTable ? table.createdBy : sortedPl[0]?.name;
+                    const iAmLeader = leaderName === getPlayerName();
+                    const leaderLabel = creatorAtTable ? '(host)' : '(první)';
+                    
+                    // Tlačítko "Rozdat teď" pro leadera (pokud nechce čekat)
+                    const manualButton = iAmLeader 
+                        ? `<button class="btn" onclick="startPokerHand('${table.id}')" style="margin-top:0.4rem;width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);font-size:0.85rem;padding:0.5rem;">🎴 Rozdat karty TEĎ</button>` 
+                        : '';
+                    
                     actionsHtml = `<div style="text-align:center;padding:0.5rem;background:linear-gradient(135deg,#1a2a1a,#0a1a0a);border:1px solid #4caf50;border-radius:6px;">
                         <div style="color:#4caf50;font-weight:bold;">🎴 Hra začne automaticky...</div>
                         <div style="color:#888;font-size:0.75rem;margin-top:0.2rem;">Jsou 2+ hráči u stolu. Karty se rozdají do 5 sekund.</div>
+                        <div style="color:#aaa;font-size:0.7rem;margin-top:0.3rem;">Spouští: <b style="color:${iAmLeader?'#8bc34a':'#888'}">${escapeHtml(leaderName || '?')}</b> ${leaderLabel}${iAmLeader ? ' — ty' : ''}</div>
+                        ${manualButton}
                     </div>`;
                 } else {
                     actionsHtml = `<div style="text-align:center;color:#888;padding:0.5rem;">⏳ Čekám na více hráčů... (${players.length}/2 s chipy)</div>`;
