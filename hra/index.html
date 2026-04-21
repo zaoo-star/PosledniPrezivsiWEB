@@ -15535,7 +15535,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.24';
+        const GAME_VERSION = '3.9.34';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -17708,11 +17708,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function updateCarryWeight() {
             state.carryWeight = 0;
             
-            // Inventář - pouze předměty, NE suroviny (ty jsou v osadě/skladu)
+            // Inventář - batohové předměty
             // EQUIPPED itemy se NEPOČÍTAJÍ - ty "nosíš na sobě", ne v batohu
             state.inv.forEach(item => {
                 state.carryWeight += (item.weight || 0) * (item.count || 1);
             });
+            
+            // [FIX BUG Bekosh] Suroviny v state.resources jsou HRÁČŮV inventář surovin (ne osadní sklad)
+            // Osada má vlastní state.settlement.resources. Takže i suroviny zvyšují váhu batohu.
+            // Váha je 50% aby existující hráči s velkými zásobami nebyli okamžitě přetížení (suroviny jsou volně sypané).
+            if (state.resources && typeof ITEMS !== 'undefined') {
+                for (const [resId, amount] of Object.entries(state.resources)) {
+                    if (!amount || amount <= 0) continue;
+                    const itemDef = ITEMS.find(i => i.id === resId);
+                    if (itemDef?.weight) {
+                        state.carryWeight += itemDef.weight * amount * 0.5;
+                    }
+                }
+            }
             
             // Přičti váhu itemů vystavených na tržišti (dokud se neprodají, stále je "neseš")
             const myName = getPlayerName();
@@ -33017,29 +33030,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                 </div>
                 
-                <!-- AI QUESTY -->
+                <!-- AI QUESTY - VYPNUTO podle požadavku
                 <div class="quest-content" id="quest-ai">
-                    ${(state.aiQuests||[]).length > 0 ? 
-                        (state.aiQuests||[]).map(function(q, i) {
-                            var prog = typeof getAIQuestProgress === 'function' ? getAIQuestProgress(q) : { done: false, current: 0, target: 1, text: '???', pct: 0 };
-                            return '<div class="quest-card' + (q.completed ? ' completed' : prog.done ? ' active-quest' : '') + '">' +
-                                '<div style="display: flex; align-items: center; gap: 0.6rem;">' +
-                                    '<span style="font-size: 1.3rem;">📜</span>' +
-                                    '<div style="flex: 1;">' +
-                                        '<div style="font-weight: bold; color: ' + (q.completed ? '#8bc34a' : '#ce93d8') + '; font-size: 0.9rem;">' + escapeHtml(q.name) + '</div>' +
-                                        '<div style="font-size: 0.75rem; color: #888;">' + escapeHtml(q.desc).substring(0, 80) + '</div>' +
-                                        '<div style="font-size: 0.8rem; color: #ff9800; margin-top: 0.2rem;">🎯 ' + escapeHtml(prog.text) + '</div>' +
-                                    '</div>' +
-                                    '<span style="font-size: 1.2rem;">' + (q.completed ? '✅' : prog.done ? '🎯' : '⏳') + '</span>' +
-                                '</div>' +
-                                (!q.completed ? '<div style="margin-top: 0.4rem;"><div style="height: 4px; background: #0a0a0a; border-radius: 2px; overflow: hidden;"><div style="height: 100%; width: ' + prog.pct + '%; background: ' + (prog.done ? '#4caf50' : '#9c27b0') + ';"></div></div><div style="text-align: right; font-size: 0.65rem; color: #666;">' + prog.current + '/' + prog.target + '</div></div>' : '') +
-                                (q.completed ? '<button class="btn" onclick="claimAIQuest(' + i + ')" style="width:100%;margin-top:0.3rem;background:#4caf50;font-size:0.8rem">🎁 Vyzvednout</button>' : 
-                                 prog.done ? '<button class="btn" onclick="completeAIQuest(' + i + ')" style="width:100%;margin-top:0.3rem;background:#ff9800;font-size:0.8rem">✅ Odevzdat</button>' : '') +
-                            '</div>';
-                        }).join('')
-                    : '<div style="text-align:center;padding:1rem;color:#555">Žádné AI questy. Vygeneruj nový!</div>'}
-                    <button class="btn" onclick="closeModal();setTimeout(showAIQuestPanel,100)" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#9c27b0,#6a1b9a);font-size:0.85rem">🎲 Generovat nový AI quest</button>
                 </div>
+                -->
                 
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">${t('ui', 'close')}</button>
             `);
@@ -33655,6 +33649,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Kontrola quest itemu - použij nový systém
+            // [FIX BUG Cinky] Recovery: pokud aktivní quest má spawnItem pro tuto lokaci ale questItems je prázdný (ze starého save), respawn
+            if (!state.world.questItems?.[currentLocation]) {
+                const currentQuest = (typeof getCurrentQuest === 'function') ? getCurrentQuest() : null;
+                if (currentQuest?.spawnItem?.location === currentLocation && currentQuest.spawnItem.id) {
+                    // Zkontroluj že item ještě nemám v inventáři (neprojde objective)
+                    const alreadyHave = state.inv?.some(i => i.id === currentQuest.spawnItem.id);
+                    if (!alreadyHave) {
+                        if (!state.world.questItems) state.world.questItems = {};
+                        state.world.questItems[currentLocation] = currentQuest.spawnItem.id;
+                        console.log(`🔄 Quest item RESPAWN: ${currentQuest.spawnItem.id} na ${currentLocation} (byl ztracen)`);
+                    }
+                }
+            }
+            
             if (state.world.questItems?.[currentLocation]) {
                 const itemId = state.world.questItems[currentLocation];
                 const item = QUEST_ITEMS.find(i => i.id === itemId);
@@ -34092,6 +34100,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             state.skillTree[branchId][skillId] = currentLevel + 1;
             state.skillTreePoints--;
+            
+            // [FIX BUG Cinky] Přepočítat max HP a další staty po skill upgradu
+            // Skill Pevnost (maxHpBonus) se neaplikoval dokud hráč nespustil jinou akci
+            if (typeof calculateMaxHp === 'function') {
+                const oldMaxHp = state.char.maxHp || 100;
+                const newMaxHp = calculateMaxHp();
+                const diff = newMaxHp - oldMaxHp;
+                state.char.maxHp = newMaxHp;
+                // Pokud max HP vzrostlo, přidej i aktuální HP (aby hráč viděl efekt okamžitě)
+                if (diff > 0) {
+                    state.char.hp = Math.min(newMaxHp, (state.char.hp || 0) + diff);
+                }
+            }
+            saveGame();
             
             notifySuccess('Vylepšeno!', skill.name + ' ' + (currentLevel + 1) + '/' + skill.maxLevel);
             addLog('Vylepšeno: ' + skill.name + ' (' + (currentLevel + 1) + '/' + skill.maxLevel + ')', skill.icon);
@@ -40259,24 +40281,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     });
                 }
                 
-                // 5. AI Questy
-                if (state.aiQuests?.length > 0) {
-                    state.aiQuests.forEach(aq => {
-                        if (!aq.completed) {
-                            const prog = typeof getAIQuestProgress === 'function' ? getAIQuestProgress(aq) : { done: false, current: 0, target: 1, text: aq.goal || '???' };
-                            activeQuests.push({
-                                type: 'ai_quest',
-                                icon: '📜',
-                                name: aq.name,
-                                npcName: aq.npc || null,
-                                location: null,
-                                color: prog.done ? '#4caf50' : '#9c27b0',
-                                extra: `${prog.done ? '✅' : '🎯'} ${prog.current}/${prog.target} ${prog.text.substring(0, 30)}`,
-                                isQuestComplete: prog.done
-                            });
-                        }
-                    });
-                }
+                // 5. AI Questy - VYPNUTO podle požadavku
+                // (ponecháno state.aiQuests pro zpětnou kompatibilitu se save daty, ale nezobrazuje se)
                 
                 if (activeQuests.length === 0) return '';
                 
@@ -41828,10 +41834,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             html += '❓ ' + ('Nápověda k mapě') + '</button>';
             html += '<button class="btn" onclick="showMyLands()" style="background: #5D4037; font-size: 0.8rem; padding: 0.5rem 1rem;">';
             html += '🏗️ Moje pozemky</button>';
-            if (typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
-                html += '<button class="btn" onclick="showAIQuestPanel()" style="background: linear-gradient(135deg, #9c27b0, #6a1b9a); font-size: 0.8rem; padding: 0.5rem 1rem;">';
-                html += '📜 AI Questy</button>';
-            }
+            // AI Questy tlačítko vypnuto podle požadavku
             html += '</div>';
             
             html += '</div></details>';
@@ -51438,7 +51441,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Kontrola váhy PŘED nákupem
-            const itemWeight = (itemData.weight || 0) * amount;
+            // [FIX] Resources váží 50% v batohu (konzistentní s updateCarryWeight)
+            const weightMultiplier = itemData.type === 'resource' ? 0.5 : 1.0;
+            const itemWeight = (itemData.weight || 0) * amount * weightMultiplier;
             if (state.carryWeight + itemWeight > state.maxCarryWeight) {
                 notifyWarning('Příliš těžké!', ('Neuneseš ') + amount + 'x ' + itemData.name);
                 SoundSystem.play('error');
@@ -63833,7 +63838,23 @@ function openFullscreenMap() {
             
             // === 5. RESET SKILL TREE ===
             const level = state.char.level;
-            const skillPointsBack = Math.max(0, level - 1);
+            const skillPointsFromLevel = Math.max(0, level - 1); // 1 bod za level-up (1→2 = 1 bod)
+            
+            // [FIX BUG Cinky] Spočítej KOLIK BODŮ hráč celkem měl (použité + nepoužité)
+            // Bonus body od Sajka a dalších zdrojů jsou "navíc" - musíme je zachovat
+            let totalSkillPointsHad = state.skillTreePoints || 0;
+            if (state.skillTree) {
+                for (const branchId of Object.keys(state.skillTree)) {
+                    for (const skillId of Object.keys(state.skillTree[branchId])) {
+                        totalSkillPointsHad += state.skillTree[branchId][skillId] || 0;
+                    }
+                }
+            }
+            // Bonusové body = body nad rámec levelingu (od Sajka, questů, achievements)
+            const bonusPoints = Math.max(0, totalSkillPointsHad - skillPointsFromLevel);
+            const skillPointsBack = skillPointsFromLevel + bonusPoints;
+            
+            console.log(`🔄 Class change: level=${level}, skillPointsFromLevel=${skillPointsFromLevel}, total had=${totalSkillPointsHad}, bonus=${bonusPoints}, vráceno=${skillPointsBack}`);
             
             // Vynuluj všechny skill tree větve
             if (state.skillTree) {
@@ -80744,6 +80765,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Základní damage
             let damage = isCompanion ? unit.damage : calculateDamage();
             
+            // [FIX BUG Cinky] Weapon buff (+X DMG na Y bojů) - aplikuj vždy, decrementuj JEN 1× za boj
+            // Předtím se decrementoval za každý útok (hráč udělal 3 swingy = -3 fights)
+            if (!isCompanion && state.weaponBuff && state.weaponBuff.fights > 0) {
+                damage += state.weaponBuff.damage;
+                if (!cs._weaponBuffConsumed) {
+                    cs._weaponBuffConsumed = true;
+                    state.weaponBuff.fights--;
+                    cs.log.push(`✨ Weapon buff: +${state.weaponBuff.damage} DMG (zbývá ${state.weaponBuff.fights} bojů)`);
+                    if (state.weaponBuff.fights <= 0) {
+                        cs.log.push(`💨 Zesílený povlak se spotřeboval.`);
+                        state.weaponBuff = null;
+                    }
+                }
+            }
+            
             // === CLASS PASSIVES - ÚTOK ===
             if (!isCompanion) {
                 // Raider: Rage - Pod 30% HP +28% damage (nerfed from 50%)
@@ -80754,7 +80790,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Berserker: Frenzy stacks (+8% per stack, max 5)
                 if (state.char.classId === 'berserker') {
-                    const frenzyStacks = (state.buffs || []).filter(b => b.id === 'frenzy' && b.expires > Date.now()).length;
+                    // [FIX] state.buffs je objekt, frenzyStacks je pole uvnitř
+                    const fsList = (state.buffs && !Array.isArray(state.buffs) && Array.isArray(state.buffs.frenzyStacks)) 
+                        ? state.buffs.frenzyStacks 
+                        : [];
+                    const frenzyStacks = fsList.filter(s => s.expires > Date.now()).length;
                     if (frenzyStacks > 0) {
                         damage = Math.floor(damage * (1 + frenzyStacks * 0.08));
                         cs.log.push(`Šílenství! (+${Math.round(frenzyStacks * 8)}% DMG)`);
@@ -81518,11 +81558,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Berserker: Frenzy stack při zabití
                 if (!isCompanion && state.char.classId === 'berserker') {
-                    state.buffs = state.buffs || [];
-                    const frenzyStacks = state.buffs.filter(b => b.id === 'frenzy').length;
-                    if (frenzyStacks < 10) {
-                        state.buffs.push({ id: 'frenzy', value: 0.1, expires: Date.now() + 60000 });
-                        cs.log.push(`Šílenství! (+${(frenzyStacks + 1) * 10}% DMG)`);
+                    // [FIX] state.buffs je objekt (pro alcoholDamage, weaponCoating atd.)
+                    // Frenzy stacky uložíme jako objekt s expires pole
+                    if (!state.buffs || Array.isArray(state.buffs)) state.buffs = {};
+                    if (!state.buffs.frenzyStacks) state.buffs.frenzyStacks = [];
+                    // Vyčisti expirované stacky
+                    state.buffs.frenzyStacks = state.buffs.frenzyStacks.filter(s => s.expires > Date.now());
+                    if (state.buffs.frenzyStacks.length < 5) { // max 5 stacků (ne 10)
+                        state.buffs.frenzyStacks.push({ value: 0.08, expires: Date.now() + 60000 });
+                        cs.log.push(`Šílenství! (+${state.buffs.frenzyStacks.length * 8}% DMG)`);
                     }
                 }
             }
@@ -89646,6 +89690,91 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             console.log('✅ Migrace dokončena');
+            
+            // === MIGRACE v3.9.28: Přesun přebytečných surovin do osadního skladu ===
+            // Před v3.9.28 se suroviny nepočítaly do carryWeight. Po updatu by hráči
+            // s velkými zásobami byli přetížení. Automaticky přesuneme přebytek do osady.
+            if (!state._migratedResourceWeight && state.resources && state.settlement) {
+                // Spočítej celkovou váhu surovin
+                let totalResourceWeight = 0;
+                const resourceItems = [];
+                for (const [resId, amount] of Object.entries(state.resources)) {
+                    if (!amount || amount <= 0) continue;
+                    const itemDef = ITEMS?.find(i => i.id === resId);
+                    if (itemDef?.weight) {
+                        const w = itemDef.weight * amount * 0.5;
+                        totalResourceWeight += w;
+                        resourceItems.push({ id: resId, amount, weight: w, unitWeight: itemDef.weight });
+                    }
+                }
+                
+                // Pokud by byl hráč přetížený (více než 60% nosnosti jen ze surovin), přesuň přebytek
+                const maxAllowed = (state.maxCarryWeight || 50) * 0.6; // max 60% váhy ze surovin
+                if (totalResourceWeight > maxAllowed) {
+                    if (!state.settlement.resources) state.settlement.resources = {};
+                    let transferred = 0;
+                    let transferredItems = 0;
+                    // Přesuň přebytek - seřaď podle váhy, přesuň nejtěžší první
+                    resourceItems.sort((a, b) => b.weight - a.weight);
+                    for (const res of resourceItems) {
+                        if (totalResourceWeight <= maxAllowed) break;
+                        // Kolik kusů odebrat aby váha klesla
+                        const excessWeight = totalResourceWeight - maxAllowed;
+                        const unitsToMove = Math.ceil(excessWeight / (res.unitWeight * 0.5));
+                        const actualMove = Math.min(unitsToMove, res.amount);
+                        if (actualMove > 0) {
+                            state.settlement.resources[res.id] = (state.settlement.resources[res.id] || 0) + actualMove;
+                            state.resources[res.id] = res.amount - actualMove;
+                            totalResourceWeight -= actualMove * res.unitWeight * 0.5;
+                            transferred += actualMove;
+                            transferredItems++;
+                        }
+                    }
+                    if (transferred > 0) {
+                        console.log(`📦 Migrace: Přesunuto ${transferred} surovin (${transferredItems} typů) z batohu do osadního skladu`);
+                        // Uložíme notifikaci pro zobrazení po startu
+                        state._pendingMigrationNotice = { transferred, items: transferredItems };
+                    }
+                }
+                state._migratedResourceWeight = true; // označ že migrace proběhla
+                
+                // Zobraz MODAL po migraci (ne notifikaci - aby to hráč neprohlédl)
+                if (state._pendingMigrationNotice) {
+                    const notice = state._pendingMigrationNotice;
+                    delete state._pendingMigrationNotice;
+                    // Setimeout aby se počkalo až se UI načte a neustřelil se úvodní modal
+                    setTimeout(() => {
+                        if (typeof showModal === 'function') {
+                            showModal('📦 Aktualizace systému', `
+                                <div style="text-align: center;">
+                                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">📦</div>
+                                    <p style="color: #ffd700; font-weight: bold; font-size: 1.05rem;">Nová verze hry mění pravidla pro suroviny</p>
+                                </div>
+                                <div style="background: #1a1a2a; padding: 0.8rem; border-radius: 8px; margin: 1rem 0; border-left: 3px solid #7986CB;">
+                                    <p style="color: #ccc; font-size: 0.9rem; line-height: 1.5; margin: 0;">
+                                        Suroviny (kov, kámen, bylinky, šrot...) se teď <strong style="color: #8bc34a;">počítají do váhy batohu</strong> (50% své normální váhy).
+                                    </p>
+                                </div>
+                                <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; border-left: 3px solid #4caf50;">
+                                    <p style="color: #8bc34a; font-weight: bold; margin: 0 0 0.3rem 0;">✅ Automatická oprava:</p>
+                                    <p style="color: #ccc; font-size: 0.9rem; line-height: 1.5; margin: 0;">
+                                        Abys nebyl přetížený, přesunul jsem <strong style="color: #ffd700;">${notice.transferred}</strong> kusů surovin z batohu do <strong>osadního skladu</strong>.
+                                    </p>
+                                </div>
+                                <div style="background: #2a2a1a; padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; font-size: 0.8rem; color: #aaa;">
+                                    💡 Suroviny v osadním skladu můžeš použít ke stavění a craftingu. Pokud potřebuješ suroviny s sebou, můžeš si je vzít z osady.
+                                </div>
+                                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: linear-gradient(135deg, #4caf50, #2e7d32);">✓ Rozumím</button>
+                            `);
+                        } else if (typeof notifyInfo === 'function') {
+                            notifyInfo(
+                                '📦 Aktualizace systému',
+                                `Suroviny se teď počítají do váhy batohu. Přesunuto ${notice.transferred}× přebytečných surovin do osadního skladu.`
+                            );
+                        }
+                    }, 3500);
+                }
+            }
             
             // === MIGRACE: Doplň chybějící properties a sync metadata na inventářních předmětech ===
             // BEZPEČNÁ MIGRACE: Nikdy nesnižuje damage/defense, pouze sync metadata a doplní chybějící
@@ -104575,13 +104704,24 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             try {
-                const isAdmin = window.isAdmin && window.isAdmin();
+                const isAdm = window.isAdmin && window.isAdmin();
                 await firebaseDB.ref('bugReports/' + reportId + '/comments').push({
                     text: text,
                     player: getPlayerName(),
-                    isAdmin: isAdmin || false,
+                    isAdmin: isAdm || false,
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
+                
+                // [NEW] Pokud admin odpověděl, pošli reporterovi Fallout-style SZ
+                if (isAdm) {
+                    try {
+                        const reportSnap = await firebaseDB.ref('bugReports/' + reportId).once('value');
+                        const report = reportSnap.val();
+                        if (report?.player && report.player !== getPlayerName()) {
+                            await _sendAdminFalloutReply(report.player, 'bug', report.title || 'tvůj report');
+                        }
+                    } catch(szErr) { console.warn('Fallout SZ selhala:', szErr); }
+                }
                 
                 notifySuccess('💬 Odpověď odeslána!');
                 // Znovu otevři detail
@@ -104592,6 +104732,66 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 notifyWarning('Chyba při odesílání odpovědi');
             }
         }
+        
+        // [NEW] Odeslat Fallout-stylovou soukromou zprávu hráči když admin odpoví na jeho report/nápad
+        async function _sendAdminFalloutReply(toPlayerName, kind, subject) {
+            if (!multiplayerEnabled || !firebaseDB || !toPlayerName) return;
+            const myName = getPlayerName();
+            
+            // Hlášky v duchu naší Pustiny - o přežití, radioaktivitě, přeživších, osadách, NPC
+            const bugMessages = [
+                `*prach víří u paty vysílače* ...Hele, přeživší. Tvé hlášení "${subject}" prorazilo až k adminovi. Máš větší štěstí než chlap co přežil radiační bouři bez masky. Koukni do zpráv. — Admin Pustiny`,
+                `Tak poslouchej, přeživší. Tvůj bug report padl adminovi na stůl. Víš jak vzácný to je? Víc než najít plnou nabitou baterku v ruinách. Otevři chat. — Admin Pustiny`,
+                `*praskání starého rádia* Tvoje zpráva o "${subject}" byla přečtena A zodpovězena. To se v pustině nestává každý den. Většinou jsou hlášení sežrána mutanty dřív než někam dojdou. — Admin Pustiny`,
+                `Poslechni si to, přeživší. Zatímco ostatní stížnosti hnijí někde v trhlinách mezi světy, ta tvoje se dostala rovnou na admina. Buď vděčný — příští týden tě může sežrat deathclaw. — Admin Pustiny`,
+                `🎲 Hod na štěstí: úspěch! Tvůj bug "${subject}" byl admin viděl a reagoval. Šance že se to bude opakovat je menší než že najdeš Super schopnost v odpadcích. — Admin Pustiny`,
+                `*ťukání do terminálu* ...Hlášení přijato. Zpracováno. ODPOVĚZENO. To se v pustině ocení víc než konzerva masa. Otevři soukromé zprávy. — Admin Pustiny`,
+                `Hej, přeživší! Admin se probral z letargie a odpověděl na tvůj report. Tohle se neděje — za celou historii Pustiny jen pár vyvolených. Jsi teď mezi nimi. — Admin Pustiny`,
+                `*šustění papíru* Vytáhl jsem tvůj report ze stoh hlášení vysokého jako věž v bunkru. Přečetl, napsal odpověď. Radiaci dnes nepotřebuješ, z takového štěstí ti zčernají vlasy sami. — Admin Pustiny`
+            ];
+            
+            const ideaMessages = [
+                `*prach víří u paty vysílače* ...Hej přeživší, tvůj nápad "${subject}" doletěl až k adminovi. V Pustině se šíří rychleji zvěsti než myšlenky, ale ty tvoje přežily. Otevři zprávy. — Admin Pustiny`,
+                `Poslouchej — tvůj nápad prošel všemi filtry, mutanty, radiacií a dostal se k adminovi. To je jako kdyby se poštovní holub dokázal vyhnout všem lovcům v pustině. — Admin Pustiny`,
+                `*praskání starého rádia* Admin si všiml tvého návrhu na "${subject}". Víc se mu věnoval než raidu na Kultisty. Otevři si chat a čti. — Admin Pustiny`,
+                `🎲 Hod na charisma: NATURAL 20! Tvůj nápad přesvědčil admina odpovědět. V pustině je to vzácnější než čistá voda. Užij si chvíli slávy. — Admin Pustiny`,
+                `Hej! Admin osobně reagoval na tvůj nápad. Zatímco ostatní návrhy končí v radioaktivní louži, ten tvůj se dostal k vrcholu. Jsi mezi vyvolenými přeživšími. — Admin Pustiny`,
+                `*ťukání do terminálu* ...Tvůj nápad zaujal. Admin si sedl k terminálu a napsal odpověď — to se v pustině stává asi tak často jako déšť bez radiace. — Admin Pustiny`,
+                `Přeživší ${toPlayerName}, tvůj nápad "${subject}" prorazil všudypřítomným chaosem Pustiny a admin reagoval. Ostatní přeživší ti mohou závidět víc než předválečné konzervě. — Admin Pustiny`,
+                `*šustění papíru* Vytáhl jsem tvůj nápad z haldy, která by zasypala celou osadu. Přečetl, napsal odpověď. Tohle se v pustině hodí víc než Stimpak v boji. — Admin Pustiny`
+            ];
+            
+            const pool = kind === 'bug' ? bugMessages : ideaMessages;
+            const text = pool[Math.floor(Math.random() * pool.length)];
+            
+            const msg = {
+                from: myName,
+                to: toPlayerName,
+                text: text.substring(0, 500),
+                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                _falloutReply: true // marker
+            };
+            
+            try {
+                // Ulož do obou inboxů (stejný pattern jako sendPrivateMessage)
+                await firebaseDB.ref('chat/private/' + myName).push(msg);
+                await firebaseDB.ref('chat/private/' + toPlayerName).push(msg);
+                console.log('📬 Fallout SZ odeslána hráči', toPlayerName);
+                
+                // Notifikace příjemci
+                try {
+                    await firebaseDB.ref('notifications/' + toPlayerName).push({
+                        type: 'private_message',
+                        from: myName,
+                        text: '📬 Admin ti poslal zprávu...',
+                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                } catch(e) {}
+            } catch (e) {
+                console.error('Fallout SZ selhala:', e);
+            }
+        }
+        window._sendAdminFalloutReply = _sendAdminFalloutReply;
         
         // === NÁPADY NA VYLEPŠENÍ ===
         function showIdeasModal() {
@@ -104966,6 +105166,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 };
                 
                 await firebaseDB.ref('gameIdeas/' + ideaId + '/comments').push(comment);
+                
+                // [NEW] Pokud admin odpověděl, pošli autorovi nápadu Fallout-style SZ
+                const isAdm = window.isAdmin && window.isAdmin();
+                if (isAdm) {
+                    try {
+                        const ideaSnap = await firebaseDB.ref('gameIdeas/' + ideaId).once('value');
+                        const idea = ideaSnap.val();
+                        const authorName = idea?.author || idea?.playerName;
+                        if (authorName && authorName !== 'Anonym' && authorName !== getPlayerName()) {
+                            await _sendAdminFalloutReply(authorName, 'idea', idea.title || 'tvůj nápad');
+                        }
+                    } catch(szErr) { console.warn('Fallout SZ selhala:', szErr); }
+                }
                 
                 notifySuccess('💬 Komentář přidán!', '');
                 showIdeaDetail(ideaId); // Refresh
@@ -114928,10 +115141,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // 🔒 Fix: Kontrola kdo může spustit
             const playersSorted = Object.values(table.players || {}).sort((a, b) => a.seat - b.seat);
-            const creatorStillAtTable = !!(table.createdBy && table.players?.[table.createdBy]);
+            // [FIX] Creator je "aktivní" jen pokud je ve Firebase A má čerstvou aktivitu (< 30s)
+            // Jinak se stává leaderem seat#0 (prevence zaseknutí hry když creator zavře prohlížeč)
+            const creatorData = table.createdBy ? table.players?.[table.createdBy] : null;
+            const creatorLastSeen = creatorData?.lastSeen || 0;
+            const creatorIsIdle = creatorLastSeen > 0 && (Date.now() - creatorLastSeen) > 30000; // 30s idle
+            const creatorStillAtTable = !!(creatorData) && !creatorIsIdle;
             const allowedStarter = creatorStillAtTable ? table.createdBy : (playersSorted[0]?.name);
             if (allowedStarter !== myName) {
-                notifyWarning('🔒 Pouze host', `Rundu spouští ${allowedStarter}`);
+                notifyWarning('🔒 Pouze host', `Rundu spouští ${allowedStarter}${creatorIsIdle ? ' (creator idle)' : ''}`);
                 return;
             }
             
@@ -116304,10 +116522,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                                         const fallbackLeader = sorted2[0]?.name;
                                                         if (fallbackLeader === getPlayerName()) {
                                                             console.log('🎴 Auto-start FALLBACK: Creator idle 15s, beru vedení');
-                                                            // Přepiš createdBy ve Firebase aby startPokerHand prošel
-                                                            await firebaseDB.ref(`pokerTables/${tableId}/createdBy`).set(fallbackLeader);
-                                                            await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
-                                                            // Teď volám startPokerHand
+                                                            // [FIX] startPokerHand sama detekuje idle creator (30s) a povolí seat#0 jako leader
+                                                            // Žádný Firebase write do createdBy - to by Firebase rules odmítly (PERMISSION_DENIED)
                                                             if (typeof startPokerHand === 'function') {
                                                                 await startPokerHand(tableId);
                                                             }
@@ -132212,16 +132428,22 @@ _refund(){if(this.requestCount>0)this.requestCount--;},
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
 _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>100)this.cache.delete(this.cache.keys().next().value);this._cacheDirty=true;},
 async callGemini(sys,msg,maxTok){if(!this.geminiKey)return null;
-// [FIX AI] AbortController s 15s timeoutem (dřív byl jen na Claude, Gemini by mohl zaseknout klient)
-const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),15000);
+// [FIX AI] AbortController timeoutem škálovaným podle maxTok (dlouhé odpovědi potřebují víc času)
+const ctrl=new AbortController();
+const _gemTimeoutMs = maxTok && maxTok > 1000 ? Math.min(50000, 15000 + maxTok * 8) : 15000;
+const tid=setTimeout(()=>ctrl.abort(),_gemTimeoutMs);
 try{this._stats.geminiCalls++;const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`,{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json','x-goog-api-key':this.geminiKey},body:JSON.stringify({system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]})});clearTimeout(tid);if(!r.ok){this._stats.geminiFails++;const errText=await r.text().catch(()=>'');console.error('Gemini HTTP:',r.status,errText.substring(0,200));
 // [FIX AI] 401/403 = bad key, oznamit adminům
 if((r.status===401||r.status===403)&&typeof notifyWarning==='function'&&(isAdmin?.()||isStaff?.())){notifyWarning('🤖 AI klíč selhal','HTTP '+r.status+' — zkontroluj nastavení (může být referer/API restriction)');}
 return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;
 // [FIX AI] Telemetrie tokenů
 if(d?.usageMetadata?.totalTokenCount)this._stats.geminiTokens+=d.usageMetadata.totalTokenCount;
-console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');this._stats.geminiFails++;return null;}if(finish==='MAX_TOKENS'&&text){return text.replace(/[,\s]+$/,'')+'...';}return text;}catch(e){clearTimeout(tid);this._stats.geminiFails++;console.error('Gemini:',e.name==='AbortError'?'timeout 15s':e);return null;}},
-async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{this._stats.claudeCalls++;const ctrl=new AbortController();const tid=setTimeout(()=>ctrl.abort(),15000);const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]}),signal:ctrl.signal});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){this._stats.claudeFails++;console.error('Claude:',e.name==='AbortError'?'timeout 15s':e);return null;}},
+console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');this._stats.geminiFails++;return null;}if(finish==='MAX_TOKENS'&&text){return text.replace(/[,\s]+$/,'')+'...';}return text;}catch(e){clearTimeout(tid);this._stats.geminiFails++;console.error('Gemini:',e.name==='AbortError'?'timeout '+_gemTimeoutMs+'ms':e);return null;}},
+async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{this._stats.claudeCalls++;const ctrl=new AbortController();
+// [FIX] Timeout škáluje s maxTok - dlouhé odpovědi (3000 tokens) potřebují víc času
+// Claude Sonnet generuje ~100 tokens/s, takže 3000 tokenů = ~30s + overhead
+const timeoutMs = maxTok && maxTok > 1000 ? Math.min(60000, 20000 + maxTok * 10) : 20000;
+const tid=setTimeout(()=>ctrl.abort(),timeoutMs);const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]}),signal:ctrl.signal});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){this._stats.claudeFails++;console.error('Claude:',e.name==='AbortError'?'timeout '+(maxTok>1000?'50s':'20s'):e);return null;}},
 async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;
 // [FIX AI] Check cache PŘED rate-limit (cache hit nerequirs rate)
 if(ck){const c=this._gc(ck);if(c){this._stats.cacheHits++;return c;}this._stats.cacheMisses++;}
@@ -133124,7 +133346,9 @@ DŮLEŽITÉ:
 
 KONTEXT: Den ${days}, ${season}.${eventCtx}`;
         
-        broadcast = await AI_ENGINE.generateFast(prompt, 'Vysílej', null, 3000);
+        // [FIX] Rádio používá generate (Claude Sonnet primárně) pro kvalitní literární obsah
+        // Hráči rádio čtou rádi, stojí za kvalitnější výstup než rychlé Gemini
+        broadcast = await AI_ENGINE.generate(prompt, 'Vysílej', null, 3000);
         
         if (broadcast && firebaseDB) {
             try { await firebaseDB.ref('shared/broadcast').set({ 
@@ -134207,7 +134431,19 @@ function showNpcLetters() {
         if (l.action && !l.actionDone) {
             const a = l.action;
             if (a.type === 'fetch') {
-                const has = state.inv?.filter(it => it.id === a.item).length || 0;
+                // [FIX BUG OwerLord] Resource typy (herbs, metal, scrap, fuel...) jsou v state.resources, ne v state.inv
+                // Předtím to kontrolovalo jen inv, proto Marta tvrdila "nemáš dost" i když jsi měl 15 bylinek
+                const itemDef = ITEMS?.find(it => it.id === a.item);
+                const isResource = itemDef?.type === 'resource';
+                let has = 0;
+                if (isResource) {
+                    has = state.resources?.[a.item] || 0;
+                } else {
+                    // Inventory items - počítej všechny instance (včetně stackovaných countů)
+                    (state.inv || []).forEach(it => {
+                        if (it.id === a.item) has += (it.count || 1);
+                    });
+                }
                 const enough = has >= a.amount;
                 actionHtml = `<div style="margin-top:0.5rem;padding:0.4rem;background:#1a2a1a;border:1px solid #3a5a3a;border-radius:6px">
                     <div style="color:#8bc34a;font-size:0.75rem">📦 Požadavek: ${a.amount}x ${a.item} (máš: ${has})</div>
@@ -134262,9 +134498,38 @@ function showNpcLetters() {
 function acceptLetterFetch(idx) {
     const l = state.npcLetters[idx]; if (!l?.action) return;
     const a = l.action;
-    let removed = 0;
-    state.inv = state.inv.filter(it => { if (it.id === a.item && removed < a.amount) { removed++; return false; } return true; });
-    if (removed < a.amount) { notifyWarning('❌','Nemáš dost!'); return; }
+    
+    // [FIX BUG] Resource typy (herbs, metal, scrap) jsou v state.resources, ne v state.inv
+    const itemDef = ITEMS?.find(it => it.id === a.item);
+    const isResource = itemDef?.type === 'resource';
+    
+    if (isResource) {
+        const has = state.resources?.[a.item] || 0;
+        if (has < a.amount) { notifyWarning('❌','Nemáš dost!'); return; }
+        state.resources[a.item] = has - a.amount;
+    } else {
+        // Inventory items - odeber count od stackovaných, nebo celý item
+        let needed = a.amount;
+        const newInv = [];
+        for (const it of (state.inv || [])) {
+            if (needed > 0 && it.id === a.item) {
+                const itCount = it.count || 1;
+                if (itCount <= needed) {
+                    needed -= itCount;
+                    // skip item (úplně odebráno)
+                } else {
+                    // Stackovaný item - sniž count
+                    newInv.push({...it, count: itCount - needed});
+                    needed = 0;
+                }
+            } else {
+                newInv.push(it);
+            }
+        }
+        if (needed > 0) { notifyWarning('❌','Nemáš dost!'); return; }
+        state.inv = newInv;
+    }
+    
     _applyLetterReward(l, a);
 }
 async function acceptLetterBuy(idx) {
@@ -134303,19 +134568,48 @@ async function _revealBuyInfoSecret(idx) {
             const promptBase = (typeof AI_BASE_LITE !== 'undefined') ? AI_BASE_LITE : '';
             secret = await AI_ENGINE.generateFast(`${promptBase}
 Jsi "${from}" (šibalský pašerák). Hráč ti zaplatil za tajnou informaci.
-Šeptáš mu krátký zajímavý drb ze světa Pustiny (2-3 věty). Může být o:
+Šeptáš mu KRÁTKÝ ale UCELENÝ drb ze světa Pustiny — MAX 3 VĚTY, ale VŠECHNY věty musí být kompletní (ne useknuté).
+
+Můžeš mluvit o:
 - poklad/skrýš v konkrétní lokaci (šachta, laborka, továrna, sklep)
 - nájezdnické hnízdo/past kde se dá něco získat
 - tajemství o NPC (Starý obchodník, Kovář Ivan, Kapitán Novák, Rosa, Babička Marta)
 - drb o mutantech/bossích/radiaci
-- užitečný tip pro hraní (kde se najde vzácný item, jak zlevnit opravy atd.)
+- užitečný tip pro hraní
 
-NEVYMÝŠLEJ si konkrétní čísla/statistiky. Piš česky, přirozeně, šibalským tónem. Bez markdown. Konči — ${from}`, 'Dopis-tajemství', null, 350);
+DŮLEŽITÉ: Musíš napsat CELÝ text — každá věta ukončená tečkou. Nepřerušuj uprostřed!
+Piš česky, přirozeně, šibalským tónem. Bez markdown. Konči podpisem: — ${from}`, 'Dopis-tajemství', null, 600);
         } catch(e) { console.warn('Letter secret gen error:', e); }
     }
     
     // Ulož odhalenou informaci do dopisu (pro příště)
-    const secretText = secret ? secret.substring(0, 400) : `${from} se mlčky usměje a přikývne. "Časy jsou těžké, ale důvěra je klíč. Uvidíme se příště." — ${from}`;
+    // [FIX] Pokud text je useknutý (nekončí . ! ? ani podpisem) → vrať se k poslední tečce
+    let secretText = secret ? secret.trim() : '';
+    if (secretText && secretText.length > 100) {
+        const lastChar = secretText[secretText.length - 1];
+        if (!['.', '!', '?'].includes(lastChar)) {
+            // Text je useknutý → najdi poslední tečku a ukonč tam
+            const lastPunc = Math.max(secretText.lastIndexOf('.'), secretText.lastIndexOf('!'), secretText.lastIndexOf('?'));
+            if (lastPunc > 50) {
+                secretText = secretText.substring(0, lastPunc + 1);
+                // Přidej podpis pokud chybí
+                if (!secretText.includes('— ' + from) && !secretText.endsWith(from)) {
+                    secretText += ' — ' + from;
+                }
+            }
+        }
+    }
+    // Ochranný limit: max 600 znaků
+    if (secretText.length > 600) {
+        const cut = secretText.substring(0, 600);
+        const lastPunc = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
+        secretText = lastPunc > 100 ? cut.substring(0, lastPunc + 1) : cut;
+    }
+    // Fallback pokud AI selže
+    if (!secretText) {
+        secretText = `${from} se mlčky usměje a přikývne. "Časy jsou těžké, ale důvěra je klíč. Uvidíme se příště." — ${from}`;
+    }
+    
     l.secretRevealed = true;
     l.secretText = secretText;
     saveGame();
