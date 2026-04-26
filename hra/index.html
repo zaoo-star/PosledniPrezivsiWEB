@@ -15650,7 +15650,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.98';
+        const GAME_VERSION = '3.9.99';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -83934,12 +83934,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         exitAbyss();
                         return;
                     }
+                    
+                    // [FIX v3.9.99] CRITICAL - dýmovnice nečistila combat state.
+                    // Důsledek: combat se obnovil "beze hráče ale se společníky" když se hra
+                    // re-renderovala (např. po revive v osadě).
+                    try {
+                        // Vrať munici z magazínu zpět do inv (jako při normálním ukončení)
+                        if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
+                    } catch(e) {}
+                    
+                    window.combatState = null;
+                    delete state.activeCombat;
+                    delete state.savedCombatState;
+                    window.isSettlementRaid = false;
+                    state._raidVictoryHandled = false;
+                    
                     closeModal();
                     if (cs.resumeAfterCombat || state.world?.resumeAfterCombat) {
                         state.world.resumeAfterCombat = false;
                         continueTravel();
                     }
                     renderFull();
+                    // [FIX v3.9.99] Force-save aby escape přežil i refresh / minimalizaci
+                    try { saveGame(true); } catch(e) {}
                 }, 500);
                 return;
             }
@@ -94336,6 +94353,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             state.status.thirst = 30;
             state.status.energy = 30;
             state.status.radiation = Math.max(0, state.status.radiation - 20);
+            
+            // [FIX v3.9.99] CRITICAL - vyčisti VŠECHEN combat state při smrti.
+            // Bez toho se combat re-aktivoval po revive ("pokračování v boji beze hráče ale se společníky").
+            try {
+                window.combatState = null;
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                window.isSettlementRaid = false;
+                state._raidVictoryHandled = false;
+                window.companionPositionsOverride = null;
+                window.preCombatPositions = null;
+                window.pendingEnemyGroup = null;
+                window.pendingCombatType = null;
+                window._inPreCombatFlow = false;
+                document.body.classList.remove('combat-fullscreen');
+                // Cleanup combat floating button
+                const _fb = document.getElementById('combatFloatingBtn');
+                if (_fb) _fb.remove();
+                console.log('💀 Combat state vyčištěn po smrti');
+            } catch(e) { console.warn('Combat cleanup error:', e); }
             
             // Teleport do úkrytu
             state.world.currentLocation = 'shelter';
