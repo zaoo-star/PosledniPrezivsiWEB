@@ -90126,6 +90126,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [FIX v3.9.92] Ochrana proti race condition - pokud na Firebase je novější reset 
+            // než ten co jsme acknowledgli, zablokuj save dokud user nevytvoří novou postavu.
+            // Tohle řeší případ kdy admin resetne server a user má tab běžící v paměti.
+            try {
+                const lastAck = parseInt(localStorage.getItem('lastResetAcknowledged') || '0');
+                const cachedResetTs = parseInt(sessionStorage.getItem('cachedServerResetTs') || '0');
+                if (cachedResetTs > lastAck) {
+                    console.warn('🔄 Server reset detekován po startu - save zablokován do nového ack');
+                    return;
+                }
+            } catch(e) {}
+            
             // Ulož čas pro sync porovnání
             state.lastSaveTime = Date.now();
             localStorage.setItem('lastSaveTime', state.lastSaveTime.toString());
@@ -95890,7 +95902,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         })();
         
         // Auto-load saved game on page load
-        let saveData = localStorage.getItem('survival_hero_save_v2');
+        // [FIX v3.9.92] SYNCHRONNÍ pre-check - pokud máme cached server reset timestamp 
+        // novější než ack, blokuj load. Tím se zabrání race condition kdy async check
+        // detekuje reset, ale auto-load už proběhl synchronně.
+        let _shouldBlockLoad = false;
+        try {
+            const cachedTs = parseInt(sessionStorage.getItem('cachedServerResetTs') || '0');
+            const lastAck = parseInt(localStorage.getItem('lastResetAcknowledged') || '0');
+            if (cachedTs > lastAck) {
+                console.warn('🔄 STARTUP: Server reset detected synchronously - blocking save load');
+                _shouldBlockLoad = true;
+                // Smaž rovnou
+                localStorage.removeItem('survival_hero_save_v2');
+                localStorage.removeItem('survival_hero_save');
+                localStorage.removeItem('survival_hero_backup');
+                localStorage.removeItem('lastSaveTime');
+                localStorage.setItem('lastResetAcknowledged', String(cachedTs));
+            }
+        } catch(e) { console.warn('Pre-load reset check error:', e); }
+        
+        let saveData = _shouldBlockLoad ? null : localStorage.getItem('survival_hero_save_v2');
         let loaded = null;
         
         // Zkus dešifrovat novou verzi
@@ -97149,11 +97180,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Načti aktuální timestamp jako baseline (už jsme ho acknowledged)
                     firebaseDB.ref('serverReset/timestamp').once('value').then(snap => {
                         _knownResetTs = snap.val() || 0;
+                        // [FIX v3.9.92] Cache do sessionStorage pro saveGame validaci
+                        try { sessionStorage.setItem('cachedServerResetTs', String(_knownResetTs)); } catch(e) {}
                     });
                     
                     firebaseDB.ref('serverReset/timestamp').on('value', snap => {
                         const newTs = snap.val();
                         if (!newTs) return;
+                        
+                        // [FIX v3.9.92] Update cached timestamp pro saveGame
+                        try { sessionStorage.setItem('cachedServerResetTs', String(newTs)); } catch(e) {}
                         
                         // Při prvním načtení (baseline) se neprobouzej
                         if (_knownResetTs === null) {
@@ -114806,6 +114842,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 html += `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem;">
                     <button class="btn" onclick="adminInspectPlayer()" style="background: #555;">← Zpět na seznam</button>
                     <button class="btn" onclick="adminSetPlayerMoney('${escapeHtml(playerName).replace(/'/g, "\\'")}'); closeModal();" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">💰 Nastavit peníze</button>
+                </div>
+                <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #2a0a0a;">
+                    <button class="btn" onclick="adminWipePlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}', '${uid || ''}')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b0000;">
+                        💀 SMAZAT POSTAVU (cheater hunt)
+                    </button>
+                    <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Smaže cloud save + leaderboard záznam. Hráč bude muset vytvořit novou postavu při dalším loginu.</p>
                 </div>`;
                 
                 showModal('🔍 ' + escapeHtml(playerName), html);
@@ -116537,6 +116579,93 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         // === NASTAVENÍ PENĚZ HRÁČE (ADMIN) ===
+        // [v3.9.92] Manuální wipe konkrétního hráče - "cheater hunting tool"
+        // Použití: když uvidíš že někdo přežil server reset nebo cheatuje, smaž jen jeho postavu
+        // bez nutnosti dělat plný server reset.
+        async function adminWipePlayer(playerName, uid) {
+            if (!isAdmin()) {
+                notifyWarning('❌ Přístup odepřen', 'Pouze pro hlavního admina');
+                return;
+            }
+            
+            if (!confirm(`💀 SMAZAT postavu "${playerName}"?\n\nTato akce smaže:\n• Cloud save (cloudSaves)\n• Leaderboard záznam\n• Player data (players, online)\n\nHráč bude muset vytvořit novou postavu při dalším loginu (pokud nepřežije v localStorage - tam jeho save nemůžeme smazat na dálku).\n\nPokračovat?`)) {
+                return;
+            }
+            
+            const safeName = String(playerName).replace(/[\\/.#$\[\]]/g, '_');
+            
+            try {
+                notifyInfo('⏳ Mažu...', playerName);
+                let deleted = [];
+                
+                // 1. Cloud save (pod UID pokud máme)
+                if (uid) {
+                    try {
+                        await firebaseDB.ref('cloudSaves/' + uid).remove();
+                        deleted.push('cloudSaves/' + uid);
+                    } catch(e) { console.warn('cloudSaves delete:', e); }
+                }
+                
+                // 2. Leaderboard - hledej podle name (může být víc UIDů s tím samým name)
+                try {
+                    const lbSnap = await firebaseDB.ref('leaderboard').orderByChild('name').equalTo(playerName).once('value');
+                    const lbData = lbSnap.val() || {};
+                    for (const lbUid of Object.keys(lbData)) {
+                        await firebaseDB.ref('leaderboard/' + lbUid).remove();
+                        deleted.push('leaderboard/' + lbUid);
+                    }
+                } catch(e) { console.warn('leaderboard delete:', e); }
+                
+                // 3. Players
+                try {
+                    await firebaseDB.ref('players/' + safeName).remove();
+                    deleted.push('players/' + safeName);
+                } catch(e) { console.warn('players delete:', e); }
+                
+                // 4. Online status
+                try {
+                    const onlineSnap = await firebaseDB.ref('online').orderByChild('name').equalTo(playerName).once('value');
+                    const onlineData = onlineSnap.val() || {};
+                    for (const onUid of Object.keys(onlineData)) {
+                        await firebaseDB.ref('online/' + onUid).remove();
+                        deleted.push('online/' + onUid);
+                    }
+                } catch(e) { console.warn('online delete:', e); }
+                
+                // 5. Friends - obě strany
+                try {
+                    await firebaseDB.ref('friends/' + safeName).remove();
+                    deleted.push('friends/' + safeName);
+                } catch(e) { console.warn('friends delete:', e); }
+                
+                // 6. Avatar
+                try {
+                    await firebaseDB.ref('playerAvatars/' + safeName).remove();
+                    deleted.push('playerAvatars/' + safeName);
+                } catch(e) { console.warn('avatar delete:', e); }
+                
+                // 7. Notifikuj hráče přes notifications - pošli "musíš vytvořit novou postavu"
+                try {
+                    await firebaseDB.ref('notifications/' + safeName).push({
+                        type: 'wipe',
+                        message: '💀 Tvoje postava byla smazána adminem. Při dalším přihlášení vytvoř novou.',
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        forceReload: true  // Klient by tohle mohl zachytit a force-reload
+                    });
+                } catch(e) {}
+                
+                console.log('💀 Wiped player ' + playerName + ':', deleted);
+                notifySuccess('💀 Smazáno', playerName + ' - smazáno ' + deleted.length + ' uzlů');
+                
+                setTimeout(() => closeModal(), 800);
+                
+            } catch (e) {
+                console.error('Wipe player error:', e);
+                notifyWarning('Chyba', e.message || 'Nelze smazat hráče');
+            }
+        }
+        window.adminWipePlayer = adminWipePlayer;
+        
         function adminSetPlayerMoney(playerName) {
             if (!isAdmin()) return;
             
