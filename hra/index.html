@@ -82366,26 +82366,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Pokud je v dosahu pohybu, automaticky se přesuň (jako by user klikl Pohyb a pak políčko)
                 const occupiedByAlly = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'player');
                 if (!occupiedByAlly) {
-                    // Spočítej validní pohyby pokud ještě nejsou
-                    if (!cs.validMoves || cs.validMoves.length === 0) {
-                        cs.validMoves = [];
-                        const moveRange = unit.moveRange || 2;
-                        for (let dy = -moveRange; dy <= moveRange; dy++) {
-                            for (let dx = -moveRange; dx <= moveRange; dx++) {
-                                if (dx === 0 && dy === 0) continue;
-                                const nx = unit.x + dx;
-                                const ny = unit.y + dy;
-                                const dist = Math.max(Math.abs(dx), Math.abs(dy));
-                                if (dist > moveRange) continue;
-                                if (nx < 0 || ny < 0 || nx >= (cs.gridW || 12) || ny >= (cs.gridH || 8)) continue;
-                                // Není obsazené?
-                                const occ = cs.units.find(u => u.x === nx && u.y === ny && u.alive);
-                                if (occ) continue;
-                                // Terén pasable?
-                                const terrain = cs.terrain?.[ny]?.[nx];
-                                if (terrain?.blocked) continue;
-                                cs.validMoves.push({ x: nx, y: ny });
-                            }
+                    // [DEBUG v3.9.94] Vždy přepočti validní pohyby (možná tam zůstaly staré z předchozí akce)
+                    cs.validMoves = [];
+                    const moveRange = unit.moveRange || 2;
+                    for (let dy = -moveRange; dy <= moveRange; dy++) {
+                        for (let dx = -moveRange; dx <= moveRange; dx++) {
+                            if (dx === 0 && dy === 0) continue;
+                            const nx = unit.x + dx;
+                            const ny = unit.y + dy;
+                            const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                            if (dist > moveRange) continue;
+                            if (nx < 0 || ny < 0 || nx >= (cs.gridW || 12) || ny >= (cs.gridH || 8)) continue;
+                            const occ = cs.units.find(u => u.x === nx && u.y === ny && u.alive);
+                            if (occ) continue;
+                            const terrainAt = cs.terrain?.[ny]?.[nx];
+                            if (terrainAt?.blocked) continue;
+                            cs.validMoves.push({ x: nx, y: ny });
                         }
                     }
                     
@@ -82394,11 +82390,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         // Pohyb - jako by user klikl Pohyb tlačítko
                         cs.selectedAction = 'move';
                         // Pokračuj rovnou do move logiky níže (re-use existing handler)
-                        // Tím že nedáme return, kód naváže s `if (cs.selectedAction === 'move')`
                     } else {
+                        // Mimo dosah - krátká hláška
+                        cs.log.push(`Políčko (${x},${y}) je mimo dosah pohybu.`);
+                        cs.validMoves = [];
+                        renderHeroesCombatUI();
                         return;
                     }
                 } else {
+                    cs.log.push(`Políčko obsazeno spojencem.`);
+                    renderHeroesCombatUI();
                     return;
                 }
             }
@@ -84803,8 +84804,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const hasSelectedPlayerUnit = cs.selectedUnit && cs.selectedUnit.team === 'player' && cs.selectedUnit.actionsLeft > 0;
                     const isClickableEnemy = isEnemyCell && hasSelectedPlayerUnit && !isValidTarget;
                     
-                    const clickable = (isValidMove || isValidTarget || isClickableEnemy) ? 'cursor: pointer;' : '';
-                    const onClick = (isValidMove || isValidTarget || isClickableEnemy) ? `onclick="clickCell(${x},${y})"` : '';
+                    // [FIX v3.9.94] Auto-move - prázdné políčko je klikatelné pokud má hráč vybranou jednotku
+                    // a buňka není zablokovaná. clickCell logika sama rozhodne jestli pohyb je možný (spočítá range).
+                    const isEmptyWalkable = !unit && hasSelectedPlayerUnit && !terrain?.blocked;
+                    
+                    const clickable = (isValidMove || isValidTarget || isClickableEnemy || isEmptyWalkable) ? 'cursor: pointer;' : '';
+                    const onClick = (isValidMove || isValidTarget || isClickableEnemy || isEmptyWalkable) ? `onclick="clickCell(${x},${y})"` : '';
                     
                     // Tooltip pro terén
                     const terrainTitle = terrain && terrain.type !== 'empty' ? `title="${terrain.name || terrain.type}${terrain.desc ? ': ' + terrain.desc : ''}${terrain.blocked ? ' [NEPROSTUPNÉ]' : ''}"` : '';
@@ -84843,7 +84848,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             ${terrain && terrain.type !== 'empty' && !unit ? `<span style="opacity: ${terrain.blocked ? '0.7' : '0.6'}; font-size: 0.85rem;">${terrain.icon}</span>` : ''}
                             ${unit ? `
                                 ${terrain && terrain.type !== 'empty' ? `<span style="position: absolute; top: -1px; left: 0px; font-size: 0.45rem; opacity: 0.6;">${terrain.icon}</span>` : ''}
-                                <span style="filter: ${unit.stunned ? 'grayscale(1)' : 'none'}; font-size: 1.1rem;" title="${(unit.name || '').replace(/"/g, '&quot;')}">${hasStacked ? unitsHere.map(u => u.icon).join('') : unit.icon}</span>
+                                ${(() => {
+                                    // [v3.9.94] Pokud je to hráčská jednotka a má profilovku, ukaž ji místo emoji
+                                    if (!hasStacked && unit.isPlayer && typeof getPlayerAvatar === 'function') {
+                                        const avatarUrl = getPlayerAvatar(state.char?.name);
+                                        if (avatarUrl) {
+                                            return `<img src="${avatarUrl}" alt="${(unit.name || '').replace(/"/g, '&quot;')}" style="width: 24px; height: 24px; border-radius: 50%; object-fit: cover; border: 1px solid #4caf50; filter: ${unit.stunned ? 'grayscale(1)' : 'none'};">`;
+                                        }
+                                    }
+                                    return `<span style="filter: ${unit.stunned ? 'grayscale(1)' : 'none'}; font-size: 1.1rem;" title="${(unit.name || '').replace(/"/g, '&quot;')}">${hasStacked ? unitsHere.map(u => u.icon).join('') : unit.icon}</span>`;
+                                })()}
                                 <!-- [v3.9.69] Zkrácené jméno pod ikonou -->
                                 ${!hasStacked && unit.name ? `<span style="
                                     position: absolute;
