@@ -46036,6 +46036,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Flag pro arrival animaci
                 window._playArrivalAnimation = true;
                 renderFull();
+                // [FIX v3.9.92] CRITICAL - ulož stav po dokončení cesty.
+                // Bez toho se hráč při minimalizaci a návratu vrátí ZPĚT do startovní lokace
+                // protože load přečte starý save kde traveling=true a travelTo=X.
+                try { saveGame(true); } catch(e) { console.warn('Save after travel error:', e); }
+                // Force cloud save aby se zachovalo i mezi zařízeními
+                if (typeof triggerAutoCloudSave === 'function') {
+                    try { triggerAutoCloudSave(); } catch(e) {}
+                }
             }
         }
         
@@ -90142,17 +90150,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
-            // [FIX v3.9.92] Ochrana proti race condition - pokud na Firebase je novější reset 
-            // než ten co jsme acknowledgli, zablokuj save dokud user nevytvoří novou postavu.
-            // Tohle řeší případ kdy admin resetne server a user má tab běžící v paměti.
-            try {
-                const lastAck = parseInt(localStorage.getItem('lastResetAcknowledged') || '0');
-                const cachedResetTs = parseInt(sessionStorage.getItem('cachedServerResetTs') || '0');
-                if (cachedResetTs > lastAck) {
-                    console.warn('🔄 Server reset detekován po startu - save zablokován do nového ack');
-                    return;
-                }
-            } catch(e) {}
+            // [FIX v3.9.93] ODSTRANĚNO - tato kontrola blokovala VŠECHNY savy hráčů
+            // kteří si vytvořili novou postavu po resetu (lastResetAcknowledged nebyl
+            // updated → cachedResetTs > lastAck → save VŽDY zablokován).
+            // Důsledek: cesta/lov/průzkum se reset při minimalizaci protože nebyl save.
+            // Server reset ochrana zůstává v _serverResetInProgress flag (synchronně nastavený listenerem).
             
             // Ulož čas pro sync porovnání
             state.lastSaveTime = Date.now();
@@ -95918,21 +95920,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         })();
         
         // Auto-load saved game on page load
-        // [FIX v3.9.92] SYNCHRONNÍ pre-check - pokud máme cached server reset timestamp 
-        // novější než ack, blokuj load. Tím se zabrání race condition kdy async check
-        // detekuje reset, ale auto-load už proběhl synchronně.
+        // [FIX v3.9.93] Pre-check pro server reset - smaže save POUZE pokud byl detekován
+        // reset který user ještě neacknowledgli. Po smazání ihned acknowledge,
+        // aby se neblokoval znovu při dalším loadu.
         let _shouldBlockLoad = false;
         try {
             const cachedTs = parseInt(sessionStorage.getItem('cachedServerResetTs') || '0');
             const lastAck = parseInt(localStorage.getItem('lastResetAcknowledged') || '0');
-            if (cachedTs > lastAck) {
-                console.warn('🔄 STARTUP: Server reset detected synchronously - blocking save load');
+            if (cachedTs > 0 && cachedTs > lastAck) {
+                console.warn('🔄 STARTUP: Server reset detected - clearing local save once');
                 _shouldBlockLoad = true;
-                // Smaž rovnou
                 localStorage.removeItem('survival_hero_save_v2');
                 localStorage.removeItem('survival_hero_save');
                 localStorage.removeItem('survival_hero_backup');
                 localStorage.removeItem('lastSaveTime');
+                // [FIX v3.9.93] Acknowledge HNED, aby se save znovu nezablokoval
                 localStorage.setItem('lastResetAcknowledged', String(cachedTs));
             }
         } catch(e) { console.warn('Pre-load reset check error:', e); }
@@ -96612,6 +96614,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.addEventListener('beforeunload', () => {
             if (state.confirmed) {
                 saveGame(true);
+            }
+        });
+        
+        // [FIX v3.9.92] CRITICAL pro mobilní prohlížeče - pagehide event je spolehlivější než beforeunload
+        // (mobile Safari/Chrome často beforeunload nezavolá při minimalizaci aplikace)
+        // Bez tohoto se ztráta save dat při minimalizaci stávala mnoha hráčům.
+        window.addEventListener('pagehide', () => {
+            if (state.confirmed) {
+                try { saveGame(true); } catch(e) {}
+            }
+        });
+        
+        // [FIX v3.9.92] Při ztrátě fokusu (např. user otevře jinou aplikaci) - ulož HNED
+        // visibilitychange to taky řeší, ale 'blur' triggeruje dřív v některých prohlížečích
+        window.addEventListener('blur', () => {
+            if (state.confirmed) {
+                try { saveGame(true); } catch(e) {}
             }
         });
         
