@@ -82542,6 +82542,37 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Společník nebo hráč?
             const isCompanion = unit.isCompanion;
             
+            // [FIX v3.9.98] DEFENSIVNÍ kontrola dosahu - melee zbraně nesmí útočit na dálku
+            // Toto je poslední záchytná síť proti bug že melee útoky jdou na dálku.
+            // Pokud je weapon melee (žádný ammoType) a cíl je dál než 1 pole, blokuj útok.
+            try {
+                const _wpn = isCompanion ? unit.equipped?.weapon : state.equipped?.weapon;
+                const _isRanged = !!_wpn?.ammoType;
+                
+                // Re-validate ammoType proti ITEMS definici (stale data fix)
+                if (_wpn && _wpn.id && typeof ITEMS !== 'undefined') {
+                    const _def = ITEMS.find(i => i.id === _wpn.id);
+                    if (_def && !_def.ammoType && _wpn.ammoType) {
+                        // Zbraň má stale ammoType - smaž ho
+                        delete _wpn.ammoType;
+                        console.warn(`🔧 playerAttackTarget: Smazán stale ammoType ze zbraně ${_wpn.name}`);
+                    }
+                }
+                
+                const _isReallyRanged = !!_wpn?.ammoType;
+                const _dist = Math.max(Math.abs(target.x - unit.x), Math.abs(target.y - unit.y));
+                
+                if (!_isReallyRanged && _dist > 1) {
+                    cs.log.push(`⚠️ ${_wpn?.name || 'Pěsti'} - melee zbraň, cíl je mimo dosah (${_dist} polí). Přibliž se nebo změň zbraň.`);
+                    notifyWarning('Mimo dosah', `${_wpn?.name || 'Pěsti'} dosáhne jen na 1 pole. Cíl je ${_dist} polí daleko.`);
+                    cs._actionInProgress = false;
+                    cs.selectedAction = null;
+                    cs.validTargets = [];
+                    renderHeroesCombatUI();
+                    return;
+                }
+            } catch(e) { console.warn('Distance check error:', e); }
+            
             // Získej skill efekty společníka
             let companionSkillEffects = {};
             if (isCompanion && unit.companionId) {
@@ -85684,7 +85715,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const compData = COMPANIONS.find(cd => cd.id === comp.id);
                 const compId = comp.uniqueId || comp.id;
                 const currentPos = window.preCombatPositions[compId] || positions[0];
-                const isExcluded = currentPos.id === 'excluded';
+                // [FIX v3.9.98] Robustní detekce excluded - id NEBO flag
+                const isExcluded = currentPos.id === 'excluded' || currentPos.excluded === true;
                 
                 html += `
                     <div style="background: ${isExcluded ? '#2a2a1a' : '#1a2a1a'}; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid ${isExcluded ? '#666' : '#2a4a2a'}; ${isExcluded ? 'opacity: 0.7;' : ''}">
@@ -85774,6 +85806,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Excluded se ukládá po dobu dungeonu — hráč nemusí každé patro znovu vylučovat zraněné
             if (!state.savedCompanionPositions) state.savedCompanionPositions = {};
             state.savedCompanionPositions[compId] = newPos;
+            
+            // [DEBUG v3.9.98] Log change pro debugging
+            console.log(`👥 Companion ${compId} → pozice: ${positionId} (excluded: ${!!newPos.excluded})`);
+            
+            // [FIX v3.9.98] Force-save aby pozice přežila i restart hry mezi pre-combat a startem boje
+            try { saveGame(true); } catch(e) {}
             
             // Překresli modal pro vizuální feedback
             renderPreCombatSetup();
@@ -109440,7 +109478,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const notifications = snap.val() || {};
                 console.log('👥 Přijaté notifikace:', notifications);
                 friendRequests = [];
+                
+                // [FIX v3.9.98] Filtr - notifikace ze starého účtu (před vytvořením postavy)
+                // se ignorují. Tím se zabrání tomu aby hráč po smazání postavy získal staré odměny
+                // při vytvoření nové se stejným nickem.
+                const charCreatedAt = state.char?.createdAt || 0;
+                
                 Object.entries(notifications).forEach(([k, v]) => {
+                    // Ignoruj notifikace starší než vytvoření postavy (s 1h tolerancí)
+                    if (charCreatedAt > 0 && v.timestamp && v.timestamp < (charCreatedAt - 3600000)) {
+                        console.log(`⏰ Ignoruji starou notifikaci (před vytvořením postavy): ${v.type}`);
+                        // Smaž ji aby se neukládaly v databázi
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                        return;
+                    }
+                    
                     if (v.type === 'friend_request') {
                         friendRequests.push({...v, id: k});
                         console.log('👥 Žádost o přátelství od:', v.from);
