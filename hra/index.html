@@ -78239,6 +78239,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     cs.validMoves = [];
                     cs.validTargets = [];
                     
+                    // [v3.9.94] Předpočítej validní pohyby pro hráčskou jednotku
+                    // - aby user viděl modré zvýrazněné políčka kam může jít, aniž by musel klikat tlačítko Pohyb.
+                    // [FIX v3.9.95] Sjednoceno s calculateValidMoves - pohyb je 1 pole (8 směrů s diagonálami)
+                    if (unit.team === 'player' && (unit.isPlayer || (unit.isCompanion && cs.manualCompanions))) {
+                        const moveRange = 1;
+                        for (let dy = -moveRange; dy <= moveRange; dy++) {
+                            for (let dx = -moveRange; dx <= moveRange; dx++) {
+                                if (dx === 0 && dy === 0) continue;
+                                const nx = unit.x + dx;
+                                const ny = unit.y + dy;
+                                if (nx < 0 || ny < 0 || nx >= (cs.gridW || COMBAT_GRID.cols) || ny >= (cs.gridH || COMBAT_GRID.rows)) continue;
+                                const occ = cs.units.find(u => u.x === nx && u.y === ny && u.alive);
+                                if (occ) continue;
+                                const terrainAt = cs.terrain?.[ny]?.[nx];
+                                if (terrainAt?.blocked) continue;
+                                cs.validMoves.push({ x: nx, y: ny });
+                            }
+                        }
+                    }
+                    
                     // Nepřítel - automatický AI tah
                     if (unit.team === 'enemy') {
                         cs._turnLocked = true; // Zamkni dokud AI neodehraje
@@ -82366,17 +82386,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Pokud je v dosahu pohybu, automaticky se přesuň (jako by user klikl Pohyb a pak políčko)
                 const occupiedByAlly = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'player');
                 if (!occupiedByAlly) {
-                    // [DEBUG v3.9.94] Vždy přepočti validní pohyby (možná tam zůstaly staré z předchozí akce)
+                    // [FIX v3.9.95] Sjednoceno s calculateValidMoves - 1 pole, 8 směrů
                     cs.validMoves = [];
-                    const moveRange = unit.moveRange || 2;
+                    const moveRange = 1;
                     for (let dy = -moveRange; dy <= moveRange; dy++) {
                         for (let dx = -moveRange; dx <= moveRange; dx++) {
                             if (dx === 0 && dy === 0) continue;
                             const nx = unit.x + dx;
                             const ny = unit.y + dy;
-                            const dist = Math.max(Math.abs(dx), Math.abs(dy));
-                            if (dist > moveRange) continue;
-                            if (nx < 0 || ny < 0 || nx >= (cs.gridW || 12) || ny >= (cs.gridH || 8)) continue;
+                            if (nx < 0 || ny < 0 || nx >= (cs.gridW || COMBAT_GRID.cols) || ny >= (cs.gridH || COMBAT_GRID.rows)) continue;
                             const occ = cs.units.find(u => u.x === nx && u.y === ny && u.alive);
                             if (occ) continue;
                             const terrainAt = cs.terrain?.[ny]?.[nx];
@@ -82385,14 +82403,37 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                     }
                     
-                    const validMove = cs.validMoves.find(m => m.x === x && m.y === y);
+                    let validMove = cs.validMoves.find(m => m.x === x && m.y === y);
+                    
+                    // [FIX v3.9.96] SMART MOVE - pokud klik je dál než 1 pole, najdi nejbližší
+                    // dostupné pole směrem k cíli a tam jdi. Lepší UX - hráč nemusí přesně kliknout vedle.
+                    if (!validMove && cs.validMoves.length > 0) {
+                        // Najdi pole z validMoves nejblíže ke kliku
+                        let bestMove = null;
+                        let bestDist = Infinity;
+                        for (const m of cs.validMoves) {
+                            const d = Math.abs(m.x - x) + Math.abs(m.y - y); // Manhattan
+                            if (d < bestDist) {
+                                bestDist = d;
+                                bestMove = m;
+                            }
+                        }
+                        if (bestMove && bestDist > 0) {
+                            validMove = bestMove;
+                            // Předáme pohyb jako by user klikl na bestMove místo původního pole
+                            x = bestMove.x;
+                            y = bestMove.y;
+                            cs.log.push(`Pohyb směrem k (${arguments[0]}, ${arguments[1]})...`);
+                        }
+                    }
+                    
                     if (validMove) {
                         // Pohyb - jako by user klikl Pohyb tlačítko
                         cs.selectedAction = 'move';
                         // Pokračuj rovnou do move logiky níže (re-use existing handler)
                     } else {
                         // Mimo dosah - krátká hláška
-                        cs.log.push(`Políčko (${x},${y}) je mimo dosah pohybu.`);
+                        cs.log.push(`Není kam jít z (${unit.x},${unit.y}).`);
                         cs.validMoves = [];
                         renderHeroesCombatUI();
                         return;
