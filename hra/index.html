@@ -78358,7 +78358,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Dříve: jen nejblíže. Teď: score podle vzdálenosti, HP, hrozby (ranged enemies)
             
             // Zjisti jestli má společník střelnou zbraň - ověř přes ITEMS definici (předsunuto před scoreEnemy)
-            const equippedWeapon = unit.equipped?.weapon;
+            // [FIX v3.9.99] Defenzivní fallback - pokud unit.equipped chybí (stale combat state), 
+            // hledej v state.companions. Tím se zabrání tomu aby ranged companion ztratil tah
+            // protože "je daleko" když ve skutečnosti má luk a měl by střílet.
+            let equippedWeapon = unit.equipped?.weapon;
+            if (!equippedWeapon && unit.companionId) {
+                const _comp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                if (_comp?.equipped?.weapon) {
+                    equippedWeapon = _comp.equipped.weapon;
+                    // Fix unit reference pro další volání v této akci
+                    if (!unit.equipped) unit.equipped = _comp.equipped;
+                    console.log(`🔧 Companion ${unit.name}: equipped restored z state.companions (luk: ${equippedWeapon.name})`);
+                }
+            }
             let hasRangedWeapon = false;
             if (equippedWeapon && equippedWeapon.id) {
                 const weaponDef = ITEMS.find(i => i.id === equippedWeapon.id);
@@ -82545,12 +82557,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [FIX v3.9.98] DEFENSIVNÍ kontrola dosahu - melee zbraně nesmí útočit na dálku
             // Toto je poslední záchytná síť proti bug že melee útoky jdou na dálku.
             // Pokud je weapon melee (žádný ammoType) a cíl je dál než 1 pole, blokuj útok.
+            // [FIX v3.9.99] CRITICAL - companion weapon NENÍ na unit.equipped, je v state.companions[].equipped
+            // Bez tohoto fixu hra hlásila "mimo dosah" pro companions s luky/puškami a brala jim tahy.
             try {
-                const _wpn = isCompanion ? unit.equipped?.weapon : state.equipped?.weapon;
-                const _isRanged = !!_wpn?.ammoType;
+                let _wpn = null;
+                if (isCompanion) {
+                    // Companion: najdi v state.companions (unit.equipped neexistuje pro companion v combat unitě)
+                    const _comp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                    _wpn = _comp?.equipped?.weapon || null;
+                } else {
+                    _wpn = state.equipped?.weapon;
+                }
                 
-                // Re-validate ammoType proti ITEMS definici (stale data fix)
-                if (_wpn && _wpn.id && typeof ITEMS !== 'undefined') {
+                // Re-validate ammoType proti ITEMS definici (stale data fix - jen pro hráče)
+                if (!isCompanion && _wpn && _wpn.id && typeof ITEMS !== 'undefined') {
                     const _def = ITEMS.find(i => i.id === _wpn.id);
                     if (_def && !_def.ammoType && _wpn.ammoType) {
                         // Zbraň má stale ammoType - smaž ho
@@ -82562,9 +82582,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const _isReallyRanged = !!_wpn?.ammoType;
                 const _dist = Math.max(Math.abs(target.x - unit.x), Math.abs(target.y - unit.y));
                 
-                if (!_isReallyRanged && _dist > 1) {
-                    cs.log.push(`⚠️ ${_wpn?.name || 'Pěsti'} - melee zbraň, cíl je mimo dosah (${_dist} polí). Přibliž se nebo změň zbraň.`);
-                    notifyWarning('Mimo dosah', `${_wpn?.name || 'Pěsti'} dosáhne jen na 1 pole. Cíl je ${_dist} polí daleko.`);
+                // [FIX v3.9.99] Pokud companion nemá zbraň (žádné _wpn), preskoč distance check.
+                // Companion bez zbraně = útok holýma rukama, dosah řeší calculateValidTargets
+                if (_wpn && !_isReallyRanged && _dist > 1) {
+                    cs.log.push(`⚠️ ${_wpn.name || 'Zbraň'} - melee, cíl je mimo dosah (${_dist} polí).`);
+                    if (!isCompanion) {
+                        notifyWarning('Mimo dosah', `${_wpn.name || 'Pěsti'} dosáhne jen na 1 pole. Cíl je ${_dist} polí daleko.`);
+                    }
                     cs._actionInProgress = false;
                     cs.selectedAction = null;
                     cs.validTargets = [];
