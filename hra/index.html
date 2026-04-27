@@ -25464,6 +25464,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Skutečná hodnota z calculateDamage pro ověření
             const actualDamage = typeof calculateDamage === 'function' ? calculateDamage() : totalDamage;
             
+            // [DEBUG v3.9.99] Log breakdown pro diagnostiku rozdílů actualDamage vs totalDamage
+            try {
+                console.log('🔍 ATTACK BREAKDOWN:', {
+                    baseAttack, strBonus, weaponDmg, weaponName,
+                    flatBase, flatBonuses, totalFlat, baseDmgBeforePercent,
+                    percentBonuses, totalPercentBonus, finalMultiplier,
+                    totalDamage, actualDamage, 
+                    diff: actualDamage - totalDamage,
+                    cached: window._cachedDamage, cacheTime: window._cachedDamageTime,
+                    cacheAge: window._cachedDamageTime ? (Date.now() - window._cachedDamageTime) : null
+                });
+                // Force-invalidate cache aby další zobrazení ukázalo aktuální stav
+                window._cachedDamage = null;
+            } catch(e) {}
+            
+            // [FIX v3.9.99] Pokud actualDamage > totalDamage, znamená to že calculateDamage()
+            // přidává bonusy které UI nezná (super abilities, achievement bonusy, prestige, buffs).
+            // Místo aby se ty rozdíly tajně schovávaly, ukaž je hráči jako "Ostatní bonusy".
+            const unaccountedDmg = actualDamage - totalDamage;
+            const unaccountedRow = unaccountedDmg !== 0 ? `
+                <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                    <span>✨ Ostatní bonusy <span style="color: #888; font-size: 0.8rem;">(buffy/dovednosti/prestiž)</span></span>
+                    <span style="color: ${unaccountedDmg > 0 ? '#8bc34a' : '#f44336'};">${unaccountedDmg > 0 ? '+' : ''}${unaccountedDmg}</span>
+                </div>
+            ` : '';
+            
             // Coating info
             const coatingInfo = state.weaponCoating ? `
                 <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
@@ -25515,8 +25541,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <span style="color: #8bc34a;">+${b.value}</span>
                         </div>
                     `).join('')}
+                    ${unaccountedRow}
                     ${coatingInfo}
                     ${specialInfo}
+                    ${(() => {
+                        // [FIX v3.9.99] Pokud breakdown nesedí s actualDamage, ukaž "Ostatní bonusy z boje"
+                        // Tohle pokrývá efekty které breakdown explicitně nesleduje (companion party damage,
+                        // exotic bonusy, klan, runová slova, set bonusy, world boss buffy atd.)
+                        const breakdownTotal = baseDmgBeforePercent;
+                        const expectedAfterPercent = Math.floor(breakdownTotal * finalMultiplier);
+                        const diff = actualDamage - expectedAfterPercent;
+                        if (Math.abs(diff) >= 1) {
+                            return `<div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
+                                <span>✨ Ostatní bonusy</span>
+                                <span style="color: ${diff > 0 ? '#8bc34a' : '#f44336'};">${diff > 0 ? '+' : ''}${diff}</span>
+                            </div>`;
+                        }
+                        return '';
+                    })()}
                 </div>
                 
                 ${percentBonuses.length > 0 ? `
@@ -27288,7 +27330,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Získání bonusů z Power Armor
         function getPowerArmorBonuses() {
-            if (!state.equipped?.powerArmor) return { defense: 0, damage: 1, carry: 0, speed: 1 };
+            // [FIX v3.9.99] damage default 0 (ne 1) - jinak UI ukazuje "Power Armor +1" i když ho hráč nemá
+            if (!state.equipped?.powerArmor) return { defense: 0, damage: 0, carry: 0, speed: 1 };
             
             const item = state.equipped.powerArmor;
             const hasFuel = state.equipped.powerArmorHasFuel !== false;
@@ -42047,7 +42090,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     clickAction = "showCoordsInfo(" + loc.x + ", " + loc.y + ", '???')";
                 }
                 
-                const opacity = isHere ? 1 : (hasPath ? 1 : (loc.type === 'clan_land' && window.clanOwnershipCache?.[loc.id] ? 1 : (isKnown ? 0.5 : (window.landOwnershipCache?.[loc.id]?.owner ? 0.6 : 0.2))));
+                // [FIX v3.9.99] Zvětšil jsem opacity pro neznámé lokace - hráči si stěžovali že
+                // mapa byla "prázdná, viděli jen aktuální pozici". Před: 0.35, teď: 0.6 - pořád se odlišují
+                // od navštívených (1.0) ale jsou viditelné.
+                const opacity = isHere ? 1 : (hasPath ? 1 : (loc.type === 'clan_land' && window.clanOwnershipCache?.[loc.id] ? 1 : (isKnown ? 0.7 : (window.landOwnershipCache?.[loc.id]?.owner ? 0.7 : 0.6))));
                 
                 // [NEW] Map filter — ztlumit neodpovídající lokace
                 let filterMatch = true;
@@ -77491,7 +77537,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     maxHp: state.char.maxHp,
                     damage: calculateDamage(),
                     defense: calculateDefense(),
-                    speed: isAmbush ? 5 : (10 + Math.floor((state.char.attrs?.agi || 5) / 2)), // Při přepadení pomalejší start
+                    speed: isAmbush ? 7 + Math.floor((state.char.attrs?.agi || 5) / 2) : (10 + Math.floor((state.char.attrs?.agi || 5) / 2)), // [FIX v3.9.99] Při přepadení pomalejší ale stále reflektuje DEX
                     x: playerX,
                     y: playerY,
                     team: 'player',
@@ -77643,7 +77689,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             maxHp: compMaxHp,
                             damage: compDamage,
                             defense: compDefense,
-                            speed: 8 + idx,
+                            // [FIX v3.9.99] Speed nikdy nepřevyšuje hráče - jinak kočka jede před hráčem
+                            // a hráč pak nemůže útočit první (FreeRiderCz hlásil že kočka jede první)
+                            speed: Math.max(1, Math.min(8 + idx, (10 + Math.floor((state.char.attrs?.agi || 5) / 2)) - 1)),
                             x: pos.x,
                             y: pos.y,
                             team: 'player',
@@ -82399,6 +82447,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Pokud je v dosahu pohybu, automaticky se přesuň (jako by user klikl Pohyb a pak políčko)
                 const occupiedByAlly = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'player');
                 if (!occupiedByAlly) {
+                    // Uložíme původní target pro log (než přepíšeme x/y)
+                    const _origClickX = x;
+                    const _origClickY = y;
+                    
                     // [FIX v3.9.95] Sjednoceno s calculateValidMoves - 1 pole, 8 směrů
                     cs.validMoves = [];
                     const moveRange = 1;
@@ -82436,7 +82488,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             // Předáme pohyb jako by user klikl na bestMove místo původního pole
                             x = bestMove.x;
                             y = bestMove.y;
-                            cs.log.push(`Pohyb směrem k (${arguments[0]}, ${arguments[1]})...`);
+                            // [FIX v3.9.99] Použij _origClickX/Y pro log (arguments by mohly být stale)
+                            cs.log.push(`Pohyb směrem k (${_origClickX}, ${_origClickY})...`);
                         }
                     }
                     
@@ -82576,6 +82629,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         // Zbraň má stale ammoType - smaž ho
                         delete _wpn.ammoType;
                         console.warn(`🔧 playerAttackTarget: Smazán stale ammoType ze zbraně ${_wpn.name}`);
+                    }
+                    // [FIX v3.9.99b] OPAČNÝ FIX - pokud je v ITEMS ammoType ale ve weapon chybí, doplnit.
+                    // Stalo se to hráčům s brokovnicí/luky kteří měli starý save kde ammoType chyběl.
+                    if (_def && _def.ammoType && !_wpn.ammoType) {
+                        _wpn.ammoType = _def.ammoType;
+                        console.warn(`🔧 playerAttackTarget: Doplněn ammoType '${_def.ammoType}' na zbraň ${_wpn.name}`);
                     }
                 }
                 
@@ -96674,6 +96733,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 setTimeout(() => {
                     if (state.confirmed && state.char?.name) {
                         try { 
+                            // [FIX v3.9.99b] Před save spusť weapon migration aby všechny zbraně 
+                            // měly správný ammoType (ranged) nebo nemnely stale ammoType (melee).
+                            // Pomáhá hráčům s rozbitými staré savy kde ammoType zmizel ze zbraní.
+                            if (typeof _ensureWeaponProperties === 'function') {
+                                _ensureWeaponProperties();
+                            }
                             saveGame(true);
                             console.log('✅ Force-save 2s po loadu OK');
                         } catch(e) { console.warn('Force-save error:', e); }
