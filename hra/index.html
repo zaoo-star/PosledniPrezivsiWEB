@@ -104077,8 +104077,25 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             window._cancellingOffers[offerId] = true;
             
             try {
-                // [FIX BUG] Ověř existenci offer ve Firebase PŘED refundem (atomic delete-if-exists)
-                // Tím zabráníme duplicitnímu vrácení itemu pokud Firebase listener už smaže nabídku (expire, kup apod.)
+                // [FIX v3.9.99] Atomic claim s vrácením offer dat - dříve race condition
+                // s Firebase listenerem mohla vyčistit lokální cache PŘEDTÍM než jsme stihli
+                // získat offer data → refund se přeskočil → hráč ztratil item.
+                // Nyní: získáme data ze snapshotu PŘED smazáním v transakci.
+                let offerData = null;
+                
+                // Pokus 1: získej data z lokálního cache PŘED transakcí (než ji listener smaže)
+                offerData = marketplaceOffers.find(o => o.id === offerId);
+                
+                // Pokus 2: pokud cache už neobsahuje, fetch přímo z Firebase (před smazáním)
+                if (!offerData) {
+                    try {
+                        const directSnap = await firebaseDB.ref('marketplace/offers/' + offerId).once('value');
+                        offerData = directSnap.val();
+                        if (offerData) offerData.id = offerId;
+                    } catch(e) { console.warn('Direct fetch failed:', e); }
+                }
+                
+                // Atomická transakce: smaž PUZE pokud existuje
                 const txResult = await firebaseDB.ref('marketplace/offers/' + offerId).transaction(current => {
                     if (!current) return; // Už neexistuje → abort
                     return null; // Smaž atomicky
@@ -104090,13 +104107,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
-                // Získej data offer ze snapshot PŘED smazáním (transakční callback dostal current → to je obsah před smazáním)
-                // Alternativně z lokálního cache marketplaceOffers
-                let offer = null;
-                // txResult.snapshot.val() vrací NOVOU hodnotu (null po smazání), takže použijeme lokální cache
-                offer = marketplaceOffers.find(o => o.id === offerId);
+                // Použij offerData (získaná před transakcí) místo cache lookup po smazání
+                const offer = offerData;
                 
-                if (offer && offer.item) {
+                if (!offer || !offer.item) {
+                    console.error('❌ Cancel: offer data lost - cannot refund!', { offerId, offerData });
+                    notifyWarning('⚠️ Chyba refundu', 'Nabídka byla zrušena ale data se nepodařilo získat. Pošli screenshot adminovi.');
+                    return;
+                }
+                
+                {
                     // Vrať předmět do inventáře nebo resources
                     const count = offer.count || 1;
                     
