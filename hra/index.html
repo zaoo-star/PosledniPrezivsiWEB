@@ -15650,7 +15650,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '3.9.99';
+        const GAME_VERSION = '4.0.0';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -78333,10 +78333,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             return;
                         }
                         if (cs.manualCompanions) {
-                            // Auto-select attack pro společníka — předvypočítej cíle
-                            cs.selectedAction = 'attack';
+                            // [FIX v3.9.99] Manual mode - vypočti VALIDNÍ pohyby i cíle, hráč si vybere
+                            // Předtím se automaticky nastavilo selectedAction=attack a hráč nemohl pohnout
+                            // ranged companion který byl daleko od nepřítele - hra hlásila "moc daleko".
+                            cs.selectedAction = null;
                             calculateValidTargets(unit);
-                            cs.log.push(`🐾 ${unit.name} — tvůj tah! Klikni na nepřítele.`);
+                            
+                            // Vypočítej i validní pohyby (1 pole, 8 směrů) aby hráč mohl pohnout
+                            cs.validMoves = [];
+                            const moveRange = 1;
+                            for (let dy = -moveRange; dy <= moveRange; dy++) {
+                                for (let dx = -moveRange; dx <= moveRange; dx++) {
+                                    if (dx === 0 && dy === 0) continue;
+                                    const nx = unit.x + dx;
+                                    const ny = unit.y + dy;
+                                    if (nx < 0 || ny < 0 || nx >= (cs.gridW || COMBAT_GRID.cols) || ny >= (cs.gridH || COMBAT_GRID.rows)) continue;
+                                    const occ = cs.units.find(u => u.x === nx && u.y === ny && u.alive);
+                                    if (occ) continue;
+                                    const terrainAt = cs.terrain?.[ny]?.[nx];
+                                    if (terrainAt?.blocked) continue;
+                                    cs.validMoves.push({ x: nx, y: ny });
+                                }
+                            }
+                            
+                            cs.log.push(`🐾 ${unit.name} — tvůj tah! Klikni na nepřítele nebo prázdné pole.`);
                             renderHeroesCombatUI();
                         } else {
                             cs._turnLocked = true;
@@ -80435,14 +80455,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     'Raketomet', 'Plamenomet/Pila', 'Odstřelovačka', 'Gauss/Plasma', 'Brokovnice', 'brokovnice',
                     'Kuše', 'kuše', 'Luk', 'luk', 'elektřina', 'radioaktivní plameny', 'dech zkázy'];
                 let _isRangedAttacker = false;
-                if (attacker.isPlayer) {
-                    const _pw = state.equipped?.weapon;
-                    // Ranged = má ammoType (nejspolehlivější) NEBO range > 1
-                    _isRangedAttacker = !!(_pw && (_pw.ammoType || _pw.range > 1));
-                } else if (attacker.isCompanion) {
-                    const _comp = state.companions?.find(c => c.id === attacker.companionId);
-                    const _cw = _comp?.weapon;
-                    _isRangedAttacker = !!(_cw && (_cw.ammoType || _cw.range > 1)) || _comp?.isRanged === true;
+                if (attacker.isPlayer || attacker.isCompanion) {
+                    // [FIX v3.9.99] Použij sjednocený helper - dříve byly 2 různé implementace s chybou
+                    _isRangedAttacker = isUnitRanged(attacker);
                 } else {
                     // Enemy: isRanged flag nebo zbraň v ranged listu
                     _isRangedAttacker = attacker.isRanged === true || _rangedWeaponList.includes(attacker.weapon);
@@ -80450,7 +80465,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Pokud je melee a vzdálenost > 1, blokuj útok
                 if (!_isRangedAttacker && dist > 1) {
-                    console.warn(`⚠️ Range guard: ${attacker.name} (melee) nemůže útočit na ${target.name} ze vzdálenosti ${dist}`);
+                    console.warn(`⚠️ Range guard: ${attacker.name} (melee, isCompanion=${attacker.isCompanion}, hasEquipped=${!!attacker.equipped?.weapon}) nemůže útočit na ${target.name} ze vzdálenosti ${dist}`);
                     cs.log.push(`${attacker.name} je moc daleko na útok.`);
                     return;
                 }
@@ -81849,6 +81864,64 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
 
         // === WEAPON PROPERTY RESTORATION ===
         // Po save/load se mohou z weapon objectu ztratit properties jako ammoType
+        // [HELPER v3.9.99] Sjednocený lookup zbraně combat unity.
+        // Tato funkce je SINGLE SOURCE OF TRUTH pro získání zbraně. 
+        // Companion v combat unitě může mít stale `unit.equipped` (po save/load) — proto fallback do state.companions.
+        function getUnitWeapon(unit) {
+            if (!unit) return null;
+            // Hráč
+            if (unit.isPlayer) {
+                return state.equipped?.weapon || null;
+            }
+            // Companion - zkus unit.equipped, pak fallback do state.companions
+            if (unit.isCompanion) {
+                let weapon = unit.equipped?.weapon;
+                if (!weapon && unit.companionId) {
+                    const _comp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                    if (_comp?.equipped?.weapon) {
+                        weapon = _comp.equipped.weapon;
+                        // Repair unit reference pro další volání v tomto tahu
+                        if (!unit.equipped) unit.equipped = _comp.equipped;
+                    }
+                }
+                
+                // Validace ammoType proti ITEMS def (oprava stale dat)
+                if (weapon && weapon.id && typeof ITEMS !== 'undefined') {
+                    const _def = ITEMS.find(i => i.id === weapon.id);
+                    if (_def) {
+                        if (_def.ammoType && !weapon.ammoType) {
+                            weapon.ammoType = _def.ammoType;
+                        }
+                        if (!_def.ammoType && weapon.ammoType) {
+                            delete weapon.ammoType;
+                        }
+                    }
+                }
+                return weapon || null;
+            }
+            // Enemy - má atribut weapon jako string nebo isRanged flag
+            return null;
+        }
+        window.getUnitWeapon = getUnitWeapon;
+        
+        // Pomocná funkce: je jednotka ranged?
+        function isUnitRanged(unit) {
+            if (!unit) return false;
+            const wpn = getUnitWeapon(unit);
+            if (wpn && (wpn.ammoType || wpn.range > 1)) return true;
+            // Enemy fallback
+            if (!unit.isPlayer && !unit.isCompanion) {
+                return unit.isRanged === true;
+            }
+            // Companion isRanged flag (stará data)
+            if (unit.isCompanion && unit.companionId) {
+                const _comp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                if (_comp?.isRanged === true) return true;
+            }
+            return false;
+        }
+        window.isUnitRanged = isUnitRanged;
+        
         function _ensureWeaponProperties() {
             try {
                 const pw = state.equipped?.weapon;
@@ -82227,8 +82300,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         console.warn('⚠️ Weapon reference opravena z inventáře:', weapon.name);
                     }
                 }
-            } else if (unit.equipped?.weapon) {
-                weapon = unit.equipped.weapon;
+            } else if (isCompanion) {
+                // [FIX v3.9.99] CRITICAL - companion v combat unit nemusí mít unit.equipped (po save/load).
+                // Bez tohoto fixu calculateValidTargets viděl companion bez zbraně, isRanged=false,
+                // a manuální mode pak hlásil "moc daleko" pro brokovnici (companion validTargets prázdný).
+                weapon = unit.equipped?.weapon;
+                if (!weapon && unit.companionId) {
+                    const _comp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                    if (_comp?.equipped?.weapon) {
+                        weapon = _comp.equipped.weapon;
+                        // Repair unit reference pro další volání
+                        if (!unit.equipped) unit.equipped = _comp.equipped;
+                        console.log(`🔧 calculateValidTargets: companion ${unit.name} weapon obnovena (${weapon.name})`);
+                    }
+                }
                 // Pro společníky: ověř ammoType přes ITEMS definici (oprava stale dat)
                 if (weapon && weapon.id) {
                     const weaponDef = ITEMS.find(i => i.id === weapon.id);
