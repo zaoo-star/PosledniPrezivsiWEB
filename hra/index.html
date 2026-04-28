@@ -79771,7 +79771,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const comp = state.companions?.find(c => c.id === unit.companionId || c.uniqueId === unit.companionId);
             if (comp) {
                 comp.hp = Math.max(0, Math.min(unit.hp, comp.maxHp || unit.maxHp || 50));
-                if (!unit.alive || unit.hp <= 0) { comp.isDead = true; comp.hp = 0; }
+                if (!unit.alive || unit.hp <= 0) {
+                    // [FIX v4.0.1] WB raid - společníci jen omráčeni, ne zabiti (stejně jako v combat sync)
+                    const isWorldBossRaid = state.activeWorldBoss?.isRaid || window.combatState?.units?.some(u => u.team === 'enemy' && (u.isWorldBoss || u.isRaidBoss));
+                    if (isWorldBossRaid) {
+                        comp.hp = 1;
+                        comp.isDead = false;
+                    } else {
+                        comp.isDead = true;
+                        comp.hp = 0;
+                    }
+                }
             }
             renderHeroesCombatUI();
             setTimeout(() => {
@@ -81348,6 +81358,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [FIX v4.0.1] Anti-insta-kill safeguard pro hráče
             // Žádný útok (kromě world boss raidů) nemůže udělat víc než 60% maxHP hráče v jedné ráně.
             // Tohle chrání před double-scaling bugy a extrémními kritickými zásahy které insta-killovaly hráče.
+            // POZN: World Boss / Raid Boss je vyjmutý - jejich smrt se řeší v handleCombatDefeat
+            //       (raid path → 50% HP, žádná ztráta itemů, žádný hřbitov)
             if (target.isPlayer && finalDamage > 0 && attacker && !attacker.isWorldBoss && !attacker.isRaidBoss) {
                 const playerMaxHp = state.char?.maxHp || target.maxHp || 100;
                 const damageCap = Math.floor(playerMaxHp * 0.60);
@@ -83986,8 +83998,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             cs.log.push(`💖 ${unit.name} se odmítá vzdát — věčná věrnost ho zachránila! (1 HP)`);
                             addLog(`💖 ${comp.name || 'Společník'} zachráněn maximální loajalitou (1× za boj)`, '💖');
                         } else {
-                            comp.isDead = true;
-                            comp.hp = 0;
+                            // [FIX v4.0.1] WB raid - společníci jen omráčeni, ne zabiti
+                            const isWorldBossRaid = state.activeWorldBoss?.isRaid || cs?.units?.some(u => u.team === 'enemy' && (u.isWorldBoss || u.isRaidBoss));
+                            if (isWorldBossRaid) {
+                                comp.hp = 1;
+                                comp.isDead = false;
+                                // Necháme unit.alive = false aby se boss nesmysl nepokoušel pokračovat - boj končí
+                            } else {
+                                comp.isDead = true;
+                                comp.hp = 0;
+                            }
                         }
                     }
                 }
@@ -85626,19 +85646,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const hpBefore = _playerHpBefore;
                 state.char.hp = Math.max(1, Math.floor(hpBefore * 0.5));
                 
-                // Společníci přežijí raid - obnov padlé na 1 HP
+                // [FIX v4.0.1] Společníci VŽDY přežijí WB raid - obnov padlé na 1 HP A reset isDead
+                // Bug: předchozí kód přeskočil isDead=true společníky (z combat sync na ř. 79774)
+                // a tak zůstávali "mrtví" i když měli dostat 1 HP raid záchranu.
                 if (state.companions) {
                     // Sync HP z combat state
                     const combatUnits = cs.units || [];
                     state.companions.forEach(comp => {
-                        if (comp.isDead) return;
                         const combatUnit = combatUnits.find(u => u.isCompanion && (u.companionId === comp.uniqueId || u.companionId === comp.id || u.name === comp.name));
                         if (combatUnit) {
                             comp.hp = Math.max(0, combatUnit.hp || 0);
                         }
-                        if (comp.hp <= 0) {
-                            comp.hp = 1; // Raid = přežijí s 1 HP
-                            console.log(`🐉 DEFEAT: Companion ${comp.name} survived raid with 1 HP`);
+                        // Raid záchrana - i mrtví společníci dostanou 1 HP a reset isDead
+                        if (comp.hp <= 0 || comp.isDead) {
+                            comp.hp = 1;
+                            comp.isDead = false; // Reset death flag - raid = ústup, ne smrt
+                            console.log(`🐉 DEFEAT: Companion ${comp.name} survived raid with 1 HP (isDead reset)`);
                         }
                     });
                 }
@@ -85656,7 +85679,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             <div style="color: #888;">Nepodařilo se způsobit žádný damage.</div>
                         `}
                         <p style="color: #8bc34a; font-size: 0.9rem;">HP sníženo na 50% (z ${formatNumber(hpBefore)} na ${formatNumber(state.char.hp)}). Další útok za 3 hodiny.</p>
-                        ${state.companions?.some(c => c.isDead) ? '<p style="color: #f44336; font-size: 0.85rem;">💀 Někteří společníci padli v boji!</p>' : ''}
+                        ${state.companions?.length > 0 ? '<p style="color: #aaa; font-size: 0.8rem;">🐾 Společníci se stáhli s tebou (1 HP, mohou se vyléčit).</p>' : ''}
                     </div>
                     <button class="btn" onclick="closeModal(); renderFull();" style="width: 100%; margin-top: 1rem; background: #555;">
                         OK
