@@ -15650,7 +15650,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '4.0.0';
+        const GAME_VERSION = '4.0.1';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -36325,6 +36325,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Nastav správné hodnoty
                 state.char.hp = 0;
                 state.isDead = true;
+                
+                // [FIX v4.0.1] Když detekujeme smrt mimo handleCombatDefeat, ukliď i combat state
+                // (např. hráč umřel z DOT tikem nebo radiace mimo aktivní combat tah)
+                if (typeof _cleanupCombatState === 'function' && (window.combatState || state.activeCombat)) {
+                    _cleanupCombatState();
+                }
                 
                 // Zkontroluj jestli už je zobrazen death modal
                 const existingModal = document.querySelector('.modal-overlay');
@@ -59925,6 +59931,8 @@ function openFullscreenMap() {
                     const bossHp = Math.floor(boss.hp * bossHpMult);
                     const bossDmg = Math.floor(boss.damage * finalDmgMult);
                     const bossDef = Math.floor(boss.defense * (1 + (currentFloorNum - 1) * 0.06));
+                    // [DEBUG v4.0.0] Diagnostika spawnu bosse pro hráčské reporty
+                    console.log(`🏰 BOSS SPAWN: ${boss.name} (${currentFloor.boss}) | HP=${bossHp} DMG=${bossDmg} DEF=${bossDef} | floor=${currentFloorNum} dungeon=${state.dungeonState?.dungeonId}`);
                     enemyGroup.push({
                         ...boss,
                         id: currentFloor.boss,
@@ -60954,8 +60962,7 @@ function openFullscreenMap() {
         }
         
         function handleAbyssVictory() {
-            returnMagazineAmmo(); window.combatState = null;
-            delete state.activeCombat;
+            _cleanupCombatState();
             window.isAbyssCombat = false;
             
             const floor = state.abyss.currentFloor;
@@ -80482,8 +80489,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (attacker.isPlayer) {
                         attackerWeapon = state.equipped?.weapon || null;
                     } else if (attacker.isCompanion && attacker.companionId) {
-                        const comp = state.companions?.find(c => c.id === attacker.companionId);
-                        attackerWeapon = comp?.weapon || { name: attacker.weapon || '' };
+                        // [FIX v4.0.1] Companion weapon je v comp.equipped.weapon, ne comp.weapon
+                        // Bez tohoto fixu chyběly střelecké visuální efekty (projektil, muzzle flash)
+                        // pro companion s lukem/brokovnicí - vidíš jen melee animaci.
+                        const comp = state.companions?.find(c => c.uniqueId === attacker.companionId || c.id === attacker.companionId);
+                        attackerWeapon = comp?.equipped?.weapon || { name: attacker.weapon || comp?.weapon || '' };
                     } else {
                         // Enemy - má weapon string v definici
                         attackerWeapon = { name: attacker.weapon || '', ammoType: attacker.ammoType };
@@ -80732,10 +80742,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Základní damage
             // [FIX v3.9.75] Pro hráče přepočítej damage dynamicky - odráží buffy, změny výbavy
             // Předtím se attacker.damage nastavil při initu boje a nikdy se neaktualizoval
+            // [FIX v4.0.1] Companion damage taky live - reflektuje equipment change během boje
             let damage;
             if (attacker.isPlayer && typeof calculateDamage === 'function') {
                 damage = calculateDamage();
                 attacker.damage = damage; // Uložit zpět pro konzistenci (UI, AI)
+            } else if (attacker.isCompanion && attacker.companionId && typeof getCompanionStat === 'function') {
+                const _liveComp = (state.companions || []).find(c => c.uniqueId === attacker.companionId || c.id === attacker.companionId);
+                if (_liveComp) {
+                    damage = getCompanionStat(_liveComp, 'damage');
+                    attacker.damage = damage;
+                } else {
+                    damage = attacker.damage;
+                }
             } else {
                 damage = attacker.damage;
             }
@@ -80986,8 +81005,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // [FIX v3.9.76] 💥 CRITICAL ENCHANT - +25% crit damage
-            if (isCrit && attacker.isPlayer) {
-                const critWeapon = state.equipped?.weapon;
+            // [FIX v4.0.1] Pracuje i pro companions s critical enchant na zbrani
+            if (isCrit) {
+                let critWeapon = null;
+                if (attacker.isPlayer) {
+                    critWeapon = state.equipped?.weapon;
+                } else if (attacker.isCompanion && attacker.companionId) {
+                    const _comp = state.companions?.find(c => c.uniqueId === attacker.companionId || c.id === attacker.companionId);
+                    critWeapon = _comp?.equipped?.weapon;
+                }
                 if (critWeapon?.enchantment === 'critical') {
                     damage = Math.floor(damage * 1.25);
                 }
@@ -81000,7 +81026,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // [FIX v3.9.81] 📣 WAR CRY BUFF - medik/velitel dává buff na 3 kola na začátku boje
-            if (attacker.isPlayer && window._warCryBuff && window._warCryBuff.rounds > 0) {
+            // [FIX v4.0.1] War Cry je TEAM buff podle popisu skill ("+25% DMG VŠEM na 3 kola").
+            // Předtím se aplikoval jen na hráče - companions byli ošizeni.
+            if ((attacker.isPlayer || attacker.isCompanion) && window._warCryBuff && window._warCryBuff.rounds > 0) {
                 damage = Math.floor(damage * window._warCryBuff.multiplier);
             }
             
@@ -82822,7 +82850,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Původní kód bral munici z hráčova inventáře i pro melee companiony
             
             // Základní damage
-            let damage = isCompanion ? unit.damage : calculateDamage();
+            // [FIX v4.0.1] Companion damage live z getCompanionStat - dříve unit.damage byl
+            // statický snapshot z začátku boje, neaktualizoval se při změně equipment
+            let damage;
+            if (isCompanion) {
+                const _liveComp = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                if (_liveComp && typeof getCompanionStat === 'function') {
+                    damage = getCompanionStat(_liveComp, 'damage');
+                    unit.damage = damage; // Sync zpět pro UI/AI
+                } else {
+                    damage = unit.damage || 5;
+                }
+            } else {
+                damage = calculateDamage();
+            }
             
             // [FIX BUG Cinky] Weapon buff (+X DMG na Y bojů) - aplikuj vždy, decrementuj JEN 1× za boj
             // Předtím se decrementoval za každý útok (hráč udělal 3 swingy = -3 fights)
@@ -83396,8 +83437,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (unit.isPlayer) {
                         attackerWeapon = state.equipped?.weapon || null;
                     } else if (unit.isCompanion && unit.companionId) {
-                        const _comp = state.companions?.find(c => c.id === unit.companionId || c.uniqueId === unit.companionId);
-                        attackerWeapon = _comp?.weapon || { name: unit.weapon || '' };
+                        // [FIX v4.0.1] Companion weapon je v _comp.equipped.weapon, ne _comp.weapon
+                        const _comp = state.companions?.find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                        attackerWeapon = _comp?.equipped?.weapon || { name: unit.weapon || _comp?.weapon || '' };
                     }
                     cs._attackVisualDelay = combatAttackVisual(unit, target, attackerWeapon) || 0;
                     console.log(`⚔️ [playerAttackTarget] Visual delay = ${cs._attackVisualDelay}ms`);
@@ -84110,16 +84152,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // [FIX v3.9.99] CRITICAL - dýmovnice nečistila combat state.
                     // Důsledek: combat se obnovil "beze hráče ale se společníky" když se hra
                     // re-renderovala (např. po revive v osadě).
-                    try {
-                        // Vrať munici z magazínu zpět do inv (jako při normálním ukončení)
-                        if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
-                    } catch(e) {}
-                    
-                    window.combatState = null;
-                    delete state.activeCombat;
-                    delete state.savedCombatState;
-                    window.isSettlementRaid = false;
-                    state._raidVictoryHandled = false;
+                    // [FIX v4.0.1] Použij sjednocený cleanup helper
+                    _cleanupCombatState();
                     
                     closeModal();
                     if (cs.resumeAfterCombat || state.world?.resumeAfterCombat) {
@@ -84458,13 +84492,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 // Žádný stav k obnově - vyčisti a nabídni restart
-                delete state.activeCombat;
+                _cleanupCombatState();
                 document.getElementById('modalContent').innerHTML = `
                     <div style="text-align: center; padding: 2rem;">
                         <div style="font-size: 4rem;">⚠️</div>
                         <h2 style="color: #ff9800;">Chyba boje</h2>
                         <p style="color: #888;">Combat state byl ztracen.</p>
-                        <button class="btn" onclick="returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; state._raidVictoryHandled = false; closeModal(); renderFull(); saveGame(true); setTimeout(function(){ if(typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, 1500);" style="width: 100%; margin-top: 1rem;">← Zpět do hry</button>
+                        <button class="btn" onclick="_cleanupCombatState(); closeModal(); renderFull(); saveGame(true); setTimeout(function(){ if(typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, 1500);" style="width: 100%; margin-top: 1rem;">← Zpět do hry</button>
                     </div>
                 `;
                 return;
@@ -84527,7 +84561,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             ` : ''}
                             <span style="color: #4ecdc4; font-size: 0.85rem;">👥 ${playerUnits.length}</span>
                             <span style="color: #ff6b6b; font-size: 0.85rem;">💀 ${enemyUnits.length}</span>
-                            <button onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){returnMagazineAmmo();window.combatState=null;delete state.activeCombat;delete state.savedCombatState;window.isSettlementRaid=false;state._raidVictoryHandled=false;closeModal();renderFull();saveGame(true);}" style="background: #333; border: 1px solid #555; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #888;" title="Nouzový odchod z boje">✕</button>
+                            <button onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){_cleanupCombatState();closeModal();renderFull();saveGame(true);}" style="background: #333; border: 1px solid #555; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #888;" title="Nouzový odchod z boje">✕</button>
                         </div>
                     </div>
                     
@@ -85247,17 +85281,44 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         window.returnMagazineAmmo = returnMagazineAmmo;
         
+        // [HELPER v4.0.1] Komplexní cleanup combat state - SINGLE SOURCE OF TRUTH
+        // Všechny způsoby jak boj končí (vítězství, smrt, útěk, dýmovnice, abyss exit) použijí tohle.
+        // Eliminuje bug kdy částečný cleanup nechal stale state v paměti/save.
+        function _cleanupCombatState() {
+            try {
+                // Vrať munici ze zásobníku do inv (před smazáním combat state)
+                if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
+                
+                // Hlavní combat state
+                window.combatState = null;
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                
+                // Raid flagy
+                window.isSettlementRaid = false;
+                state._raidVictoryHandled = false;
+                
+                // Pre-combat staging
+                window.companionPositionsOverride = null;
+                window.preCombatPositions = null;
+                window.pendingEnemyGroup = null;
+                window.pendingCombatType = null;
+                window._inPreCombatFlow = false;
+                
+                // Visual cleanup
+                document.body.classList.remove('combat-fullscreen');
+                const _fb = document.getElementById('combatFloatingBtn');
+                if (_fb) _fb.remove();
+                window._combatBubbleUntil = 0;
+            } catch(e) { console.warn('Combat cleanup error:', e); }
+        }
+        window._cleanupCombatState = _cleanupCombatState;
+        
         function endCombat() {
-            // [FIX] Vrať nevystřelené náboje ze zásobníku zpět do inventáře
-            returnMagazineAmmo();
-            
-            returnMagazineAmmo(); window.combatState = null;
-            delete state.activeCombat;
-            
-            // 🎯 [NEW] Deaktivuj fullscreen combat modal
-            document.body.classList.remove('combat-fullscreen');
+            _cleanupCombatState();
             
             saveGame(true); // Uložit že boj skončil (tiše)
+            
             // Po skončení boje zkontroluj nevyzvednuté raid odměny
             setTimeout(() => {
                 if (typeof checkRaidVictoryFallback === 'function' && !state._raidVictoryHandled) {
@@ -85489,6 +85550,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const firstEnemy2 = cs?.enemies?.[0];
             const killerName = firstEnemy2?.name || 'Nepřítel';
             state.lastDamageSource = killerName;
+            
+            // [FIX v4.0.1] CRITICAL - vyčisti combat state PŘED zobrazením death screenu a save.
+            // Bez toho cloud save mohl obsahovat state.isDead=true + state.activeCombat=valid → "punishment loop"
+            // (load znovu spustil boj). Cleanup helper se postará o vše konzistentně.
+            _cleanupCombatState();
             
             showModal('💀 SMRT', `
                 <div style="text-align: center; padding: 1rem;">
@@ -87762,11 +87828,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // Handle special combat types
-            let continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; closeModal(); checkAchievements(); renderFull();";
+            // [FIX v4.0.1] Použij sjednocený _cleanupCombatState helper - dříve byl ručně rozepsaný cleanup
+            // s rizikem že některé property zůstanou (savedCombatState, isSettlementRaid, atd.)
+            let continueAction = "_cleanupCombatState(); closeModal(); checkAchievements(); renderFull();";
             
             // DŮLEŽITÉ: Pokud cestujeme, po boji pokračuj (cesta běží na pozadí)
             if (state.world?.traveling || state.map?.traveling || state.world?.travelPaused || state.map?.travelPaused) {
-                continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; closeModal(); checkAchievements(); continueTravel();";
+                continueAction = "_cleanupCombatState(); closeModal(); checkAchievements(); continueTravel();";
                 console.log('🚶 Traveling - will continue after combat');
             }
             
@@ -87816,7 +87884,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Nastav speciální continue akci (po zavření zkusí raid victory)
                 // Delší delay aby Firebase transakce stihla dokončit
                 const _raidVictoryDelay = bossHpAfter <= 0 ? 2000 : 3000;
-                continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; closeModal(); renderFull(); setTimeout(function(){ if(typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, " + _raidVictoryDelay + "); setTimeout(function(){ if(!state._raidVictoryHandled && typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, " + (_raidVictoryDelay + 5000) + ");";
+                continueAction = "_cleanupCombatState(); closeModal(); renderFull(); setTimeout(function(){ if(typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, " + _raidVictoryDelay + "); setTimeout(function(){ if(!state._raidVictoryHandled && typeof checkRaidVictoryFallback==='function') checkRaidVictoryFallback(); }, " + (_raidVictoryDelay + 5000) + ");";
             }
             // === SOLO WORLD BOSS (offline/legacy) ===
             else if (enemyData.isWorldBoss) {
@@ -87873,12 +87941,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     `;
                 }
             } else if (cs.combatType === 'dungeon' || cs.isDungeon) {
-                continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; window.isDungeonCombat = false; handleDungeonVictory();";
+                continueAction = "_cleanupCombatState(); window.isDungeonCombat = false; handleDungeonVictory();";
                 console.log('🏰 Setting continueAction to handleDungeonVictory, combatType:', cs.combatType, 'isDungeon:', cs.isDungeon);
             } else if (cs.combatType === 'dungeon_explore') {
-                continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; handleDungeonExploreVictory();";
+                continueAction = "_cleanupCombatState(); handleDungeonExploreVictory();";
             } else if (cs.combatType === 'abyss') {
-                continueAction = "returnMagazineAmmo(); window.combatState = null; delete state.activeCombat; window.isAbyssCombat = false; handleAbyssVictory();"
+                continueAction = "_cleanupCombatState(); window.isAbyssCombat = false; handleAbyssVictory();"
             }
             
             // Show victory screen
@@ -90378,6 +90446,43 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!state.activeCombat) return false;
             
             const _csr = state.activeCombat;
+            
+            // [FIX v4.0.1] CRITICAL - pokud je hráč právě mrtvý nebo nedávno revivl, NEOBNOVUJ combat.
+            // Hráči hlásili: "zabil mě má rána, vrátilo mě do boje, udělal to znovu - dvojitý punishment".
+            // Stale activeCombat v save přežíval respawn → load ho znovu spustil.
+            if (state.isDead) {
+                console.warn('⚠️ Combat restore SKIPPED - hráč je mrtvý');
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
+                window.combatState = null;
+                window.isSettlementRaid = false;
+                return false;
+            }
+            
+            // Pokud byl hráč nedávno revivl (do 30s), nezačínej znovu boj v paměti
+            const _lastRevive = state.lastReviveTime || 0;
+            if (_lastRevive && (Date.now() - _lastRevive) < 30000) {
+                console.warn(`⚠️ Combat restore SKIPPED - hráč nedávno revivl (před ${Math.floor((Date.now() - _lastRevive)/1000)}s)`);
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
+                window.combatState = null;
+                window.isSettlementRaid = false;
+                return false;
+            }
+            
+            // Pokud je hráč v shelteru (kde se respawne), NEOBNOVUJ combat (lokace je shelter = byl revivl)
+            if (state.world?.currentLocation === 'shelter' && _csr.units?.some(u => u.team === 'player' && u.isPlayer)) {
+                console.warn('⚠️ Combat restore SKIPPED - hráč je v shelteru (pravděpodobně revivl)');
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                if (typeof returnMagazineAmmo === 'function') returnMagazineAmmo();
+                window.combatState = null;
+                window.isSettlementRaid = false;
+                return false;
+            }
+            
             const combatValid = _csr.units && Array.isArray(_csr.units) && _csr.units.length > 0 &&
                 _csr.units.some(u => u.team === 'player' && u.alive) &&
                 _csr.units.some(u => u.team === 'enemy' && u.alive);
@@ -90401,6 +90506,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             _cs._turnLocked = false;
             _cs._turnLockedAt = 0;
             window._combatBubbleUntil = 0;
+            
+            // [FIX v4.0.1] Po JSON serializaci/deserializaci ztratily companion units 
+            // referenci na state.companions[].equipped. Obnovme ji aby companion AI a útoky 
+            // viděly aktuální zbraň (po změně equipped) — jinak pořád bojuje s kopií staré zbraně.
+            try {
+                let _restored = 0;
+                _cs.units?.forEach(u => {
+                    if (u.isCompanion && u.companionId) {
+                        const _comp = (state.companions || []).find(c => c.uniqueId === u.companionId || c.id === u.companionId);
+                        if (_comp?.equipped) {
+                            u.equipped = _comp.equipped; // Obnov live referenci
+                            _restored++;
+                        }
+                    }
+                });
+                if (_restored > 0) console.log(`🔧 Restore: obnoveno ${_restored} companion equipped references`);
+            } catch(e) { console.warn('Companion reference restore error:', e); }
             
             // [FIX] Validace player unitu v units array
             const playerUnit = _cs.units.find(u => u.isPlayer && u.team === 'player');
@@ -94526,25 +94648,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             state.status.energy = 30;
             state.status.radiation = Math.max(0, state.status.radiation - 20);
             
-            // [FIX v3.9.99] CRITICAL - vyčisti VŠECHEN combat state při smrti.
-            // Bez toho se combat re-aktivoval po revive ("pokračování v boji beze hráče ale se společníky").
-            try {
-                window.combatState = null;
-                delete state.activeCombat;
-                delete state.savedCombatState;
-                window.isSettlementRaid = false;
-                state._raidVictoryHandled = false;
-                window.companionPositionsOverride = null;
-                window.preCombatPositions = null;
-                window.pendingEnemyGroup = null;
-                window.pendingCombatType = null;
-                window._inPreCombatFlow = false;
-                document.body.classList.remove('combat-fullscreen');
-                // Cleanup combat floating button
-                const _fb = document.getElementById('combatFloatingBtn');
-                if (_fb) _fb.remove();
-                console.log('💀 Combat state vyčištěn po smrti');
-            } catch(e) { console.warn('Combat cleanup error:', e); }
+            // [FIX v4.0.1] Track recent revive time pro restoreCombatFromState ochranu
+            state.lastReviveTime = Date.now();
+            
+            // [FIX v4.0.1] Použij sjednocený cleanup helper - SINGLE SOURCE OF TRUTH
+            // Nahrazuje původních 11 vlastností co se musely ručně mazat (často zapomenuté).
+            _cleanupCombatState();
+            console.log('💀 Combat state vyčištěn po smrti');
             
             // Teleport do úkrytu
             state.world.currentLocation = 'shelter';
