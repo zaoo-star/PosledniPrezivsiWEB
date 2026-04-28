@@ -77424,12 +77424,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 let enemySpawnPositions = formations[selectedFormation]();
                 
-                // [SVISLÁ ORIENTACE] Transponuj pozice: x↔y
-                // Formace byly navržené horizontálně (enemy vlevo = x nízké, y = řádek)
-                // V svislé orientaci enemy nahoře = y nízké, x = sloupec
+                // [FIX v4.0.1] KRITICKÝ BUG: Transponace x↔y rozbíjela formace!
+                // Komentář říkal že formace byly horizontální, ALE ve skutečnosti jsou
+                // všechny napsané SVISLE (y=0 nahoře = nepřátelská strana, x = sloupec).
+                // Surround používá pY = R-2 (dole u hráče) — po transponaci pY=7 šel na x=7
+                // což bylo mimo cols=5, takže se clampnul na 4 a nepřátelé spawnovali
+                // vpravo NAHOŘE místo kolem hráče. Defensive měl řadu nahoře y=0, x=0..4
+                // — po transponaci sloupec vlevo. Atd.
+                // Jen clampujeme do gridu pro jistotu, žádná transponace.
                 enemySpawnPositions = enemySpawnPositions.map(p => ({
-                    x: Math.max(0, Math.min(COMBAT_GRID.cols - 1, p.y)),
-                    y: Math.max(0, Math.min(COMBAT_GRID.rows - 1, p.x))
+                    x: Math.max(0, Math.min(COMBAT_GRID.cols - 1, p.x)),
+                    y: Math.max(0, Math.min(COMBAT_GRID.rows - 1, p.y))
                 }));
                 
                 // Zajisti že máme dost pozic
@@ -77458,7 +77463,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 enemyGroup.forEach((e, idx) => {
-                    const pos = enemySpawnPositions[idx] || { x: idx % 3, y: idx % 5 };
+                    // [FIX v4.0.1] Fallback pozice musí být v nepřátelské části (nahoře = nízké y)
+                    // Předtím to byl nesmysl idx%3 / idx%5 z času horizontálního gridu.
+                    const pos = enemySpawnPositions[idx] || { 
+                        x: idx % COMBAT_GRID.cols, 
+                        y: Math.min(2, Math.floor(idx / COMBAT_GRID.cols)) 
+                    };
                     
                     // === RAID BOSS / DUNGEON BOSS / PRE-SCALED ===
                     if (e.isRaidBoss || e.isWorldBoss || e.isBoss || e.isPreScaled) {
@@ -78864,6 +78874,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         if (!_skipTerrainDmg) {
                             u.hp = Math.max(0, u.hp - terrain.damage);
                             cs.log.push(`⚠️ ${u.name}: -${terrain.damage} HP (${terrain.name || 'terén'})`);
+                            // [FIX v4.0.1] Vizuální feedback pro terén damage
+                            try { if (typeof combatHitEffect === 'function') combatHitEffect(u.isPlayer === true, terrain.damage, false, u); } catch(e) {}
                             
                             if (u.hp <= 0) {
                                 u.alive = false;
@@ -78908,6 +78920,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     u.hp = Math.max(0, u.hp - dmg);
                     u.poisoned = Math.max(0, u.poisoned - 2);
                     cs.log.push(`🧪 ${u.name}: -${dmg} HP jedem.`);
+                    // [FIX v4.0.1] Vizuální feedback pro DOT (jed) - chyběl
+                    try { if (typeof combatHitEffect === 'function') combatHitEffect(u.isPlayer === true, dmg, false, u); } catch(e) {}
                     // [FIX BUG #17] Sync HP do state.char když je u hráč (jinak raider rage <30% nefungoval pod DoTy)
                     if (u.isPlayer) state.char.hp = u.hp;
                     if (u.hp <= 0) {
@@ -78920,6 +78934,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     u.hp = Math.max(0, u.hp - dmg);
                     u.bleeding = Math.max(0, u.bleeding - 1);
                     cs.log.push(`🩸 ${u.name}: -${dmg} HP krvácením.`);
+                    // [FIX v4.0.1] Vizuální feedback pro DOT (krvácení)
+                    try { if (typeof combatHitEffect === 'function') combatHitEffect(u.isPlayer === true, dmg, false, u); } catch(e) {}
                     // [FIX BUG #17] Sync HP do state.char
                     if (u.isPlayer) state.char.hp = u.hp;
                     if (u.hp <= 0) {
@@ -78934,6 +78950,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     u.burnRounds = Math.max(0, u.burnRounds - 1);
                     if (u.burnRounds <= 0) u.burnDamage = 0;
                     cs.log.push(`🔥 ${u.name}: -${bdmg} HP ohněm. (${u.burnRounds} kol)`);
+                    // [FIX v4.0.1] Vizuální feedback pro DOT (oheň)
+                    try { if (typeof combatHitEffect === 'function') combatHitEffect(u.isPlayer === true, bdmg, false, u); } catch(e) {}
                     // Sync do state.char pro hráče
                     if (u.isPlayer) {
                         state.char.burning = Math.max(0, (state.char.burning || 0) - 1);
@@ -79580,8 +79598,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!cs) {
                 console.error('⚠️ _finishAITurn: combatState ztracen — vynucuji obnovu');
                 unit.actionsLeft = 0;
-                if (state.activeCombat) {
-                    window.combatState = state.activeCombat;
+                // [FIX v4.0.1] Použij sjednocený restore helper s 3 ochranami
+                const _restored = typeof restoreCombatFromState === 'function' 
+                    ? restoreCombatFromState() 
+                    : false;
+                if (_restored && window.combatState) {
                     window.combatState._turnLocked = false;
                     setTimeout(() => startNextTurn(), 500);
                 }
@@ -79610,8 +79631,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!cs) {
                 console.error('⚠️ _finishCompanionTurn: combatState ztracen — vynucuji obnovu');
                 unit.actionsLeft = 0;
-                if (state.activeCombat) {
-                    window.combatState = state.activeCombat;
+                // [FIX v4.0.1] Použij sjednocený restore helper s 3 ochranami (isDead/lastReviveTime/shelter)
+                const _restored = typeof restoreCombatFromState === 'function' 
+                    ? restoreCombatFromState() 
+                    : false;
+                if (_restored && window.combatState) {
                     window.combatState._turnLocked = false;
                     setTimeout(() => startNextTurn(), 500);
                 }
@@ -82333,6 +82357,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cs = window.combatState;
             cs.validMoves = [];
             
+            // [FIX v4.0.1] Použij dynamické gridy pokud existují (raid/dungeon mají různé rozměry)
+            const gridCols = cs.gridW || COMBAT_GRID.cols;
+            const gridRows = cs.gridH || COMBAT_GRID.rows;
+            
             // Pohyb pouze o 1 pole (4 směry + diagonály)
             const range = 1;
             for (let dx = -range; dx <= range; dx++) {
@@ -82342,7 +82370,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const newY = unit.y + dy;
                     
                     // Kontrola hranic
-                    if (newX < 0 || newX >= COMBAT_GRID.cols || newY < 0 || newY >= COMBAT_GRID.rows) continue;
+                    if (newX < 0 || newX >= gridCols || newY < 0 || newY >= gridRows) continue;
                     
                     // Kontrola kolizí
                     const occupied = cs.units.some(u => u.alive && u.x === newX && u.y === newY);
@@ -82480,26 +82508,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // Kontrola munice pro střelné zbraně (společník v manuálním režimu)
-            if (isRangedFinal && isCompanion) {
-                const ammoCount = getAmmoCount(weapon.ammoType);
-                if (ammoCount <= 0) {
-                    cs.log.push(`${unit.name}: zásobník prázdný. Útočí na blízko.`);
-                    // Fallback na melee - společník může útočit na blízko i bez munice
-                    const maxRangeFallback = 1;
-                    cs.units.filter(u => u.team === 'enemy' && u.alive).forEach(enemy => {
-                        const dist = Math.max(Math.abs(enemy.x - unit.x), Math.abs(enemy.y - unit.y));
-                        if (dist <= maxRangeFallback) {
-                            enemy._combatDist = dist;
-                            cs.validTargets.push(enemy);
-                        }
-                    });
-                    if (cs.validTargets.length === 0) {
-                        cs.log.push(`Žádný cíl v dosahu.`);
-                    }
-                    return;
-                }
-            }
+            // [FIX v4.0.1] Companion má virtuální nekonečnou munici (architektura: nečerpá hráčovu).
+            // Předtím tady byla kontrola getAmmoCount(weapon.ammoType) která blokovala companion ranged útok
+            // pokud hráč neměl munici - ale companion ji vůbec nepotřebuje! Pak fallback na melee dělal
+            // že se ranged companion (luk, brokovnice) dostal do situace "musím melee" i když měl letět šíp.
+            // Žádná kontrola munice pro companion = může vždy střílet.
             
             // Dosah zbraně:
             // - Střelná (luk, pistole, puška, brokovnice, plamenomet): neomezený dosah (celá mapa)
@@ -84744,12 +84757,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                     🔫 ${getAmmoCount(state.equipped.weapon.ammoType)} ${getAmmoIcon(state.equipped.weapon.ammoType)}
                                 </span>` :
                                 isCompanionTurn && currentUnit.equipped?.weapon?.ammoType ?
-                                `<span style="font-size: 0.75rem; padding: 0.2rem 0.4rem; border-radius: 4px; ${getAmmoCount(currentUnit.equipped.weapon.ammoType) > 0 ? 'background: #2a4a2a; color: #8bc34a;' : 'background: #4a2a2a; color: #ff6b6b;'}" title="${getAmmoName(currentUnit.equipped.weapon.ammoType)}">
-                                    🔫 ${getAmmoCount(currentUnit.equipped.weapon.ammoType)} ${getAmmoIcon(currentUnit.equipped.weapon.ammoType)}
-                                ${weaponHasMagazine(currentUnit.equipped.weapon) ? 
-                                    ` <span style="color: ${(playerUnit?.magazine || 0) > 0 ? '#8bc34a' : '#f44336'}; font-weight: bold;">[${playerUnit?.magazine || 0}/${playerUnit?.maxMagazine || 0}]</span>` : ''}
+                                `<span style="font-size: 0.75rem; padding: 0.2rem 0.4rem; border-radius: 4px; background: #2a4a2a; color: #8bc34a;" title="Společník má virtuální nekonečnou munici">
+                                    🔫 ∞ ${getAmmoIcon(currentUnit.equipped.weapon.ammoType)}
                                 </span>` :
-                                `<span style="font-size: 0.7rem; color: #ff9800;">Dosah: ${isCompanionTurn ? 'Na blízko' : '1 pole'}</span>`}
+                                `<span style="font-size: 0.7rem; color: #ff9800;">Dosah: ${isCompanionTurn ? (currentUnit.equipped?.weapon?.ammoType ? 'Na dálku' : 'Na blízko') : '1 pole'}</span>`}
                         </div>
                         
                         <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.4rem;">
