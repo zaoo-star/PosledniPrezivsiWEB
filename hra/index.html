@@ -638,6 +638,11 @@
         details { border-radius: 4px; }
         details > summary { border-radius: 4px; font-family: 'Rajdhani', sans-serif; font-weight: 600; }
         details[open] > summary { border-radius: 4px 4px 0 0; }
+        /* [v4.0.1] Banlist sekce - rotace arrow */
+        details > summary::-webkit-details-marker { display: none; }
+        details > summary::marker { content: ''; }
+        details[open] > summary .banlist-arrow { transform: rotate(90deg); }
+        details > summary:hover .banlist-arrow { color: #fff !important; }
         
         @keyframes bounce-arrow {
             0%, 100% { transform: translateY(0); }
@@ -102081,17 +102086,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 </button>`);
             }
             
-            // Marketplace ban (admin + moderator)
-            if (hasPermission('marketplace')) {
-                modButtons.push(`<button class="btn" onclick="adminMarketBanPlayer('${escNameJs}')" style="background: linear-gradient(135deg, #ff9800 0%, #e65100 100%); padding: 0.7rem;">
-                    🚫 Zákaz tržiště
-                </button>`);
-            }
-            
-            // [v4.0.1] World Boss ban (admin + moderator)
-            if (hasPermission('warzone')) {
-                modButtons.push(`<button class="btn" onclick="adminWorldBossBanPlayer('${escNameJs}')" style="background: linear-gradient(135deg, #8e24aa 0%, #4a148c 100%); padding: 0.7rem;">
-                    🐉 Zákaz World Boss
+            // [v4.0.1] Sjednocený multiplayer ban - jedno tlačítko místo 5 samostatných
+            // Modal nabídne checkboxy pro jednotlivé features (tržiště, world boss, klan, tombola, poklady)
+            const canBanAny = hasPermission('marketplace') || hasPermission('warzone') 
+                              || hasPermission('tombola') || hasPermission('treasure');
+            if (canBanAny) {
+                modButtons.push(`<button class="btn" onclick="adminMultiplayerBan('${escNameJs}')" style="background: linear-gradient(135deg, #d32f2f 0%, #6a1b1b 100%); padding: 0.7rem; grid-column: 1 / -1;">
+                    🌐 Multiplayer ban
                 </button>`);
             }
             
@@ -102553,6 +102554,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.deleteStaffMessage = deleteStaffMessage;
         
         // [v4.0.1] Centrální banlist - agreguje game bans, mutes a marketplace bans
+        // === MULTIPLAYER BAN FEATURES CONFIG ===
+        // [v4.0.1] Definice 5 multiplayer features které lze zakázat.
+        // Definováno před showBanlist aby bylo dostupné v obou (banlist render i admin modal).
+        const MP_BAN_FEATURES = [
+            { key: 'marketplace', path: 'marketplace/banned',  permission: 'marketplace', icon: '🛒', label: 'Tržiště',     color: '#ff9800', desc: 'kupování a prodávání na tržišti' },
+            { key: 'worldboss',   path: 'worldBoss/banned',    permission: 'warzone',     icon: '🐉', label: 'World Boss',  color: '#8e24aa', desc: 'útoky na World Bosse' },
+            { key: 'clan',        path: 'clanBan/banned',      permission: 'warzone',     icon: '🛡️', label: 'Klany',       color: '#5e35b1', desc: 'vstup do klanů' },
+            { key: 'tombola',     path: 'tombolaBan/banned',   permission: 'tombola',     icon: '🎰', label: 'Tombola',     color: '#fbc02d', desc: 'kupování losů' },
+            { key: 'treasure',    path: 'treasureBan/banned',  permission: 'treasure',    icon: '💎', label: 'Poklady',     color: '#26c6da', desc: 'vyzvedávání pokladů' }
+        ];
+        window.MP_BAN_FEATURES = MP_BAN_FEATURES;
+        
         async function showBanlist() {
             // [v4.0.1] Banlist je viditelný pro všechny hráče (transparentnost - kdo dostal ban a proč)
             // Tlačítka "Odebrat" jsou jen pro staff členy
@@ -102564,12 +102577,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             showModal('🔒 Banlist', '<div style="text-align: center; padding: 2rem;"><div class="loading-spinner"></div><p>Načítám seznam banů...</p></div>');
             
             // Načti všechny typy banů paralelně
-            const [gameBans, gameUidBans, mutes, marketBans, wbBans, wipeLogData] = await Promise.all([
+            const [gameBans, gameUidBans, mutes, marketBans, wbBans, clanBans, tombolaBans, treasureBans, wipeLogData] = await Promise.all([
                 firebaseDB.ref('bannedPlayers').once('value').then(s => s.val() || {}).catch(() => ({})),
                 firebaseDB.ref('bannedUIDs').once('value').then(s => s.val() || {}).catch(() => ({})),
                 firebaseDB.ref('mutedPlayers').once('value').then(s => s.val() || {}).catch(() => ({})),
                 firebaseDB.ref('marketplace/banned').once('value').then(s => s.val() || {}).catch(() => ({})),
                 firebaseDB.ref('worldBoss/banned').once('value').then(s => s.val() || {}).catch(() => ({})),
+                firebaseDB.ref('clanBan/banned').once('value').then(s => s.val() || {}).catch(() => ({})),
+                firebaseDB.ref('tombolaBan/banned').once('value').then(s => s.val() || {}).catch(() => ({})),
+                firebaseDB.ref('treasureBan/banned').once('value').then(s => s.val() || {}).catch(() => ({})),
                 firebaseDB.ref('admin/wipeLog').orderByChild('timestamp').limitToLast(100).once('value').then(s => s.val() || {}).catch(() => ({}))
             ]);
             
@@ -102595,6 +102611,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Marketplace ban: admin + moderator (kdo má 'marketplace' permission)
                 // Game ban: admin + moderator (kdo má 'gameban' permission) [v4.0.1]
                 // World Boss ban: admin + moderator (kdo má 'warzone' permission) [v4.0.1]
+                // Clan ban: admin + moderator (kdo má 'warzone' permission) [v4.0.1]
                 let canUnban = false;
                 if (type === 'gameban' || type === 'gameban_uid') {
                     canUnban = hasPermission('gameban');
@@ -102604,6 +102621,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     canUnban = hasPermission('marketplace');
                 } else if (type === 'wbban') {
                     canUnban = hasPermission('warzone');
+                } else if (type === 'clanban') {
+                    canUnban = hasPermission('warzone');
+                } else if (type === 'tombolaban') {
+                    canUnban = hasPermission('tombola');
+                } else if (type === 'treasureban') {
+                    canUnban = hasPermission('treasure');
                 }
                 
                 return `
@@ -102627,6 +102650,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const mutesList = Object.entries(mutes).map(([k, v]) => renderEntry(v, 'mute', k, '#607d8b', '🔇'));
             const marketBansList = Object.entries(marketBans).map(([k, v]) => renderEntry(v, 'marketban', k, '#ff9800', '🛒'));
             const wbBansList = Object.entries(wbBans).map(([k, v]) => renderEntry(v, 'wbban', k, '#8e24aa', '🐉'));
+            const clanBansList = Object.entries(clanBans).map(([k, v]) => renderEntry(v, 'clanban', k, '#5e35b1', '🛡️'));
+            const tombolaBansList = Object.entries(tombolaBans).map(([k, v]) => renderEntry(v, 'tombolaban', k, '#fbc02d', '🎰'));
+            const treasureBansList = Object.entries(treasureBans).map(([k, v]) => renderEntry(v, 'treasureban', k, '#26c6da', '💎'));
             
             // [v4.0.1] Smazané postavy z admin/wipeLog (chronologicky, nejnovější první)
             const wipedList = Object.entries(wipeLogData)
@@ -102653,6 +102679,25 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     `;
                 });
             
+            // [v4.0.1] Rozbalovatelné sekce - používá native <details>/<summary>
+            // Hlavní sekce defaultně sbalené (kromě Staff týmu), klikem se rozbalí.
+            // Nepotřebuje žádný JS, funguje přes native browser API.
+            const collapsibleSection = (title, count, color, content, openByDefault = false) => `
+                <details ${openByDefault ? 'open' : ''} style="margin: 0.8rem 0 0.4rem 0;">
+                    <summary style="background: linear-gradient(180deg, ${color}22 0%, ${color}11 100%); padding: 0.5rem 0.7rem; border-radius: 6px; border-left: 3px solid ${color}; cursor: pointer; list-style: none; user-select: none; display: flex; align-items: center; justify-content: space-between;">
+                        <span>
+                            <span class="banlist-arrow" style="color: ${color}; display: inline-block; transition: transform 0.2s; font-size: 0.7rem; margin-right: 0.3rem;">▶</span>
+                            <strong style="color: ${color}; font-size: 0.9rem;">${title}</strong>
+                            <span style="color: #888; font-size: 0.8rem; margin-left: 0.5rem;">(${count})</span>
+                        </span>
+                    </summary>
+                    <div style="margin-top: 0.4rem; padding: 0 2px;">
+                        ${content}
+                    </div>
+                </details>
+            `;
+            
+            // Backwards compatibility - některé staré místa to ještě používají
             const sectionHeader = (title, count, color) => `
                 <div style="background: linear-gradient(180deg, ${color}22 0%, ${color}11 100%); padding: 0.5rem 0.7rem; border-radius: 6px; margin: 0.8rem 0 0.4rem 0; border-left: 3px solid ${color};">
                     <strong style="color: ${color}; font-size: 0.9rem;">${title}</strong>
@@ -102662,7 +102707,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const empty = '<p style="color: #555; text-align: center; padding: 0.8rem; font-size: 0.85rem;">Žádné záznamy</p>';
             
-            const totalCount = gameBansList.length + gameUidBansList.length + mutesList.length + marketBansList.length + wbBansList.length + wipedList.length;
+            // Spočítej unikátní hráče s multiplayer omezením
+            const uniqueMpBanned = new Set([
+                ...Object.keys(marketBans),
+                ...Object.keys(wbBans),
+                ...Object.keys(clanBans),
+                ...Object.keys(tombolaBans),
+                ...Object.keys(treasureBans)
+            ]).size;
+            
+            const totalCount = gameBansList.length + gameUidBansList.length + mutesList.length + uniqueMpBanned + wipedList.length;
             
             const html = `
                 <div style="background: linear-gradient(180deg, #2a1a25 0%, #1a0a15 100%); padding: 0.6rem; border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid #4a2a3a;">
@@ -102709,23 +102763,122 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         `;
                     })()}
                     
-                    ${sectionHeader('🚫 Bany hry (postava)', gameBansList.length, '#f44336')}
-                    ${gameBansList.length > 0 ? gameBansList.join('') : empty}
+                    ${collapsibleSection(
+                        '🚫 Bany hry (postava)', 
+                        gameBansList.length, 
+                        '#f44336',
+                        gameBansList.length > 0 ? gameBansList.join('') : empty,
+                        gameBansList.length > 0 && gameBansList.length <= 5
+                    )}
                     
-                    ${sectionHeader('🔐 Bany hry (účet/UID)', gameUidBansList.length, '#d32f2f')}
-                    ${gameUidBansList.length > 0 ? gameUidBansList.join('') : empty}
+                    ${collapsibleSection(
+                        '🔐 Bany hry (účet/UID)', 
+                        gameUidBansList.length, 
+                        '#d32f2f',
+                        gameUidBansList.length > 0 ? gameUidBansList.join('') : empty,
+                        gameUidBansList.length > 0 && gameUidBansList.length <= 5
+                    )}
                     
-                    ${sectionHeader('🔇 Mute chat', mutesList.length, '#607d8b')}
-                    ${mutesList.length > 0 ? mutesList.join('') : empty}
+                    ${collapsibleSection(
+                        '🔇 Mute chat', 
+                        mutesList.length, 
+                        '#607d8b',
+                        mutesList.length > 0 ? mutesList.join('') : empty,
+                        mutesList.length > 0 && mutesList.length <= 5
+                    )}
                     
-                    ${sectionHeader('🛒 Marketplace ban', marketBansList.length, '#ff9800')}
-                    ${marketBansList.length > 0 ? marketBansList.join('') : empty}
+                    ${(() => {
+                        // [v4.0.1] Sjednocená sekce pro multiplayer omezení - groupováno podle hráče
+                        // Spočítej kolik hráčů má aspoň jedno omezení
+                        const playersByName = {}; // safeName -> { features: [{key, ban}], originalName }
+                        const sources = [
+                            { data: marketBans,   feature: MP_BAN_FEATURES.find(f => f.key === 'marketplace'), removeType: 'marketban' },
+                            { data: wbBans,       feature: MP_BAN_FEATURES.find(f => f.key === 'worldboss'),   removeType: 'wbban' },
+                            { data: clanBans,     feature: MP_BAN_FEATURES.find(f => f.key === 'clan'),        removeType: 'clanban' },
+                            { data: tombolaBans,  feature: MP_BAN_FEATURES.find(f => f.key === 'tombola'),     removeType: 'tombolaban' },
+                            { data: treasureBans, feature: MP_BAN_FEATURES.find(f => f.key === 'treasure'),    removeType: 'treasureban' }
+                        ];
+                        sources.forEach(({ data, feature, removeType }) => {
+                            Object.entries(data).forEach(([k, v]) => {
+                                if (!playersByName[k]) playersByName[k] = { features: [], originalName: v?.originalName || k };
+                                playersByName[k].features.push({ feature, ban: v, removeType });
+                            });
+                        });
+                        
+                        const playerEntries = Object.entries(playersByName);
+                        const totalPlayers = playerEntries.length;
+                        
+                        const renderPlayerRow = (safeName, info) => {
+                            const displayName = info.originalName || safeName;
+                            const featuresHtml = info.features.map(({ feature, ban, removeType }) => {
+                                const isPermanent = ban?.permanent;
+                                const remaining = ban?.until && ban.until > Date.now() 
+                                    ? Math.ceil((ban.until - Date.now()) / (60 * 60 * 1000)) : 0;
+                                const expired = !isPermanent && ban?.until && ban.until <= Date.now();
+                                const statusText = isPermanent ? 'TRVALÝ' 
+                                    : expired ? 'expirovaný'
+                                    : remaining > 24 ? `${Math.ceil(remaining/24)}d` 
+                                    : `${remaining}h`;
+                                const statusColor = isPermanent ? '#c62828' 
+                                    : expired ? '#666'
+                                    : remaining > 24 ? '#ff9800' : '#ff5722';
+                                
+                                // Permission pro odebrání
+                                let canRemove = false;
+                                if (removeType === 'marketban') canRemove = hasPermission('marketplace');
+                                else if (removeType === 'wbban' || removeType === 'clanban') canRemove = hasPermission('warzone');
+                                else if (removeType === 'tombolaban') canRemove = hasPermission('tombola');
+                                else if (removeType === 'treasureban') canRemove = hasPermission('treasure');
+                                
+                                const removeBtn = canRemove 
+                                    ? `<button onclick="banlistRemove('${removeType}', '${safeName}')" style="background: transparent; border: 1px solid #c62828; color: #ff8a8a; padding: 1px 6px; font-size: 0.65rem; border-radius: 3px; cursor: pointer; margin-left: 0.3rem; line-height: 1;" title="Odebrat tento ban">✕</button>` 
+                                    : '';
+                                
+                                return `
+                                    <div style="display: inline-flex; align-items: center; background: ${feature.color}22; border: 1px solid ${feature.color}55; padding: 2px 8px; border-radius: 12px; margin: 2px 4px 2px 0; font-size: 0.75rem;">
+                                        <span style="color: ${feature.color}; font-weight: bold;">${feature.icon} ${feature.label}</span>
+                                        <span style="color: ${statusColor}; margin-left: 0.4rem; font-weight: bold;">${statusText}</span>
+                                        ${removeBtn}
+                                    </div>`;
+                            }).join('');
+                            
+                            // Sdílený důvod (pokud všechny features mají stejný)
+                            const reasons = [...new Set(info.features.map(f => f.ban?.reason).filter(Boolean))];
+                            const reasonText = reasons.length === 1 ? reasons[0] 
+                                : reasons.length > 1 ? `${reasons.length} různých důvodů` : '';
+                            
+                            // Kdo banoval (pokud všichni stejní)
+                            const bannedBy = [...new Set(info.features.map(f => f.ban?.by).filter(Boolean))];
+                            const byText = bannedBy.length === 1 ? bannedBy[0] : bannedBy.join(', ');
+                            
+                            return `
+                                <div style="background: #1a1a1a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.4rem; border-left: 3px solid #d32f2f;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.4rem;">
+                                        <div style="font-weight: bold; color: #ff8a8a; font-size: 0.9rem;">🌐 ${escapeHtml(displayName)}</div>
+                                        <span style="color: #888; font-size: 0.7rem;">${info.features.length}× omezení</span>
+                                    </div>
+                                    <div style="margin-bottom: 0.3rem;">${featuresHtml}</div>
+                                    ${reasonText ? `<div style="font-size: 0.7rem; color: #aaa; margin-top: 0.3rem;">📝 ${escapeHtml(reasonText)}</div>` : ''}
+                                    ${byText ? `<div style="font-size: 0.65rem; color: #666; margin-top: 0.15rem;">By: ${escapeHtml(byText)}</div>` : ''}
+                                </div>`;
+                        };
+                        
+                        return collapsibleSection(
+                            '🌐 Multiplayer omezení',
+                            totalPlayers,
+                            '#d32f2f',
+                            totalPlayers > 0 ? playerEntries.map(([k, info]) => renderPlayerRow(k, info)).join('') : empty,
+                            totalPlayers > 0 && totalPlayers <= 5
+                        );
+                    })()}
                     
-                    ${sectionHeader('🐉 World Boss ban', wbBansList.length, '#8e24aa')}
-                    ${wbBansList.length > 0 ? wbBansList.join('') : empty}
-                    
-                    ${sectionHeader('💀 Smazané postavy (historie)', wipedList.length, '#6a1b1b')}
-                    ${wipedList.length > 0 ? wipedList.join('') : empty}
+                    ${collapsibleSection(
+                        '💀 Smazané postavy (historie)', 
+                        wipedList.length, 
+                        '#6a1b1b',
+                        wipedList.length > 0 ? wipedList.join('') : empty,
+                        false  // historie - vždy sbalená
+                    )}
                 </div>
                 
                 ${!hasPermission('gameban') && isStaff() ? `<p style="color: #666; font-size: 0.7rem; margin: 0.6rem 0; text-align: center;">🔒 Bany hry mohou rušit pouze admin a moderátor.</p>` : ''}
@@ -102749,6 +102902,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!hasPermission('marketplace')) { notifyWarning('Přístup odepřen', 'Nemáš oprávnění.'); return; }
             } else if (type === 'wbban') {
                 if (!hasPermission('warzone')) { notifyWarning('Přístup odepřen', 'Nemáš oprávnění.'); return; }
+            } else if (type === 'clanban') {
+                if (!hasPermission('warzone')) { notifyWarning('Přístup odepřen', 'Nemáš oprávnění.'); return; }
+            } else if (type === 'tombolaban') {
+                if (!hasPermission('tombola')) { notifyWarning('Přístup odepřen', 'Nemáš oprávnění.'); return; }
+            } else if (type === 'treasureban') {
+                if (!hasPermission('treasure')) { notifyWarning('Přístup odepřen', 'Nemáš oprávnění.'); return; }
             }
             
             const labels = {
@@ -102756,7 +102915,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 gameban_uid: 'ban hry (účet)',
                 mute: 'mute chat',
                 marketban: 'marketplace ban',
-                wbban: 'World Boss ban'
+                wbban: 'World Boss ban',
+                clanban: 'zákaz klanu',
+                tombolaban: 'zákaz tomboly',
+                treasureban: 'zákaz pokladů'
             };
             
             if (!confirm(`Opravdu odstranit ${labels[type]} pro "${key}"?`)) return;
@@ -102766,7 +102928,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 gameban_uid: 'bannedUIDs/' + key,
                 mute: 'mutedPlayers/' + key,
                 marketban: 'marketplace/banned/' + key,
-                wbban: 'worldBoss/banned/' + key
+                wbban: 'worldBoss/banned/' + key,
+                clanban: 'clanBan/banned/' + key,
+                tombolaban: 'tombolaBan/banned/' + key,
+                treasureban: 'treasureBan/banned/' + key
             };
             
             try {
@@ -116440,10 +116605,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <button class="btn" onclick="adminSetPlayerMoney('${escapeHtml(playerName).replace(/'/g, "\\'")}'); closeModal();" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">💰 Nastavit peníze</button>
                 </div>
                 <div style="margin-top: 0.5rem;">
-                    <button class="btn" onclick="adminMarketBanPlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="width: 100%; background: linear-gradient(135deg, #4a2a0a 0%, #2a1505 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b6000;">
-                        🚫 Zákaz tržiště (marketplace ban)
+                    <button class="btn" onclick="adminMultiplayerBan('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="width: 100%; background: linear-gradient(135deg, #d32f2f 0%, #6a1b1b 100%); padding: 0.7rem; font-size: 0.85rem;">
+                        🌐 Multiplayer ban
                     </button>
-                    <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Hráč nebude moci prodávat, kupovat ani vytvářet poptávky na tržišti.</p>
+                    <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Vyber co konkrétně mu chceš zakázat (tržiště, World Boss, klan, tombolu, poklady).</p>
                 </div>
                 <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #2a0a0a;">
                     <button class="btn" onclick="adminWipePlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}', '${uid || ''}')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b0000;">
@@ -118278,15 +118443,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (wantedDeleted > 0) deleted.push(`marketplace/wanted (${wantedDeleted})`);
                 } catch(e) { console.warn('marketplace wanted delete:', e); }
                 
-                // 8. [v4.0.1] Marketplace notifikace, earnings, returns, banned + worldBoss banned
+                // 8. [v4.0.1] Marketplace notifikace, earnings, returns, banned + worldBoss banned + clan ban
                 try {
                     await firebaseDB.ref('marketplace/notifications/' + safeName).remove();
                     await firebaseDB.ref('marketplace/earnings/' + safeName).remove();
                     await firebaseDB.ref('marketplace/returns/' + safeName).remove();
                     await firebaseDB.ref('marketplace/banned/' + safeName).remove();
                     await firebaseDB.ref('worldBoss/banned/' + safeName).remove();
-                    deleted.push('marketplace + worldBoss/* (' + safeName + ')');
-                } catch(e) { console.warn('marketplace/wb data delete:', e); }
+                    await firebaseDB.ref('clanBan/banned/' + safeName).remove();
+                    await firebaseDB.ref('tombolaBan/banned/' + safeName).remove();
+                    await firebaseDB.ref('treasureBan/banned/' + safeName).remove();
+                    deleted.push('marketplace + worldBoss + clanBan + tombolaBan + treasureBan/* (' + safeName + ')');
+                } catch(e) { console.warn('marketplace/wb/clan data delete:', e); }
                 
                 // 9. [v4.0.1] PvP výzvy
                 try {
@@ -118686,6 +118854,482 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         window.adminUnbanFromWorldBoss = adminUnbanFromWorldBoss;
+        
+        // === CLAN BAN ===
+        // [v4.0.1] Moderátor/admin může zakázat hráči vstoupit do klanu
+        async function adminClanBanPlayer(playerName) {
+            if (!hasPermission('warzone')) {
+                notifyWarning('Nedostatek práv', 'Potřebuješ warzone permission.');
+                return;
+            }
+            if (!firebaseDB) {
+                notifyWarning('Offline', 'Multiplayer není aktivní.');
+                return;
+            }
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            
+            let existingBan = null;
+            try {
+                const snap = await firebaseDB.ref(`clanBan/banned/${safeName}`).once('value');
+                existingBan = snap.val();
+            } catch(e) {}
+            
+            const escName = escapeHtml(playerName);
+            const escNameJs = escName.replace(/'/g, "\\'");
+            
+            let existingHtml = '';
+            if (existingBan) {
+                if (existingBan.permanent) {
+                    existingHtml = `<div style="background: #4a1a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #c62828;">
+                        <strong style="color: #ff6b6b;">⚠️ Aktuální ban: TRVALÝ</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span>
+                    </div>`;
+                } else if (existingBan.until && Date.now() < existingBan.until) {
+                    const remaining = Math.ceil((existingBan.until - Date.now()) / (60 * 60 * 1000));
+                    existingHtml = `<div style="background: #4a3a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #ff9800;">
+                        <strong style="color: #ffb74d;">⚠️ Aktuální ban: ${remaining}h zbývá</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span>
+                    </div>`;
+                }
+            }
+            
+            const html = `
+                <div style="padding: 0.5rem;">
+                    ${existingHtml}
+                    <p style="margin-bottom: 1rem;">Hráč <strong style="color: #5e35b1;">${escName}</strong> nebude moci vstoupit do žádného klanu.</p>
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.3rem;">Důvod (zobrazí se hráči):</label>
+                    <input type="text" id="clanBanReasonInput" placeholder="Např. drama v klanech, spam přijetí..." 
+                        style="width: 100%; padding: 0.5rem; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; margin-bottom: 1rem;" />
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Délka zákazu:</label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.4rem;">
+                        <button class="btn" onclick="confirmClanBan('${escNameJs}', 24)" style="background: #5d4037;">⏰ 24 hodin</button>
+                        <button class="btn" onclick="confirmClanBan('${escNameJs}', 72)" style="background: #6a4c3a;">⏰ 3 dny</button>
+                        <button class="btn" onclick="confirmClanBan('${escNameJs}', 168)" style="background: #ff9800;">⏰ 7 dní</button>
+                        <button class="btn" onclick="confirmClanBan('${escNameJs}', 720)" style="background: #ff5722;">⏰ 30 dní</button>
+                    </div>
+                    <button class="btn" onclick="confirmClanBan('${escNameJs}', 'permanent')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); border: 1px solid #8b0000;">💀 TRVALÝ ZÁKAZ</button>
+                    
+                    ${existingBan ? `<button class="btn" onclick="adminUnbanFromClan('${escNameJs}')" style="width: 100%; margin-top: 0.5rem; background: #2e7d32;">✅ Zrušit ban</button>` : ''}
+                    
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zrušit</button>
+                </div>
+            `;
+            
+            showModal('🛡️ Zákaz klanu - ' + escName, html);
+        }
+        window.adminClanBanPlayer = adminClanBanPlayer;
+        
+        async function confirmClanBan(playerName, durationHours) {
+            if (!hasPermission('warzone') || !firebaseDB) return;
+            
+            const reasonInput = document.getElementById('clanBanReasonInput');
+            const reason = reasonInput?.value?.trim() || '';
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            
+            const banData = {
+                by: getPlayerName(),
+                reason: reason || 'porušení pravidel',
+                bannedAt: firebase.database.ServerValue.TIMESTAMP,
+                originalName: playerName
+            };
+            
+            if (durationHours === 'permanent') {
+                banData.permanent = true;
+                banData.until = 0;
+            } else {
+                banData.until = Date.now() + (durationHours * 60 * 60 * 1000);
+            }
+            
+            try {
+                await firebaseDB.ref(`clanBan/banned/${safeName}`).set(banData);
+                
+                // Notifikace
+                try {
+                    await firebaseDB.ref(`notifications/${safeName}`).push({
+                        type: 'clan_ban',
+                        title: '🛡️ Zákaz klanu',
+                        message: durationHours === 'permanent' 
+                            ? `Máš trvalý zákaz vstupu do klanů. Důvod: ${banData.reason}` 
+                            : `Máš zákaz vstupu do klanů na ${durationHours}h. Důvod: ${banData.reason}`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        from: getPlayerName()
+                    });
+                } catch(e) {}
+                
+                const durLabel = durationHours === 'permanent' ? 'TRVALE' : `na ${durationHours}h`;
+                notifySuccess('🛡️ Zákaz klanu uložen', `${playerName} ${durLabel}.`);
+                closeModal();
+            } catch(e) {
+                console.error('Clan ban error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se uložit ban: ' + e.message);
+            }
+        }
+        window.confirmClanBan = confirmClanBan;
+        
+        async function adminUnbanFromClan(playerName) {
+            if (!hasPermission('warzone') || !firebaseDB) return;
+            if (!confirm(`Zrušit zákaz klanu pro ${playerName}?`)) return;
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            try {
+                await firebaseDB.ref(`clanBan/banned/${safeName}`).remove();
+                notifySuccess('✅ Ban zrušen', `${playerName} může opět vstupovat do klanů.`);
+                closeModal();
+            } catch(e) {
+                console.error('Unban clan error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zrušit ban: ' + e.message);
+            }
+        }
+        window.adminUnbanFromClan = adminUnbanFromClan;
+        
+        // === GENERIC BAN SYSTEM (tombola, treasure) ===
+        // [v4.0.1] Sjednocený systém pro lehké multiplayer-only zákazy
+        const GENERIC_BAN_TYPES = {
+            tombola: {
+                path: 'tombolaBan/banned',
+                title: 'Zákaz tomboly',
+                permission: 'tombola',
+                icon: '🎰',
+                color: '#fbc02d',
+                desc: 'nemůže kupovat losy do tomboly',
+                placeholder: 'Např. spam losů, bot...'
+            },
+            treasure: {
+                path: 'treasureBan/banned',
+                title: 'Zákaz pokladů',
+                permission: 'treasure',
+                icon: '💎',
+                color: '#26c6da',
+                desc: 'nemůže vyzvedávat poklady na mapě',
+                placeholder: 'Např. exploit, bot na poklady...'
+            }
+        };
+        window.GENERIC_BAN_TYPES = GENERIC_BAN_TYPES;
+        
+        async function adminGenericBan(banType, playerName) {
+            const config = GENERIC_BAN_TYPES[banType];
+            if (!config) { notifyWarning('Chyba', 'Neznámý typ banu: ' + banType); return; }
+            if (!hasPermission(config.permission)) {
+                notifyWarning('Nedostatek práv', `Potřebuješ ${config.permission} permission.`);
+                return;
+            }
+            if (!firebaseDB) {
+                notifyWarning('Offline', 'Multiplayer není aktivní.');
+                return;
+            }
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            
+            let existingBan = null;
+            try {
+                const snap = await firebaseDB.ref(`${config.path}/${safeName}`).once('value');
+                existingBan = snap.val();
+            } catch(e) {}
+            
+            const escName = escapeHtml(playerName);
+            const escNameJs = escName.replace(/'/g, "\\'");
+            
+            let existingHtml = '';
+            if (existingBan) {
+                if (existingBan.permanent) {
+                    existingHtml = `<div style="background: #4a1a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #c62828;">
+                        <strong style="color: #ff6b6b;">⚠️ Aktuální ban: TRVALÝ</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span>
+                    </div>`;
+                } else if (existingBan.until && Date.now() < existingBan.until) {
+                    const remaining = Math.ceil((existingBan.until - Date.now()) / (60 * 60 * 1000));
+                    existingHtml = `<div style="background: #4a3a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #ff9800;">
+                        <strong style="color: #ffb74d;">⚠️ Aktuální ban: ${remaining}h zbývá</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span>
+                    </div>`;
+                }
+            }
+            
+            const html = `
+                <div style="padding: 0.5rem;">
+                    ${existingHtml}
+                    <p style="margin-bottom: 1rem;">Hráč <strong style="color: ${config.color};">${escName}</strong> ${config.desc}.</p>
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.3rem;">Důvod (zobrazí se hráči):</label>
+                    <input type="text" id="genericBanReason" placeholder="${config.placeholder}" 
+                        style="width: 100%; padding: 0.5rem; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; margin-bottom: 1rem;" />
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Délka zákazu:</label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.4rem;">
+                        <button class="btn" onclick="confirmGenericBan('${banType}', '${escNameJs}', 24)" style="background: #5d4037;">⏰ 24 hodin</button>
+                        <button class="btn" onclick="confirmGenericBan('${banType}', '${escNameJs}', 72)" style="background: #6a4c3a;">⏰ 3 dny</button>
+                        <button class="btn" onclick="confirmGenericBan('${banType}', '${escNameJs}', 168)" style="background: #ff9800;">⏰ 7 dní</button>
+                        <button class="btn" onclick="confirmGenericBan('${banType}', '${escNameJs}', 720)" style="background: #ff5722;">⏰ 30 dní</button>
+                    </div>
+                    <button class="btn" onclick="confirmGenericBan('${banType}', '${escNameJs}', 'permanent')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); border: 1px solid #8b0000;">💀 TRVALÝ ZÁKAZ</button>
+                    
+                    ${existingBan ? `<button class="btn" onclick="adminGenericUnban('${banType}', '${escNameJs}')" style="width: 100%; margin-top: 0.5rem; background: #2e7d32;">✅ Zrušit ban</button>` : ''}
+                    
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zrušit</button>
+                </div>
+            `;
+            
+            showModal(`${config.icon} ${config.title} - ${escName}`, html);
+        }
+        window.adminGenericBan = adminGenericBan;
+        
+        async function confirmGenericBan(banType, playerName, durationHours) {
+            const config = GENERIC_BAN_TYPES[banType];
+            if (!config || !hasPermission(config.permission) || !firebaseDB) return;
+            
+            const reasonInput = document.getElementById('genericBanReason');
+            const reason = reasonInput?.value?.trim() || '';
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            
+            const banData = {
+                by: getPlayerName(),
+                reason: reason || 'porušení pravidel',
+                bannedAt: firebase.database.ServerValue.TIMESTAMP,
+                originalName: playerName
+            };
+            
+            if (durationHours === 'permanent') {
+                banData.permanent = true;
+                banData.until = 0;
+            } else {
+                banData.until = Date.now() + (durationHours * 60 * 60 * 1000);
+            }
+            
+            try {
+                await firebaseDB.ref(`${config.path}/${safeName}`).set(banData);
+                
+                // Notifikace hráči
+                try {
+                    await firebaseDB.ref(`notifications/${safeName}`).push({
+                        type: banType + '_ban',
+                        title: `${config.icon} ${config.title}`,
+                        message: durationHours === 'permanent' 
+                            ? `Máš trvalý ${config.title.toLowerCase()}. Důvod: ${banData.reason}` 
+                            : `Máš ${config.title.toLowerCase()} na ${durationHours}h. Důvod: ${banData.reason}`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        from: getPlayerName()
+                    });
+                } catch(e) {}
+                
+                const durLabel = durationHours === 'permanent' ? 'TRVALE' : `na ${durationHours}h`;
+                notifySuccess(`${config.icon} Zákaz uložen`, `${playerName} ${durLabel}.`);
+                closeModal();
+            } catch(e) {
+                console.error('Generic ban error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se uložit ban: ' + e.message);
+            }
+        }
+        window.confirmGenericBan = confirmGenericBan;
+        
+        async function adminGenericUnban(banType, playerName) {
+            const config = GENERIC_BAN_TYPES[banType];
+            if (!config || !hasPermission(config.permission) || !firebaseDB) return;
+            if (!confirm(`Zrušit ${config.title.toLowerCase()} pro ${playerName}?`)) return;
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            try {
+                await firebaseDB.ref(`${config.path}/${safeName}`).remove();
+                notifySuccess('✅ Ban zrušen', `${playerName} - ${config.title.toLowerCase()} odebrán.`);
+                closeModal();
+            } catch(e) {
+                console.error('Generic unban error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zrušit ban: ' + e.message);
+            }
+        }
+        window.adminGenericUnban = adminGenericUnban;
+        
+        // === SJEDNOCENÝ MULTIPLAYER BAN [v4.0.1] ===
+        // Jeden modal s checkboxy pro všechny multiplayer features.
+        // Firebase cesty zůstávají původní (zpětná kompatibilita s existujícími bany).
+        // MP_BAN_FEATURES je definovaný výš, před showBanlist (kvůli použití v banlistu).
+        
+        async function adminMultiplayerBan(playerName) {
+            if (!firebaseDB) { notifyWarning('Offline', 'Multiplayer není aktivní.'); return; }
+            
+            // Načti existující stav všech 5 banů paralelně
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            const escName = escapeHtml(playerName);
+            const escNameJs = escName.replace(/'/g, "\\'");
+            
+            const existingBans = {};
+            try {
+                const results = await Promise.all(MP_BAN_FEATURES.map(f => 
+                    firebaseDB.ref(`${f.path}/${safeName}`).once('value').then(s => s.val()).catch(() => null)
+                ));
+                MP_BAN_FEATURES.forEach((f, i) => existingBans[f.key] = results[i]);
+            } catch(e) { console.warn('MP ban load error:', e); }
+            
+            // Vykresli checkboxy s aktuálním stavem
+            const featuresHtml = MP_BAN_FEATURES.map(f => {
+                const canEdit = hasPermission(f.permission);
+                const ban = existingBans[f.key];
+                const isActive = ban && (ban.permanent || (ban.until && Date.now() < ban.until));
+                
+                let statusBadge = '';
+                if (isActive) {
+                    if (ban.permanent) {
+                        statusBadge = `<span style="background: #c62828; color: white; padding: 1px 6px; border-radius: 3px; font-size: 0.7rem; margin-left: 0.4rem;">TRVALÝ</span>`;
+                    } else {
+                        const remaining = Math.ceil((ban.until - Date.now()) / (60 * 60 * 1000));
+                        statusBadge = `<span style="background: #ef6c00; color: white; padding: 1px 6px; border-radius: 3px; font-size: 0.7rem; margin-left: 0.4rem;">${remaining}h</span>`;
+                    }
+                }
+                
+                const reasonText = isActive && ban.reason ? `<div style="color: #888; font-size: 0.7rem; margin-left: 1.7rem; margin-top: 2px;">📝 ${escapeHtml(ban.reason)}</div>` : '';
+                
+                if (!canEdit) {
+                    return `
+                        <label style="display: block; padding: 0.5rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem; opacity: 0.5;">
+                            <input type="checkbox" disabled style="margin-right: 0.5rem;" />
+                            ${f.icon} ${f.label} ${statusBadge}
+                            <div style="color: #666; font-size: 0.7rem; margin-left: 1.7rem;">⚠️ Bez oprávnění</div>
+                        </label>`;
+                }
+                
+                return `
+                    <label style="display: block; padding: 0.5rem; background: ${isActive ? '#2a1a1a' : '#1a1a1a'}; border-radius: 6px; margin-bottom: 0.3rem; cursor: pointer; border-left: 3px solid ${isActive ? f.color : 'transparent'};">
+                        <input type="checkbox" id="mpban-${f.key}" data-key="${f.key}" ${isActive ? 'checked' : ''} style="margin-right: 0.5rem; transform: scale(1.2);" />
+                        <span style="color: ${f.color}; font-weight: bold;">${f.icon} ${f.label}</span> ${statusBadge}
+                        <div style="color: #aaa; font-size: 0.75rem; margin-left: 1.7rem; margin-top: 2px;">Zakáže: ${f.desc}</div>
+                        ${reasonText}
+                    </label>`;
+            }).join('');
+            
+            const html = `
+                <div style="padding: 0.5rem;">
+                    <div style="background: #1a1a2a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.8rem; border-left: 3px solid #d32f2f;">
+                        <div style="color: #ff8a8a; font-weight: bold; margin-bottom: 0.2rem;">🌐 Multiplayer omezení pro: ${escName}</div>
+                        <div style="color: #aaa; font-size: 0.75rem;">Vyber co konkrétně mu chceš zakázat. Zaškrtnuté = aktivní omezení.</div>
+                    </div>
+                    
+                    <div style="margin-bottom: 0.8rem;">
+                        ${featuresHtml}
+                    </div>
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.3rem;">📝 Společný důvod (zobrazí se hráči):</label>
+                    <input type="text" id="mpBanReason" placeholder="Např. spam, exploit, drama..." 
+                        style="width: 100%; padding: 0.5rem; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; margin-bottom: 1rem;" />
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">⏰ Délka pro nově zaškrtnutá omezení:</label>
+                    <select id="mpBanDuration" style="width: 100%; padding: 0.5rem; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; margin-bottom: 1rem;">
+                        <option value="24">24 hodin</option>
+                        <option value="72">3 dny</option>
+                        <option value="168" selected>7 dní</option>
+                        <option value="720">30 dní</option>
+                        <option value="permanent">💀 Permanentně</option>
+                    </select>
+                    
+                    <div style="background: #1a2a1a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.8rem; font-size: 0.75rem; color: #aaa;">
+                        ℹ️ <strong>Logika:</strong> Zaškrtnuté ale neaktivní = nový ban se uloží. Odškrtnuté ale aktivní = ban se zruší. Ostatní zůstanou beze změny.
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        <button class="btn" onclick="closeModal()" style="background: #555;">← Zrušit</button>
+                        <button class="btn" onclick="confirmMultiplayerBan('${escNameJs}')" style="background: linear-gradient(135deg, #d32f2f 0%, #6a1b1b 100%);">
+                            💾 Uložit změny
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            showModal('🌐 Multiplayer ban', html);
+        }
+        window.adminMultiplayerBan = adminMultiplayerBan;
+        
+        async function confirmMultiplayerBan(playerName) {
+            if (!firebaseDB) return;
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]\s+]/g, '_');
+            const reason = document.getElementById('mpBanReason')?.value?.trim() || 'porušení pravidel';
+            const durationVal = document.getElementById('mpBanDuration')?.value || '168';
+            const adminName = getPlayerName();
+            
+            const banData = (durationHours) => {
+                const data = {
+                    by: adminName,
+                    reason: reason,
+                    bannedAt: firebase.database.ServerValue.TIMESTAMP,
+                    originalName: playerName
+                };
+                if (durationHours === 'permanent') {
+                    data.permanent = true;
+                    data.until = 0;
+                } else {
+                    data.until = Date.now() + (parseInt(durationHours) * 60 * 60 * 1000);
+                }
+                return data;
+            };
+            
+            const changes = []; // pro souhrnnou notifikaci
+            const newBans = []; // features kde se přidává nový ban (pro hráče)
+            
+            // Zpracuj každý feature
+            for (const f of MP_BAN_FEATURES) {
+                if (!hasPermission(f.permission)) continue; // Bez práva přeskoč
+                
+                const checkbox = document.getElementById('mpban-' + f.key);
+                if (!checkbox) continue;
+                
+                const wantBan = checkbox.checked;
+                
+                // Zjisti aktuální stav
+                let currentBan = null;
+                try {
+                    const snap = await firebaseDB.ref(`${f.path}/${safeName}`).once('value');
+                    currentBan = snap.val();
+                } catch(e) {}
+                const isCurrentlyBanned = currentBan && (currentBan.permanent || (currentBan.until && Date.now() < currentBan.until));
+                
+                if (wantBan && !isCurrentlyBanned) {
+                    // ✅ ADD - nový ban
+                    try {
+                        await firebaseDB.ref(`${f.path}/${safeName}`).set(banData(durationVal));
+                        changes.push(`+ ${f.icon} ${f.label}`);
+                        newBans.push(f);
+                    } catch(e) {
+                        console.error(`MP ban save error (${f.key}):`, e);
+                        changes.push(`⚠️ ${f.label}: ${e.message}`);
+                    }
+                } else if (!wantBan && isCurrentlyBanned) {
+                    // ❌ REMOVE - zrušit ban
+                    try {
+                        await firebaseDB.ref(`${f.path}/${safeName}`).remove();
+                        changes.push(`− ${f.icon} ${f.label}`);
+                    } catch(e) {
+                        console.error(`MP ban remove error (${f.key}):`, e);
+                        changes.push(`⚠️ ${f.label}: ${e.message}`);
+                    }
+                }
+                // wantBan === isBanned → nic neděláme
+            }
+            
+            if (changes.length === 0) {
+                notifyInfo('Žádná změna', 'Nic se nezměnilo.');
+                return;
+            }
+            
+            // Pošli souhrnnou notifikaci hráči pokud přibyla nějaká nová omezení
+            if (newBans.length > 0) {
+                try {
+                    const durLabel = durationVal === 'permanent' ? 'permanentně' : `na ${durationVal}h`;
+                    const featList = newBans.map(f => `${f.icon} ${f.label}`).join(', ');
+                    await firebaseDB.ref(`notifications/${safeName}`).push({
+                        type: 'mp_ban',
+                        title: '🌐 Multiplayer omezení',
+                        message: `Dostal jsi omezení ${durLabel}: ${featList}. Důvod: ${reason}`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        from: adminName
+                    });
+                } catch(e) { console.warn('MP ban notif:', e); }
+            }
+            
+            notifySuccess('🌐 Hotovo', `${playerName}: ${changes.join(', ')}`);
+            closeModal();
+        }
+        window.confirmMultiplayerBan = confirmMultiplayerBan;
         
         function adminSetPlayerMoney(playerName) {
             if (!isAdmin()) return;
@@ -131801,6 +132445,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         async function buyTombolaTicket(count = 1) {
             if (!multiplayerEnabled || !firebaseDB) return;
             
+            // [v4.0.1] Tombola ban check
+            try {
+                const safeName = (getPlayerName() || '').replace(/[\\/.#$\[\]\s+]/g, '_');
+                const banSnap = await firebaseDB.ref(`tombolaBan/banned/${safeName}`).once('value');
+                const banData = banSnap.val();
+                if (banData && (banData.permanent || (banData.until && Date.now() < banData.until))) {
+                    const reason = banData.reason || 'porušení pravidel';
+                    const untilText = banData.permanent ? 'permanentně' 
+                        : `do ${new Date(banData.until).toLocaleString('cs', {dateStyle: 'short', timeStyle: 'short'})}`;
+                    notifyWarning('🎰 Zákaz tomboly', 
+                        `Máš zakázáno kupovat losy do tomboly (${reason}). ${untilText}.`);
+                    return;
+                }
+            } catch(e) { console.warn('Tombola ban check error:', e); }
+            
             try {
                 // Nejdřív načti základní info o tombole
                 const snap = await firebaseDB.ref('tombola/active').once('value');
@@ -133337,6 +133996,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 notifyWarning('Chyba', 'Musíš být přihlášen!');
                 return;
             }
+            
+            // [v4.0.1] Treasure ban check
+            try {
+                const safeName = (getPlayerName() || '').replace(/[\\/.#$\[\]\s+]/g, '_');
+                const banSnap = await firebaseDB.ref(`treasureBan/banned/${safeName}`).once('value');
+                const banData = banSnap.val();
+                if (banData && (banData.permanent || (banData.until && Date.now() < banData.until))) {
+                    const reason = banData.reason || 'porušení pravidel';
+                    const untilText = banData.permanent ? 'permanentně' 
+                        : `do ${new Date(banData.until).toLocaleString('cs', {dateStyle: 'short', timeStyle: 'short'})}`;
+                    notifyWarning('💎 Zákaz pokladů', 
+                        `Máš zakázáno vyzvedávat poklady (${reason}). ${untilText}.`);
+                    return;
+                }
+            } catch(e) { console.warn('Treasure ban check error:', e); }
             
             try {
                 const snap = await firebaseDB.ref('treasure').once('value');
@@ -136873,6 +137547,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!clan) return;
             
             const myName = getPlayerName();
+            
+            // [v4.0.1] Clan ban check
+            try {
+                const safeName = myName.replace(/[\\/.#$\[\]\s+]/g, '_');
+                const banSnap = await firebaseDB.ref(`clanBan/banned/${safeName}`).once('value');
+                const banData = banSnap.val();
+                if (banData && (banData.permanent || (banData.until && Date.now() < banData.until))) {
+                    const reason = banData.reason || 'porušení pravidel';
+                    const untilText = banData.permanent ? 'permanentně' 
+                        : `do ${new Date(banData.until).toLocaleString('cs', {dateStyle: 'short', timeStyle: 'short'})}`;
+                    notifyWarning('🛡️ Zákaz klanu', 
+                        `Máš zakázán vstup do klanů (${reason}). ${untilText}.`);
+                    return;
+                }
+            } catch(e) { console.warn('Clan ban check error:', e); }
+            
             const inputPwd = document.getElementById('clanJoinPassword')?.value?.trim() || '';
             
             if (clan.password && clan.password.length > 0 && inputPwd !== clan.password) {
