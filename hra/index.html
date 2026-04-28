@@ -88132,6 +88132,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Sync damage na Firebase (async)
                 syncRaidBossDamage(bossHpAfter);
                 
+                // [FIX v4.0.1] Vyčisti raid stav po victory sync
+                // Bez tohoto by activeWorldBoss zůstal nastavený s OLD raidHpBefore
+                // a další admin útok (přes bypass cooldown) by se mohl zaseknout v podivném stavu.
+                // joinWorldBossRaid stejně vytvoří nový state.activeWorldBoss s fresh HP.
+                state.activeWorldBoss = null;
+                
                 // Výhra = hráč si nechá své aktuální HP z boje (žádná penalizace)
                 // HP je už synchronizované z combatu
                 
@@ -127505,6 +127511,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 notifyWarning('⏳ Cooldown', `Počkej ${hoursLeft > 0 ? hoursLeft + 'h ' : ''}${mLeft}m před dalším útokem na World Bosse.`);
                 return;
             }
+            // [v4.0.1] Admin: minimální 3s cooldown aby Firebase transakce stihla dokončit a listener aktualizovat
+            // Bez tohoto by spam útoky generovaly race conditions v transakcích
+            if (isAdmin() && lastAttack > 0 && Date.now() - lastAttack < 3000) {
+                const secsLeft = Math.ceil((3000 - (Date.now() - lastAttack)) / 1000);
+                notifyWarning('⏳ Admin spam protect', `Počkej ${secsLeft}s před dalším útokem (Firebase sync).`);
+                return;
+            }
             if (isAdmin() && lastAttack > 0 && Date.now() - lastAttack < cooldownMs) {
                 console.log('🐉 Admin bypass: WB cooldown ignored');
             }
@@ -127514,6 +127527,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             try {
                 const hpSnap = await firebaseDB.ref('worldBossRaid/currentHp').once('value');
                 currentHp = hpSnap.val();
+                console.log('🐉 ATTACK INIT: Firebase currentHp =', currentHp, '| isAdmin:', isAdmin());
                 if (currentHp === null || currentHp <= 0) {
                     notifyInfo('Boss poražen!', 'World Boss už byl poražen!');
                     return;
