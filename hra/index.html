@@ -19423,18 +19423,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Combat hit effect
         function combatHitEffect(isPlayer = false, damage = 0, isCrit = false) {
-            if (isPlayer) {
-                screenShake(isCrit ? 8 : 4, 200);
-                showFloatingNumber(damage, 'damage');
-                if (typeof triggerDamageShake === 'function') triggerDamageShake();
-                if (typeof playCombatSound === 'function') playCombatSound('playerHit');
-            } else {
-                showFloatingNumber(damage, isCrit ? 'crit' : 'damage');
-                if (typeof playCombatSound === 'function') playCombatSound(isCrit ? 'crit' : 'enemyHit');
-                if (isCrit) {
-                    screenShake(3, 150);
+            // [FIX v4.0.1] Přidaná možnost zobrazit damage nad konkrétní pozicí v boji.
+            // Hráč: screen shake + center floating number, ostatní: nad jejich combat unitou.
+            try {
+                if (isPlayer) {
+                    screenShake(isCrit ? 8 : 4, 200);
+                    showFloatingNumber(damage, 'damage');
+                    if (typeof triggerDamageShake === 'function') triggerDamageShake();
+                    if (typeof playCombatSound === 'function') playCombatSound('playerHit');
+                } else {
+                    // Hledat target combat cell pro umístění
+                    const target = arguments[3]; // optional unit object
+                    if (target && target.x !== undefined && target.y !== undefined) {
+                        const cell = document.querySelector(`.combat-grid [data-x="${target.x}"][data-y="${target.y}"]`)
+                                  || document.querySelector(`#combatCell-${target.x}-${target.y}`);
+                        if (cell) {
+                            const rect = cell.getBoundingClientRect();
+                            showFloatingNumber(damage, isCrit ? 'crit' : 'damage', 
+                                rect.left + rect.width/2, rect.top + 10);
+                        } else {
+                            showFloatingNumber(damage, isCrit ? 'crit' : 'damage');
+                        }
+                    } else {
+                        showFloatingNumber(damage, isCrit ? 'crit' : 'damage');
+                    }
+                    if (typeof playCombatSound === 'function') playCombatSound(isCrit ? 'crit' : 'enemyHit');
+                    if (isCrit) {
+                        screenShake(3, 150);
+                    }
                 }
-            }
+            } catch(e) { console.warn('combatHitEffect error:', e); }
         }
         
         // === COMBAT DETECTION ===
@@ -77416,7 +77434,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Zajisti že máme dost pozic
                 while (enemySpawnPositions.length < enemyCount) {
-                    enemySpawnPositions.push({ x: Math.floor(Math.random() * 4), y: Math.floor(Math.random() * R) });
+                    // [FIX v4.0.1] Random fallback nesmí spawnit nepřítele do dolní poloviny gridu (kde je hráč)
+                    // a musí používat aktuální gridSize, ne hardcoded 4.
+                    enemySpawnPositions.push({ 
+                        x: Math.floor(Math.random() * COMBAT_GRID.cols), 
+                        y: Math.floor(Math.random() * Math.floor(R / 2)) // Jen horní polovina = nepřátelská strana
+                    });
                 }
                 
                 // === BOJOVÉ MODIFIKÁTORY ===
@@ -81184,6 +81207,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // berserker frenzy a další low-HP perky používají stale state.char.hp.
             if (target.isPlayer && finalDamage > 0) state.char.hp = target.hp;
             
+            // [FIX v4.0.1] Floating damage numbers - chyběly! combatHitEffect() byl definován 
+            // ale nikde se nevolal. Hráči ztráceli klíčový vizuální feedback "kolik DMG udělal".
+            // Synchronizováno s projektilem - pro ranged útoky čeká až kulka doletí.
+            try {
+                if (finalDamage > 0 && typeof combatHitEffect === 'function') {
+                    const _visDelay = cs._attackVisualDelay || 0;
+                    const _shownDmg = finalDamage;
+                    const _isCritShown = isCrit;
+                    const _targetSnap = target;
+                    if (_visDelay > 0) {
+                        setTimeout(() => {
+                            if (typeof combatHitEffect === 'function') {
+                                combatHitEffect(_targetSnap.isPlayer === true, _shownDmg, _isCritShown, _targetSnap);
+                            }
+                        }, _visDelay);
+                    } else {
+                        combatHitEffect(target.isPlayer === true, finalDamage, isCrit, target);
+                    }
+                }
+            } catch(e) {}
+            
             // [FIX] Nemoc "krvácivá rána" (bleedChance) - extra šance na krvácení při zásahu hráče
             // Předtím jen v legacy attack(), v hex combatu se neaplikovalo
             if (target.isPlayer && finalDamage > 0 && typeof getDiseaseModifiers === 'function') {
@@ -81487,19 +81531,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // 💬 Combat speech bubbles
+            // 💬 Combat speech bubbles - synchronizováno s projektilem (visual delay)
             try {
-                if (target.isPlayer && finalDamage > 0) {
-                    combatBubble(target.x, target.y, isCrit ? 'playerCritHurt' : 'playerHurt');
-                } else if (target.isCompanion && finalDamage > 0 && attacker.team === 'enemy') {
-                    combatBubble(target.x, target.y, 'companionHurt', null, target);
-                } else if (!target.isPlayer && !target.isCompanion && finalDamage > 0 && (attacker.isPlayer || attacker.isCompanion)) {
-                    if (isCrit) combatBubble(attacker.x, attacker.y, 'playerCrit');
-                    if (target.hp <= 0) combatBubble(attacker.x, attacker.y, 'playerKill');
-                    else combatBubble(target.x, target.y, 'enemyHurt', null, target);
-                } else if (target.team === 'player' && finalDamage > 0 && attacker.team === 'enemy') {
-                    if (Math.random() < 0.35) combatBubble(attacker.x, attacker.y, 'enemyTaunt', null, attacker);
-                }
+                const _bubVisDelay = cs._attackVisualDelay || 0;
+                const _showBubbles = () => {
+                    try {
+                        if (target.isPlayer && finalDamage > 0) {
+                            combatBubble(target.x, target.y, isCrit ? 'playerCritHurt' : 'playerHurt');
+                        } else if (target.isCompanion && finalDamage > 0 && attacker.team === 'enemy') {
+                            combatBubble(target.x, target.y, 'companionHurt', null, target);
+                        } else if (!target.isPlayer && !target.isCompanion && finalDamage > 0 && (attacker.isPlayer || attacker.isCompanion)) {
+                            if (isCrit) combatBubble(attacker.x, attacker.y, 'playerCrit');
+                            if (target.hp <= 0) combatBubble(attacker.x, attacker.y, 'playerKill');
+                            else combatBubble(target.x, target.y, 'enemyHurt', null, target);
+                        } else if (target.team === 'player' && finalDamage > 0 && attacker.team === 'enemy') {
+                            if (Math.random() < 0.35) combatBubble(attacker.x, attacker.y, 'enemyTaunt', null, attacker);
+                        }
+                    } catch(e) {}
+                };
+                if (_bubVisDelay > 0) setTimeout(_showBubbles, _bubVisDelay);
+                else _showBubbles();
             } catch(e) {}
             
             // Zvuky boje
@@ -83467,12 +83518,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             target.hp = Math.max(0, target.hp - cappedDamage);
             
-            // 💬 Combat speech bubbles — hráčův útok
+            // [FIX v4.0.1] Floating damage number + bubbles synchronizované s projektilem.
+            // Damage se aplikuje hned (kód po něm potřebuje aktuální HP), ale vizuál čeká až dolétne.
             try {
                 if (cappedDamage > 0) {
-                    combatBubble(target.x, target.y, 'enemyHurt', null, target);
-                    if (isCrit) combatBubble(unit.x, unit.y, 'playerCrit');
-                    if (target.hp <= 0) combatBubble(unit.x, unit.y, 'playerKill');
+                    const _vDel = cs._attackVisualDelay || 0;
+                    const _dmg = cappedDamage;
+                    const _crit = isCrit;
+                    const _tgt = target;
+                    const _atk = unit;
+                    const _showVisuals = () => {
+                        try {
+                            if (typeof combatHitEffect === 'function') {
+                                combatHitEffect(_tgt.isPlayer === true, _dmg, _crit, _tgt);
+                            }
+                            combatBubble(_tgt.x, _tgt.y, 'enemyHurt', null, _tgt);
+                            if (_crit) combatBubble(_atk.x, _atk.y, 'playerCrit');
+                            if (_tgt.hp <= 0) combatBubble(_atk.x, _atk.y, 'playerKill');
+                        } catch(e) {}
+                    };
+                    if (_vDel > 0) setTimeout(_showVisuals, _vDel);
+                    else _showVisuals();
                 }
             } catch(e) {}
             
@@ -84475,6 +84541,24 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!cs) {
                 // Combat state ztracen - pokus o obnovu z activeCombat
                 if (state.activeCombat) {
+                    // [FIX v4.0.1] Stejné ochrany jako restoreCombatFromState - zabraň "punishment loopu".
+                    // Když je hráč mrtvý, nedávno revivl, nebo v shelteru, NEOBNOVUJ stale combat.
+                    if (state.isDead) {
+                        console.warn('⚠️ renderHeroesCombatUI: Combat NEobnovuji - hráč je mrtvý');
+                        if (typeof _cleanupCombatState === 'function') _cleanupCombatState();
+                        return;
+                    }
+                    if (state.lastReviveTime && (Date.now() - state.lastReviveTime) < 30000) {
+                        console.warn('⚠️ renderHeroesCombatUI: Combat NEobnovuji - hráč nedávno revivl');
+                        if (typeof _cleanupCombatState === 'function') _cleanupCombatState();
+                        return;
+                    }
+                    if (state.world?.currentLocation === 'shelter') {
+                        console.warn('⚠️ renderHeroesCombatUI: Combat NEobnovuji - hráč je v shelteru');
+                        if (typeof _cleanupCombatState === 'function') _cleanupCombatState();
+                        return;
+                    }
+                    
                     console.log('⚔️ Obnovuji combatState z activeCombat...');
                     window.combatState = state.activeCombat;
                     const _rcs = window.combatState;
@@ -84487,6 +84571,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const _ru = _rcs.turnOrder[_rcs.currentTurnIndex];
                         if (_ru) _rcs.selectedUnit = _ru;
                     }
+                    
+                    // [FIX v4.0.1] Po JSON restore obnov live companion equipped reference (sjednoceno s restoreCombatFromState)
+                    try {
+                        _rcs.units?.forEach(u => {
+                            if (u.isCompanion && u.companionId) {
+                                const _comp = (state.companions || []).find(c => c.uniqueId === u.companionId || c.id === u.companionId);
+                                if (_comp?.equipped) u.equipped = _comp.equipped;
+                            }
+                        });
+                    } catch(e) {}
+                    
                     renderHeroesCombatUI();
                     setTimeout(() => { if (window.combatState) startNextTurn(); }, 700);
                     return;
@@ -85152,6 +85247,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                             return `<img src="${avatarUrl}" alt="${(unit.name || '').replace(/"/g, '&quot;')}" style="width: 24px; height: 24px; border-radius: 50%; object-fit: cover; border: 1px solid #4caf50; filter: ${unit.stunned ? 'grayscale(1)' : 'none'};">`;
                                         }
                                     }
+                                    // [FIX v4.0.1] Companion - použij custom PNG ikonu pokud existuje (pes, kočka, vlk, havran, robot, válečník)
+                                    if (!hasStacked && unit.isCompanion && unit.companionId && typeof COMPANION_CUSTOM_ICONS !== 'undefined') {
+                                        const _baseId = unit.companionId.split('_')[0]; // uniqueId má prefix
+                                        const _iconPath = COMPANION_CUSTOM_ICONS[_baseId] || COMPANION_CUSTOM_ICONS[unit.companionId];
+                                        if (_iconPath) {
+                                            const fallback = (unit.icon || '👤').replace(/'/g, "&#39;");
+                                            return `<img src="${_iconPath}" alt="${fallback}" title="${(unit.name || '').replace(/"/g, '&quot;')}" style="width: 26px; height: 26px; object-fit: contain; filter: ${unit.stunned ? 'grayscale(1)' : 'drop-shadow(0 0 2px rgba(80,255,80,0.5))'};" onerror="this.outerHTML='<span style=&quot;font-size:1.1rem;&quot;>${fallback}</span>'">`;
+                                        }
+                                    }
                                     // [v3.9.96] Pokud je to nepřítel a má custom PNG ikonu, použij ji
                                     if (!hasStacked && unit.team === 'enemy' && unit.enemyId && typeof ENEMY_CUSTOM_ICONS !== 'undefined' && ENEMY_CUSTOM_ICONS[unit.enemyId]) {
                                         const imgPath = ENEMY_CUSTOM_ICONS[unit.enemyId];
@@ -85205,7 +85309,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 ${unit.defending ? '<span style="position: absolute; bottom: 5px; right: -2px; font-size: 0.5rem;">🛡️</span>' : ''}
                                 ${unit.confused > 0 ? '<span style="position: absolute; top: 5px; right: 5px; font-size: 0.55rem;" title="Zmatený">😵‍💫</span>' : ''}
                                 ${unit.slowed > 0 ? '<span style="position: absolute; top: 5px; left: 5px; font-size: 0.55rem;" title="Zpomalený">🐌</span>' : ''}
-                                ${unit.isPlayer && window._warCryBuff && window._warCryBuff.rounds > 0 ? `<span style="position: absolute; top: -4px; right: 50%; transform: translateX(50%); font-size: 0.5rem;" title="Válečný výkřik (+${Math.round((window._warCryBuff.multiplier - 1) * 100)}% DMG, ${window._warCryBuff.rounds} kol)">📣</span>` : ''}
+                                ${(unit.isPlayer || unit.isCompanion) && window._warCryBuff && window._warCryBuff.rounds > 0 ? `<span style="position: absolute; top: -4px; right: 50%; transform: translateX(50%); font-size: 0.5rem;" title="Válečný výkřik (+${Math.round((window._warCryBuff.multiplier - 1) * 100)}% DMG, ${window._warCryBuff.rounds} kol)">📣</span>` : ''}
                                 ${unit.isPlayer && state.buffs?.frenzy && (state.buffs.frenzy.until || state.buffs.frenzy.expires || 0) > Date.now() ? `<span style="position: absolute; bottom: 5px; left: 5px; font-size: 0.55rem;" title="Šílenství (+${Math.round((state.buffs.frenzy.value || 0) * 100)}% DMG)">💢</span>` : ''}
                             ` : ''}
                         </div>
@@ -91034,39 +91138,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // === OBNOVENÍ COMBAT STATE ===
                     if (state.activeCombat) {
-                        // Validace - pokud je combat state starý nebo poškozený, zahoď ho
-                        const _csr = state.activeCombat;
-                        const combatValid = _csr.units && Array.isArray(_csr.units) && _csr.units.length > 0 &&
-                            _csr.units.some(u => u.team === 'player' && u.alive) &&
-                            _csr.units.some(u => u.team === 'enemy' && u.alive);
-                        
-                        if (!combatValid) {
-                            console.warn('⚠️ Combat state nevalidní - zahazuji');
-                            delete state.activeCombat;
-                            delete state.savedCombatState;
-                            returnMagazineAmmo(); window.combatState = null;
-                            window.isSettlementRaid = false;
-                        } else {
-                            window.combatState = state.activeCombat;
-                            console.log('⚔️ Combat state obnoven po refreshi');
-                            const _cs = window.combatState;
-                            // === FIX: Po JSON restore jsou turnOrder a units RŮZNÉ objekty ===
-                            // Musíme přebudovat turnOrder z units aby sdílely reference
-                            if (_cs.turnOrder && _cs.units) {
-                                _cs.turnOrder = _cs.units.filter(u => u.alive).sort((a, b) => (b.speed || 0) - (a.speed || 0));
-                                console.log('⚔️ turnOrder přebudován z units (' + _cs.turnOrder.length + ' jednotek)');
-                            }
-                            if (_cs.turnOrder && _cs.currentTurnIndex !== undefined) {
-                                // Clamp index
-                                _cs.currentTurnIndex = Math.min(_cs.currentTurnIndex, _cs.turnOrder.length - 1);
-                                const _ru = _cs.turnOrder[_cs.currentTurnIndex];
-                                if (_ru) _cs.selectedUnit = _ru;
-                            }
-                            // [FIX v3.9.66] Aktivuj combat-fullscreen CSS class (chybělo!)
-                            // Bez tohoto se modal zobrazí ale bez fullscreen stylingu a je nečitelný
+                        // [FIX v4.0.1] Sjednoceno - používáme restoreCombatFromState helper
+                        // který má 3 ochrany (isDead, lastReviveTime, shelter) proti "punishment loopu"
+                        // PLUS obnoví companion equipped references po JSON serialization.
+                        // Předtím loadGame měl vlastní duplikátní logiku bez těchto ochran.
+                        const _restored = typeof restoreCombatFromState === 'function' 
+                            ? restoreCombatFromState() 
+                            : false;
+                        if (_restored) {
+                            // Aktivuj combat-fullscreen CSS class
                             document.body.classList.add('combat-fullscreen');
                             setTimeout(() => {
-                                document.getElementById('modal').classList.add('show');
+                                const _modal = document.getElementById('modal');
+                                if (_modal) _modal.classList.add('show');
                                 renderHeroesCombatUI();
                                 if (window.combatState) setTimeout(() => startNextTurn(), 700);
                             }, 100);
@@ -97012,43 +97096,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // 2. Obnov aktivní combat [FIX v3.9.66 - BUG: kontrolovalo se window.combatState které je runtime only]
                 if (state.activeCombat) {
-                    const _csr = state.activeCombat;
-                    // Validace: musí být živé jednotky na obou stranách
-                    const combatValid = _csr.units && Array.isArray(_csr.units) && _csr.units.length > 0 &&
-                        _csr.units.some(u => u.team === 'player' && u.alive) &&
-                        _csr.units.some(u => u.team === 'enemy' && u.alive);
-                    
-                    if (!combatValid) {
-                        console.warn('⚠️ Combat state nevalidní po refreshi - zahazuji');
-                        delete state.activeCombat;
-                        delete state.savedCombatState;
-                        window.combatState = null;
-                        window.isSettlementRaid = false;
-                    } else {
+                    // [FIX v4.0.1] Sjednoceno přes restoreCombatFromState helper s 3 ochranami
+                    // (isDead/lastReviveTime/shelter) + obnovou companion equipped references.
+                    const _restored = typeof restoreCombatFromState === 'function' 
+                        ? restoreCombatFromState() 
+                        : false;
+                    if (_restored) {
                         console.log('⚔️ Obnovuji aktivní boj po refreshi...');
-                        // Obnov window.combatState z uloženého state.activeCombat
-                        window.combatState = state.activeCombat;
-                        const _cs = window.combatState;
-                        
-                        // Po JSON restore jsou turnOrder a units RŮZNÉ objekty - přebuduj turnOrder
-                        if (_cs.turnOrder && _cs.units) {
-                            _cs.turnOrder = _cs.units.filter(u => u.alive).sort((a, b) => (b.speed || 0) - (a.speed || 0));
-                        }
-                        if (_cs.turnOrder && _cs.currentTurnIndex !== undefined) {
-                            _cs.currentTurnIndex = Math.min(_cs.currentTurnIndex, _cs.turnOrder.length - 1);
-                            const _ru = _cs.turnOrder[_cs.currentTurnIndex];
-                            if (_ru) _cs.selectedUnit = _ru;
-                        }
-                        
-                        // Aktivuj combat-fullscreen CSS
                         document.body.classList.add('combat-fullscreen');
-                        
                         setTimeout(() => {
-                            document.getElementById('modal').classList.add('show');
+                            const _modal = document.getElementById('modal');
+                            if (_modal) _modal.classList.add('show');
                             if (typeof renderHeroesCombatUI === 'function') {
                                 renderHeroesCombatUI();
                             }
-                            // Continue turn
                             if (window.combatState && typeof startNextTurn === 'function') {
                                 setTimeout(() => startNextTurn(), 700);
                             }
@@ -97736,8 +97797,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         
                         // Zastav combat pokud je aktivní
                         if (window.combatState) {
-                            window.combatState = null;
-                            document.body.classList.remove('combat-fullscreen');
+                            // [FIX v4.0.1] Použij sjednocený helper
+                            if (typeof _cleanupCombatState === 'function') _cleanupCombatState();
+                            else { window.combatState = null; document.body.classList.remove('combat-fullscreen'); }
                         }
                         
                         // Zavři modaly
