@@ -13563,7 +13563,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 trees: {
                     speed: { name: 'Rychlost', icon: '💨', color: '#00bcd4', skills: [
                         { id: 'swift', name: 'Hbitost', icon: '🏃', desc: '+4% rychlost', effect: { travelSpeed: 0.04 }, tier: 1 },
-                        { id: 'parkour', name: 'Parkour', icon: '🧗', desc: 'Ignoruje terén, +8% úhyb', effect: { ignoreTerrain: true, dodgeChance: 0.08 }, tier: 2, requires: 'swift' },
+                        { id: 'parkour', name: 'Parkour', icon: '🧗', desc: 'V boji: ignoruje terén, +8% úhyb. Na cestě: ignoruje postihy za nebezpečný terén (pro celý team)', effect: { ignoreTerrain: true, dodgeChance: 0.08 }, tier: 2, requires: 'swift' },
                         { id: 'flash', name: 'Blesk', icon: '⚡', desc: 'První útok vždy crit, +4% rychlost', effect: { firstStrikeCrit: true, travelSpeed: 0.04 }, tier: 3, requires: 'parkour' },
                         { id: 'sonic', name: 'Zvuková bariéra', icon: '🌪️', desc: '+8% rychlost, +12% úhyb, první útok vždy crit', effect: { travelSpeed: 0.08, dodgeChance: 0.12, firstStrikeCrit: true }, tier: 4, requires: 'flash' },
                         { id: 'time_warp', name: 'Zkroucení času', icon: '⏱️', desc: '+12% rychlost, +20% úhyb, 30% šance 2× akce', effect: { travelSpeed: 0.12, dodgeChance: 0.20, doubleAttackChance: 0.30, alwaysFirst: true }, tier: 5, requires: 'sonic' }
@@ -17474,6 +17474,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         let marketplaceOffers = [];
         let pvpChallenges = [];
         let chatListener = null;
+        // [v4.0.1] Staff chat - soukromý kanál pro adminy a moderátory
+        let staffChatMessages = [];
+        let staffChatListener = null;
+        let currentChatChannel = 'global'; // 'global' nebo 'staff'
+        let staffChatUnread = 0; // Počet nepřečtených staff zpráv
         let privateMessages = {}; // Soukromé zprávy
         let unreadPMCount = 0; // Počet nepřečtených soukromých zpráv (globální)
         let friendsList = []; // Seznam přátel
@@ -29446,7 +29451,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ${currentWeapon ? `
                             <div style="background: #3a3a3a; padding: 0.5rem; border-radius: 6px; border-left: 3px solid #ff6b6b;">
                                 ${currentWeapon.icon || '⚔️'} ${getItemName(currentWeapon.id)} - ⚔️+${currentWeapon.damage || 0}
-                                ${currentWeapon.ammoType ? `<div style="font-size: 0.75rem; color: #ff9800; margin-top: 0.3rem;">🔫 Tvé náboje: ${typeof getAmmoCount === 'function' ? getAmmoCount(currentWeapon.ammoType) : '?'} (${getAmmoName(currentWeapon.ammoType)}) - bere z inventáře</div>` : ''}
+                                ${currentWeapon.ammoType ? `<div style="font-size: 0.75rem; color: #8bc34a; margin-top: 0.3rem;">🔫 Munice: ∞ (${getAmmoName(currentWeapon.ammoType)}) - společník má vlastní zásoby</div>` : ''}
                             </div>
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">${'Žádná zbraň'}</div>
@@ -36800,16 +36805,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         comp.uniqueId = `${comp.id}_migrated_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                     }
                     
-                    // Vymaž excluded pozice z uložených pozic (common bug source)
-                    if (state.savedCompanionPositions) {
-                        const compId = comp.uniqueId || comp.id;
-                        const savedPos = state.savedCompanionPositions[compId];
-                        if (savedPos && (savedPos.id === 'excluded' || savedPos.excluded)) {
-                            delete state.savedCompanionPositions[compId];
-                        }
-                        // Vymaž i pozice uložené pod holým id (starý formát)
+                    // [FIX v4.0.1] Ne-mazat excluded pozice - hráč si je nastavil záměrně
+                    // (Předtím tu byla migrace která excluded mazala, ale to mazalo i validní volby hráče)
+                    // Migration: zachovej excluded pozice pod uniqueId; smaž jen duplikáty pod holým id
+                    if (state.savedCompanionPositions && comp.uniqueId) {
                         const savedPosById = state.savedCompanionPositions[comp.id];
-                        if (savedPosById && (savedPosById.id === 'excluded' || savedPosById.excluded)) {
+                        const savedPosByUid = state.savedCompanionPositions[comp.uniqueId];
+                        // Pokud existuje duplicate pod holým id ALE NE pod uniqueId, převedeš to
+                        if (savedPosById && !savedPosByUid && comp.id !== comp.uniqueId) {
+                            state.savedCompanionPositions[comp.uniqueId] = savedPosById;
                             delete state.savedCompanionPositions[comp.id];
                         }
                     }
@@ -46919,22 +46923,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     break;
                     
                 case 'permanent_hp':
+                    // [FIX v4.0.1] Limit max 5× použití mysterious_serum trvale (max +25 HP z této cesty)
+                    if (!state.permanentItemUses) state.permanentItemUses = {};
+                    const serumUses = state.permanentItemUses[itemId] || 0;
+                    if (serumUses >= 5) {
+                        notifyWarning('Maximum dosaženo', 'Tvé tělo si vybudovalo toleranci. Sérum už neúčinkuje (5/5).');
+                        // Vrátit peníze a stock
+                        addMoney(item.price);
+                        state.wanderingMerchant.stock[itemId]++;
+                        return;
+                    }
+                    state.permanentItemUses[itemId] = serumUses + 1;
                     state.permanentHpBonus = (state.permanentHpBonus || 0) + 5;
                     state.char.maxHp = calculateMaxHp();
                     state.char.hp = Math.min(state.char.hp + 5, state.char.maxHp);
-                    notifySuccess('Sérum účinkuje!', '+5 max HP trvale!');
+                    notifySuccess('Sérum účinkuje!', `+5 max HP trvale! (${serumUses + 1}/5)`);
                     break;
                     
                 case 'shop_discount':
+                    // [FIX v4.0.1] Limit 5× použití (max -50% sleva)
+                    if (!state.permanentItemUses) state.permanentItemUses = {};
+                    const compassUses = state.permanentItemUses[itemId] || 0;
+                    if (compassUses >= 5) {
+                        notifyWarning('Maximum dosaženo', 'Už nemůžeš tento bonus dále stackovat (5/5).');
+                        addMoney(item.price);
+                        state.wanderingMerchant.stock[itemId]++;
+                        return;
+                    }
+                    state.permanentItemUses[itemId] = compassUses + 1;
                     state.exoticBonuses = state.exoticBonuses || {};
                     state.exoticBonuses.shopDiscount = (state.exoticBonuses.shopDiscount || 0) + 0.1;
-                    notifySuccess('Kompas aktivní!', '-10% nákupní ceny trvale!');
+                    notifySuccess('Kompas aktivní!', `-10% nákupní ceny trvale! (${compassUses + 1}/5)`);
                     break;
                     
                 case 'luck_bonus':
+                    // [FIX v4.0.1] Limit 5× použití
+                    if (!state.permanentItemUses) state.permanentItemUses = {};
+                    const luckUses = state.permanentItemUses[itemId] || 0;
+                    if (luckUses >= 5) {
+                        notifyWarning('Maximum dosaženo', 'Už nemůžeš tento bonus dále stackovat (5/5).');
+                        addMoney(item.price);
+                        state.wanderingMerchant.stock[itemId]++;
+                        return;
+                    }
+                    state.permanentItemUses[itemId] = luckUses + 1;
                     state.exoticBonuses = state.exoticBonuses || {};
                     state.exoticBonuses.luck = (state.exoticBonuses.luck || 0) + 0.15;
-                    notifySuccess('Štěstí!', '+15% šance na lepší loot (trvale)');
+                    notifySuccess('Štěstí!', `+15% šance na lepší loot trvale! (${luckUses + 1}/5)`);
                     break;
                     
                 case 'mutation_resist':
@@ -46967,9 +47002,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     break;
                     
                 case 'rad_resist':
+                    // [FIX v4.0.1] Limit 2× použití (max -100% radiace = imunita)
+                    if (!state.permanentItemUses) state.permanentItemUses = {};
+                    const radUses = state.permanentItemUses[itemId] || 0;
+                    if (radUses >= 2) {
+                        notifyWarning('Maximum dosaženo', 'Už máš plnou ochranu proti radiaci (2/2).');
+                        addMoney(item.price);
+                        state.wanderingMerchant.stock[itemId]++;
+                        return;
+                    }
+                    state.permanentItemUses[itemId] = radUses + 1;
                     state.exoticBonuses = state.exoticBonuses || {};
                     state.exoticBonuses.radResistPermanent = (state.exoticBonuses.radResistPermanent || 0) + 0.5;
-                    notifySuccess('Talisman aktivní!', '-50% radiace trvale!');
+                    notifySuccess('Talisman aktivní!', `-50% radiace trvale! (${radUses + 1}/2)`);
                     break;
                     
                 case 'super_heal':
@@ -46984,9 +47029,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     break;
                     
                 case 'damage_boost':
+                    // [FIX v4.0.1] Limit 5× použití (max +35% damage)
+                    if (!state.permanentItemUses) state.permanentItemUses = {};
+                    const dmgUses = state.permanentItemUses[itemId] || 0;
+                    if (dmgUses >= 5) {
+                        notifyWarning('Maximum dosaženo', 'Krystal už neposkytuje další bonus (5/5).');
+                        addMoney(item.price);
+                        state.wanderingMerchant.stock[itemId]++;
+                        return;
+                    }
+                    state.permanentItemUses[itemId] = dmgUses + 1;
                     state.exoticBonuses = state.exoticBonuses || {};
-                    state.exoticBonuses.damageBoost = (state.exoticBonuses.damageBoost || 0) + 0.1;
-                    notifySuccess('Krystal absorbován!', '+7% všechen damage trvale!');
+                    state.exoticBonuses.damageBoost = (state.exoticBonuses.damageBoost || 0) + 0.07;
+                    notifySuccess('Krystal absorbován!', `+7% všechen damage trvale! (${dmgUses + 1}/5)`);
                     break;
                     
                 case 'learn_recipe':
@@ -53769,8 +53824,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            const oldMax = eq.maxDurability || 200;
-            eq.maxDurability = oldMax + 100;
+            // [FIX v4.0.1] Limit max výdrže - 2× rarity base aby šlo nelimitovaně používat kity
+            const rarityBase = eq.rarity === 'legendary' ? 200 : eq.rarity === 'epic' ? 150 : eq.rarity === 'rare' ? 120 : eq.rarity === 'uncommon' ? 80 : 50;
+            const absoluteMaxDur = rarityBase * 2; // Strop: 100/160/240/300/400 podle rarity
+            
+            const oldMax = eq.maxDurability || rarityBase;
+            
+            if (oldMax >= absoluteMaxDur) {
+                notifyWarning('🔩 Maximum dosaženo', `${eq.name || slot} už má maximální možnou výdrž (${oldMax}). Tento předmět nelze dále vyztužit.`);
+                return;
+            }
+            
+            // Přidat 100, ale ne přes strop
+            const newMax = Math.min(oldMax + 100, absoluteMaxDur);
+            const actualBonus = newMax - oldMax;
+            
+            eq.maxDurability = newMax;
             eq.durability = eq.maxDurability; // Plně opraví + zvýší max
             
             // Spotřebuj kit
@@ -53781,8 +53850,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="text-align: center;">
                     <div style="font-size: 3rem;">🔩</div>
                     <p style="color: #8bc34a;">${eq.icon || '🔧'} ${eq.name || slot} vyztužen!</p>
-                    <p style="color: #ffd700;">Max výdrž: ${oldMax} → ${eq.maxDurability}</p>
+                    <p style="color: #ffd700;">Max výdrž: ${oldMax} → ${eq.maxDurability} (+${actualBonus})</p>
                     <p style="color: #4caf50;">Výdrž plně obnovena na ${eq.maxDurability}/${eq.maxDurability}</p>
+                    ${newMax >= absoluteMaxDur ? `<p style="color: #ff9800; font-size: 0.85rem; margin-top: 0.5rem;">⚠️ Dosažen strop pro ${eq.rarity || 'common'} (max ${absoluteMaxDur})</p>` : `<p style="color: #888; font-size: 0.75rem; margin-top: 0.5rem;">Strop pro ${eq.rarity || 'common'}: ${absoluteMaxDur}</p>`}
                 </div>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
             `);
@@ -60293,14 +60363,9 @@ function openFullscreenMap() {
                 }
             }
             
-            // === RESET EXCLUDED POZIC: odstraň dočasná vyloučení z dungeonu ===
-            if (state.savedCompanionPositions) {
-                Object.keys(state.savedCompanionPositions).forEach(compId => {
-                    if (state.savedCompanionPositions[compId]?.excluded) {
-                        delete state.savedCompanionPositions[compId];
-                    }
-                });
-            }
+            // === [FIX v4.0.1] Excluded pozice se NESMAZÁVAJÍ automaticky ===
+            // Hráč si excluded přeje zachovat napříč všemi boji dokud sám nezmění.
+            // Když nastaví "nebojuje", společník zůstane vyloučený i v dalších bojích.
             
             const dungeonData = DUNGEON_FLOORS[dungeonId];
             const totalFloors = dungeonData?.floors?.length || 1;
@@ -77162,9 +77227,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (state.skipPreCombatSetup && state.savedCompanionPositions && Object.keys(state.savedCompanionPositions).length > 0) {
                     // Načti uložené pozice do preCombatPositions
                     window.preCombatPositions = {...state.savedCompanionPositions};
+                    // [FIX v4.0.1] Nastav i companionPositionsOverride - jinak se excluded ignoruje a společník se zapojí
+                    window.companionPositionsOverride = {...state.savedCompanionPositions};
                     window.pendingEnemyGroup = enemyGroup;
                     window.pendingCombatType = combatType;
-                    console.log('⚡ Skip pre-combat: using saved positions');
+                    console.log('⚡ Skip pre-combat: using saved positions, override:', JSON.stringify(window.companionPositionsOverride));
                     // Pokračuj s uloženým nastavením
                 } else {
                     console.log('🎮 Showing pre-combat setup for', aliveCompanions.length, 'companions');
@@ -78867,8 +78934,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Damage z terénu
                     if (terrain?.damage) {
                         // [FIX BUG #23] Nomád skill: žádné postihy za terén (skip damage tile pro hráče)
+                        // [FIX v4.0.1] Nomad je v skillTree.exploration, ne survival! Opravený klíč.
                         let _skipTerrainDmg = false;
-                        if (u.isPlayer && (state.skillTree?.survival?.nomad || 0) > 0) {
+                        if (u.isPlayer && (state.skillTree?.exploration?.nomad || 0) > 0) {
                             _skipTerrainDmg = true;
                         }
                         if (!_skipTerrainDmg) {
@@ -80916,7 +80984,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 let _appliedDefBonus = terrain.defenseBonus;
                 if (target.isPlayer && _appliedDefBonus < 0 && typeof getSkillTreeBonus === 'function') {
                     // nomad skill: noTerrainPenalty boolean
-                    const _nomadLvl = state.skillTree?.survival?.nomad || 0;
+                    // [FIX v4.0.1] Nomad je v exploration tree, ne survival
+                    const _nomadLvl = state.skillTree?.exploration?.nomad || 0;
                     if (_nomadLvl > 0) _appliedDefBonus = 0;
                 }
                 if (_appliedDefBonus !== 0) defense = Math.floor(defense * (1 + _appliedDefBonus));
@@ -83380,9 +83449,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (terrain?.defenseBonus) {
                 // [FIX BUG #23] Nomád skill: žádné postihy za terén
+                // [FIX v4.0.1] Nomad je v exploration tree, ne survival
                 let _appliedDefBonus2 = terrain.defenseBonus;
                 if (target.isPlayer && _appliedDefBonus2 < 0) {
-                    const _nomadLvl2 = state.skillTree?.survival?.nomad || 0;
+                    const _nomadLvl2 = state.skillTree?.exploration?.nomad || 0;
                     if (_nomadLvl2 > 0) _appliedDefBonus2 = 0;
                 }
                 if (_appliedDefBonus2 !== 0) defense = Math.floor(defense * (1 + _appliedDefBonus2));
@@ -94737,10 +94807,46 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [FIX v4.0.1] Track recent revive time pro restoreCombatFromState ochranu
             state.lastReviveTime = Date.now();
             
+            // [FIX v4.0.1] Reset všech bojových debuffů a DoT - aby smrt vše vyresetovala
+            // Předtím zůstávaly aktivní kletby/nemoci/otravení/únava i po smrti, což způsobovalo
+            // že hráč šel do dalšího boje "oslabený" a dostal insta-kill.
+            try {
+                if (state.combatDebuffs) state.combatDebuffs = {};
+                // Otrávení a závislosti - reset (smrt mohla být způsobená i jimi)
+                if (state.intoxication) {
+                    state.intoxication.alcohol = 0;
+                    state.intoxication.drugs = 0;
+                    // Závislost (addiction) zůstává - to je dlouhodobá vlastnost
+                }
+                // Reset všechny aktivní kletby (curses)
+                if (state.curses?.active && state.curses.active.length > 0) {
+                    const curseCount = state.curses.active.length;
+                    state.curses.totalRemoved = (state.curses.totalRemoved || 0) + curseCount;
+                    state.curses.active = [];
+                    addLog(`💀 Smrt zlomila ${curseCount} kletbu/y`, '✨');
+                }
+                // Disease: smrt nevyléčí nemoc, ale resetuje HP drain protection (player dostal 50% HP)
+                // diseases zůstávají - to je "realistické" že nemoc přežije respawn
+                
+                // Reset weapon buffs (krátkodobé efekty)
+                state.weaponBuff = null;
+                
+                // Reset combat-only buffs co měl hráč v boji
+                if (state.buffs) {
+                    Object.keys(state.buffs).forEach(buffKey => {
+                        const buff = state.buffs[buffKey];
+                        // Krátkodobé buffy (< 5 minut) maž
+                        if (buff?.until && (buff.until - Date.now()) < 5 * 60 * 1000) {
+                            delete state.buffs[buffKey];
+                        }
+                    });
+                }
+            } catch(e) { console.warn('Respawn debuff reset error:', e); }
+            
             // [FIX v4.0.1] Použij sjednocený cleanup helper - SINGLE SOURCE OF TRUTH
             // Nahrazuje původních 11 vlastností co se musely ručně mazat (často zapomenuté).
             _cleanupCombatState();
-            console.log('💀 Combat state vyčištěn po smrti');
+            console.log('💀 Combat state + debuffs vyčištěny po smrti');
             
             // Teleport do úkrytu
             state.world.currentLocation = 'shelter';
@@ -98040,6 +98146,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Načti chat zprávy
                 listenToChat();
             listenToClanChat();
+            // [v4.0.1] Staff chat - jen pro adminy a moderátory
+            if (typeof listenToStaffChat === 'function') listenToStaffChat();
                 
                 // Načti marketplace
                 listenToMarketplace();
@@ -101896,22 +102004,58 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 </button>
             `;
             
-            // Admin tlačítko pro odměnu
+            // === MODERÁTORSKÁ TLAČÍTKA (podle permission) ===
+            // Tlačítka se zobrazí podle role - admin vidí vše, moderátor jen co může
+            const escNameJs = escapeHtml(playerName).replace(/'/g, "\\\\'");
+            
+            const modButtons = [];
+            
+            // Mute (admin + moderator + helper)
+            if (hasPermission('mute')) {
+                modButtons.push(`<button class="btn" onclick="adminQuickMute('${escNameJs}')" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%); padding: 0.7rem;">
+                    🔇 Mute chat
+                </button>`);
+            }
+            
+            // Marketplace ban (admin + moderator)
+            if (hasPermission('marketplace')) {
+                modButtons.push(`<button class="btn" onclick="adminMarketBanPlayer('${escNameJs}')" style="background: linear-gradient(135deg, #ff9800 0%, #e65100 100%); padding: 0.7rem;">
+                    🚫 Zákaz tržiště
+                </button>`);
+            }
+            
+            // Inspect player - read-only kontrola (admin + moderator s 'inspect' permission)
+            if (hasPermission('inspect') || isAdmin()) {
+                modButtons.push(`<button class="btn" onclick="closeModal(); adminShowPlayerDetail('${escNameJs}', '')" style="background: linear-gradient(135deg, #1976d2 0%, #0d47a1 100%); padding: 0.7rem;">
+                    🔍 Detaily hráče
+                </button>`);
+            }
+            
+            // Admin-only tlačítka
             if (isAdmin()) {
-                html += `
-                    <button class="btn" onclick="showQuickReward('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.8rem;">
-                        🎁 Odměna
-                    </button>
-                    <button class="btn" onclick="adminQuickMute('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%); padding: 0.8rem;">
-                        🔇 Mute
-                    </button>
-                    <button class="btn" onclick="adminQuickBan('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #f44336 0%, #c62828 100%); padding: 0.8rem; grid-column: span 2;">
-                        🚫 Banovat
-                    </button>
-                    <button class="btn" onclick="adminGrantSuperAbility('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); padding: 0.8rem; color: #000; grid-column: span 2;">
-                        ⚡ Super schopnost
-                    </button>
-                `;
+                modButtons.push(`<button class="btn" onclick="showQuickReward('${escNameJs}')" style="background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.7rem;">
+                    🎁 Odměna
+                </button>`);
+                modButtons.push(`<button class="btn" onclick="adminGrantSuperAbility('${escNameJs}')" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); padding: 0.7rem; color: #000;">
+                    ⚡ Super schopnost
+                </button>`);
+                modButtons.push(`<button class="btn" onclick="adminQuickBan('${escNameJs}')" style="background: linear-gradient(135deg, #f44336 0%, #c62828 100%); padding: 0.7rem;">
+                    🚫 Ban hry
+                </button>`);
+                modButtons.push(`<button class="btn" onclick="adminWipePlayer('${escNameJs}', '')" style="background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; border: 1px solid #8b0000;">
+                    💀 Smazat postavu
+                </button>`);
+            }
+            
+            if (modButtons.length > 0) {
+                html += `<div style="grid-column: span 2; padding-top: 0.8rem; margin-top: 0.5rem; border-top: 1px solid #444;">
+                    <div style="color: ${isAdmin() ? '#ff5252' : '#42a5f5'}; font-size: 0.75rem; margin-bottom: 0.5rem; text-align: center; font-weight: bold;">
+                        ${isAdmin() ? '👑 ADMIN AKCE' : '🛡️ MODERÁTOR AKCE'}
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        ${modButtons.join('')}
+                    </div>
+                </div>`;
             }
             
             html += `
@@ -102005,6 +102149,248 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Listen for typing indicators
             listenChatTyping();
         }
+        
+        // === STAFF CHAT ===
+        // Soukromý kanál pro adminy a moderátory (helper nemá přístup)
+        function listenToStaffChat() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            // Helper nemá přístup do staff chatu - jen admin a moderator
+            if (!isAdmin() && getStaffRole(getPlayerName()) !== 'moderator') return;
+            
+            // Cleanup předchozího listeneru
+            if (staffChatListener) {
+                try { firebaseDB.ref('chat/staff/messages').off('value', staffChatListener); } catch(e) {}
+            }
+            
+            staffChatListener = firebaseDB.ref('chat/staff/messages')
+                .orderByChild('timestamp')
+                .limitToLast(100)
+                .on('value', (snapshot) => {
+                    const data = snapshot.val() || {};
+                    const newMessages = Object.entries(data).map(([k,v]) => ({...v, _key: k}))
+                        .sort((a, b) => a.timestamp - b.timestamp);
+                    
+                    // Detekce nových zpráv (pro unread badge)
+                    const lastSeenKey = 'staffChatLastSeen';
+                    const lastSeen = parseInt(localStorage.getItem(lastSeenKey) || '0');
+                    const myName = getPlayerName();
+                    const newUnread = newMessages.filter(m => m.author !== myName && m.timestamp > lastSeen).length;
+                    
+                    staffChatMessages = newMessages;
+                    
+                    // Pokud je staff chat aktivně otevřený, render a aktualizuj last seen
+                    const inOldChannelMode = currentChatChannel === 'staff' && document.getElementById('chatMessagesContainer');
+                    const inStandaloneStaffModal = document.getElementById('staffChatMessages');
+                    
+                    if (inOldChannelMode) {
+                        staffChatUnread = 0;
+                        localStorage.setItem(lastSeenKey, Date.now().toString());
+                        renderChatMessages();
+                    } else if (inStandaloneStaffModal) {
+                        // [v4.0.1] Standalone staff modal je otevřený - re-render
+                        staffChatUnread = 0;
+                        localStorage.setItem(lastSeenKey, Date.now().toString());
+                        if (typeof showStaffChatModal === 'function') showStaffChatModal();
+                    } else {
+                        staffChatUnread = newUnread;
+                    }
+                    
+                    // Update badge in chat tabs
+                    const badge = document.getElementById('staffChatBadge');
+                    if (badge) {
+                        if (staffChatUnread > 0) {
+                            badge.textContent = staffChatUnread;
+                            badge.style.display = 'inline-block';
+                        } else {
+                            badge.style.display = 'none';
+                        }
+                    }
+                });
+        }
+        window.listenToStaffChat = listenToStaffChat;
+        
+        async function sendStaffChatMessage(text) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            if (!text || !text.trim()) return;
+            if (!isAdmin() && getStaffRole(getPlayerName()) !== 'moderator') {
+                notifyWarning('Přístup odepřen', 'Staff chat je jen pro adminy a moderátory.');
+                return;
+            }
+            
+            // Rate limit
+            if (!RateLimiter.canProceed('staff_chat', 1500)) {
+                const remaining = Math.ceil(RateLimiter.getRemaining('staff_chat', 1500) / 1000);
+                notifyWarning('Příliš rychle', `Počkej ${remaining}s`);
+                return;
+            }
+            
+            const sanitizedText = escapeHtml(text.trim().substring(0, 500));
+            if (!sanitizedText) return;
+            
+            const role = isAdmin() ? 'admin' : 'moderator';
+            const roleData = STAFF_ROLES[role];
+            
+            try {
+                await firebaseDB.ref('chat/staff/messages').push({
+                    author: getPlayerName(),
+                    text: sanitizedText,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    role: role,
+                    badge: roleData?.badge || '',
+                    badgeColor: roleData?.color || ''
+                });
+                
+                // Auto-cleanup starých zpráv (jen admin) - max 200 zpráv
+                if (isAdmin()) {
+                    try {
+                        const allSnap = await firebaseDB.ref('chat/staff/messages').once('value');
+                        const all = [];
+                        allSnap.forEach(c => all.push({key: c.key, ts: c.val().timestamp || 0}));
+                        if (all.length > 200) {
+                            all.sort((a, b) => a.ts - b.ts);
+                            const toDelete = all.slice(0, all.length - 200);
+                            const updates = {};
+                            toDelete.forEach(m => updates[m.key] = null);
+                            await firebaseDB.ref('chat/staff/messages').update(updates);
+                        }
+                    } catch(e) {}
+                }
+            } catch(e) {
+                console.error('Staff chat send error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odeslat zprávu.');
+            }
+        }
+        window.sendStaffChatMessage = sendStaffChatMessage;
+        
+        // [v4.0.1] Samostatný staff chat modal (volaný z Online menu)
+        function showStaffChatModal() {
+            if (!isAdmin() && getStaffRole(getPlayerName()) !== 'moderator') {
+                notifyWarning('Přístup odepřen', 'Staff chat je jen pro adminy a moderátory.');
+                return;
+            }
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Multiplayer není aktivní.');
+                return;
+            }
+            
+            // Reset unread counter
+            staffChatUnread = 0;
+            localStorage.setItem('staffChatLastSeen', Date.now().toString());
+            
+            const myName = getPlayerName();
+            const myRole = isAdmin() ? 'admin' : 'moderator';
+            const myRoleData = STAFF_ROLES[myRole];
+            
+            // Render messages
+            let messagesHtml = '';
+            if (staffChatMessages.length === 0) {
+                messagesHtml = '<div style="text-align: center; padding: 2rem; color: #888;">🛡️ Žádné staff zprávy. Buď první!</div>';
+            } else {
+                staffChatMessages.forEach(msg => {
+                    const isMe = msg.author === myName;
+                    const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('cs', {hour: '2-digit', minute: '2-digit'}) : '';
+                    const badgeColor = msg.badgeColor || '#888';
+                    messagesHtml += `<div style="background: ${isMe ? '#1a2a3a' : '#1a1a1a'}; padding: 0.5rem 0.7rem; margin-bottom: 0.3rem; border-radius: 6px; border-left: 3px solid ${badgeColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.2rem;">
+                            <div>
+                                <span style="color: ${badgeColor}; font-weight: bold; font-size: 0.85rem;">${escapeHtml(msg.badge || '')}</span>
+                                <span style="color: #fff; font-weight: bold;">${escapeHtml(msg.author || '?')}</span>
+                            </div>
+                            <span style="color: #666; font-size: 0.7rem;">${time}</span>
+                        </div>
+                        <div style="color: #ccc; font-size: 0.9rem; word-break: break-word;">${msg.text || ''}</div>
+                    </div>`;
+                });
+            }
+            
+            // Get list of staff online (z STAFF_MEMBERS + online)
+            const staffMembers = Object.entries(STAFF_MEMBERS).map(([name, role]) => ({
+                name, role, roleData: STAFF_ROLES[role]
+            }));
+            
+            const html = `
+                <div style="background: linear-gradient(180deg, #1a0a25 0%, #0a0515 100%); padding: 0.6rem; border-radius: 6px; margin-bottom: 0.8rem; border: 1px solid #4a2a7a;">
+                    <div style="color: #b388ff; font-size: 0.85rem; font-weight: bold; margin-bottom: 0.3rem;">🛡️ Staff chat</div>
+                    <div style="color: #888; font-size: 0.75rem;">Soukromý kanál pro adminy a moderátory. Helper sem nevidí.</div>
+                </div>
+                
+                <div style="background: #0a0a0a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid #333;">
+                    <div style="color: #888; font-size: 0.75rem; margin-bottom: 0.3rem;">👥 Staff členové (${staffMembers.length}):</div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.3rem;">
+                        ${staffMembers.map(s => `<span style="background: ${s.roleData?.color || '#444'}22; color: ${s.roleData?.color || '#aaa'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; border: 1px solid ${s.roleData?.color || '#444'}55;">${s.roleData?.icon || ''} ${escapeHtml(s.name)}</span>`).join('')}
+                    </div>
+                </div>
+                
+                <div id="staffChatMessages" style="max-height: 50vh; min-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch; background: linear-gradient(180deg, #050505 0%, #020202 100%); border-radius: 6px; padding: 0.6rem; border: 1px solid #2a1a3a; box-shadow: inset 0 0 15px rgba(0,0,0,0.5);">
+                    ${messagesHtml}
+                </div>
+                
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.6rem;">
+                    <input type="text" id="staffChatInput" placeholder="Napiš staff zprávu..." maxlength="500" 
+                        style="flex: 1; padding: 0.6rem; background: #1a1a1a; border: 1px solid #4a2a7a; color: #fff; border-radius: 4px;"
+                        onkeypress="if(event.key==='Enter') sendStaffFromInput()">
+                    <button class="btn" onclick="sendStaffFromInput()" style="background: linear-gradient(135deg, #7c3aed 0%, #4a2a7a 100%); padding: 0.6rem 1rem;">📤 Poslat</button>
+                </div>
+                
+                <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #333; padding: 0.5rem;">← Zavřít</button>
+            `;
+            
+            showModal('🛡️ Staff Chat', html);
+            
+            // Auto-scroll to bottom
+            setTimeout(() => {
+                const container = document.getElementById('staffChatMessages');
+                if (container) container.scrollTop = container.scrollHeight;
+            }, 100);
+            
+            // Update badge
+            const badge = document.getElementById('staffChatBadge');
+            if (badge) badge.style.display = 'none';
+        }
+        window.showStaffChatModal = showStaffChatModal;
+        
+        function sendStaffFromInput() {
+            const input = document.getElementById('staffChatInput');
+            if (input && input.value.trim()) {
+                const text = input.value.trim();
+                input.value = '';
+                sendStaffChatMessage(text).then(() => {
+                    // Re-render po odeslání
+                    setTimeout(() => {
+                        if (document.getElementById('staffChatMessages')) {
+                            showStaffChatModal();
+                        }
+                    }, 300);
+                });
+            }
+        }
+        window.sendStaffFromInput = sendStaffFromInput;
+        
+        function switchChatChannel(channel) {
+            currentChatChannel = channel;
+            if (channel === 'staff') {
+                staffChatUnread = 0;
+                localStorage.setItem('staffChatLastSeen', Date.now().toString());
+                const badge = document.getElementById('staffChatBadge');
+                if (badge) badge.style.display = 'none';
+            }
+            // Re-render chat messages
+            renderChatMessages();
+            // Update tab UI
+            const tabGlobal = document.getElementById('chatTabGlobal');
+            const tabStaff = document.getElementById('chatTabStaff');
+            if (tabGlobal) tabGlobal.style.background = channel === 'global' ? '#1976d2' : '#2a2a2a';
+            if (tabStaff) tabStaff.style.background = channel === 'staff' ? '#7c3aed' : '#2a2a2a';
+        }
+        window.switchChatChannel = switchChatChannel;
+        
+        function renderChatMessages() {
+            // Re-render celého chat modalu - showChatModal už obsluhuje staff/global pomocí currentChatChannel
+            if (typeof showChatModal === 'function' && document.getElementById('chatMessagesContainer')) {
+                showChatModal();
+            }
+        }
+        window.renderChatMessages = renderChatMessages;
         
         // === KLAN CHAT ===
         let clanChatMessages = [];
@@ -102142,6 +102528,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         async function sendChatMessage(text) {
             if (!multiplayerEnabled || !firebaseDB) return;
             if (!text || !text.trim()) return;
+            
+            // [v4.0.1] Routing: pokud je aktivní staff channel, posílej tam
+            if (currentChatChannel === 'staff') {
+                return sendStaffChatMessage(text);
+            }
             
             // Kontrola mute
             const playerName = getPlayerName();
@@ -103226,7 +103617,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             let messagesHtml = '';
             const myName = getPlayerName();
             
-            if (chatMessages.length === 0) {
+            // [v4.0.1] Pokud je aktivní staff channel, render staff messages
+            const isStaffChannel = currentChatChannel === 'staff' && (isAdmin() || getStaffRole(myName) === 'moderator');
+            if (isStaffChannel) {
+                if (staffChatMessages.length === 0) {
+                    messagesHtml = '<div style="text-align: center; padding: 2rem; color: #888;">🛡️ Žádné staff zprávy. Buď první!</div>';
+                } else {
+                    staffChatMessages.forEach(msg => {
+                        const isMe = msg.author === myName;
+                        const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('cs', {hour: '2-digit', minute: '2-digit'}) : '';
+                        const badgeColor = msg.badgeColor || '#888';
+                        messagesHtml += `<div style="background: ${isMe ? '#1a2a3a' : '#1a1a1a'}; padding: 0.5rem 0.7rem; margin-bottom: 0.3rem; border-radius: 6px; border-left: 3px solid ${badgeColor};">
+                            <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.2rem;">
+                                <div>
+                                    <span style="color: ${badgeColor}; font-weight: bold; font-size: 0.85rem;">${escapeHtml(msg.badge || '')}</span>
+                                    <span style="color: #fff; font-weight: bold;">${escapeHtml(msg.author || '?')}</span>
+                                </div>
+                                <span style="color: #666; font-size: 0.7rem;">${time}</span>
+                            </div>
+                            <div style="color: #ccc; font-size: 0.9rem; word-break: break-word;">${msg.text || ''}</div>
+                        </div>`;
+                    });
+                }
+            } else if (chatMessages.length === 0) {
                 messagesHtml = '<div style="text-align: center; padding: 2rem; color: #666;">Žádné zprávy... Buď první!</div>';
             } else {
                 window._chatMsgTexts = [];
@@ -103611,6 +104024,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ` : `
                 <!-- GLOBÁLNÍ CHAT -->
                 <div style="position: relative;">
+                    ${(isAdmin() || getStaffRole(getPlayerName()) === 'moderator') ? `
+                    <!-- [v4.0.1] Staff chat tab switcher -->
+                    <div style="display: flex; gap: 0.3rem; margin-bottom: 0.5rem;">
+                        <button id="chatTabGlobal" class="btn" onclick="switchChatChannel('global')" style="flex: 1; padding: 0.4rem; font-size: 0.85rem; background: ${currentChatChannel === 'global' ? '#1976d2' : '#2a2a2a'}; border: 1px solid #444;">
+                            🌍 Globální
+                        </button>
+                        <button id="chatTabStaff" class="btn" onclick="switchChatChannel('staff')" style="flex: 1; padding: 0.4rem; font-size: 0.85rem; background: ${currentChatChannel === 'staff' ? '#7c3aed' : '#2a2a2a'}; border: 1px solid #444; position: relative;">
+                            🛡️ Staff
+                            <span id="staffChatBadge" style="display: ${staffChatUnread > 0 ? 'inline-block' : 'none'}; background: #f44336; color: #fff; border-radius: 10px; padding: 0 6px; font-size: 0.7rem; margin-left: 0.3rem;">${staffChatUnread || ''}</span>
+                        </button>
+                    </div>
+                    ` : ''}
                     <div id="chatMessagesContainer" style="max-height: ${_chatPoll?.question ? '32vh' : '45vh'}; min-height: 150px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; overscroll-behavior-y: contain; touch-action: pan-y; background: linear-gradient(180deg, #080805 0%, #050503 100%); border-radius: 2px; padding: 0.8rem; position: relative; border: 1px solid #2a2010; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
                         ${messagesHtml}
                     </div>
@@ -103934,6 +104359,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         async function createMarketOffer(item, price) {
             if (!multiplayerEnabled || !firebaseDB) return;
             
+            // [v4.0.1] Marketplace ban check - moderator může zakázat hráči přístup na tržiště
+            try {
+                const safeName = (getPlayerName() || '').replace(/[\\/.#$\[\]]/g, '_');
+                const banSnap = await firebaseDB.ref(`marketplace/banned/${safeName}`).once('value');
+                const banData = banSnap.val();
+                if (banData && banData.until && Date.now() < banData.until) {
+                    const remainingMs = banData.until - Date.now();
+                    const hours = Math.ceil(remainingMs / (60 * 60 * 1000));
+                    const reason = banData.reason || 'porušení pravidel';
+                    notifyWarning('🚫 Zákaz tržiště', 
+                        `Máš zakázaný přístup na tržiště (${reason}). Zbývá ${hours}h. Bližší info od ${banData.by || 'moderátora'}.`);
+                    return;
+                }
+                // Permanentní ban - until se rovná 0 nebo není
+                if (banData && banData.permanent) {
+                    notifyWarning('🚫 Trvalý zákaz tržiště', 
+                        `Máš trvale zakázaný přístup na tržiště (${banData.reason || 'porušení pravidel'}). Kontaktuj ${banData.by || 'moderátora'}.`);
+                    return;
+                }
+            } catch(e) { console.warn('Marketplace ban check error:', e); }
+            
             // Sjednocená kontrola zkažení - blokuj prodej zkažených jídel
             if (PERISHABLE_FOOD[item.id]) {
                 let isSpoiled = false;
@@ -104184,6 +104630,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         async function buyMarketOffer(offerId, buyCount = 1) {
             if (!multiplayerEnabled || !firebaseDB) return;
+            
+            // [v4.0.1] Marketplace ban check - banovaný hráč nemůže ani kupovat
+            try {
+                const safeName = (getPlayerName() || '').replace(/[\\/.#$\[\]]/g, '_');
+                const banSnap = await firebaseDB.ref(`marketplace/banned/${safeName}`).once('value');
+                const banData = banSnap.val();
+                if (banData && (banData.permanent || (banData.until && Date.now() < banData.until))) {
+                    const reason = banData.reason || 'porušení pravidel';
+                    notifyWarning('🚫 Zákaz tržiště', `Máš zakázaný přístup na tržiště (${reason}).`);
+                    return;
+                }
+            } catch(e) { console.warn('Marketplace ban check error:', e); }
             
             const offer = marketplaceOffers.find(o => o.id === offerId);
             if (!offer) return;
@@ -108216,6 +108674,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         return `<button class="btn wl-btn wl-scratch" onclick="showPokerLobby()" style="flex:1;background:linear-gradient(180deg, #0a1510 0%, #050a08 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #1a4a2a;"><span style="font-size:0.7rem;color:#4caf50">🃏 TEXAS HOLD'EM POKER${playerCount > 0 ? ` <span style="color:#ffd700">(${playerCount} hr${playerCount === 1 ? 'áč' : playerCount < 5 ? 'áči' : 'áčů'})</span>` : ''}</span></button>`;
                     })()}
                 </div>
+                
+                <!-- 🛡️ STAFF CHAT (jen admin/moderator) -->
+                ${(isAdmin() || getStaffRole(getPlayerName()) === 'moderator') ? `
+                <div style="display: flex; gap: 3px; margin-bottom: 4px;">
+                    <button class="btn wl-btn" onclick="showStaffChatModal()" style="flex:1;background:linear-gradient(180deg, #1a0a25 0%, #0a0515 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #4a2a7a;position:relative;">
+                        <span style="font-size:0.7rem;color:#b388ff;font-weight:bold;">🛡️ STAFF CHAT${staffChatUnread > 0 ? ` <span style="color:#f44336;background:#2a0a0a;padding:0 6px;border-radius:8px;font-size:0.65rem;">${staffChatUnread}</span>` : ''}</span>
+                    </button>
+                </div>
+                ` : ''}
                 
                 <!-- OBNOVIT HRU -->
                 <button class="btn wl-btn wl-scratch wl-dirt" onclick="location.reload()" style="width: 100%; background: #0a0a0a; padding: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; margin-bottom: 0.4rem; ">
@@ -113148,6 +113615,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Odeslat poptávku
         async function submitWantedAd() {
+            // [v4.0.1] Marketplace ban check - i poptávky jsou součástí tržiště
+            try {
+                if (firebaseDB) {
+                    const safeName = (getPlayerName() || '').replace(/[\\/.#$\[\]]/g, '_');
+                    const banSnap = await firebaseDB.ref(`marketplace/banned/${safeName}`).once('value');
+                    const banData = banSnap.val();
+                    if (banData && (banData.permanent || (banData.until && Date.now() < banData.until))) {
+                        const reason = banData.reason || 'porušení pravidel';
+                        notifyWarning('🚫 Zákaz tržiště', `Máš zakázaný přístup na tržiště (${reason}). Nemůžeš vytvářet poptávky.`);
+                        return;
+                    }
+                }
+            } catch(e) { console.warn('Marketplace ban check error:', e); }
+            
             let itemName = document.getElementById('wantedItemName')?.value?.trim();
             const maxPrice = parseInt(document.getElementById('wantedMaxPrice')?.value) || null;
             const note = document.getElementById('wantedNote')?.value?.trim();
@@ -115462,6 +115943,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <button class="btn" onclick="adminInspectPlayer()" style="background: #555;">← Zpět na seznam</button>
                     <button class="btn" onclick="adminSetPlayerMoney('${escapeHtml(playerName).replace(/'/g, "\\'")}'); closeModal();" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">💰 Nastavit peníze</button>
                 </div>
+                <div style="margin-top: 0.5rem;">
+                    <button class="btn" onclick="adminMarketBanPlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="width: 100%; background: linear-gradient(135deg, #4a2a0a 0%, #2a1505 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b6000;">
+                        🚫 Zákaz tržiště (marketplace ban)
+                    </button>
+                    <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Hráč nebude moci prodávat, kupovat ani vytvářet poptávky na tržišti.</p>
+                </div>
                 <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #2a0a0a;">
                     <button class="btn" onclick="adminWipePlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}', '${uid || ''}')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b0000;">
                         💀 SMAZAT POSTAVU (cheater hunt)
@@ -117284,6 +117771,159 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         window.adminWipePlayer = adminWipePlayer;
+        
+        // === MARKETPLACE BAN ===
+        // Moderátor může zakázat hráči přístup na tržiště (prodej, nákup, poptávky)
+        async function adminMarketBanPlayer(playerName) {
+            // Permission: marketplace (admin i moderator mají)
+            if (!hasPermission('marketplace')) {
+                notifyWarning('Nedostatek práv', 'K zákazu tržiště potřebuješ marketplace permission.');
+                return;
+            }
+            if (!firebaseDB) {
+                notifyWarning('Offline', 'Multiplayer není aktivní.');
+                return;
+            }
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]]/g, '_');
+            
+            // Zjisti jestli je už banovaný
+            let existingBan = null;
+            try {
+                const snap = await firebaseDB.ref(`marketplace/banned/${safeName}`).once('value');
+                existingBan = snap.val();
+            } catch(e) {}
+            
+            const escName = escapeHtml(playerName);
+            const escNameJs = escName.replace(/'/g, "\\'");
+            
+            let existingHtml = '';
+            if (existingBan) {
+                if (existingBan.permanent) {
+                    existingHtml = `<div style="background: #4a1a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #c62828;">
+                        <strong style="color: #ff6b6b;">⚠️ Aktuální ban: TRVALÝ</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span><br>
+                        <span style="color: #888; font-size: 0.75rem;">Banoval: ${escapeHtml(existingBan.by || '?')}</span>
+                    </div>`;
+                } else if (existingBan.until && Date.now() < existingBan.until) {
+                    const remaining = Math.ceil((existingBan.until - Date.now()) / (60 * 60 * 1000));
+                    existingHtml = `<div style="background: #4a3a0a; padding: 0.6rem; border-radius: 6px; margin-bottom: 1rem; border-left: 3px solid #ff9800;">
+                        <strong style="color: #ffb74d;">⚠️ Aktuální ban: ${remaining}h zbývá</strong><br>
+                        <span style="color: #ccc; font-size: 0.85rem;">Důvod: ${escapeHtml(existingBan.reason || 'neuveden')}</span><br>
+                        <span style="color: #888; font-size: 0.75rem;">Banoval: ${escapeHtml(existingBan.by || '?')}</span>
+                    </div>`;
+                }
+            }
+            
+            const html = `
+                <div style="padding: 0.5rem;">
+                    ${existingHtml}
+                    <p style="margin-bottom: 1rem;">Hráč <strong style="color: #ff9800;">${escName}</strong> nebude moci prodávat, kupovat ani vytvářet poptávky na tržišti.</p>
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.3rem;">Důvod (zobrazí se hráči):</label>
+                    <input type="text" id="banReasonInput" placeholder="Např. spam levných nabídek, podvodné ceny..." 
+                        style="width: 100%; padding: 0.5rem; background: #1a1a1a; border: 1px solid #555; color: #fff; border-radius: 4px; margin-bottom: 1rem;" />
+                    
+                    <label style="display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.5rem;">Délka zákazu:</label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.4rem;">
+                        <button class="btn" onclick="confirmMarketBan('${escNameJs}', 24)" style="background: #5d4037;">⏰ 24 hodin</button>
+                        <button class="btn" onclick="confirmMarketBan('${escNameJs}', 72)" style="background: #6a4c3a;">⏰ 3 dny</button>
+                        <button class="btn" onclick="confirmMarketBan('${escNameJs}', 168)" style="background: #ff9800;">⏰ 7 dní</button>
+                        <button class="btn" onclick="confirmMarketBan('${escNameJs}', 720)" style="background: #ff5722;">⏰ 30 dní</button>
+                    </div>
+                    <button class="btn" onclick="confirmMarketBan('${escNameJs}', 'permanent')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); border: 1px solid #8b0000;">💀 TRVALÝ ZÁKAZ</button>
+                    
+                    ${existingBan ? `<button class="btn" onclick="adminUnbanFromMarket('${escNameJs}')" style="width: 100%; margin-top: 0.5rem; background: #2e7d32;">✅ Zrušit ban</button>` : ''}
+                    
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zrušit</button>
+                </div>
+            `;
+            
+            showModal('🚫 Zákaz tržiště - ' + escName, html);
+        }
+        window.adminMarketBanPlayer = adminMarketBanPlayer;
+        
+        async function confirmMarketBan(playerName, durationHours) {
+            if (!hasPermission('marketplace')) return;
+            if (!firebaseDB) return;
+            
+            const reasonInput = document.getElementById('banReasonInput');
+            const reason = reasonInput?.value?.trim() || '';
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]]/g, '_');
+            const banData = {
+                by: getPlayerName(),
+                reason: reason || 'porušení pravidel',
+                bannedAt: firebase.database.ServerValue.TIMESTAMP
+            };
+            
+            if (durationHours === 'permanent') {
+                banData.permanent = true;
+                banData.until = 0;
+            } else {
+                banData.until = Date.now() + (durationHours * 60 * 60 * 1000);
+            }
+            
+            try {
+                await firebaseDB.ref(`marketplace/banned/${safeName}`).set(banData);
+                
+                // [v4.0.1] Smaž všechny aktivní nabídky banovaného hráče
+                try {
+                    const offersSnap = await firebaseDB.ref('marketplace/offers').once('value');
+                    const updates = {};
+                    offersSnap.forEach(child => {
+                        const offer = child.val();
+                        if (offer && (offer.seller === playerName || offer.author === playerName)) {
+                            updates[child.key] = null;
+                        }
+                    });
+                    if (Object.keys(updates).length > 0) {
+                        await firebaseDB.ref('marketplace/offers').update(updates);
+                        console.log(`🚫 Smazáno ${Object.keys(updates).length} nabídek banovaného hráče`);
+                    }
+                } catch(e) { console.warn('Chyba mazání nabídek:', e); }
+                
+                // Odešli notifikaci hráči
+                try {
+                    const notifData = {
+                        type: 'marketplace_ban',
+                        title: '🚫 Zákaz tržiště',
+                        message: durationHours === 'permanent' 
+                            ? `Máš trvalý zákaz tržiště. Důvod: ${banData.reason}` 
+                            : `Máš zákaz tržiště na ${durationHours}h. Důvod: ${banData.reason}`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        from: getPlayerName()
+                    };
+                    await firebaseDB.ref(`marketplace/notifications/${safeName}`).push(notifData);
+                } catch(e) {}
+                
+                const durLabel = durationHours === 'permanent' ? 'TRVALE' : `na ${durationHours}h`;
+                notifySuccess('🚫 Zákaz uložen', `${playerName} ${durLabel}. Nabídky smazány.`);
+                closeModal();
+            } catch(e) {
+                console.error('Ban error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se uložit ban: ' + e.message);
+            }
+        }
+        window.confirmMarketBan = confirmMarketBan;
+        
+        async function adminUnbanFromMarket(playerName) {
+            if (!hasPermission('marketplace')) return;
+            if (!firebaseDB) return;
+            
+            if (!confirm(`Zrušit zákaz tržiště pro ${playerName}?`)) return;
+            
+            const safeName = playerName.replace(/[\\/.#$\[\]]/g, '_');
+            try {
+                await firebaseDB.ref(`marketplace/banned/${safeName}`).remove();
+                notifySuccess('✅ Ban zrušen', `${playerName} může opět používat tržiště.`);
+                closeModal();
+            } catch(e) {
+                console.error('Unban error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zrušit ban: ' + e.message);
+            }
+        }
+        window.adminUnbanFromMarket = adminUnbanFromMarket;
         
         function adminSetPlayerMoney(playerName) {
             if (!isAdmin()) return;
