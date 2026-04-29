@@ -70087,6 +70087,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     if (typeof updateCarryWeight === 'function') updateCarryWeight();
                     rewardItemGiven = rewardItem;
+                } else {
+                    // [FIX v4.0.1] Quest reward item not found - kompenzuj přes peníze + log
+                    // Hráč by ztratil suroviny ale nedostal nic, takže dej alespoň zlato jako náhradu.
+                    console.error('NPC quest reward item not found:', quest.reward.item);
+                    const compensation = 200; // Náhrada za nepřidělený item
+                    addMoney(compensation);
+                    notifyWarning('⚠️ Náhrada', `Předmět "${quest.reward.item}" nedostupný. Místo toho ${compensation} 💰.`);
                 }
             }
             
@@ -71946,6 +71953,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Funkce pro splnění osadnického questu
         function completeSettlerQuest(questIndex) {
+            // [FIX v4.0.1] Anti double-click - quest se nesmí dokončit 2× rychle za sebou
+            // Předtím hráč mohl ztratit 2× peníze ale dostat jen 1 odměnu (nebo žádnou).
+            if (window._completingQuest) {
+                console.log('🛑 Quest in progress, ignoring duplicate click');
+                return;
+            }
+            window._completingQuest = true;
+            try {
+                _completeSettlerQuestInner(questIndex);
+            } finally {
+                // Reset po 500ms (bezpečnostní timeout)
+                setTimeout(() => { window._completingQuest = false; }, 500);
+            }
+        }
+        function _completeSettlerQuestInner(questIndex) {
             if (!state.settlement?.activeQuests?.[questIndex]) return;
             
             const sq = state.settlement.activeQuests[questIndex];
@@ -71980,6 +72002,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!hasItem) {
                     const itemName = ITEMS.find(i => i.id === quest.request.item)?.name || quest.request.item;
                     notifyWarning('Chybí předmět!', `Potřebuješ: ${itemName}`);
+                    return;
+                }
+            }
+            // [FIX v4.0.1] Kontrola action questů (patrol, explore atd.)
+            // Předtím chyběla → hráč mohl dokončit quest s 0/3 prozkoumanými lokacemi
+            if (quest.request.action) {
+                const progress = sq.progress?.[quest.request.action + 'd'] || sq.progress?.explored || 0;
+                if (progress < (quest.request.count || 1)) {
+                    notifyWarning('Úkol nedokončen!', `Pokrok: ${progress}/${quest.request.count} (potřebuješ navštívit více lokací)`);
                     return;
                 }
             }
@@ -72051,6 +72082,37 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.inv.push({ ...rewardItem });
                     if (typeof updateCarryWeight === 'function') updateCarryWeight();
                     notifySuccess('🎁 Odměna!', `${rewardItem.icon || '📦'} ${rewardItem.name}`);
+                } else {
+                    // [FIX v4.0.1] Pokud item nelze nalézt (pool je prázdný), VRAŤ VŠECHNY suroviny + peníze
+                    // Předtím hráč ztratil suroviny + nedostal nic = velký bug
+                    console.error('Quest reward item not found:', quest.reward.item, 'pool was empty');
+                    const refunded = [];
+                    if (quest.request.money) {
+                        state.money += quest.request.money;
+                        refunded.push(`${quest.request.money} 💰`);
+                    }
+                    if (quest.request.wood) {
+                        state.resources.wood = (state.resources.wood || 0) + quest.request.wood;
+                        refunded.push(`${quest.request.wood} 🪵`);
+                    }
+                    if (quest.request.metal) {
+                        state.resources.metal = (state.resources.metal || 0) + quest.request.metal;
+                        refunded.push(`${quest.request.metal} ⚙️`);
+                    }
+                    if (quest.request.meat) {
+                        state.resources.raw_meat = (state.resources.raw_meat || 0) + quest.request.meat;
+                        refunded.push(`${quest.request.meat} 🥩`);
+                    }
+                    if (quest.request.item) {
+                        const reqItem = ITEMS.find(i => i.id === quest.request.item);
+                        if (reqItem) {
+                            state.inv.push({ ...reqItem });
+                            refunded.push(reqItem.icon + ' ' + reqItem.name);
+                        }
+                    }
+                    
+                    const refundText = refunded.length > 0 ? `Vráceno: ${refunded.join(', ')}` : 'Žádné suroviny ke vrácení.';
+                    notifyWarning('❌ Quest selhal', `Žádný vhodný předmět není dostupný. ${refundText}`);
                 }
             }
             
