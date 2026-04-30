@@ -16557,7 +16557,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             createCost: 5000,          // Cena za vytvoření klanu
             joinCost: 0,               // Vstup do klanu zdarma (stačí přijít fyzicky)
             maxMembers: 20,            // Max členů klanu
-            maxOfficers: 4,            // Max důstojníků
+            // [v6-rank] maxOfficers nahrazeno CLAN_RANKS.officer.maxSlots = 3
             clanNameMinLen: 3,
             clanNameMaxLen: 20,
             // Sdílené bonusy pro všechny členy klanu
@@ -16675,57 +16675,69 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 xpBonus: 0,
                 lootBonus: 0,
                 vaultDailyLimit: 0,        // 💰 — 0 = nelze vybírat
-                canManage: false           // Nemůže stavět/najímat/vybírat
+                canManage: false,          // Nemůže stavět/najímat/vybírat
+                maxSlots: -1,              // -1 = neomezeno
+                requiredCaptures: 0        // Min dobytá území pro povýšení SEM
             },
             warrior: {
                 id: 'warrior', tier: 2, name: 'Bojovník', icon: '⚔️', color: '#8bc34a',
                 desc: 'Aktivní člen, dobývá rychleji.',
                 captureBonus: 1,           // -1 min (14 min)
-                damageBonus: 0.02,         // +2%
+                damageBonus: 0.02,
                 xpBonus: 0,
                 lootBonus: 0,
                 vaultDailyLimit: 0,
-                canManage: false
+                canManage: false,
+                maxSlots: -1,              // neomezeno
+                requiredCaptures: 3        // 3 dobytá území
             },
             veteran: {
                 id: 'veteran', tier: 3, name: 'Veterán', icon: '🏹', color: '#4fc3f7',
                 desc: 'Zkušený bojovník. Lepší v boji i lov.',
-                captureBonus: 2,           // -2 min (13 min)
-                damageBonus: 0.05,         // +5%
+                captureBonus: 2,
+                damageBonus: 0.05,
                 xpBonus: 0.03,
                 lootBonus: 0,
                 vaultDailyLimit: 0,
-                canManage: false
+                canManage: false,
+                maxSlots: 5,               // max 5 Veteránů v klanu
+                requiredCaptures: 15
             },
             officer: {
                 id: 'officer', tier: 4, name: 'Důstojník', icon: '⭐', color: '#ce93d8',
                 desc: 'Management klanu. Spravuje budovy, najímá strážce.',
-                captureBonus: 3,           // -3 min (12 min)
+                captureBonus: 3,
                 damageBonus: 0.07,
                 xpBonus: 0.05,
                 lootBonus: 0.03,
                 vaultDailyLimit: 500,
-                canManage: true
+                canManage: true,
+                maxSlots: 3,               // max 3 Důstojníci
+                requiredCaptures: 40
             },
             commander: {
                 id: 'commander', tier: 5, name: 'Komandér', icon: '💎', color: '#ffd700',
                 desc: 'Vyšší management. Zástupce vůdce.',
-                captureBonus: 4,           // -4 min (11 min)
+                captureBonus: 4,
                 damageBonus: 0.10,
                 xpBonus: 0.07,
                 lootBonus: 0.05,
                 vaultDailyLimit: 2000,
-                canManage: true
+                canManage: true,
+                maxSlots: 1,               // max 1 Komandér
+                requiredCaptures: 100
             },
             leader: {
                 id: 'leader', tier: 6, name: 'Vůdce', icon: '👑', color: '#ffeb3b',
                 desc: 'Zakladatel klanu. Nejvyšší pravomoc.',
-                captureBonus: 5,           // -5 min (10 min)
+                captureBonus: 5,
                 damageBonus: 0.12,
                 xpBonus: 0.10,
                 lootBonus: 0.07,
-                vaultDailyLimit: -1,       // -1 = neomezeno
-                canManage: true
+                vaultDailyLimit: -1,
+                canManage: true,
+                maxSlots: 1,               // pouze 1 Vůdce (zakladatel)
+                requiredCaptures: 0        // Vůdce je zakladatel — nelze "povýšit"
             }
         };
         
@@ -16734,10 +16746,83 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return CLAN_RANKS[rankId] || CLAN_RANKS.recruit;
         }
         
+        // [v6-rank] Pořadí povýšení (od nejnižšího po nejvyšší dosažitelný přes promote)
+        // Vůdce není v řetězci — je to zakladatel, nelze ho dosáhnout přes ↑
+        const PROMOTE_CHAIN = ['recruit', 'warrior', 'veteran', 'officer', 'commander'];
+        
+        // Vrátí ID další/předchozí hodnosti, nebo null pokud na konci
+        function getNextRankId(currentRankId) {
+            const idx = PROMOTE_CHAIN.indexOf(currentRankId);
+            if (idx === -1 || idx >= PROMOTE_CHAIN.length - 1) return null;
+            return PROMOTE_CHAIN[idx + 1];
+        }
+        function getPrevRankId(currentRankId) {
+            const idx = PROMOTE_CHAIN.indexOf(currentRankId);
+            if (idx <= 0) return null;
+            return PROMOTE_CHAIN[idx - 1];
+        }
+        
         // Capture čas v minutách podle hodnosti hráče
         function getCaptureMinutes(rankId) {
             const def = getRankDef(rankId);
             return Math.max(5, 15 - (def.captureBonus || 0));  // floor 5 minut
+        }
+        
+        // [v6-rank] Spočítá kolik členů klanu má daný rank (bez sebe)
+        function countRankInClan(locationId, targetRank) {
+            const clan = window.clanOwnershipCache?.[locationId];
+            if (!clan) return 0;
+            let count = 0;
+            const counted = new Set();  // [v6-rank] Dedup proti dvojímu počítání officer v legacy + new
+            
+            if (targetRank === 'leader') return clan.leader ? 1 : 0;
+            
+            // Officers (legacy storage) jsou všichni 'officer'
+            if (targetRank === 'officer' && clan.officers) {
+                Object.values(clan.officers).forEach(o => {
+                    if (o.name === clan.leader) return;  // Vůdce nesmí být v officers
+                    if (counted.has(o.name)) return;
+                    counted.add(o.name);
+                    count++;
+                });
+            }
+            
+            // Members map — count podle rank field
+            if (clan.members) {
+                for (const m of Object.values(clan.members)) {
+                    if (m.name === clan.leader) continue;  // Vůdce nesmí být v members
+                    if (counted.has(m.name)) continue;     // Už spočítán v officers
+                    let rank = m.rank || 'recruit';
+                    if (rank === 'member') rank = 'recruit';  // legacy
+                    if (!CLAN_RANKS[rank]) rank = 'recruit';
+                    if (rank === targetRank) {
+                        counted.add(m.name);
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+        
+        // [v6-rank] Vrátí počet dobytých území daného hráče v klanu (z členské metadata)
+        function getMemberCaptures(locationId, playerName) {
+            const clan = window.clanOwnershipCache?.[locationId];
+            if (!clan) return 0;
+            const playerKey = playerName.replace(/[.#$\/\[\]]/g, '_');
+            
+            // Vůdce má unlimited (zakladatel)
+            if (clan.leader === playerName) return Infinity;
+            
+            // [v6-rank] Pokud je v obou (špatná data), vezmi vyšší hodnotu — neztratíme dobytí
+            const officerCaps = clan.officers?.[playerKey]?.captures || 0;
+            const memberCaps = clan.members?.[playerKey]?.captures || 0;
+            
+            // Pokud existuje aspoň v jednom map
+            if (clan.officers?.[playerKey] || clan.members?.[playerKey]) {
+                return Math.max(officerCaps, memberCaps);
+            }
+            
+            return 0;
         }
         
         // === ZÁSOBNÍKOVÝ SYSTÉM (přebíjení v boji) ===
@@ -100817,7 +100902,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">🗺️ Jak dobývat území?</h4>
                     <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0;">
                         <li><strong>Neutrální</strong> - obsadíš okamžitě (+20 bodů)</li>
-                        <li><strong>Dobývání</strong> - čekej 15 minut (+10 bodů)</li>
+                        <li><strong>Dobývání</strong> - čekej 10-15 minut podle hodnosti (+10 bodů)</li>
                         <li><strong>Víc hráčů</strong> - může dobývat současně!</li>
                         <li><strong style="color:#ff9800;">⚠️ Pokud má území strážce, nelze pasivně dobývat</strong> — nejdřív je musíš porazit v boji. Po vítězství získáš území okamžitě (+50 bodů).</li>
                     </ul>
@@ -100834,7 +100919,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     <h4 style="color: #ff9800; margin: 0 0 0.5rem 0;">🛡️ Strážci území</h4>
                     <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0; font-size: 0.82rem;">
-                        <li>Vůdce/důstojník může najmout <strong>až 3 strážce</strong> na každé vlastní území</li>
+                        <li><strong>Najímat smí ⭐ Důstojník / 💎 Komandér / 👑 Vůdce</strong> — Nováček/Bojovník/Veterán nemůže</li>
+                        <li>Až <strong>3 strážce</strong> na každé vlastní území</li>
                         <li>Plat z <strong>klanové kasy</strong> (25-800💰 podle úrovně)</li>
                         <li>5 typů: 👤 Nováček · 💂 Voják · 🎖️ Veterán · ⚔️ Elita · 🏆 Šampion</li>
                         <li>Nepřátele dobývající území musí strážce nejdřív porazit (bez XP/lootu)</li>
@@ -100874,6 +100960,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <li>👑 <strong>Vůdce</strong> — vše + povýšit na Důstojníka/Komandéra, vyhodit kohokoli, neomezený výběr z kasy, rozpustit klan</li>
                     </ul>
                     <p style="color: #888; font-size: 0.75rem;">💡 Povýšení/sesazení je vždy o jeden tier (↑/↓ tlačítka). Cesta: 👤 → ⚔️ → 🏹 → ⭐ → 💎</p>
+                    
+                    <h4 style="color: #7B1FA2; margin: 1rem 0 0.5rem 0;">🏴 Jak se povyšuje — limit slotů + dobytí</h4>
+                    <p style="color: #ccc; font-size: 0.85rem; margin-bottom: 0.4rem;">Aby vůdce nemohl všem dát Komandéra a obejít balanc, jsou dva typy limitů:</p>
+                    <table style="width:100%;border-collapse:collapse;font-size:0.72rem;color:#ccc;margin-bottom:0.8rem;">
+                        <tr style="background:#1a1a1a;">
+                            <th style="padding:0.3rem;text-align:left;border-bottom:1px solid #333;">Hodnost</th>
+                            <th style="padding:0.3rem;text-align:center;border-bottom:1px solid #333;">Max v klanu</th>
+                            <th style="padding:0.3rem;text-align:center;border-bottom:1px solid #333;">🏴 Vyžaduje dobytí</th>
+                        </tr>
+                        <tr><td style="padding:0.25rem;color:#aaa;">👤 Nováček</td><td style="text-align:center;">∞</td><td style="text-align:center;">—</td></tr>
+                        <tr><td style="padding:0.25rem;color:#8bc34a;">⚔️ Bojovník</td><td style="text-align:center;">∞</td><td style="text-align:center;">3</td></tr>
+                        <tr><td style="padding:0.25rem;color:#4fc3f7;">🏹 Veterán</td><td style="text-align:center;">5</td><td style="text-align:center;">15</td></tr>
+                        <tr><td style="padding:0.25rem;color:#ce93d8;">⭐ Důstojník</td><td style="text-align:center;">3</td><td style="text-align:center;">40</td></tr>
+                        <tr><td style="padding:0.25rem;color:#ffd700;">💎 Komandér</td><td style="text-align:center;">1</td><td style="text-align:center;">100</td></tr>
+                        <tr><td style="padding:0.25rem;color:#ffeb3b;">👑 Vůdce</td><td style="text-align:center;">1 (zakladatel)</td><td style="text-align:center;">—</td></tr>
+                    </table>
+                    <ul style="color: #ccc; margin: 0 0 1rem 1rem; padding: 0; font-size: 0.78rem;">
+                        <li><strong>Dobytí se počítá za:</strong> dokončený capture (10-15 min podle hodnosti, +10 bodů) <em>nebo</em> vítězství v boji se strážci (+50 bodů)</li>
+                        <li>Pouhé postávání bez dokončení se <strong>nepočítá</strong></li>
+                        <li>V klanovém panelu vedle jmen vidíš progress 🏴 <strong>X/Y</strong> — kolik dobytí má a kolik potřebuje</li>
+                        <li>Sesazení (↓) je <strong>bez požadavků</strong> — vůdce si rozhoduje sám</li>
+                        <li>Pokud je slot plný (např. 1× 💎 Komandér), <strong>musíš nejdřív sesadit</strong> stávajícího</li>
+                    </ul>
                 </div>
                 <button class="btn" onclick="showFactionHub()" style="width: 100%; margin-top: 1rem; background: #555;">← Zpět</button>
             `);
@@ -101051,7 +101160,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Kontrola jestli už dobýváme
             const myCapture = state.territoryCapture?.[locationId];
-            const amCapturing = myCapture && (Date.now() - myCapture.startTime < 15 * 60 * 1000);
+            // [v6-rank] Použij skutečnou duration ze state (rank bonus), ne hard-coded 15 min
+            const myCaptureDuration = myCapture?.duration || (15 * 60 * 1000);
+            const amCapturing = myCapture && (Date.now() - myCapture.startTime < myCaptureDuration);
             
             // Real-time listener
             if (multiplayerEnabled && firebaseDB) {
@@ -101086,6 +101197,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (activePlayers.length > 0) {
                 const playersList = activePlayers.map(p => {
                     const pClan = getClanWarInfo(p.clan);
+                    // [v6-rank] Pro cizí hráče neznáme jejich rank, takže používáme default 15 min
+                    // (jejich skutečný čas může být kratší podle hodnosti, ale neukazujeme přesnou hodnotu)
                     const remaining = Math.ceil((15 * 60 * 1000 - (Date.now() - p.startTime)) / 60000);
                     return '<span style="color: ' + (pClan?.color || '#888') + ';">' + (pClan?.icon || '?') + ' ' + p.name + ' (' + remaining + 'min)</span>';
                 }).join(', ');
@@ -101153,7 +101266,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             <div style="color:#4caf50;font-size:0.85rem;font-weight:bold;">🛡️ Obrana území</div>
                             <div style="color:#888;font-size:0.75rem;margin-top:0.15rem;">${guardCount > 0 ? `${guardSummary} · ${guardCount}/${MAX_GUARDS_PER_TERRITORY} strážců` : '⚠️ Žádní strážci — území je nechráněné!'}</div>
                         </div>
-                        <button class="btn" onclick="showHireGuardModal('${locationId}')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);font-size:0.75rem;padding:0.35rem 0.6rem;flex-shrink:0;">${guardCount > 0 ? '⚙️ Spravovat' : '🛡️ Najmout'}</button>
+                        ${canManageClan(locationId) 
+                            ? `<button class="btn" onclick="showHireGuardModal('${locationId}')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);font-size:0.75rem;padding:0.35rem 0.6rem;flex-shrink:0;">${guardCount > 0 ? '⚙️ Spravovat' : '🛡️ Najmout'}</button>` 
+                            : `<span style="color:#888;font-size:0.65rem;flex-shrink:0;">🔒 ⭐+</span>`}
                     </div>
                 </div>`;
             } else if (isEnemyTerritory && guardCount > 0) {
@@ -101294,9 +101409,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!myClan) { notifyWarning('Chyba', 'Klan nenalezen'); return; }
             
             const myName = getPlayerName();
-            const isLeader = myClan.leader === myName;
-            const isOfficer = Object.values(myClan.officers || {}).some(o => o.name === myName);
-            const canHire = isLeader || isOfficer;
+            // [v6-rank] canHire pro Officer/Commander/Leader
+            const canHire = canManageClan(faction);
             
             // Načti aktuální strážce
             let currentGuards = [];
@@ -101351,7 +101465,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             let infoHtml = '';
             if (!canHire) {
-                infoHtml = '<p style="color:#ff9800;text-align:center;font-size:0.8rem;padding:0.4rem;">🔒 Najímat strážce může jen vůdce nebo důstojník klanu.</p>';
+                infoHtml = '<p style="color:#ff9800;text-align:center;font-size:0.8rem;padding:0.4rem;">🔒 Najímat strážce může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.</p>';
             } else if (slotsLeft <= 0) {
                 infoHtml = `<p style="color:#888;text-align:center;font-size:0.8rem;padding:0.4rem;">✓ Maximum strážců (${MAX_GUARDS_PER_TERRITORY}/${MAX_GUARDS_PER_TERRITORY}). Pro nového počkej až někdo zemře v boji.</p>`;
             }
@@ -101417,15 +101531,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
-            // [FIX] Pouze vůdce a důstojníci mohou najímat strážce (chrání kasu)
+            // [FIX v6-rank] Pouze management (Officer/Commander/Leader) mohou najímat strážce
             await loadClanData();
             const myClan = getClanData(faction);
             if (!myClan) { notifyWarning('Chyba', 'Klan nenalezen'); return; }
             const myName = getPlayerName();
-            const isLeader = myClan.leader === myName;
-            const isOfficer = Object.values(myClan.officers || {}).some(o => o.name === myName);
-            if (!isLeader && !isOfficer) {
-                notifyWarning('🔒 Pouze důstojníci', 'Najímat strážce může jen vůdce nebo důstojník klanu');
+            if (!canManageClan(faction)) {
+                notifyWarning('🔒 Nedostatek oprávnění', 'Najímat strážce může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce');
                 return;
             }
             
@@ -101783,6 +101895,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         await contributeToTerritory(50);
                         window.territoryCache = null;
                         
+                        // [v6-rank] Inkrementuj counter dobytí — vítězství nad strážci se počítá jako 1 dobytí
+                        try {
+                            const myName = getPlayerName();
+                            const playerKey = myName.replace(/[.#$\/\[\]]/g, '_');
+                            const memberSnap = await firebaseDB.ref(`clans/${faction}/members/${playerKey}`).once('value');
+                            if (memberSnap.exists()) {
+                                await firebaseDB.ref(`clans/${faction}/members/${playerKey}/captures`).transaction(c => (c || 0) + 1);
+                            } else {
+                                const officerSnap = await firebaseDB.ref(`clans/${faction}/officers/${playerKey}`).once('value');
+                                if (officerSnap.exists()) {
+                                    await firebaseDB.ref(`clans/${faction}/officers/${playerKey}/captures`).transaction(c => (c || 0) + 1);
+                                }
+                            }
+                        } catch(e) { console.warn('Guard capture counter error:', e); }
+                        
                         // Jen notifikace, ne modal
                         notifySuccess('🏆 Území dobyto!', `Území nyní patří [${(getClanWarInfo(faction)?.name || faction)}]! +50 bodů`);
                     } catch(e) {
@@ -102012,7 +102139,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const lockedDur = state.territoryCapture[locationId].duration || CAPTURE_DURATION;
                 const elapsed = Date.now() - state.territoryCapture[locationId].startTime;
                 if (elapsed < lockedDur) {
-                    const remaining = Math.ceil((CAPTURE_DURATION - elapsed) / 60000);
+                    const remaining = Math.ceil((lockedDur - elapsed) / 60000);  // [v6-rank] Použij lockedDur
                     notifyInfo('🏴 Dobývání probíhá', `Zbývá ${remaining} min - zůstaň na místě!`);
                     return;
                 }
@@ -102038,10 +102165,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!state.territoryCapture) state.territoryCapture = {};
             state.territoryCapture[locationId] = {
                 startTime: Date.now(),
-                faction: faction
+                faction: faction,
+                duration: CAPTURE_DURATION,  // [v6-rank] Lock duration při startu
+                rank: myRank1                // [v6-rank] Ulož rank pro UI
             };
             
-            notifySuccess(`🏴 Dobývání začalo!`, `${factionData.icon} +10 bodů za 15 min - zůstaň na místě!`);
+            const rankDef1 = getRankDef(myRank1);
+            const rankNote1 = (rankDef1.captureBonus > 0) ? ` (${rankDef1.icon} bonus −${rankDef1.captureBonus} min)` : '';
+            notifySuccess(`🏴 Dobývání začalo!`, `${factionData.icon} +10 bodů za ${captureMinutes1} min${rankNote1} - zůstaň na místě!`);
             saveGame(true);
             renderFull();
         }
@@ -102484,6 +102615,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
                     const contribRef = firebaseDB.ref('factionMembers/' + sanitizedName + '/contribution');
                     await contribRef.transaction(current => (current || 0) + POINTS_PER_CAPTURE);
+                    
+                    // [v6-rank] 7. Inkrementuj counter dobytí pro povýšení člena
+                    // (faction = locationId klanu hráče; tj. clans/{faction}/members/{name}.captures)
+                    try {
+                        const playerKey = myName.replace(/[.#$\/\[\]]/g, '_');
+                        // Try members map first (current player může být buď v members, nebo officers, nebo leader)
+                        const memberRef = firebaseDB.ref(`clans/${faction}/members/${playerKey}/captures`);
+                        const memberSnap = await firebaseDB.ref(`clans/${faction}/members/${playerKey}`).once('value');
+                        if (memberSnap.exists()) {
+                            await memberRef.transaction(current => (current || 0) + 1);
+                            console.log('🏴 Member capture counter +1 for', myName);
+                        } else {
+                            // Officer (legacy storage)
+                            const officerSnap = await firebaseDB.ref(`clans/${faction}/officers/${playerKey}`).once('value');
+                            if (officerSnap.exists()) {
+                                await firebaseDB.ref(`clans/${faction}/officers/${playerKey}/captures`).transaction(current => (current || 0) + 1);
+                                console.log('🏴 Officer capture counter +1 for', myName);
+                            }
+                            // Leader nemá counter — je vyňat z požadavků
+                        }
+                    } catch(captureErr) {
+                        console.warn('🏴 Capture counter error:', captureErr);
+                    }
                     
                     // Invaliduj cache
                     window.territoryCache = null;
@@ -118265,7 +118419,7 @@ Pro lokace typu 'dungeon':
 <strong>⚔️ KLANOVÉ DOBÝVÁNÍ</strong>
 
 Pro lokace typu 'clan_land':
-• <strong>Stůj 15 minut na lokaci</strong> = +10 bodů klanu
+• <strong>Stůj 10-15 minut na lokaci</strong> (podle hodnosti) = +10 bodů klanu
 • Sleduj postup bar (real-time)
 • <strong>00:00 SEČ (půlnoc)</strong>: klan s nejvíc body vyhraje
 • Vítězný klan: kontrola území + body resources
@@ -118481,7 +118635,7 @@ Strážci brání území když cizí klan zaútočí.
 
 <strong>📐 ZÁKLADNÍ MECHANIKA</strong>
 
-• Stůj <strong>15 minut</strong> na lokaci = <strong>+10 bodů</strong> klanu
+• Stůj <strong>10-15 minut</strong> na lokaci (podle hodnosti — Vůdce 10 min, Nováček 15 min) = <strong>+10 bodů</strong> klanu
 • Capture postup bar zobrazuje real-time progres (% z 15 min)
 • <strong>Pulse efekt</strong> v posledních 60 sekundách
 • Po 15 min se body připíšou do Firebase (atomic transaction)
@@ -141852,6 +142006,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         // Territory capture
         window.cancelTerritoryCapture = cancelTerritoryCapture;
         window.cancelTerritoryAndTravel = cancelTerritoryAndTravel;
+        window.startTerritoryCapture = startTerritoryCapture;
         // Politický systém - Šéf Pustiny
         window.showPoliticsPanel = showPoliticsPanel;
         window.showTreasuryDetails = showTreasuryDetails;
@@ -141989,14 +142144,22 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 Object.values(clan.officers || {}).some(o => o.name === myName);
             if (!isMember) { notifyWarning('Nejsi člen', 'Sklad je jen pro členy klanu!'); return; }
             
+            // [v6-rank] Vybírat ze skladu může jen leader/officer/commander
+            const canWithdraw = canManageClan(locationId);
+            
             const storage = clan.clanStorage || {};
             const storageItems = Object.entries(storage).filter(([k,v]) => v && v.id);
             const maxSlots = CLAN_CONFIG.buildings.clan_storage.maxSlots;
             const totalItemCount = storageItems.reduce((sum, [k,v]) => sum + (v.count || 1), 0);
             
-            // Sklad - položky s tlačítkem Vzít
+            // Sklad - položky s tlačítkem Vzít (pokud má oprávnění)
             const itemsHtml = storageItems.length > 0 ? storageItems.map(([key, item]) => {
                 const cnt = item.count || 1;
+                const withdrawBtn = canWithdraw 
+                    ? (cnt > 1 
+                        ? `<button onclick="showClanStorageQtyPicker('${locationId}','${key}','withdraw',${cnt})" style="background:#c62828;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">↑ Vzít…</button>`
+                        : `<button onclick="withdrawFromClanStorage('${locationId}','${key}',1)" style="background:#c62828;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">↑ Vzít</button>`)
+                    : '';
                 return `
                 <div style="display:flex;align-items:center;gap:0.4rem;padding:0.4rem;background:#0a0a1a;border-radius:4px;margin-bottom:0.3rem;border:1px solid #222;">
                     <span style="font-size:1.1rem;">${item.icon || '📦'}</span>
@@ -142005,15 +142168,14 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         <div style="font-size:0.6rem;color:#666;">od ${escapeHtml(item.depositedBy || '?')}</div>
                     </div>
                     <span style="color:#ce93d8;font-size:0.8rem;font-weight:bold;">${cnt}×</span>
-                    ${cnt > 1 ? `
-                    <button onclick="showClanStorageQtyPicker('${locationId}','${key}','withdraw',${cnt})" 
-                        style="background:#c62828;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">↑ Vzít…</button>
-                    ` : `
-                    <button onclick="withdrawFromClanStorage('${locationId}','${key}',1)" 
-                        style="background:#c62828;border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">↑ Vzít</button>
-                    `}
+                    ${withdrawBtn}
                 </div>`;
             }).join('') : '<div style="color:#555;text-align:center;padding:1rem;font-size:0.8rem;">📦 Sklad je prázdný.</div>';
+            
+            // [v6-rank] Pokud nemá oprávnění vybrat, zobrazí informativní hlášku
+            const permissionNote = !canWithdraw 
+                ? `<div style="background:#1a1500;padding:0.4rem 0.6rem;border-radius:4px;border:1px solid #ffd70040;margin-bottom:0.4rem;font-size:0.7rem;color:#ffd700;text-align:center;">🔒 Vybírat ze skladu může jen ⭐ Důstojník a vyšší. Můžeš ale vkládat!</div>`
+                : '';
             
             // Inventář - položky k vložení (seskupené, jen suroviny/ammo/jídlo/léky/misc)
             const depositableItems = [];
@@ -142056,6 +142218,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 <details open style="margin-bottom:0.6rem;">
                     <summary style="cursor:pointer;background:#1a0a2a;padding:0.4rem 0.6rem;border-radius:6px;border:1px solid #7B1FA2;font-size:0.8rem;color:#ce93d8;">📦 Ve skladu (${storageItems.length})</summary>
                     <div style="background:#050510;padding:0.4rem;border-radius:0 0 6px 6px;border:1px solid #7B1FA2;border-top:none;max-height:200px;overflow-y:auto;">
+                        ${permissionNote}
                         ${itemsHtml}
                     </div>
                 </details>
@@ -142346,7 +142509,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             // [FIX] Permission check — vybírat ze skladu může jen leader/officer
             // Předtím: kdokoli člen mohl vybírat → "krádeže" mezi členy
             if (!canManageClan(locationId)) {
-                notifyWarning('🔒 Nedostatek oprávnění', 'Vybírat ze skladu může jen vůdce nebo důstojník. Členové mohou jen vkládat.');
+                notifyWarning('🔒 Nedostatek oprávnění', 'Vybírat ze skladu může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce. Ostatní mohou jen vkládat.');
                 return;
             }
             
@@ -142840,7 +143003,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             if (clan.members) {
                 const memberEntry = Object.values(clan.members).find(m => m.name === name);
                 if (memberEntry) {
-                    return memberEntry.rank || 'recruit';  // staré položky bez rank → recruit
+                    const r = memberEntry.rank || 'recruit';
+                    // [v6-rank] Legacy 'member' rank → mapuj na 'recruit' (nový ekvivalent)
+                    if (r === 'member') return 'recruit';
+                    // Nepoznaný rank? Fallback recruit
+                    if (!CLAN_RANKS[r]) return 'recruit';
+                    return r;
                 }
             }
             return null;
@@ -142983,6 +143151,15 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             // Zkontroluj unikátnost jména klanu
             await loadClanData();
             const allClans = window.clanOwnershipCache || {};
+            
+            // [v6-rank] Kontrola: hráč nesmí být v jiném klanu (jeden klan na hráče)
+            const myExistingClans = getMyClans();
+            if (myExistingClans.length > 0) {
+                const existing = myExistingClans[0];
+                notifyWarning('Už jsi v klanu', `Jsi již členem klanu [${existing.name}]. Pro založení nového klanu jej nejdřív opusť (nebo rozpusť, pokud jsi vůdce).`);
+                return;
+            }
+            
             const nameTaken = Object.values(allClans).some(c => c?.name?.toLowerCase() === name.toLowerCase());
             if (nameTaken) {
                 notifyWarning('Název obsazen', 'Klan s tímto názvem již existuje!');
@@ -143106,6 +143283,21 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             const myName = getPlayerName();
             
+            // [v6-rank] Backend kontrola: nesmí být v jiném klanu (UI to taky kontroluje, ale toto je ochrana proti DevTools)
+            const myExistingClans = getMyClans();
+            if (myExistingClans.length > 0) {
+                const existing = myExistingClans[0];
+                notifyWarning('Už jsi v klanu', `Jsi členem klanu [${existing.name}]. Nejdřív jej opusť.`);
+                return;
+            }
+            
+            // Kontrola: klan není plný
+            const memberCount = 1 + Object.keys(clan.members || {}).length + Object.keys(clan.officers || {}).length;
+            if (memberCount >= CLAN_CONFIG.maxMembers) {
+                notifyWarning('Klan plný', `Klan je plný (max ${CLAN_CONFIG.maxMembers} členů)!`);
+                return;
+            }
+            
             // [v4.0.1] Clan ban check
             try {
                 const safeName = myName.replace(/[\\/.#$\[\]\s+]/g, '_');
@@ -143128,7 +143320,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 await firebaseDB.ref(`clans/${locationId}/members/${memberKey}`).set({
                     name: myName,
                     joinedAt: Date.now(),
-                    rank: 'recruit'  // [v6-rank] Nový člen = Nováček
+                    rank: 'recruit',  // [v6-rank] Nový člen = Nováček
+                    captures: 0       // [v6-rank] Counter pro povýšení (start od 0)
                 });
                 // [FIX BUG] Atomický increment místo set() — 2 hráči joinující současně
                 // by jinak oba napsali stejnou hodnotu a memberCount by byl špatně
@@ -143227,11 +143420,19 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             ];
             // Officers (legacy)
             Object.values(clan.officers || {}).forEach(o => {
+                if (o.name === clan.leader) return;  // [v6-rank] Vůdce nesmí být v officers
                 allMemberEntries.push({ name: o.name, rank: 'officer' });
             });
             // Members + jejich ranky
             Object.values(clan.members || {}).forEach(m => {
-                allMemberEntries.push({ name: m.name, rank: m.rank || 'recruit' });
+                if (m.name === clan.leader) return;  // [v6-rank] Vůdce nesmí být i v members
+                // Deduplicate s officers (kdyby byl člen v obou map)
+                if (allMemberEntries.some(e => e.name === m.name)) return;
+                let memberRank = m.rank || 'recruit';
+                // Legacy 'member' → 'recruit'
+                if (memberRank === 'member') memberRank = 'recruit';
+                if (!CLAN_RANKS[memberRank]) memberRank = 'recruit';
+                allMemberEntries.push({ name: m.name, rank: memberRank });
             });
             // Sort dle tier desc
             allMemberEntries.sort((a, b) => getRankDef(b.rank).tier - getRankDef(a.rank).tier);
@@ -143243,14 +143444,48 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 const safeName = entry.name.replace(/'/g, "\\'");
                 const isMe = entry.name === myName;
                 
+                // [v6-rank] Progress info — kolik dobytí má a kolik potřebuje pro povýšení
+                const promoteChain = PROMOTE_CHAIN;  // [v6-rank] Sjednoceno do konstanty
+                const currentIdx = promoteChain.indexOf(entry.rank);
+                const nextRankId = currentIdx >= 0 && currentIdx < promoteChain.length - 1 
+                    ? promoteChain[currentIdx + 1] : null;
+                const nextDef = nextRankId ? getRankDef(nextRankId) : null;
+                const memberCaptures = entry.rank === 'leader' ? Infinity : getMemberCaptures(locationId, entry.name);
+                
                 // Permission checks
-                const canPromote = isMine && entry.rank !== 'leader' && entry.rank !== 'commander' && 
-                                   canPromoteTo(locationId, ['warrior', 'veteran', 'officer', 'commander']
-                                       [['recruit','warrior','veteran','officer'].indexOf(entry.rank)] || 'warrior');
+                const hasPermission = isMine && nextRankId && canPromoteTo(locationId, nextRankId);
+                
+                // Slot check — kolik je obsazeno na cílové hodnosti?
+                let slotsLeft = -1;  // -1 = unlimited
+                let slotsTotal = -1;
+                if (nextDef && nextDef.maxSlots !== -1) {
+                    const used = countRankInClan(locationId, nextRankId);
+                    slotsLeft = Math.max(0, nextDef.maxSlots - used);
+                    slotsTotal = nextDef.maxSlots;
+                }
+                
+                // Capture check
+                const capturesNeeded = nextDef?.requiredCaptures || 0;
+                const hasCaptures = memberCaptures >= capturesNeeded;
+                
+                const canPromote = hasPermission && hasCaptures && (slotsLeft === -1 || slotsLeft > 0);
                 const canDemote = isMine && entry.rank !== 'leader' && entry.rank !== 'recruit' &&
                                   canPromoteTo(locationId, entry.rank);
                 const canKick = isMine && entry.rank !== 'leader' && !isMe && 
                                 canKickMember(locationId, entry.name);
+                
+                // Tooltip pro promote tlačítko (proč nejde)
+                let promoteTitle = 'Povýšit o jednu hodnost';
+                let promoteDisabled = false;
+                if (nextRankId && hasPermission) {
+                    if (!hasCaptures) {
+                        promoteTitle = `Vyžaduje ${capturesNeeded} dobytí (má ${memberCaptures})`;
+                        promoteDisabled = true;
+                    } else if (slotsLeft === 0) {
+                        promoteTitle = `Plný slot — max ${slotsTotal} ${nextDef.name}${slotsTotal === 1 ? '' : 'i'} v klanu`;
+                        promoteDisabled = true;
+                    }
+                }
                 
                 // Pozadí podle rank tier (vyšší = výraznější)
                 const bgs = {
@@ -143263,11 +143498,29 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 };
                 const bg = bgs[entry.rank] || '#0a0a0a';
                 
+                // Progress hint — jen pro vůdce/komandera vidí ostatní
+                let progressHint = '';
+                if (isMine && nextRankId && entry.rank !== 'leader') {
+                    if (capturesNeeded > 0) {
+                        const pct = Math.min(100, Math.floor((memberCaptures / capturesNeeded) * 100));
+                        const color = hasCaptures ? '#4caf50' : '#888';
+                        progressHint = `<span style="color:${color};font-size:0.6rem;flex-shrink:0;" title="Dobytá území pro povýšení na ${nextDef.name}">🏴 ${memberCaptures}/${capturesNeeded}</span>`;
+                    }
+                }
+                
+                // Promote button — disabled state
+                const promoteBtn = (hasPermission && nextRankId)
+                    ? (canPromote 
+                        ? `<button onclick="promoteRank('${locationId}','${safeName}')" style="background:#2e7d32;border:none;color:#fff;padding:0.1rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.7rem;" title="${promoteTitle}">↑</button>`
+                        : `<button disabled style="background:#333;border:none;color:#666;padding:0.1rem 0.4rem;border-radius:3px;cursor:not-allowed;font-size:0.7rem;opacity:0.5;" title="${promoteTitle}">↑</button>`)
+                    : '';
+                
                 return `<div style="background:${bg};padding:0.35rem 0.6rem;border-radius:4px;margin-bottom:0.2rem;display:flex;justify-content:space-between;align-items:center;gap:0.3rem;border-left:3px solid ${def.color};">
-                    <span style="color:${def.color};flex:1;font-size:0.85rem;">${def.icon} ${escapeHtml(entry.name)}${isMe ? ' <span style="color:#888;font-size:0.65rem;">(ty)</span>' : ''}</span>
+                    <span style="color:${def.color};flex:1;font-size:0.85rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${def.icon} ${escapeHtml(entry.name)}${isMe ? ' <span style="color:#888;font-size:0.65rem;">(ty)</span>' : ''}</span>
                     <span style="color:${def.color}99;font-size:0.65rem;flex-shrink:0;">${def.name}</span>
+                    ${progressHint}
                     <div style="display:flex;gap:0.2rem;flex-shrink:0;">
-                        ${canPromote ? `<button onclick="promoteRank('${locationId}','${safeName}')" style="background:#2e7d32;border:none;color:#fff;padding:0.1rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.7rem;" title="Povýšit o jednu hodnost">↑</button>` : ''}
+                        ${promoteBtn}
                         ${canDemote ? `<button onclick="demoteRank('${locationId}','${safeName}')" style="background:#7B1FA2;border:none;color:#fff;padding:0.1rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.7rem;" title="Sesadit o jednu hodnost">↓</button>` : ''}
                         ${canKick ? `<button onclick="kickClanMember('${locationId}','${safeName}')" style="background:#c62828;border:none;color:#fff;padding:0.1rem 0.4rem;border-radius:3px;cursor:pointer;font-size:0.7rem;" title="Vyhodit z klanu">🚪</button>` : ''}
                     </div>
@@ -143370,7 +143623,10 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                                 🏦 ${_bCost} 💰${_resStr ? ' + ' + _resStr : ''} ${timeStr ? '· ' + timeStr : ''}
                             </div>
                         </div>
-                        ${reqMet ? `<button onclick="buildClanBuilding('${locationId}','${bId}')" style="background:${_canAffordAll?'#4CAF50':'#555'};border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:3px;cursor:pointer;font-size:0.65rem;flex-shrink:0;" ${_canAffordAll?'':'title="Nedostatek v kase nebo surovin"'}>🏗️ Stavět</button>` : `<span style="color:#555;font-size:0.6rem;flex-shrink:0;">🔒 ${reqName}</span>`}
+                        ${reqMet ? (canManageClan(locationId) 
+                            ? `<button onclick="buildClanBuilding('${locationId}','${bId}')" style="background:${_canAffordAll?'#4CAF50':'#555'};border:none;color:#fff;padding:0.2rem 0.5rem;border-radius:3px;cursor:pointer;font-size:0.65rem;flex-shrink:0;" ${_canAffordAll?'':'title="Nedostatek v kase nebo surovin"'}>🏗️ Stavět</button>` 
+                            : `<span style="color:#555;font-size:0.6rem;flex-shrink:0;" title="Stavět může jen Důstojník+">🔒 Mngmt</span>`) 
+                            : `<span style="color:#555;font-size:0.6rem;flex-shrink:0;">🔒 ${reqName}</span>`}
                     </div>`;
                 }
                 return '';
@@ -143379,7 +143635,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             // [NEW] Načti seznam území vlastněných tímto klanem + jejich strážce
             // Vůdce/officer odsud rovnou spravuje obranu všech území bez nutnosti je objíždět.
             let territoriesHtml = '';
-            const canManageGuards = isLeader || isOfficer;
+            // [v6-rank] Komandér taky může spravovat strážce
+            const canManageGuards = canManageClan(locationId);
             if (isMine && multiplayerEnabled && firebaseDB) {
                 try {
                     const terrSnap = await firebaseDB.ref('territories').once('value');
@@ -143404,7 +143661,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         territoriesHtml = `<details style="margin-bottom:0.6rem;">
                             <summary style="cursor:pointer;background:#0d1015;padding:0.5rem 0.7rem;border-radius:6px;border:1px solid #333;font-size:0.8rem;color:#888;">🏴 Naše území (0)</summary>
                             <div style="background:#050505;padding:0.6rem;border-radius:0 0 6px 6px;border:1px solid #333;border-top:none;">
-                                <p style="color:#666;font-size:0.75rem;text-align:center;margin:0;">Klan zatím nevlastní žádné území. Dobývej území pomocí capturů (15min) nebo bojů.</p>
+                                <p style="color:#666;font-size:0.75rem;text-align:center;margin:0;">Klan zatím nevlastní žádné území. Dobývej území pomocí capturů (10-15 min podle hodnosti) nebo bojů se strážci.</p>
                             </div>
                         </details>`;
                     } else {
@@ -143468,7 +143725,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                                 🏴 Naše území (${ownedList.length}) <span style="color:${summaryColor};font-size:0.7rem;font-weight:normal;">— ${summaryText}</span>
                             </summary>
                             <div style="background:#050a05;padding:0.5rem;border-radius:0 0 6px 6px;border:1px solid #2a4a2a;border-top:none;max-height:280px;overflow-y:auto;">
-                                ${canManageGuards ? '' : '<p style="color:#888;font-size:0.7rem;margin:0 0 0.4rem 0;font-style:italic;">🔒 Strážce může najímat jen vůdce nebo důstojník.</p>'}
+                                ${canManageGuards ? '' : '<p style="color:#888;font-size:0.7rem;margin:0 0 0.4rem 0;font-style:italic;">🔒 Strážce může najímat jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.</p>'}
                                 ${territoryRowsHtml}
                             </div>
                         </details>`;
@@ -143485,6 +143742,72 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     <div style="color:#ffd700;font-size:0.7rem;">👑 ${escapeHtml(clan.leader)}</div>
                     ${isMine ? `<div style="margin-top:0.5rem;padding:0.3rem;background:#2a1a4a;border-radius:4px;font-size:0.7rem;color:#ce93d8;">✓ Jsi členem tohoto klanu</div>` : ''}
                 </div>
+                
+                ${(() => {
+                    // [v6-rank] Banner s tvojí hodností + dobytí + progress na další level
+                    if (!isMine) return '';
+                    const myCurrentRank = getClanRole(locationId);
+                    if (!myCurrentRank) return '';
+                    const myDef = getRankDef(myCurrentRank);
+                    const myCaps = myCurrentRank === 'leader' ? '∞' : getMemberCaptures(locationId, myName);
+                    
+                    // Najdi další rank
+                    const promoteChain = PROMOTE_CHAIN;  // [v6-rank] Sjednoceno do konstanty
+                    const curIdx = promoteChain.indexOf(myCurrentRank);
+                    const nextRankId = (curIdx >= 0 && curIdx < promoteChain.length - 1) ? promoteChain[curIdx + 1] : null;
+                    const nextDef = nextRankId ? getRankDef(nextRankId) : null;
+                    
+                    let progressHtml = '';
+                    if (nextDef && myCurrentRank !== 'leader') {
+                        const need = nextDef.requiredCaptures || 0;
+                        const has = typeof myCaps === 'number' ? myCaps : 0;
+                        const pct = need > 0 ? Math.min(100, Math.floor((has / need) * 100)) : 100;
+                        const ready = has >= need;
+                        const barColor = ready ? '#4caf50' : myDef.color;
+                        progressHtml = `
+                            <div style="margin-top:0.4rem;">
+                                <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.7rem;margin-bottom:0.2rem;">
+                                    <span style="color:#888;">→ ${nextDef.icon} ${nextDef.name}</span>
+                                    <span style="color:${ready ? '#4caf50' : '#aaa'};font-weight:bold;">🏴 ${has}/${need}${ready ? ' ✓' : ''}</span>
+                                </div>
+                                <div style="background:#0a0a0a;height:5px;border-radius:3px;overflow:hidden;border:1px solid #222;">
+                                    <div style="background:${barColor};height:100%;width:${pct}%;transition:width 0.3s;"></div>
+                                </div>
+                                ${ready ? `<div style="color:#4caf50;font-size:0.65rem;text-align:center;margin-top:0.2rem;">✓ Připraven na povýšení — počkej až tě vůdce povýší</div>` : ''}
+                            </div>
+                        `;
+                    } else if (myCurrentRank === 'leader') {
+                        progressHtml = `<div style="color:#ffd700;font-size:0.65rem;text-align:center;margin-top:0.3rem;">👑 Jsi zakladatel klanu — nejvyšší hodnost</div>`;
+                    } else if (myCurrentRank === 'commander') {
+                        progressHtml = `<div style="color:#ffd700;font-size:0.65rem;text-align:center;margin-top:0.3rem;">💎 Jsi na nejvyšší dosažitelné hodnosti</div>`;
+                    }
+                    
+                    return `
+                        <div style="background:linear-gradient(135deg,${myDef.color}22,${myDef.color}05);padding:0.6rem 0.8rem;border-radius:8px;border:2px solid ${myDef.color}80;border-left:4px solid ${myDef.color};margin-bottom:0.6rem;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                                <div style="display:flex;align-items:center;gap:0.4rem;">
+                                    <span style="font-size:1.5rem;">${myDef.icon}</span>
+                                    <div>
+                                        <div style="color:${myDef.color};font-weight:bold;font-size:0.9rem;">${myDef.name}</div>
+                                        <div style="color:#888;font-size:0.65rem;">${myDef.desc}</div>
+                                    </div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="color:#aaa;font-size:0.65rem;">Tvá dobytí</div>
+                                    <div style="color:${myDef.color};font-weight:bold;font-size:1rem;">🏴 ${myCaps}</div>
+                                </div>
+                            </div>
+                            <div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid ${myDef.color}30;font-size:0.7rem;color:#bbb;display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;">
+                                <div>🏴 Capture: <strong style="color:${myDef.color};">${15 - (myDef.captureBonus||0)} min</strong></div>
+                                <div>⚔️ DMG: <strong style="color:${myDef.color};">+${Math.round((myDef.damageBonus||0)*100)}%</strong></div>
+                                <div>📚 XP: <strong style="color:${myDef.color};">+${Math.round((myDef.xpBonus||0)*100)}%</strong></div>
+                                <div>🎁 Loot: <strong style="color:${myDef.color};">+${Math.round((myDef.lootBonus||0)*100)}%</strong></div>
+                                ${myDef.canManage ? `<div style="grid-column:1/-1;color:#8bc34a;font-size:0.65rem;">✓ Může stavět budovy, najímat strážce, vybírat z kasy${myDef.vaultDailyLimit !== -1 ? ` (${myDef.vaultDailyLimit}💰/den)` : ' (neomezeno)'} a skladu</div>` : `<div style="grid-column:1/-1;color:#888;font-size:0.65rem;">— Pouze vklad do kasy/skladu, žádný management</div>`}
+                            </div>
+                            ${progressHtml}
+                        </div>
+                    `;
+                })()}
                 
                 <!-- BONUSY -->
                 <details style="margin-bottom:0.6rem;">
@@ -143517,6 +143840,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     ${isMine ? `<button class="btn" onclick="showClanVault('${locationId}')" style="background:#F57F17;">${clan.buildings?.clan_vault ? '🏦' : '💰'} Klanová kasa (${clan.vault || 0} 💰)</button>` : ''}
                     ${!isMine ? `<button class="btn" onclick="joinClanRequest('${locationId}')" style="background:#4CAF50;">🤝 Vstoupit do klanu</button>` : ''}
                     ${isLeader ? `<button class="btn" onclick="showClanManage('${locationId}')" style="background:#555;">⚙️ Správa klanu</button>` : ''}
+                    <button class="btn" onclick="showClanRanksInfo('${locationId}')" style="background:#37474f;">ℹ️ Hodnosti — přehled a bonusy</button>
                     ${isMine && !isLeader ? `<button class="btn" onclick="leaveClan('${locationId}')" style="background:#c62828;">🚪 Opustit klan</button>` : ''}
                     <button class="btn" onclick="closeModal()" style="background:#1a1a1a;border:1px solid #333;">✕ Zavřít</button>
                 </div>
@@ -143524,6 +143848,108 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             showModal('⚔️ Klan', html);
         }
+        
+        // [v6-rank] Přehled všech hodností + co můžou + kdo je má
+        async function showClanRanksInfo(locationId) {
+            await loadClanData();
+            const clan = getClanData(locationId);
+            if (!clan) return;
+            const myName = getPlayerName();
+            const myRole = getClanRole(locationId);
+            
+            // Sestav seznam co kdo má
+            const rankCounts = {};
+            const rankMembers = {};
+            ['leader', 'commander', 'officer', 'veteran', 'warrior', 'recruit'].forEach(r => {
+                rankCounts[r] = countRankInClan(locationId, r);
+                rankMembers[r] = [];
+            });
+            
+            // Vůdce
+            if (clan.leader) rankMembers.leader.push(clan.leader);
+            // Officers (legacy) — vyloučit vůdce
+            Object.values(clan.officers || {}).forEach(o => {
+                if (o.name === clan.leader) return;
+                rankMembers.officer.push(o.name);
+            });
+            // Members map — vyloučit vůdce a duplikáty s officers
+            const seenNames = new Set([clan.leader, ...rankMembers.officer]);
+            Object.values(clan.members || {}).forEach(m => {
+                if (seenNames.has(m.name)) return;
+                seenNames.add(m.name);
+                let r = m.rank || 'recruit';
+                if (r === 'member') r = 'recruit';  // legacy
+                if (!CLAN_RANKS[r]) r = 'recruit';  // unknown rank fallback
+                if (rankMembers[r]) rankMembers[r].push(m.name);
+            });
+            
+            const rowsHtml = ['leader', 'commander', 'officer', 'veteran', 'warrior', 'recruit'].map(rankId => {
+                const def = getRankDef(rankId);
+                const count = rankCounts[rankId];
+                const slotInfo = def.maxSlots === -1 ? `${count}` : `${count}/${def.maxSlots}`;
+                const members = rankMembers[rankId];
+                const reqText = def.requiredCaptures > 0 ? `${def.requiredCaptures} dobytí` : (rankId === 'leader' ? 'zakladatel' : '—');
+                const isMyRank = rankId === myRole;
+                
+                const membersList = members.length > 0 
+                    ? members.map(n => `<span style="background:${def.color}20;color:${def.color};padding:0.1rem 0.4rem;border-radius:3px;font-size:0.65rem;">${n === myName ? '★ ' : ''}${escapeHtml(n)}</span>`).join(' ')
+                    : '<span style="color:#555;font-size:0.65rem;">— prázdné —</span>';
+                
+                return `
+                    <div style="background:${isMyRank ? def.color + '15' : '#0a0a0a'};padding:0.5rem 0.7rem;border-radius:6px;border-left:3px solid ${def.color};margin-bottom:0.4rem;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.3rem;margin-bottom:0.3rem;">
+                            <div style="display:flex;align-items:center;gap:0.4rem;">
+                                <span style="font-size:1.3rem;">${def.icon}</span>
+                                <div>
+                                    <div style="color:${def.color};font-weight:bold;font-size:0.85rem;">${def.name}${isMyRank ? ' <span style="color:#ffd700;font-size:0.65rem;">(ty)</span>' : ''}</div>
+                                    <div style="color:#888;font-size:0.65rem;">${def.desc}</div>
+                                </div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="color:#aaa;font-size:0.65rem;">obsazeno</div>
+                                <div style="color:${def.color};font-weight:bold;font-size:0.8rem;">${slotInfo}</div>
+                            </div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.2rem;font-size:0.65rem;color:#bbb;padding:0.3rem;background:#050505;border-radius:4px;margin-bottom:0.3rem;">
+                            <div>🏴 <strong style="color:${def.color};">${15-(def.captureBonus||0)} min</strong></div>
+                            <div>⚔️ <strong style="color:${def.color};">+${Math.round((def.damageBonus||0)*100)}%</strong></div>
+                            <div>📚 <strong style="color:${def.color};">+${Math.round((def.xpBonus||0)*100)}%</strong></div>
+                            <div>🎁 <strong style="color:${def.color};">+${Math.round((def.lootBonus||0)*100)}%</strong></div>
+                            <div>💰 <strong style="color:${def.color};">${def.vaultDailyLimit === -1 ? '∞' : def.vaultDailyLimit + '/den'}</strong></div>
+                            <div>🏗️ <strong style="color:${def.canManage ? '#4caf50' : '#666'};">${def.canManage ? 'Ano' : 'Ne'}</strong></div>
+                        </div>
+                        <div style="font-size:0.65rem;color:#888;margin-bottom:0.2rem;">
+                            <span style="color:#666;">Vyžaduje pro povýšení:</span> <strong>${reqText}</strong>
+                        </div>
+                        <div style="display:flex;flex-wrap:wrap;gap:0.2rem;">
+                            ${membersList}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            showModal('ℹ️ Hodnosti klanu — kompletní přehled', `
+                <div style="max-height:60vh;overflow-y:auto;">
+                    <p style="color:#888;font-size:0.75rem;margin:0 0 0.5rem 0;">📊 Aktuální stav klanu [${escapeHtml(clan.name)}] — kdo má jakou hodnost a co znamená každá pozice.</p>
+                    ${rowsHtml}
+                    <div style="background:#1a1500;padding:0.5rem 0.7rem;border-radius:6px;border:1px solid #ffd70040;margin-top:0.5rem;">
+                        <div style="color:#ffd700;font-size:0.75rem;font-weight:bold;margin-bottom:0.3rem;">📖 Legenda</div>
+                        <ul style="color:#bbb;font-size:0.7rem;margin:0;padding-left:1.2rem;">
+                            <li>🏴 = capture čas (kratší = lepší)</li>
+                            <li>⚔️ = bonus damage v boji</li>
+                            <li>📚 = bonus XP</li>
+                            <li>🎁 = bonus loot drop</li>
+                            <li>💰 = denní limit pro výběr z kasy</li>
+                            <li>🏗️ = může stavět budovy / najímat strážce / vybírat ze skladu</li>
+                            <li><strong>Dobytí</strong> se počítají za úspěšné capture (15min) nebo vítězství nad strážci</li>
+                        </ul>
+                    </div>
+                </div>
+                <button class="btn" onclick="showClanPanel('${locationId}')" style="width:100%;margin-top:0.5rem;background:#333;">← Zpět do klanu</button>
+            `);
+        }
+        
+        window.showClanRanksInfo = showClanRanksInfo;
         
         // === STAVBA BUDOV KLANU ===
         // Zobrazí panel příspěvků na klanovou budovu (crowdfunding model)
@@ -143544,7 +143970,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             // [FIX] Stavět může jen vůdce/důstojník (strategické rozhodnutí — utrácí kasu)
             // Předtím: každý člen mohl stavět → potenciální abuse (utratit klanovou kasu zbytečnostmi)
             if (!canManageClan(locationId)) {
-                notifyWarning('🔒 Nedostatek oprávnění', 'Stavět budovy může jen vůdce nebo důstojník klanu.');
+                notifyWarning('🔒 Nedostatek oprávnění', 'Stavět budovy může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.');
                 return;
             }
             
@@ -143695,11 +144121,9 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             if (!clan || !building) return;
             
             const myName = getPlayerName();
-            const isMember = clan.leader === myName ||
-                Object.values(clan.members || {}).some(m => m.name === myName) ||
-                Object.values(clan.officers || {}).some(o => o.name === myName);
-            if (!isMember) {
-                notifyWarning('Nejsi člen', 'Stavbu může zahájit jen člen klanu!');
+            // [v6-rank] Stavět může jen Officer/Commander/Leader (chrání kasu)
+            if (!canManageClan(locationId)) {
+                notifyWarning('🔒 Nedostatek oprávnění', 'Stavbu může zahájit jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce');
                 return;
             }
             
@@ -143843,7 +144267,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             const hasVaultBuilding = !!clan.buildings?.clan_vault;
             const vault = clan.vault || 0;
-            const isOfficerOrLeader = clan.leader === myName || Object.values(clan.officers||{}).some(o=>o.name===myName);
+            // [v6-rank] Officer/Commander/Leader vidí tlačítko Vybrat
+            const isOfficerOrLeader = canManageClan(locationId);
             
             // Načti log transakcí z Firebase
             let logHtml = '<div style="color:#555;font-size:0.75rem;text-align:center;padding:0.5rem;">Žádné transakce</div>';
@@ -143977,14 +144402,26 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 notifyWarning('Nejsi na místě', `Peníze do kasy můžeš vložit jen fyzicky na klanové půdě (${clanLoc?.name || locationId})!`);
                 return;
             }
+            
+            // [v6-rank] Permission — vkládat do kasy může jen člen klanu
+            await loadClanData();
+            const myName = getPlayerName();
+            const clanCheck = getClanData(locationId);
+            const isMember = clanCheck && (clanCheck.leader === myName ||
+                Object.values(clanCheck.members || {}).some(m => m.name === myName) ||
+                Object.values(clanCheck.officers || {}).some(o => o.name === myName));
+            if (!isMember) {
+                notifyWarning('🔒 Nejsi člen', 'Vkládat do kasy může jen člen klanu.');
+                return;
+            }
+            
             const amount = parseInt(document.getElementById('vaultDeposit')?.value || 0);
             if (!amount || amount <= 0 || amount > (state.money || 0)) {
                 notifyWarning('Chyba', 'Neplatná částka!');
                 return;
             }
             try {
-                await loadClanData();
-                const clan = getClanData(locationId);
+                const clan = clanCheck;  // [v6-rank] Reuse z permission check
                 state.money -= amount;
                 // [FIX] Atomický increment místo read+set — zabraní ztrátě peněz při současném depositu
                 await firebaseDB.ref(`clans/${locationId}/vault`).set(firebase.database.ServerValue.increment(amount));
@@ -144022,7 +144459,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             // [FIX] Backend permission check (UI button je už skrytý pro members,
             // ale bez backend checku by se dalo obejít DevTools manipulací)
             if (!canManageClan(locationId)) {
-                notifyWarning('🔒 Nedostatek oprávnění', 'Vybírat z kasy může jen vůdce nebo důstojník.');
+                notifyWarning('🔒 Nedostatek oprávnění', 'Vybírat z kasy může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.');
                 return;
             }
             
@@ -144040,8 +144477,11 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const myKey = myName.replace(/[.#$\/\[\]]/g, '_');
             
             if (dailyLimit !== -1) {  // -1 = neomezeno (Leader)
-                // Načti dnešní výběr
-                const todayKey = new Date().toISOString().slice(0, 10);  // YYYY-MM-DD
+                // [v6-rank] Načti dnešní výběr — používáme lokální datum (lokální půlnoc reset)
+                const _now = new Date();
+                const todayKey = _now.getFullYear() + '-' + 
+                    String(_now.getMonth() + 1).padStart(2, '0') + '-' + 
+                    String(_now.getDate()).padStart(2, '0');
                 let todayWithdrawn = 0;
                 try {
                     const snap = await firebaseDB.ref(`clans/${locationId}/vaultWithdrawTracking/${todayKey}/${myKey}`).once('value');
@@ -144381,6 +144821,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const newName = document.getElementById('clanNameInput')?.value?.trim() || '';
             const desc = document.getElementById('clanDescInput')?.value?.trim() || '';
             
+            // [v6-rank] Permission check — jen vůdce může měnit nastavení klanu
+            if (!isClanLeader(locationId)) {
+                notifyWarning('🔒 Nedostatek oprávnění', 'Měnit nastavení klanu může jen vůdce.');
+                return;
+            }
+            
             // [v4.0.1] Validace nového jména
             await loadClanData();
             const currentClan = getClanData(locationId);
@@ -144464,7 +144910,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const myName = getPlayerName();
             await loadClanData();
             const clan = getClanData(locationId);
-            if (!clan || clan.leader !== myName) return;
+            if (!clan) return;
+            // [v6-rank] Permission check s hláškou
+            if (clan.leader !== myName) {
+                notifyWarning('🔒 Nedostatek oprávnění', 'Rozpustit klan může jen vůdce.');
+                return;
+            }
             
             try {
                 // Vrať část kasy vůdci (50%)
@@ -144559,19 +145010,21 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const myRole = getClanRole(locationId);
             const targetRole = getClanRole(locationId, targetName);
             
-            if (!myRole || (myRole !== 'leader' && myRole !== 'officer')) {
-                notifyWarning('🔒 Nedostatek oprávnění', 'Vyhazovat členy může jen vůdce nebo důstojník.');
-                return;
-            }
-            
-            // Officer nemůže vyhodit jiného officera — to může jen vůdce
-            if (myRole === 'officer' && targetRole === 'officer') {
-                notifyWarning('🔒 Nelze', 'Důstojník nemůže vyhodit jiného důstojníka. To smí jen vůdce.');
+            // [v6-rank] Použij canKickMember (tier-based: tvůj tier > target tier)
+            if (!canKickMember(locationId, targetName)) {
+                if (!myRole) {
+                    notifyWarning('🔒', 'Nejsi členem tohoto klanu');
+                } else {
+                    const targetDef = getRankDef(targetRole);
+                    notifyWarning('🔒 Nedostatek oprávnění', 
+                        `Nemůžeš vyhodit ${targetDef.icon} ${targetDef.name}. Tvoje hodnost je nižší nebo stejná.`);
+                }
                 return;
             }
             
             // Potvrzovací dialog
-            const targetIcon = targetRole === 'officer' ? '⭐' : '👤';
+            const targetDefDialog = getRankDef(targetRole);
+            const targetIcon = targetDefDialog.icon;
             showModal('🚪 Vyhodit z klanu?', `
                 <div style="text-align:center;padding:0.5rem;">
                     <div style="font-size:3rem;margin-bottom:0.3rem;">⚠️</div>
@@ -144591,14 +145044,10 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const clan = getClanData(locationId);
             if (!clan) return;
             
-            // Re-check oprávnění (pro případ že se stav mezi-tím změnil)
-            const myRole = getClanRole(locationId);
-            const targetRole = getClanRole(locationId, targetName);
-            if (!myRole || (myRole !== 'leader' && myRole !== 'officer')) {
-                notifyWarning('🔒', 'Nedostatek oprávnění'); return;
-            }
-            if (myRole === 'officer' && targetRole === 'officer') {
-                notifyWarning('🔒', 'Officer nemůže vyhodit jiného officera'); return;
+            // [v6-rank] Re-check oprávnění (stav se může změnit mezi otevřením modal a confirmem)
+            if (!canKickMember(locationId, targetName)) {
+                notifyWarning('🔒', 'Nedostatek oprávnění pro vyhození tohoto hráče');
+                return;
             }
             
             try {
@@ -144651,7 +145100,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             }
             
             // Pořadí postupu
-            const promoteChain = ['recruit', 'warrior', 'veteran', 'officer', 'commander'];
+            const promoteChain = PROMOTE_CHAIN;  // [v6-rank] Sjednoceno do konstanty
             const currentIdx = promoteChain.indexOf(currentRank);
             if (currentIdx === -1 || currentIdx >= promoteChain.length - 1) {
                 notifyWarning('Nejvyšší', 'Tento člen už je na nejvyšší pozici (Komandér).');
@@ -144668,6 +145117,28 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 return;
             }
             
+            // [v6-rank] Slot limit — nemůže být víc členů než maxSlots na cílové hodnosti
+            const nextDef = getRankDef(nextRank);
+            if (nextDef.maxSlots !== -1) {
+                const currentCount = countRankInClan(locationId, nextRank);
+                if (currentCount >= nextDef.maxSlots) {
+                    notifyWarning('🔒 Plný slot', 
+                        `${nextDef.icon} ${nextDef.name} — limit ${nextDef.maxSlots} ${nextDef.maxSlots === 1 ? 'místo' : 'místa'} v klanu. Sesaď nejdřív stávajícího ${nextDef.name}a.`);
+                    return;
+                }
+            }
+            
+            // [v6-rank] Capture requirement — člen musí mít dobytá území pro povýšení
+            // Vůdce může požadavek obejít? Ne — je to spravedlivé pravidlo i pro vůdce
+            if (nextDef.requiredCaptures > 0) {
+                const memberCaptures = getMemberCaptures(locationId, memberName);
+                if (memberCaptures < nextDef.requiredCaptures) {
+                    notifyWarning('🔒 Nedostatek dobytí', 
+                        `${nextDef.icon} ${nextDef.name} vyžaduje ${nextDef.requiredCaptures} dobytá území. ${memberName} má jen ${memberCaptures}.`);
+                    return;
+                }
+            }
+            
             try {
                 const memberKey = memberName.replace(/[.#$\/\[\]]/g, '_');
                 const oldDef = getRankDef(currentRank);
@@ -144680,12 +145151,14 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         name: memberName,
                         rank: nextRank,
                         joinedAt: oldOfficerData.promotedAt || Date.now(),
-                        promotedAt: Date.now()
+                        promotedAt: Date.now(),
+                        captures: oldOfficerData.captures || 0  // [v6-rank] Zachovat počet dobytí při migraci
                     });
                     await firebaseDB.ref(`clans/${locationId}/officers/${memberKey}`).remove();
                 } else {
                     // Standardní cesta — update rank v members map
-                    const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now() };
+                    // [v6-rank] Spread memberData zachová všechna existující pole (captures, joinedAt apod.)
+                    const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now(), captures: 0 };
                     await firebaseDB.ref(`clans/${locationId}/members/${memberKey}`).set({
                         ...memberData,
                         name: memberName,
@@ -144731,7 +145204,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 return;
             }
             
-            const promoteChain = ['recruit', 'warrior', 'veteran', 'officer', 'commander'];
+            const promoteChain = PROMOTE_CHAIN;  // [v6-rank] Sjednoceno do konstanty
             const currentIdx = promoteChain.indexOf(currentRank);
             if (currentIdx <= 0) {
                 notifyWarning('Nejnižší', 'Tento člen už je na nejnižší pozici (Nováček).');
@@ -144761,11 +145234,13 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         name: memberName,
                         rank: prevRank,
                         joinedAt: oldOfficerData.promotedAt || Date.now(),
-                        demotedAt: Date.now()
+                        demotedAt: Date.now(),
+                        captures: oldOfficerData.captures || 0  // [v6-rank] Zachovat počet dobytí
                     });
                     await firebaseDB.ref(`clans/${locationId}/officers/${memberKey}`).remove();
                 } else {
-                    const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now() };
+                    // [v6-rank] Spread memberData zachová captures a všechna ostatní pole
+                    const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now(), captures: 0 };
                     await firebaseDB.ref(`clans/${locationId}/members/${memberKey}`).set({
                         ...memberData,
                         name: memberName,
@@ -144806,7 +145281,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             if (!clan) return;
             try {
                 const memberKey = memberName.replace(/[.#$\/\[\]]/g, '_');
-                const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now() };
+                const memberData = clan.members?.[memberKey] || { name: memberName, joinedAt: Date.now(), captures: 0 };
                 await firebaseDB.ref(`clans/${locationId}/members/${memberKey}`).set({
                     ...memberData,
                     name: memberName,
@@ -144836,11 +145311,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     const officerData = clan.officers[officerKey];
                     await firebaseDB.ref(`clans/${locationId}/members/${officerKey}`).set({
                         name: officerName, rank: 'recruit',
-                        joinedAt: officerData.promotedAt || Date.now()
+                        joinedAt: officerData.promotedAt || Date.now(),
+                        captures: officerData.captures || 0  // [v6-rank] Zachovat
                     });
                     await firebaseDB.ref(`clans/${locationId}/officers/${officerKey}`).remove();
                 } else {
-                    const memberData = clan.members?.[officerKey] || { name: officerName, joinedAt: Date.now() };
+                    const memberData = clan.members?.[officerKey] || { name: officerName, joinedAt: Date.now(), captures: 0 };
                     await firebaseDB.ref(`clans/${locationId}/members/${officerKey}`).set({
                         ...memberData,
                         name: officerName,
