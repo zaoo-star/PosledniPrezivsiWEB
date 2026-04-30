@@ -127910,10 +127910,45 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     totalAfter: newTotal
                 }).catch(e => console.warn('🔇 Firebase:', e?.message || e));
                 
-                // Chat notifikace pro všechny
+                // Chat notifikace pro všechny — DETAILNÍ INFO
+                // Lidsky čitelné popisy bonusů
+                const bonusLabelMap = {
+                    thirstSlowdown: '💧 Pomalejší žízeň',
+                    hungerSlowdown: '🌾 Pomalejší hlad',
+                    travelSpeedBonus: '🛤️ Rychlejší cestování',
+                    ambushReductionBonus: '🗼 Méně přepadení',
+                    xpBonusPermanent: '📚 Více XP za vše',
+                    healingBonusPermanent: '⚕️ Lepší léčení',
+                    shopDiscountPermanent: '🏛️ Levnější ceny v obchodech',
+                    sellBonusPermanent: '🏛️ Lepší prodejní ceny',
+                    damageBonusPermanent: '⚔️ Více damage v boji',
+                    defenseBonusPermanent: '🛡️ Lepší obrana',
+                    maxHpBonusPermanent: '💪 Více max HP'
+                };
+                
+                // Detailní rozpis: jednotkový vs. akumulovaný bonus
+                let detailedBonusInfo = '';
+                if (project.perInvestment) {
+                    detailedBonusInfo = Object.entries(project.perInvestment).map(([k, v]) => {
+                        const label = bonusLabelMap[k] || k;
+                        const isReduction = k.includes('Slowdown') || k.includes('Reduction') || k.includes('Discount');
+                        const sign = isReduction ? '-' : '+';
+                        const perInv = (v * 100).toFixed(1);
+                        const total = (v * newTotal * 100).toFixed(1);
+                        return `   • ${label}: ${sign}${perInv}% (celkem ${sign}${total}%)`;
+                    }).join('\n');
+                }
+                
+                const investorName = state.char?.name || 'Šéf';
+                const titleLine = adminOk ? '👑 ADMIN INVESTICE' : '👑 ŠÉF INVESTOVAL';
+                const costLine = adminOk 
+                    ? `🎁 Cena: ZDARMA (admin)` 
+                    : `💰 Cena: ${project.cost.toLocaleString()}💰 z veřejné kasy`;
+                const countWord = newTotal === 1 ? 'investice' : (newTotal < 5 ? 'investice' : 'investic');
+                
                 firebaseDB.ref('chat/messages').push({
                     author: '🏛️ POLITIKA',
-                    text: `💰 INVESTICE: ${project.icon} "${project.name}" #${newTotal}\n\n👑 ${state.char?.name || 'Šéf'} investoval ${project.cost.toLocaleString()}💰 z veřejné kasy.\n\n🎁 Permanentní bonus pro Pustinu (akumulativní): ${totalBonusEntries}\n\n📊 Tento projekt má teď celkem ${newTotal} ${newTotal === 1 ? 'investici' : (newTotal < 5 ? 'investice' : 'investic')}!`,
+                    text: `${titleLine}\n\n${project.icon} ${project.name} #${newTotal}\n${investorName}\n${costLine}\n\n📜 ${project.desc || ''}\n\n🎁 PERMANENTNÍ BONUS PRO VŠECHNY:\n${detailedBonusInfo}\n\n📊 Projekt má teď celkem ${newTotal} ${countWord}.`,
                     timestamp: firebase.database.ServerValue.TIMESTAMP,
                     system: true
                 }).catch(e => console.warn('🔇', e));
@@ -131742,6 +131777,62 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                             Daně jdou do veřejné kasy. Šéf dostává 1% z kasy denně a může používat kasu na eventy a granty.
                         </p>
                     </div>
+                    
+                    <!-- [NEW] PŘEHLED INVESTIC PRO VŠECHNY HRÁČE -->
+                    ${(() => {
+                        const inv = (typeof getMayorInvestments === 'function') ? getMayorInvestments() : { totals: {} };
+                        const totals = inv.totals || {};
+                        const totalInvestments = Object.values(totals).reduce((sum, n) => sum + (n || 0), 0);
+                        if (totalInvestments === 0) return '';
+                        
+                        // Spočítej karty projektů které mají nějaké investice
+                        const projectsWithInv = MAYOR_SYSTEM.investments
+                            .filter(p => (totals[p.id] || 0) > 0)
+                            .sort((a, b) => (totals[b.id] || 0) - (totals[a.id] || 0));
+                        
+                        const projectCards = projectsWithInv.map(project => {
+                            const count = totals[project.id] || 0;
+                            // Spočítej bonus
+                            let bonusText = '';
+                            if (project.perInvestment) {
+                                const bonusEntries = Object.entries(project.perInvestment).map(([k, v]) => {
+                                    const isReduction = k.includes('Slowdown') || k.includes('Reduction') || k.includes('Discount');
+                                    const sign = isReduction ? '-' : '+';
+                                    return `${sign}${(v * count * 100).toFixed(1)}%`;
+                                }).join(' / ');
+                                bonusText = bonusEntries;
+                            }
+                            return `
+                                <div style="background: #0d1a0d; padding: 0.5rem 0.6rem; border-radius: 5px; border: 1px solid #2a4a2a; display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+                                    <div style="display: flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 0;">
+                                        <span style="font-size: 1.1rem;">${project.icon}</span>
+                                        <div style="min-width: 0; flex: 1;">
+                                            <div style="color: #c5e1a5; font-size: 0.78rem; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${project.name}</div>
+                                            <div style="color: #4caf50; font-size: 0.68rem;">${bonusText}</div>
+                                        </div>
+                                    </div>
+                                    <div style="background: #1b3a1b; color: #8bc34a; font-weight: bold; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; min-width: 30px; text-align: center;">
+                                        ${count}×
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                        
+                        return `
+                            <div style="background: #0d1a0d; padding: 0.8rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #2a4a2a;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="document.getElementById('investmentsOverview').style.display = document.getElementById('investmentsOverview').style.display === 'none' ? 'block' : 'none'">
+                                    <h4 style="color: #8bc34a; margin: 0; font-size: 0.9rem;">🏗️ Investice v Pustině (${totalInvestments}) ▼</h4>
+                                    <span style="color: #4caf50; font-size: 0.7rem;">${projectsWithInv.length}/10 projektů</span>
+                                </div>
+                                <div id="investmentsOverview" style="display: none; margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid #2a4a2a;">
+                                    <p style="color: #888; font-size: 0.7rem; margin: 0 0 0.5rem 0; line-height: 1.4;">
+                                        Permanentní bonusy pro <strong style="color: #aed581;">VŠECHNY hráče</strong> v Pustině. Každá investice se akumuluje napříč šéfy.
+                                    </p>
+                                    ${projectCards}
+                                </div>
+                            </div>
+                        `;
+                    })()}
                     
                     <!-- JAK FUNGUJÍ VOLBY - rozkliknutelná sekce -->
                     <div style="background: #0d1a2a; padding: 0.8rem; border-radius: 6px; margin-bottom: 1rem; border: 1px solid #1a3a5a;">
