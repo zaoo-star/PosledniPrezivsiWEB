@@ -1100,6 +1100,17 @@
             50% { box-shadow: 0 0 45px #ffd700, 0 0 90px #ffd700cc, 0 0 120px #ffd70088; transform: scale(1.06); filter: brightness(1.4); }
         }
         
+        /* [NEW] Animace pohybujících se hráčů na mapě */
+        @keyframes travel-bounce {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-3px); }
+        }
+        
+        @keyframes travel-pulse {
+            0%, 100% { box-shadow: 0 0 8px #1976d2, 0 0 16px #1976d288; }
+            50% { box-shadow: 0 0 14px #64b5f6, 0 0 24px #1976d2; }
+        }
+        
         @keyframes land-glow {
             0%, 100% { filter: brightness(1); }
             50% { filter: brightness(1.3); }
@@ -37676,6 +37687,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             _mapRenderTimer = setTimeout(() => renderFull(), 2000);
         }
         
+        // [NEW] Interval pro plynulý pohyb cestujících hráčů na mapě
+        // Když jsou na mapě cestující hráči, re-render každé 2s aby se pozice aktualizovaly
+        // Bez tohoto by ikonky stály na místě dokud se cache neobnoví (10s)
+        let _travelingPlayersInterval = null;
+        function startTravelingPlayersAnimation() {
+            if (_travelingPlayersInterval) return;
+            _travelingPlayersInterval = setInterval(() => {
+                // Jen pokud je mapa aktivní a jsou cestující hráči
+                if (state.activeTab !== 'map') return;
+                if (!Array.isArray(window.travelingPlayers) || window.travelingPlayers.length === 0) return;
+                
+                // Updatuj progress každého cestujícího (bez Firebase fetch)
+                const now = Date.now();
+                let stillTraveling = false;
+                window.travelingPlayers.forEach(tp => {
+                    const elapsed = now - tp.travelStart;
+                    tp.progress = Math.min(1, Math.max(0, elapsed / tp.travelDuration));
+                    if (tp.progress < 1) stillTraveling = true;
+                });
+                
+                // Vyfiltruj ty co dorazili (progress >= 1) — zmizí z mapy
+                window.travelingPlayers = window.travelingPlayers.filter(tp => tp.progress < 1);
+                
+                if (stillTraveling) {
+                    renderFull();  // Re-render aby se ikony posunuly
+                }
+            }, 2000);  // 2s interval = plynulý ale ne příliš drahý
+        }
+        // Spustí se automaticky při startu hry — viz startGame inicializace
+        
         function renderGame() {
             try {
                 console.log('🎮 renderGame() started');
@@ -40862,6 +40903,76 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                 }).catch(e => console.log('Territory cache error:', e));
                 
+                // === [NEW] NAČTI ONLINE HRÁČE — pro zobrazení na mapě ===
+                // Stejný refresh interval (10s). Cache se obnoví při každém openu mapy.
+                firebaseDB.ref('online').once('value').then(snapshot => {
+                    const onlineData = snapshot.val() || {};
+                    const myName = getPlayerName();
+                    const ONLINE_THRESHOLD = 24 * 60 * 60 * 1000; // [v6-rank] Posledních 24 hodin = "aktivní hráč"
+                    const now = Date.now();
+                    
+                    // Group hráče podle lokace + samostatně cestující
+                    const playersByLocation = {};
+                    const travelingPlayers = [];  // [NEW] Cestující hráči (mezi lokacemi)
+                    
+                    for (const [key, p] of Object.entries(onlineData)) {
+                        if (!p || !p.name) continue;
+                        if (p.name === myName) continue;  // Sám sebe nepočítej
+                        // Filter na "aktivní hráče" (lastSeen v posledních 24 hodin)
+                        if (p.lastSeen && (now - p.lastSeen > ONLINE_THRESHOLD)) continue;
+                        
+                        // Status: opravdu online (5 min) vs jen aktivní v 24h
+                        const isReallyOnline = p.lastSeen && (now - p.lastSeen < 5 * 60 * 1000);
+                        
+                        const playerInfo = {
+                            name: p.name,
+                            level: p.level || 1,
+                            elo: p.elo || 1000,
+                            lastSeen: p.lastSeen || 0,
+                            isReallyOnline: isReallyOnline
+                        };
+                        
+                        // [BUG FIX] Cestující hráči — viditelní I OFFLINE.
+                        // Hra jede v reálném čase, cesty trvají i 2h, hráči mezitím zavřou hru.
+                        // Pokud má aktivní travel info a progress < 1, zobraz ho jako cestujícího
+                        // bez ohledu na lastSeen (stačí že je v 24h okně, což už je odfiltrováno výš).
+                        const isCurrentlyTraveling = p.traveling && p.travelFrom && p.travelTo && p.travelStart && p.travelDuration;
+                        if (isCurrentlyTraveling) {
+                            // Spočítej progress (0-1)
+                            const elapsed = now - p.travelStart;
+                            const progress = Math.min(1, Math.max(0, elapsed / p.travelDuration));
+                            // Pokud je progress < 1, hráč ještě cestuje (klidně i offline — telefon vypnutý)
+                            if (progress < 1) {
+                                travelingPlayers.push({
+                                    ...playerInfo,
+                                    travelFrom: p.travelFrom,
+                                    travelTo: p.travelTo,
+                                    travelStart: p.travelStart,
+                                    travelDuration: p.travelDuration,
+                                    progress: progress
+                                });
+                                continue;  // Cestující se nezobrazí na lokaci
+                            }
+                            // Pokud progress >= 1, cesta dokončena — hráč je v cílové lokaci
+                            // Ale lokace v Firebase je ještě stará (z doby kdy začal cestovat).
+                            // → Použij travelTo jako jeho aktuální lokaci (po dorazu)
+                            if (!playersByLocation[p.travelTo]) playersByLocation[p.travelTo] = [];
+                            playersByLocation[p.travelTo].push(playerInfo);
+                            continue;
+                        }
+                        
+                        // Stojící hráč — zařaď do playersByLocation
+                        if (!p.location) continue;
+                        if (!playersByLocation[p.location]) playersByLocation[p.location] = [];
+                        playersByLocation[p.location].push(playerInfo);
+                    }
+                    window.onlinePlayersByLocation = playersByLocation;
+                    window.travelingPlayers = travelingPlayers;
+                    window.onlinePlayersTime = Date.now();
+                    
+                    if (state.activeTab === 'map') debouncedMapRender();
+                }).catch(e => console.log('Online players cache error:', e));
+                
                 // === NAČTI VÁLEČNOU ZÓNU ===
                 firebaseDB.ref('warZone').once('value').then(async snapshot => {
                     const warZone = snapshot.val();
@@ -42680,6 +42791,71 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 } else if (isWarZone) {
                     html += '<span style="position:absolute; bottom:0; left:0; right:0; font-size:0.4rem; text-align:center; color:#ff4444; background:#000000aa; line-height:1.3; font-weight:bold; border-radius:0 0 3px 3px;">⚔️VÁLKA</span>';
                 }
+                
+                // [NEW] Online hráči na lokaci — stack avatarů s jmény
+                // Toggle: state.hideOnlinePlayers === true → skryto
+                if (state.hideOnlinePlayers !== true) {
+                    const playersHere = window.onlinePlayersByLocation?.[loc.id] || [];
+                    if (playersHere.length > 0 && isKnown) {
+                        const playerCount = playersHere.length;
+                        // Sort: opravdu online první (zelená tečka), pak podle levelu
+                        const sortedPlayers = [...playersHere].sort((a, b) => {
+                            if (a.isReallyOnline && !b.isReallyOnline) return -1;
+                            if (!a.isReallyOnline && b.isReallyOnline) return 1;
+                            return (b.level || 0) - (a.level || 0);
+                        });
+                        
+                        const titleText = sortedPlayers.slice(0, 8).map(p => p.name + (p.isReallyOnline ? ' 🟢' : '')).join(', ') + (playersHere.length > 8 ? '...' : '');
+                        const safeTitle = escapeHtml(titleText);
+                        
+                        // Stack avatarů — max 3, zbytek jako "+N"
+                        const visibleAvatars = sortedPlayers.slice(0, 3);
+                        const overflowCount = playerCount - visibleAvatars.length;
+                        
+                        let avatarsHtml = '';
+                        visibleAvatars.forEach((p, i) => {
+                            // Mini avatar 16px, mírný overlap (-4px) když jich je víc
+                            const marginLeft = i === 0 ? '0' : '-5px';
+                            const borderColor = p.isReallyOnline ? '#4caf50' : '#1976d2';
+                            const safeName = escapeHtml(p.name);
+                            
+                            // Inline render avataru (bez fce, abychom nemuseli volat) — ale fallback na renderAvatarHTML
+                            let avatarBox;
+                            const avUrl = typeof getPlayerAvatar === 'function' ? getPlayerAvatar(p.name) : null;
+                            if (avUrl) {
+                                avatarBox = `<img src="${avUrl}" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000;background:#000;flex-shrink:0;" onerror="this.style.display='none'">`;
+                            } else {
+                                // Fallback: iniciála
+                                const initial = (p.name || '?').charAt(0).toUpperCase();
+                                avatarBox = `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#2a2a2a;color:#fff;font-size:0.5rem;font-weight:bold;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000;flex-shrink:0;">${escapeHtml(initial)}</span>`;
+                            }
+                            avatarsHtml += avatarBox;
+                        });
+                        
+                        // Pokud je víc hráčů než 3, přidej "+N" badge
+                        let overflowBadge = '';
+                        if (overflowCount > 0) {
+                            overflowBadge = `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:14px;height:14px;border-radius:50%;background:#1976d2;color:#fff;font-size:0.5rem;font-weight:bold;border:1.5px solid #64b5f6;margin-left:-5px;padding:0 2px;flex-shrink:0;">+${overflowCount}</span>`;
+                        }
+                        
+                        // [NEW] Pokud je 1 hráč, ukaž jeho jméno pod avatarem (kompaktně)
+                        let playerNameLabel = '';
+                        if (playerCount === 1) {
+                            const p = sortedPlayers[0];
+                            const shortName = p.name.length > 8 ? p.name.substring(0, 7) + '…' : p.name;
+                            playerNameLabel = `<div style="font-size:0.45rem;color:#fff;background:rgba(0,0,0,0.85);padding:0 2px;border-radius:2px;line-height:1.1;text-align:center;margin-top:1px;text-shadow:0 0 2px #000;border:1px solid ${sortedPlayers[0].isReallyOnline ? '#4caf50' : '#1976d2'};max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(shortName)}</div>`;
+                        }
+                        
+                        // Wrapper na avatary
+                        html += `<div onclick="event.stopPropagation();showPlayersAtLocation('${loc.id}')" 
+                            style="position:absolute;top:1px;left:1px;display:flex;flex-direction:column;align-items:flex-start;cursor:pointer;pointer-events:auto;z-index:5;" 
+                            title="👥 Klik pro detail: ${safeTitle}">
+                            <div style="display:flex;align-items:center;">${avatarsHtml}${overflowBadge}</div>
+                            ${playerNameLabel}
+                        </div>`;
+                    }
+                }
+                
                 html += '</div>';
             });
             
@@ -42730,6 +42906,54 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     html += _svgLines.join('');
                     html += '</svg>';
                 }
+            }
+            
+            // [NEW] === ŽIVÉ POHYBUJÍCÍ SE HRÁČI ===
+            // Renderuje cestující hráče jako ikonky na cestě mezi from→to lokacemi
+            if (state.hideOnlinePlayers !== true && Array.isArray(window.travelingPlayers) && window.travelingPlayers.length > 0) {
+                const _halfCellTrav = cellSize / 2;
+                window.travelingPlayers.forEach((tp, idx) => {
+                    const fromLoc = WORLD_LOCATIONS.find(l => l.id === tp.travelFrom);
+                    const toLoc = WORLD_LOCATIONS.find(l => l.id === tp.travelTo);
+                    if (!fromLoc || !toLoc) return;
+                    
+                    // Zda hráč zná tu cestu (alespoň jednu z lokací)
+                    const knowsFrom = state.world.visitedLocations.includes(fromLoc.id) || state.world.revealedLocations?.includes(fromLoc.id);
+                    const knowsTo = state.world.visitedLocations.includes(toLoc.id) || state.world.revealedLocations?.includes(toLoc.id);
+                    if (!knowsFrom && !knowsTo) return;  // Skryj cestující na neznámých cestách
+                    
+                    // Interpoluj pozici (linear) — pozice 1.0 (cíl) ne 0.5 protože tady je ROZPRACOVÁNÍ
+                    const fx = (fromLoc.x - minX) * cellSize + _halfCellTrav;
+                    const fy = (fromLoc.y - minY) * cellSize + _halfCellTrav;
+                    const tx = (toLoc.x - minX) * cellSize + _halfCellTrav;
+                    const ty = (toLoc.y - minY) * cellSize + _halfCellTrav;
+                    
+                    const px = fx + (tx - fx) * tp.progress;
+                    const py = fy + (ty - fy) * tp.progress;
+                    
+                    // Avatar (mini 24px) + jméno
+                    const avatar24 = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(tp.name, '20px') : `<div style="width:20px;height:20px;background:#1976d2;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.6rem;font-weight:bold;">${escapeHtml(tp.name.charAt(0))}</div>`;
+                    const safeName = escapeHtml(tp.name).replace(/'/g, "\\'");
+                    const shortNameTrav = tp.name.length > 8 ? tp.name.substring(0, 7) + '…' : tp.name;
+                    
+                    // [NEW] Status indikátor: zelený = online cestuje, žlutý = offline cestuje (telefon vypnut)
+                    const dotColor = tp.isReallyOnline ? '#4CAF50' : '#FFB300';
+                    const borderColor = tp.isReallyOnline ? '#64b5f6' : '#FFB300';
+                    const labelBorderColor = tp.isReallyOnline ? '#64b5f6' : '#FFB300';
+                    const statusTitle = tp.isReallyOnline ? '🟢 Online' : '🟡 Offline (cesta pokračuje)';
+                    
+                    // Wrapper s onclick → otevře detail cesty (avatar + jméno pod ním)
+                    html += `<div onclick="event.stopPropagation();showTravelingPlayer('${safeName}',${idx})" 
+                        style="position:absolute;left:${px - 16}px;top:${py - 14}px;width:32px;cursor:pointer;z-index:20;
+                        animation:travel-bounce 1s ease-in-out infinite alternate;pointer-events:auto;display:flex;flex-direction:column;align-items:center;"
+                        title="🚶 ${escapeHtml(tp.name)} (${escapeHtml(getLocName(tp.travelFrom))} → ${escapeHtml(getLocName(tp.travelTo))}) — ${statusTitle}">
+                        <div style="position:relative;width:28px;height:28px;border-radius:50%;background:#1976d2;border:2px solid ${borderColor};box-shadow:0 0 10px #1976d2;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+                            ${avatar24}
+                            <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;background:${dotColor};border:1px solid #000;border-radius:50%;"></span>
+                        </div>
+                        <div style="font-size:0.45rem;color:#fff;background:rgba(0,0,0,0.85);padding:0 2px;border-radius:2px;line-height:1.1;text-align:center;margin-top:1px;text-shadow:0 0 2px #000;border:1px solid ${labelBorderColor};max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(shortNameTrav)}</div>
+                    </div>`;
+                });
             }
             
             html += '</div>'; // worldMapGrid
@@ -42784,6 +43008,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             });
             // [v4.0.1] Klan filter s jasnějším popiskem - vysvětluje co dělá
             html += '<button onclick="state.showClanTerritories = !state.showClanTerritories; saveGame(true); renderFull();" title="' + (_clanTerrOn ? 'Klikni pro zobrazení dobytých území klanů (default)' : 'Klikni pro skrytí dobytých území - mapa bude přehlednější, jen základny zůstanou') + '" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (_clanTerrOn ? '#2a1a1a' : '#1a2a1a') + '; border: 1px solid ' + (_clanTerrOn ? '#c62828' : '#4caf50') + '; border-radius: 3px; color: ' + (_clanTerrOn ? '#ff8a80' : '#8bc34a') + '; cursor: pointer; margin-left: auto;">⚔️ ' + (_clanTerrOn ? '👁️‍🗨️ Území skryto' : '👁️ Území vidět') + '</button>';
+            
+            // [NEW] Online hráči toggle — defaultně zapnuto
+            const _onlinePlayersOn = state.hideOnlinePlayers !== true;  // Default: zobrazit
+            html += '<button onclick="state.hideOnlinePlayers = !(state.hideOnlinePlayers===true); saveGame(true); renderFull();" title="' + (_onlinePlayersOn ? 'Klikni pro skrytí online hráčů na mapě' : 'Klikni pro zobrazení online hráčů na mapě (modré 👥 badges)') + '" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (_onlinePlayersOn ? '#0d1a2a' : '#111') + '; border: 1px solid ' + (_onlinePlayersOn ? '#1976d2' : '#333') + '; border-radius: 3px; color: ' + (_onlinePlayersOn ? '#64b5f6' : '#666') + '; cursor: pointer;">👥 ' + (_onlinePlayersOn ? 'Hráči' : 'Hráči skrytí') + '</button>';
             html += '</div>';
             // Vysvětlovací řádek
             html += '<div style="font-size: 0.6rem; color: #666; text-align: center; margin-top: 0.3rem; padding: 0 0.5rem; line-height: 1.3;">💡 Klanový filter ovládá zobrazení <strong style="color: #ce93d8;">dobytých území</strong> ostatních klanů. Klanové <strong style="color: #ffd700;">základny</strong> jsou vidět vždy.</div>';
@@ -42823,6 +43051,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             html += '<span style="font-size:0.65rem;"><span style="color:#ff4444;">⚔️Válka</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#ffd700;">💎Poklad</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#f44336;">🐉Boss</span></span>';
+            html += '<span style="font-size:0.65rem;"><span style="display:inline-flex;vertical-align:middle;margin-right:2px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2a2a2a;border:1.5px solid #4caf50;"></span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2a2a2a;border:1.5px solid #1976d2;margin-left:-3px;"></span><span style="display:inline-block;min-width:10px;height:10px;border-radius:50%;background:#1976d2;color:#fff;font-size:0.45rem;text-align:center;line-height:10px;border:1.5px solid #64b5f6;margin-left:-3px;padding:0 1px;">+2</span></span> <span style="color:#64b5f6;">Online hráči</span></span>';
+            html += '<span style="font-size:0.65rem;"><span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#1976d2;border:2px solid #64b5f6;vertical-align:middle;margin-right:2px;"></span><span style="color:#64b5f6;">Hráč na cestě</span></span>';
             html += '</div>';
             
             html += '</div>'; // padding wrapper
@@ -102821,32 +103051,101 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const sanitizedName = playerName.replace(/[\/\.#$\[\]]/g, '_');
             const playerRef = firebaseDB.ref('online/' + sanitizedName);
             
+            // [NEW] Helper — sestaví aktuální online data včetně travel info
+            const buildOnlineData = () => {
+                const data = {
+                    name: playerName,
+                    level: state.char.level,
+                    location: state.world?.currentLocation || 'shelter',
+                    elo: state.pvp?.elo || 1000,
+                    lastSeen: firebase.database.ServerValue.TIMESTAMP
+                };
+                // Travel info (pokud cestuje)
+                if (state.world?.traveling && state.world?.travelTo && state.world?.travelStart) {
+                    data.traveling = true;
+                    data.travelFrom = state.world.currentLocation || 'shelter';
+                    data.travelTo = state.world.travelTo;
+                    data.travelStart = state.world.travelStart;
+                    data.travelDuration = state.world.travelDuration || 0;
+                } else {
+                    data.traveling = false;
+                    data.travelFrom = null;
+                    data.travelTo = null;
+                    data.travelStart = null;
+                    data.travelDuration = null;
+                }
+                return data;
+            };
+            
             // Nastav online - ulož skutečné jméno do dat
-            playerRef.set({
-                name: playerName,  // Skutečné jméno (může obsahovat speciální znaky)
-                level: state.char.level,
-                location: state.world?.currentLocation || 'shelter',
-                elo: state.pvp?.elo || 1000,
-                lastSeen: firebase.database.ServerValue.TIMESTAMP
-            });
+            playerRef.set(buildOnlineData());
             
             // Aktualizuj frakční aktivitu při přihlášení
             updateFactionActivity();
             
-            // Při odpojení smaž
-            playerRef.onDisconnect().remove();
+            // [BUG FIX] Při odpojení NEMAŽEME celý záznam (cesty trvají i 2h, hráč mezitím vypne hru).
+            // Místo toho jen aktualizujeme lastSeen — záznam zůstává, takže ostatní vidí hráče
+            // jako "cestující offline" pokud má aktivní travel info.
+            // 24h filtr v cache loading pak smaže staré záznamy automaticky.
+            // Periodický cleanup starých online záznamů by se hodil — ale pro start stačí 24h filtr.
+            playerRef.onDisconnect().update({
+                lastSeen: firebase.database.ServerValue.TIMESTAMP
+            });
             
-            // Aktualizuj každých 30 sekund
-            safeSetInterval(() => {
+            // [NEW] Adaptivní update interval — když cestuje, updatuj každých 10s; jinak 30s
+            const updateOnlineStatus = () => {
                 if (multiplayerEnabled) {
-                    playerRef.update({
-                        level: state.char.level,
-                        location: state.world?.currentLocation || 'shelter',
-                        elo: state.pvp?.elo || 1000,
-                        lastSeen: firebase.database.ServerValue.TIMESTAMP
-                    });
+                    playerRef.update(buildOnlineData()).catch(e => {});
                 }
-            }, 30000);
+            };
+            safeSetInterval(updateOnlineStatus, 10000);  // Každých 10s (kompromis)
+            
+            // [NEW] Okamžitý update při startu/ukončení cestování (přes window event)
+            window._lastTravelState = state.world?.traveling || false;
+            safeSetInterval(() => {
+                const isNowTraveling = state.world?.traveling || false;
+                if (isNowTraveling !== window._lastTravelState) {
+                    window._lastTravelState = isNowTraveling;
+                    updateOnlineStatus();  // Okamžitý update při přechodu
+                }
+            }, 1000);  // Check 1× za sekundu, update jen při změně
+            
+            // [NEW] Spustí animaci cestujících hráčů na mapě
+            if (typeof startTravelingPlayersAnimation === 'function') {
+                startTravelingPlayersAnimation();
+            }
+            
+            // [NEW] Periodický cleanup starých online záznamů (>7 dní stálo neaktivních)
+            // Aby Firebase nezdržoval staré hráče. Spustí se 1× při startu, pak každou hodinu.
+            // Cleanup se spustí jen pokud uplynulo aspoň 1h od posledního cleanupu (anti-spam).
+            const runOnlineCleanup = () => {
+                if (!multiplayerEnabled || !firebaseDB) return;
+                const lastCleanup = parseInt(localStorage.getItem('onlineCleanupTime') || '0');
+                if (Date.now() - lastCleanup < 60 * 60 * 1000) return;  // 1h cooldown
+                
+                firebaseDB.ref('online').once('value').then(snap => {
+                    const data = snap.val() || {};
+                    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;  // 7 dní
+                    let removed = 0;
+                    const updates = {};
+                    Object.entries(data).forEach(([key, p]) => {
+                        if (!p) return;
+                        const lastSeen = p.lastSeen || 0;
+                        if (lastSeen > 0 && lastSeen < cutoff) {
+                            updates[key] = null;  // Smaž
+                            removed++;
+                        }
+                    });
+                    if (removed > 0) {
+                        firebaseDB.ref('online').update(updates).catch(e => {});
+                        console.log(`🧹 Online cleanup: smazáno ${removed} starých záznamů`);
+                    }
+                    localStorage.setItem('onlineCleanupTime', String(Date.now()));
+                }).catch(e => {});
+            };
+            // Spusť za 30s po startu (aby nezahltilo init), pak 1× za hodinu
+            setTimeout(runOnlineCleanup, 30000);
+            safeSetInterval(runOnlineCleanup, 60 * 60 * 1000);
         }
         
         // === LEADERBOARD ===
@@ -103174,6 +103473,179 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const playerData = window._leaderboardPlayers?.[playerName] || {};
             showPlayerProfile(playerName, playerData, isOnline);
         }
+        window.showPlayerProfileByName = showPlayerProfileByName;
+        
+        // [NEW] Modal se seznamem hráčů na konkrétní lokaci (z mapy)
+        // Klik na hráče → otevře jeho profil
+        async function showPlayersAtLocation(locationId) {
+            const players = window.onlinePlayersByLocation?.[locationId] || [];
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            if (!loc || players.length === 0) {
+                notifyWarning('Žádní hráči', 'Na této lokaci nejsou žádní aktivní hráči.');
+                return;
+            }
+            
+            // Načti avatary pokud nejsou
+            if (typeof ensureAvatarsLoaded === 'function') {
+                try { await ensureAvatarsLoaded(); } catch(e) {}
+            }
+            
+            // Sort: opravdu online první, pak podle levelu
+            const sortedPlayers = [...players].sort((a, b) => {
+                if (a.isReallyOnline && !b.isReallyOnline) return -1;
+                if (!a.isReallyOnline && b.isReallyOnline) return 1;
+                return (b.level || 0) - (a.level || 0);
+            });
+            
+            const now = Date.now();
+            const playersHtml = sortedPlayers.map(p => {
+                const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '40px') : '';
+                const lastSeenMin = p.lastSeen ? Math.floor((now - p.lastSeen) / 60000) : 999;
+                let lastSeenText;
+                let statusColor;
+                if (p.isReallyOnline) {
+                    lastSeenText = '🟢 Online';
+                    statusColor = '#4CAF50';
+                } else if (lastSeenMin < 60) {
+                    lastSeenText = `Před ${lastSeenMin} min`;
+                    statusColor = '#aaa';
+                } else if (lastSeenMin < 1440) {
+                    lastSeenText = `Před ${Math.floor(lastSeenMin / 60)} hod`;
+                    statusColor = '#888';
+                } else {
+                    lastSeenText = `Před ${Math.floor(lastSeenMin / 1440)} dny`;
+                    statusColor = '#666';
+                }
+                
+                const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                return `
+                    <div onclick="closeModal();showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
+                        style="display:flex;align-items:center;gap:0.6rem;padding:0.6rem;background:#0a0a0a;border-radius:6px;margin-bottom:0.4rem;cursor:pointer;border:1px solid #222;transition:background 0.2s;"
+                        onmouseover="this.style.background='#1a1a1a'" 
+                        onmouseout="this.style.background='#0a0a0a'">
+                        ${avatar}
+                        <div style="flex:1;min-width:0;">
+                            <div style="color:#fff;font-size:0.9rem;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.name)}</div>
+                            <div style="display:flex;gap:0.5rem;font-size:0.7rem;margin-top:0.15rem;">
+                                <span style="color:#ffd700;">Lvl ${p.level || '?'}</span>
+                                <span style="color:#888;">•</span>
+                                <span style="color:${statusColor};">${lastSeenText}</span>
+                            </div>
+                        </div>
+                        <span style="color:#555;font-size:1.2rem;">›</span>
+                    </div>
+                `;
+            }).join('');
+            
+            const reallyOnline = players.filter(p => p.isReallyOnline).length;
+            const subTitle = `${players.length} ${players.length === 1 ? 'hráč' : (players.length < 5 ? 'hráči' : 'hráčů')}` 
+                + (reallyOnline > 0 ? ` (${reallyOnline} 🟢 online)` : ' (vše offline)');
+            
+            showModal(`👥 Hráči na lokaci`, `
+                <div style="margin-bottom:0.8rem;text-align:center;">
+                    <div style="color:#ffd700;font-size:1.1rem;font-weight:bold;">${loc.icon} ${escapeHtml(getLocName(loc.id))}</div>
+                    <div style="color:#888;font-size:0.75rem;margin-top:0.2rem;">${subTitle}</div>
+                </div>
+                <div style="max-height:60vh;overflow-y:auto;">
+                    ${playersHtml}
+                </div>
+                <div style="background:#1a1500;padding:0.4rem 0.6rem;border-radius:6px;border:1px solid #ffd70040;margin-top:0.5rem;font-size:0.7rem;color:#aaa;">
+                    💡 Klikni na hráče pro otevření profilu (zprávy, dárky, hodnocení).
+                </div>
+                <button class="btn" onclick="closeModal()" style="background:#333;width:100%;margin-top:0.6rem;">← Zavřít</button>
+            `);
+        }
+        window.showPlayersAtLocation = showPlayersAtLocation;
+        
+        // [NEW] Modal pro cestujícího hráče — odkud → kam, kolik zbývá, profil
+        async function showTravelingPlayer(playerName, idx) {
+            if (typeof ensureAvatarsLoaded === 'function') {
+                try { await ensureAvatarsLoaded(); } catch(e) {}
+            }
+            
+            const tp = (window.travelingPlayers || [])[idx];
+            if (!tp || tp.name !== playerName) {
+                // Cache se mohl mezitím obnovit — pokus o vyhledání podle jména
+                const found = (window.travelingPlayers || []).find(p => p.name === playerName);
+                if (!found) {
+                    notifyWarning('🚶 Cesta dokončena', `${playerName} už dorazil na cíl. Otevírám profil...`);
+                    setTimeout(() => showPlayerProfileByName(playerName, true), 500);
+                    return;
+                }
+                return showTravelingPlayer(playerName, window.travelingPlayers.indexOf(found));
+            }
+            
+            const fromLoc = WORLD_LOCATIONS.find(l => l.id === tp.travelFrom);
+            const toLoc = WORLD_LOCATIONS.find(l => l.id === tp.travelTo);
+            const fromName = fromLoc ? getLocName(fromLoc.id) : '???';
+            const toName = toLoc ? getLocName(toLoc.id) : '???';
+            const fromIcon = fromLoc?.icon || '❓';
+            const toIcon = toLoc?.icon || '❓';
+            
+            // Zbývající čas
+            const now = Date.now();
+            const elapsed = now - tp.travelStart;
+            const remaining = Math.max(0, tp.travelDuration - elapsed);
+            const remainingMin = Math.floor(remaining / 60000);
+            const remainingSec = Math.floor((remaining % 60000) / 1000);
+            const remainingText = remainingMin > 0 ? `${remainingMin} min ${remainingSec}s` : `${remainingSec}s`;
+            
+            // Progress bar
+            const pct = Math.round(tp.progress * 100);
+            
+            // Avatar 64px
+            const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(tp.name, '56px') : '';
+            const safeName = escapeHtml(tp.name).replace(/'/g, "\\'");
+            
+            showModal(`🚶 Hráč na cestě`, `
+                <div style="text-align:center;padding:0.5rem;">
+                    <div style="margin-bottom:0.8rem;">
+                        ${avatar}
+                        <div style="color:#fff;font-size:1.1rem;font-weight:bold;margin-top:0.4rem;">${escapeHtml(tp.name)}</div>
+                        <div style="color:#888;font-size:0.7rem;">Lvl ${tp.level} · ${tp.isReallyOnline ? '<span style="color:#4caf50;">🟢 Online</span>' : '<span style="color:#FFB300;">🟡 Offline (cesta pokračuje)</span>'}</div>
+                    </div>
+                    
+                    <!-- Cesta odkud → kam -->
+                    <div style="background:linear-gradient(135deg,#0d1a2a 0%,#0a0a0a 100%);padding:1rem;border-radius:10px;border:1px solid #1976d2;margin-bottom:0.8rem;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin-bottom:0.6rem;">
+                            <div style="text-align:center;flex:1;">
+                                <div style="font-size:1.8rem;">${fromIcon}</div>
+                                <div style="color:#888;font-size:0.7rem;margin-top:0.2rem;">Odkud</div>
+                                <div style="color:#fff;font-size:0.85rem;font-weight:bold;">${escapeHtml(fromName)}</div>
+                            </div>
+                            <div style="font-size:1.5rem;color:#64b5f6;animation:travel-bounce 0.8s ease-in-out infinite alternate;">→</div>
+                            <div style="text-align:center;flex:1;">
+                                <div style="font-size:1.8rem;">${toIcon}</div>
+                                <div style="color:#888;font-size:0.7rem;margin-top:0.2rem;">Kam</div>
+                                <div style="color:#fff;font-size:0.85rem;font-weight:bold;">${escapeHtml(toName)}</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Progress bar -->
+                        <div style="background:#0a0a0a;height:8px;border-radius:4px;overflow:hidden;border:1px solid #222;margin:0.6rem 0;">
+                            <div style="background:linear-gradient(90deg,#1976d2,#64b5f6);height:100%;width:${pct}%;transition:width 0.5s;"></div>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;font-size:0.7rem;">
+                            <span style="color:#aaa;">⏱️ Zbývá <strong style="color:#64b5f6;">${remainingText}</strong></span>
+                            <span style="color:#aaa;">${pct}% ujeto</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Akce -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+                        <button class="btn" onclick="closeModal();showPlayerProfileByName('${safeName}', ${tp.isReallyOnline})" style="background:#2196f3;padding:0.7rem;">
+                            👤 Profil
+                        </button>
+                        <button class="btn" onclick="closeModal();showPrivateChat('${safeName}')" style="background:#ff9800;padding:0.7rem;">
+                            💬 Zpráva
+                        </button>
+                    </div>
+                    
+                    <button class="btn" onclick="closeModal()" style="background:#333;width:100%;margin-top:0.6rem;padding:0.6rem;">← Zavřít</button>
+                </div>
+            `);
+        }
+        window.showTravelingPlayer = showTravelingPlayer;
         
         async function showPlayerProfile(playerName, playerData, isOnline) {
             if (typeof ensureAvatarsLoaded === "function") { try { await ensureAvatarsLoaded(); } catch(e){} }
@@ -103203,26 +103675,101 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             };
             const className = classNames[playerData?.classId] || 'Přeživší';
             
+            // [NEW] Najdi klan hráče
+            let playerClanInfo = null;
+            try {
+                if (window.clanOwnershipCache) {
+                    for (const [locId, clan] of Object.entries(window.clanOwnershipCache)) {
+                        if (!clan) continue;
+                        const myRoleHere = getClanRole(locId, playerName);
+                        if (myRoleHere) {
+                            const rankDef = getRankDef(myRoleHere);
+                            playerClanInfo = {
+                                name: clan.name || '?',
+                                tag: clan.tag || '',
+                                role: myRoleHere,
+                                rankDef: rankDef,
+                                locationId: locId,
+                                locationName: getLocName(locId)
+                            };
+                            break;
+                        }
+                    }
+                }
+            } catch (e) { /* tichá chyba */ }
+            
+            // [NEW] Najdi aktuální lokaci hráče (kde teď je)
+            let currentLocationName = null;
+            let currentLocationIcon = null;
+            try {
+                // Nejdřív zkus z onlinePlayersByLocation cache (rychlé)
+                if (window.onlinePlayersByLocation) {
+                    for (const [locId, players] of Object.entries(window.onlinePlayersByLocation)) {
+                        if (players.some(p => p.name === playerName)) {
+                            const loc = WORLD_LOCATIONS.find(l => l.id === locId);
+                            if (loc) {
+                                currentLocationName = getLocName(locId);
+                                currentLocationIcon = loc.icon;
+                            }
+                            break;
+                        }
+                    }
+                }
+            } catch (e) { /* tichá chyba */ }
+            
+            // [NEW] Pozice v leaderboardu
+            let leaderboardRank = null;
+            try {
+                if (window._leaderboardSorted && Array.isArray(window._leaderboardSorted)) {
+                    const idx = window._leaderboardSorted.findIndex(p => p.name === playerName);
+                    if (idx >= 0) leaderboardRank = idx + 1;
+                }
+            } catch (e) { /* tichá chyba */ }
+            
+            // [NEW] Friend status
+            const isFriendLocal = friendsList.includes(playerName);
+            const isMe = playerName === myName;
+            
             let html = `
                 <!-- HEADER KARTA -->
                 <div style="background: linear-gradient(135deg, ${pvpRank.color}22 0%, #0a0a0a 100%); padding: 1.2rem; border-radius: 12px; margin-bottom: 1rem; border: 1px solid ${pvpRank.color}44; text-align: center;">
                     <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-bottom: 0.5rem;">
-                        ${typeof renderAvatarHTML === 'function' ? `<div style="filter: drop-shadow(0 0 6px ${pvpRank.color}88);">${renderAvatarHTML(playerName, '64px')}</div>` : `<div style="font-size: 2.5rem; filter: drop-shadow(0 0 8px ${pvpRank.color});">${pvpRank.icon}</div>`}
+                        ${typeof renderAvatarHTML === 'function' ? `<div style="filter: drop-shadow(0 0 6px ${pvpRank.color}88);">${renderAvatarHTML(playerName, '72px')}</div>` : `<div style="font-size: 2.5rem; filter: drop-shadow(0 0 8px ${pvpRank.color});">${pvpRank.icon}</div>`}
                         <div style="text-align: left;">
-                            <div style="color: #fff; font-size: 1.3rem; font-weight: bold;">${escapeHtml(playerName)}</div>
+                            <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+                                <span style="color: #fff; font-size: 1.3rem; font-weight: bold;">${escapeHtml(playerName)}</span>
+                                ${isFriendLocal ? '<span style="color:#4caf50;font-size:0.7rem;background:#1a2a1a;padding:0.1rem 0.4rem;border-radius:3px;border:1px solid #4caf50;">⭐ Přítel</span>' : ''}
+                            </div>
                             <div style="color: ${pvpRank.color}; font-size: 0.8rem; text-transform: uppercase;">${pvpRank.icon} ${pvpRank.name}</div>
+                            ${leaderboardRank ? `<div style="color:#ffd700;font-size:0.7rem;margin-top:0.15rem;">🏆 #${leaderboardRank} v žebříčku</div>` : ''}
                         </div>
                     </div>
-                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; font-size: 0.85rem;">
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; font-size: 0.85rem; flex-wrap:wrap;">
                         <span style="color: ${isOnline ? '#4CAF50' : '#666'};">${isOnline ? '🟢 Online' : '⚫ Offline'}</span>
                         <span style="color: #888;">•</span>
                         <span style="color: #888;">Lvl <span style="color: #ffd700; font-weight: bold;">${playerData?.level || '?'}</span></span>
                         <span style="color: #888;">•</span>
                         <span style="color: #888;">${className}</span>
+                        ${currentLocationName ? `<span style="color: #888;">•</span><span style="color:#64b5f6;">📍 ${escapeHtml(currentLocationName)}</span>` : ''}
                     </div>
                 </div>
                 
-                <!-- STATISTIKY - 2 ŘÁDKY -->
+                ${playerClanInfo ? `
+                <!-- KLAN KARTA -->
+                <div style="background:linear-gradient(135deg,${playerClanInfo.rankDef.color}22 0%,#0a0a0a 100%);padding:0.7rem;border-radius:8px;border:1px solid ${playerClanInfo.rankDef.color}44;margin-bottom:1rem;display:flex;align-items:center;gap:0.6rem;">
+                    <div style="font-size:1.6rem;">${playerClanInfo.rankDef.icon}</div>
+                    <div style="flex:1;min-width:0;">
+                        <div style="color:#fff;font-size:0.85rem;font-weight:bold;">${escapeHtml(playerClanInfo.name)}${playerClanInfo.tag ? ` <span style="color:#888;font-size:0.7rem;">[${escapeHtml(playerClanInfo.tag)}]</span>` : ''}</div>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;color:#aaa;margin-top:0.15rem;">
+                            <span style="color:${playerClanInfo.rankDef.color};font-weight:bold;">${playerClanInfo.rankDef.name}</span>
+                            <span style="color:#666;">•</span>
+                            <span>🏛️ ${escapeHtml(playerClanInfo.locationName)}</span>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                <!-- STATISTIKY - 4 KARTY -->
                 <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; margin-bottom: 1rem;">
                     <div style="background: #1a1a1a; padding: 0.6rem 0.3rem; border-radius: 8px; text-align: center;">
                         <div style="font-size: 1.5rem;">⚔️</div>
@@ -103299,6 +103846,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     🎁 Dárek
                 </button>
             `;
+            
+            // [NEW] Friends tlačítko (pokud není to já)
+            if (!isMe) {
+                if (isFriendLocal) {
+                    html += `
+                        <button class="btn" onclick="if(confirm('Odebrat ${escapeHtml(playerName)} z přátel?')){removeFriend('${escapeHtml(playerName).replace(/'/g, "\\\\'")}');closeModal();}" style="background: linear-gradient(135deg,#37474f,#263238); padding: 0.8rem; grid-column: span 2;">
+                            ⭐ Odebrat z přátel
+                        </button>
+                    `;
+                } else {
+                    html += `
+                        <button class="btn" onclick="sendFriendRequest('${escapeHtml(playerName).replace(/'/g, "\\\\'")}');closeModal();" style="background: linear-gradient(135deg,#1b5e20,#2e7d32); padding: 0.8rem; grid-column: span 2;">
+                            ➕ Přidat do přátel
+                        </button>
+                    `;
+                }
+            }
             
             // Tlačítko PvP výzvy - ZAMČENO
             html += `
