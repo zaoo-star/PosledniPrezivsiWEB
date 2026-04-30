@@ -36979,7 +36979,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             _renderFullPending = true;
             requestAnimationFrame(() => {
                 _renderFullPending = false;
+                
+                // [BUG FIX] Zachovej scroll pozice (window + map container) přes render.
+                // Bez tohoto se mapa po každých 10s refreshu cache scrolluje na začátek.
+                const savedScrollY = window.scrollY || window.pageYOffset || 0;
+                const savedScrollX = window.scrollX || window.pageXOffset || 0;
+                let savedMapScrollY = 0, savedMapScrollX = 0;
+                let mapWrapper = null;
+                if (state.activeTab === 'map') {
+                    // Najdi nejbližší scrollable parent map containeru
+                    mapWrapper = document.getElementById('worldMapGrid')?.parentElement;
+                    if (mapWrapper) {
+                        savedMapScrollY = mapWrapper.scrollTop || 0;
+                        savedMapScrollX = mapWrapper.scrollLeft || 0;
+                    }
+                }
+                
                 _renderFullImpl();
+                
+                // Obnov scroll pozice po renderu (next frame aby DOM byl ready)
+                requestAnimationFrame(() => {
+                    if (savedScrollY > 0 || savedScrollX > 0) {
+                        window.scrollTo(savedScrollX, savedScrollY);
+                    }
+                    if (state.activeTab === 'map' && (savedMapScrollY > 0 || savedMapScrollX > 0)) {
+                        const newWrapper = document.getElementById('worldMapGrid')?.parentElement;
+                        if (newWrapper) {
+                            newWrapper.scrollTop = savedMapScrollY;
+                            newWrapper.scrollLeft = savedMapScrollX;
+                        }
+                    }
+                });
             });
         }
         function _renderFullImpl() {
@@ -37687,33 +37717,58 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             _mapRenderTimer = setTimeout(() => renderFull(), 2000);
         }
         
-        // [NEW] Interval pro plynulý pohyb cestujících hráčů na mapě
-        // Když jsou na mapě cestující hráči, re-render každé 2s aby se pozice aktualizovaly
-        // Bez tohoto by ikonky stály na místě dokud se cache neobnoví (10s)
+        // [NEW] Interval pro plynulý pohyb cestujících hráčů na mapě.
+        // [BUG FIX] Místo renderFull() updatujeme JEN left/top DOM elementů,
+        // takže scroll pozice mapy se zachová a není to drahé.
+        // CSS transition v stylu zajistí plynulý posun mezi tikem.
         let _travelingPlayersInterval = null;
         function startTravelingPlayersAnimation() {
             if (_travelingPlayersInterval) return;
             _travelingPlayersInterval = setInterval(() => {
-                // Jen pokud je mapa aktivní a jsou cestující hráči
+                // Jen pokud je mapa aktivní
                 if (state.activeTab !== 'map') return;
-                if (!Array.isArray(window.travelingPlayers) || window.travelingPlayers.length === 0) return;
                 
-                // Updatuj progress každého cestujícího (bez Firebase fetch)
+                // Najdi všechny cestující ikonky v DOM (data-traveling-player atribut)
+                const elements = document.querySelectorAll('[data-traveling-player]');
+                if (elements.length === 0) return;
+                
                 const now = Date.now();
-                let stillTraveling = false;
-                window.travelingPlayers.forEach(tp => {
-                    const elapsed = now - tp.travelStart;
-                    tp.progress = Math.min(1, Math.max(0, elapsed / tp.travelDuration));
-                    if (tp.progress < 1) stillTraveling = true;
+                const completedNames = [];
+                
+                elements.forEach(el => {
+                    const fx = parseFloat(el.dataset.fromX) || 0;
+                    const fy = parseFloat(el.dataset.fromY) || 0;
+                    const tx = parseFloat(el.dataset.toX) || 0;
+                    const ty = parseFloat(el.dataset.toY) || 0;
+                    const start = parseInt(el.dataset.travelStart) || 0;
+                    const duration = parseInt(el.dataset.travelDuration) || 0;
+                    if (!start || !duration) return;
+                    
+                    const elapsed = now - start;
+                    const progress = Math.min(1, Math.max(0, elapsed / duration));
+                    
+                    if (progress >= 1) {
+                        // Hráč dorazil — schovej ikonu (skutečný refresh přijde z cache)
+                        el.style.opacity = '0';
+                        el.style.pointerEvents = 'none';
+                        completedNames.push(el.dataset.travelingPlayer);
+                        return;
+                    }
+                    
+                    // Updatuj pozici (s CSS transition pro plynulost)
+                    const px = fx + (tx - fx) * progress;
+                    const py = fy + (ty - fy) * progress;
+                    el.style.left = (px - 16) + 'px';
+                    el.style.top = (py - 14) + 'px';
                 });
                 
-                // Vyfiltruj ty co dorazili (progress >= 1) — zmizí z mapy
-                window.travelingPlayers = window.travelingPlayers.filter(tp => tp.progress < 1);
-                
-                if (stillTraveling) {
-                    renderFull();  // Re-render aby se ikony posunuly
+                // Sync s window.travelingPlayers (filtruj dokončené)
+                if (completedNames.length > 0 && Array.isArray(window.travelingPlayers)) {
+                    window.travelingPlayers = window.travelingPlayers.filter(tp => 
+                        !completedNames.includes(tp.name)
+                    );
                 }
-            }, 2000);  // 2s interval = plynulý ale ne příliš drahý
+            }, 2000);  // 2s interval, transition vyhladí pohyb
         }
         // Spustí se automaticky při startu hry — viz startGame inicializace
         
@@ -40966,11 +41021,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (!playersByLocation[p.location]) playersByLocation[p.location] = [];
                         playersByLocation[p.location].push(playerInfo);
                     }
+                    // [BUG FIX] Re-render mapy jen pokud se počet/lokace hráčů změnila.
+                    // Bez tohoto se mapa každých 10s rerenderuje i když se nic nezměnilo
+                    // → resetuje scroll pozici, ruší pohyb po mapě.
+                    const newSummary = JSON.stringify({
+                        playersByLoc: Object.entries(playersByLocation).map(([loc, ps]) => [loc, ps.length]).sort(),
+                        travelingNames: travelingPlayers.map(t => t.name).sort()
+                    });
+                    const changed = window._lastOnlinePlayersSummary !== newSummary;
+                    window._lastOnlinePlayersSummary = newSummary;
+                    
                     window.onlinePlayersByLocation = playersByLocation;
                     window.travelingPlayers = travelingPlayers;
                     window.onlinePlayersTime = Date.now();
                     
-                    if (state.activeTab === 'map') debouncedMapRender();
+                    if (changed && state.activeTab === 'map') debouncedMapRender();
                 }).catch(e => console.log('Online players cache error:', e));
                 
                 // === NAČTI VÁLEČNOU ZÓNU ===
@@ -42943,9 +43008,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const statusTitle = tp.isReallyOnline ? '🟢 Online' : '🟡 Offline (cesta pokračuje)';
                     
                     // Wrapper s onclick → otevře detail cesty (avatar + jméno pod ním)
+                    // [NEW] data-* atributy pro lokální update pozice bez re-renderu mapy
                     html += `<div onclick="event.stopPropagation();showTravelingPlayer('${safeName}',${idx})" 
+                        data-traveling-player="${escapeHtml(tp.name)}"
+                        data-from-x="${fx}" data-from-y="${fy}" data-to-x="${tx}" data-to-y="${ty}"
+                        data-travel-start="${tp.travelStart}" data-travel-duration="${tp.travelDuration}"
                         style="position:absolute;left:${px - 16}px;top:${py - 14}px;width:32px;cursor:pointer;z-index:20;
-                        animation:travel-bounce 1s ease-in-out infinite alternate;pointer-events:auto;display:flex;flex-direction:column;align-items:center;"
+                        animation:travel-bounce 1s ease-in-out infinite alternate;pointer-events:auto;display:flex;flex-direction:column;align-items:center;transition:left 1.8s linear,top 1.8s linear;"
                         title="🚶 ${escapeHtml(tp.name)} (${escapeHtml(getLocName(tp.travelFrom))} → ${escapeHtml(getLocName(tp.travelTo))}) — ${statusTitle}">
                         <div style="position:relative;width:28px;height:28px;border-radius:50%;background:#1976d2;border:2px solid ${borderColor};box-shadow:0 0 10px #1976d2;display:flex;align-items:center;justify-content:center;overflow:hidden;">
                             ${avatar24}
