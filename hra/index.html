@@ -40970,11 +40970,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const playersByLocation = {};
                     const travelingPlayers = [];  // [NEW] Cestující hráči (mezi lokacemi)
                     
+                    // [DEBUG] Diagnostika filtrů — proč hráč nebyl přidán
+                    const debugStats = {
+                        total: 0,
+                        nullOrEmpty: 0,
+                        isMyself: 0,
+                        tooOld24h: 0,
+                        noLocation: 0,
+                        accepted: 0,
+                        details: []
+                    };
+                    
                     for (const [key, p] of Object.entries(onlineData)) {
-                        if (!p || !p.name) continue;
-                        if (p.name === myName) continue;  // Sám sebe nepočítej
+                        debugStats.total++;
+                        if (!p || !p.name) {
+                            debugStats.nullOrEmpty++;
+                            debugStats.details.push(`❌ ${key}: žádné jméno`);
+                            continue;
+                        }
+                        if (p.name === myName) {
+                            debugStats.isMyself++;
+                            debugStats.details.push(`⏭️ ${p.name}: sám sebe`);
+                            continue;
+                        }
                         // Filter na "aktivní hráče" (lastSeen v posledních 24 hodin)
-                        if (p.lastSeen && (now - p.lastSeen > ONLINE_THRESHOLD)) continue;
+                        if (p.lastSeen && (now - p.lastSeen > ONLINE_THRESHOLD)) {
+                            debugStats.tooOld24h++;
+                            const hours = Math.floor((now - p.lastSeen) / (60 * 60 * 1000));
+                            debugStats.details.push(`⏰ ${p.name}: před ${hours}h (>24h)`);
+                            continue;
+                        }
                         
                         // Status: opravdu online (5 min) vs jen aktivní v 24h
                         const isReallyOnline = p.lastSeen && (now - p.lastSeen < 5 * 60 * 1000);
@@ -41006,6 +41031,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     travelDuration: p.travelDuration,
                                     progress: progress
                                 });
+                                debugStats.accepted++;
+                                debugStats.details.push(`🚶 ${p.name}: ${p.travelFrom}→${p.travelTo} (${Math.round(progress*100)}%)`);
                                 continue;  // Cestující se nezobrazí na lokaci
                             }
                             // Pokud progress >= 1, cesta dokončena — hráč je v cílové lokaci
@@ -41013,13 +41040,56 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             // → Použij travelTo jako jeho aktuální lokaci (po dorazu)
                             if (!playersByLocation[p.travelTo]) playersByLocation[p.travelTo] = [];
                             playersByLocation[p.travelTo].push(playerInfo);
+                            debugStats.accepted++;
+                            debugStats.details.push(`🏁 ${p.name}: dorazil do ${p.travelTo}`);
                             continue;
                         }
                         
                         // Stojící hráč — zařaď do playersByLocation
-                        if (!p.location) continue;
-                        if (!playersByLocation[p.location]) playersByLocation[p.location] = [];
-                        playersByLocation[p.location].push(playerInfo);
+                        // [BUG FIX] Pokud nemá location (poškozený záznam), použij 'shelter' jako fallback
+                        const finalLocation = p.location || 'shelter';
+                        if (!p.location) {
+                            debugStats.noLocation++;
+                            debugStats.details.push(`📍 ${p.name}: bez lokace (fallback shelter)`);
+                        }
+                        if (!playersByLocation[finalLocation]) playersByLocation[finalLocation] = [];
+                        playersByLocation[finalLocation].push(playerInfo);
+                        debugStats.accepted++;
+                        debugStats.details.push(`✅ ${p.name} @ ${finalLocation}${isReallyOnline ? ' 🟢' : ''}`);
+                    }
+                    
+                    // [NEW] Přidej sebe do mapy — zobrazí se se zlatým borderem (rozlišení od ostatních)
+                    const myInfo = {
+                        name: myName,
+                        level: state.char.level || 1,
+                        elo: state.pvp?.elo || 1000,
+                        lastSeen: Date.now(),
+                        isReallyOnline: true,
+                        isMe: true  // ← flag pro render se zlatým borderem
+                    };
+                    if (state.world?.traveling && state.world?.travelTo && state.world?.travelStart) {
+                        const myElapsed = Date.now() - state.world.travelStart;
+                        const myDuration = state.world.travelDuration || 0;
+                        const myProgress = myDuration > 0 ? Math.min(1, Math.max(0, myElapsed / myDuration)) : 0;
+                        if (myProgress < 1) {
+                            travelingPlayers.push({
+                                ...myInfo,
+                                travelFrom: state.world.currentLocation || 'shelter',
+                                travelTo: state.world.travelTo,
+                                travelStart: state.world.travelStart,
+                                travelDuration: myDuration,
+                                progress: myProgress
+                            });
+                        } else {
+                            // Cesta dokončena — zobraz na cílové lokaci
+                            const myLoc = state.world.travelTo;
+                            if (!playersByLocation[myLoc]) playersByLocation[myLoc] = [];
+                            playersByLocation[myLoc].push(myInfo);
+                        }
+                    } else {
+                        const myLoc = state.world?.currentLocation || 'shelter';
+                        if (!playersByLocation[myLoc]) playersByLocation[myLoc] = [];
+                        playersByLocation[myLoc].push(myInfo);
                     }
                     // [BUG FIX] Re-render mapy jen pokud se počet/lokace hráčů změnila.
                     // Bez tohoto se mapa každých 10s rerenderuje i když se nic nezměnilo
@@ -41035,16 +41105,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     window.travelingPlayers = travelingPlayers;
                     window.onlinePlayersTime = Date.now();
                     
-                    // [DEBUG] Log diagnostiky aby user viděl kolik hráčů Firebase má
+                    // [DEBUG] Detailní diagnostika filtrů — kompletní přehled co se děje s každým záznamem
                     if (!window._onlineDebugLogged || changed) {
                         window._onlineDebugLogged = true;
-                        const totalRecords = Object.keys(onlineData).length;
-                        const totalActive = Object.values(playersByLocation).reduce((sum, arr) => sum + arr.length, 0);
-                        const locationCount = Object.keys(playersByLocation).length;
-                        console.log(`👥 ONLINE PLAYERS DEBUG: Firebase=${totalRecords} records, aktivní v 24h=${totalActive}, na ${locationCount} lokacích, cestujících=${travelingPlayers.length}`);
-                        if (totalActive > 0) {
-                            console.log('  Lokace s hráči:', Object.entries(playersByLocation).map(([loc, ps]) => `${loc}: ${ps.map(p => p.name).join(',')}`).join(' | '));
-                        }
+                        console.log(`👥 ONLINE PLAYERS DEBUG:
+   📊 Firebase má: ${debugStats.total} záznamů
+   ✅ Přijato (zobrazeno na mapě): ${debugStats.accepted}
+   ⏭️  Sám sebe: ${debugStats.isMyself}
+   ⏰ Příliš starých (>24h): ${debugStats.tooOld24h}
+   📍 Bez lokace (fallback shelter): ${debugStats.noLocation}
+   ❌ Null/bez jména: ${debugStats.nullOrEmpty}
+   🚶 Cestujících: ${travelingPlayers.length}
+   🏛️  Na ${Object.keys(playersByLocation).length} lokacích`);
+                        console.log('Detail každého záznamu:');
+                        debugStats.details.forEach(d => console.log('  ' + d));
                     }
                     
                     if (changed && state.activeTab === 'map') debouncedMapRender();
@@ -41485,6 +41559,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const playersHere = window.onlinePlayersByLocation?.[currentLoc.id] || [];
                     if (playersHere.length > 0) {
                         const sortedHere = [...playersHere].sort((a, b) => {
+                            // [NEW] Self vždy první
+                            if (a.isMe && !b.isMe) return -1;
+                            if (!a.isMe && b.isMe) return 1;
                             if (a.isReallyOnline && !b.isReallyOnline) return -1;
                             if (!a.isReallyOnline && b.isReallyOnline) return 1;
                             return (b.level || 0) - (a.level || 0);
@@ -41506,8 +41583,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         visiblePH.forEach(p => {
                             const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
                             const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
-                            const borderCol = p.isReallyOnline ? '#4caf50' : '#1976d2';
-                            const statusIcon = p.isReallyOnline ? '🟢' : '🔵';
+                            const borderCol = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
+                            const statusIcon = p.isMe ? '👑' : (p.isReallyOnline ? '🟢' : '🔵');
                             html += `<div onclick="showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
                                 style="display:flex;align-items:center;gap:0.4rem;padding:0.4rem;background:#0a0a0a;border-radius:6px;cursor:pointer;border:1px solid ${borderCol}44;"
                                 onmouseover="this.style.background='#1a1a1a'" onmouseout="this.style.background='#0a0a0a'">
@@ -42927,6 +43004,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const playerCount = playersHere.length;
                         // Sort: opravdu online první (zelená tečka), pak podle levelu
                         const sortedPlayers = [...playersHere].sort((a, b) => {
+                            // [NEW] Self vždy první
+                            if (a.isMe && !b.isMe) return -1;
+                            if (!a.isMe && b.isMe) return 1;
                             if (a.isReallyOnline && !b.isReallyOnline) return -1;
                             if (!a.isReallyOnline && b.isReallyOnline) return 1;
                             return (b.level || 0) - (a.level || 0);
@@ -42943,18 +43023,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         visibleAvatars.forEach((p, i) => {
                             // Mini avatar 16px, mírný overlap (-4px) když jich je víc
                             const marginLeft = i === 0 ? '0' : '-5px';
-                            const borderColor = p.isReallyOnline ? '#4caf50' : '#1976d2';
+                            // [NEW] Zlatý border + glow pro sebe (isMe), zelený pro online, modrý pro 24h aktivní
+                            const borderColor = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
+                            const extraShadow = p.isMe ? ',0 0 6px #ffd700' : '';
                             const safeName = escapeHtml(p.name);
                             
                             // Inline render avataru (bez fce, abychom nemuseli volat) — ale fallback na renderAvatarHTML
                             let avatarBox;
                             const avUrl = typeof getPlayerAvatar === 'function' ? getPlayerAvatar(p.name) : null;
                             if (avUrl) {
-                                avatarBox = `<img src="${avUrl}" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000;background:#000;flex-shrink:0;" onerror="this.style.display='none'">`;
+                                avatarBox = `<img src="${avUrl}" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000${extraShadow};background:#000;flex-shrink:0;" onerror="this.style.display='none'">`;
                             } else {
                                 // Fallback: iniciála
                                 const initial = (p.name || '?').charAt(0).toUpperCase();
-                                avatarBox = `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#2a2a2a;color:#fff;font-size:0.5rem;font-weight:bold;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000;flex-shrink:0;">${escapeHtml(initial)}</span>`;
+                                avatarBox = `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#2a2a2a;color:#fff;font-size:0.5rem;font-weight:bold;border:1.5px solid ${borderColor};margin-left:${marginLeft};box-shadow:0 0 2px #000${extraShadow};flex-shrink:0;">${escapeHtml(initial)}</span>`;
                             }
                             avatarsHtml += avatarBox;
                         });
@@ -42970,7 +43052,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (playerCount === 1) {
                             const p = sortedPlayers[0];
                             const shortName = p.name.length > 8 ? p.name.substring(0, 7) + '…' : p.name;
-                            const labelBorderCol = p.isReallyOnline ? '#4caf50' : '#1976d2';
+                            const labelBorderCol = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
                             playerNameLabel = `<div style="font-size:0.45rem;color:#fff;background:rgba(0,0,0,0.85);padding:0 2px;border-radius:2px;line-height:1.1;text-align:center;margin-top:1px;text-shadow:0 0 2px #000;border:1px solid ${labelBorderCol};max-width:34px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;pointer-events:auto;">${escapeHtml(shortName)}</div>`;
                         }
                         
@@ -43066,11 +43148,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const safeName = escapeHtml(tp.name).replace(/'/g, "\\'");
                     const shortNameTrav = tp.name.length > 8 ? tp.name.substring(0, 7) + '…' : tp.name;
                     
-                    // [NEW] Status indikátor: zelený = online cestuje, žlutý = offline cestuje (telefon vypnut)
-                    const dotColor = tp.isReallyOnline ? '#4CAF50' : '#FFB300';
-                    const borderColor = tp.isReallyOnline ? '#64b5f6' : '#FFB300';
-                    const labelBorderColor = tp.isReallyOnline ? '#64b5f6' : '#FFB300';
-                    const statusTitle = tp.isReallyOnline ? '🟢 Online' : '🟡 Offline (cesta pokračuje)';
+                    // [NEW] Status indikátor: zlatý = sám sebe, zelený = online cestuje, žlutý = offline cestuje
+                    const dotColor = tp.isMe ? '#ffd700' : (tp.isReallyOnline ? '#4CAF50' : '#FFB300');
+                    const borderColor = tp.isMe ? '#ffd700' : (tp.isReallyOnline ? '#64b5f6' : '#FFB300');
+                    const labelBorderColor = tp.isMe ? '#ffd700' : (tp.isReallyOnline ? '#64b5f6' : '#FFB300');
+                    const bgColorTrav = tp.isMe ? '#5d4037' : '#1976d2';  // Hnědé pozadí pro sebe vs modré pro ostatní
+                    const shadowColorTrav = tp.isMe ? '#ffd700' : '#1976d2';
+                    const statusTitle = tp.isMe ? '👑 Ty (cestuješ)' : (tp.isReallyOnline ? '🟢 Online' : '🟡 Offline (cesta pokračuje)');
                     
                     // Wrapper s onclick → otevře detail cesty (avatar + jméno pod ním)
                     // [NEW] data-* atributy pro lokální update pozice bez re-renderu mapy
@@ -43081,7 +43165,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         style="position:absolute;left:${px - 16}px;top:${py - 14}px;width:32px;cursor:pointer;z-index:20;
                         animation:travel-bounce 1s ease-in-out infinite alternate;pointer-events:auto;display:flex;flex-direction:column;align-items:center;transition:left 1.8s linear,top 1.8s linear;"
                         title="🚶 ${escapeHtml(tp.name)} (${escapeHtml(getLocName(tp.travelFrom))} → ${escapeHtml(getLocName(tp.travelTo))}) — ${statusTitle}">
-                        <div style="position:relative;width:28px;height:28px;border-radius:50%;background:#1976d2;border:2px solid ${borderColor};box-shadow:0 0 10px #1976d2;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+                        <div style="position:relative;width:28px;height:28px;border-radius:50%;background:${bgColorTrav};border:2px solid ${borderColor};box-shadow:0 0 10px ${shadowColorTrav};display:flex;align-items:center;justify-content:center;overflow:hidden;">
                             ${avatar24}
                             <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;background:${dotColor};border:1px solid #000;border-radius:50%;"></span>
                         </div>
@@ -43185,6 +43269,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             html += '<span style="font-size:0.65rem;"><span style="color:#ff4444;">⚔️Válka</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#ffd700;">💎Poklad</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#f44336;">🐉Boss</span></span>';
+            html += '<span style="font-size:0.65rem;"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#2a2a2a;border:1.5px solid #ffd700;box-shadow:0 0 4px #ffd700;vertical-align:middle;margin-right:2px;"></span><span style="color:#ffd700;">Ty</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="display:inline-flex;vertical-align:middle;margin-right:2px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2a2a2a;border:1.5px solid #4caf50;"></span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2a2a2a;border:1.5px solid #1976d2;margin-left:-3px;"></span><span style="display:inline-block;min-width:10px;height:10px;border-radius:50%;background:#1976d2;color:#fff;font-size:0.45rem;text-align:center;line-height:10px;border:1.5px solid #64b5f6;margin-left:-3px;padding:0 1px;">+2</span></span> <span style="color:#64b5f6;">Online hráči</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#1976d2;border:2px solid #64b5f6;vertical-align:middle;margin-right:2px;"></span><span style="color:#64b5f6;">Hráč na cestě</span></span>';
             html += '</div>';
@@ -44090,6 +44175,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (playersHere.length === 0 || state.hideOnlinePlayers === true) return '';
                     
                     const sortedPlayers = [...playersHere].sort((a, b) => {
+                        // [NEW] Self vždy první
+                        if (a.isMe && !b.isMe) return -1;
+                        if (!a.isMe && b.isMe) return 1;
                         if (a.isReallyOnline && !b.isReallyOnline) return -1;
                         if (!a.isReallyOnline && b.isReallyOnline) return 1;
                         return (b.level || 0) - (a.level || 0);
@@ -44103,8 +44191,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const playerCardsHtml = visiblePlayers.map(p => {
                         const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
                         const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
-                        const borderCol = p.isReallyOnline ? '#4caf50' : '#1976d2';
-                        const statusIcon = p.isReallyOnline ? '🟢' : '🔵';
+                        const borderCol = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
+                        const statusIcon = p.isMe ? '👑' : (p.isReallyOnline ? '🟢' : '🔵');
                         return `<div onclick="closeModal();showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
                             style="display:flex;align-items:center;gap:0.4rem;padding:0.4rem;background:#0a0a0a;border-radius:6px;cursor:pointer;border:1px solid ${borderCol}44;transition:background 0.2s;"
                             onmouseover="this.style.background='#1a1a1a'" onmouseout="this.style.background='#0a0a0a'">
@@ -103672,6 +103760,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Sort: opravdu online první, pak podle levelu
             const sortedPlayers = [...players].sort((a, b) => {
+                // [NEW] Self vždy první
+                if (a.isMe && !b.isMe) return -1;
+                if (!a.isMe && b.isMe) return 1;
                 if (a.isReallyOnline && !b.isReallyOnline) return -1;
                 if (!a.isReallyOnline && b.isReallyOnline) return 1;
                 return (b.level || 0) - (a.level || 0);
