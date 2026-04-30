@@ -127777,9 +127777,9 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 return;
             }
             
-            // Kontrola kasy
+            // Kontrola kasy (admin neplatí, takže přeskoč)
             const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
-            if (publicMoney < project.cost) {
+            if (!adminOk && publicMoney < project.cost) {
                 const chybi = project.cost - publicMoney;
                 notifyWarning('💰 Málo peněz v kase', `Potřeba ${project.cost}💰, v kase je ${publicMoney}💰. Chybí ${chybi}💰.`);
                 return;
@@ -127820,7 +127820,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     </div>
                     
                     <div style="background:#0a0a0a;padding:0.7rem;border-radius:6px;border:1px solid #333;margin-bottom:0.7rem;font-size:0.8rem;line-height:1.7;">
-                        <div>💰 <strong>Cena:</strong> ${project.cost.toLocaleString()}💰 z veřejné kasy</div>
+                        <div>💰 <strong>Cena:</strong> ${adminOk ? '<span style="color:#ff5722;">ZDARMA (admin)</span>' : `${project.cost.toLocaleString()}💰 z veřejné kasy`}</div>
                         <div>📊 <strong>Aktuální počet investic:</strong> ${currentTotal}</div>
                         <div>🎯 <strong>Bonus za 1 investici:</strong> ${project.perInvestmentDesc}</div>
                         ${bonusPreview}
@@ -127831,7 +127831,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     </div>
                     
                     <div style="display:grid;gap:0.4rem;">
-                        <button class="btn" onclick="confirmMayorInvestment('${projectId}')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);width:100%;padding:0.7rem;">✓ Investovat ${project.cost.toLocaleString()}💰</button>
+                        <button class="btn" onclick="confirmMayorInvestment('${projectId}')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);width:100%;padding:0.7rem;">✓ Investovat ${adminOk ? 'ZDARMA (admin)' : project.cost.toLocaleString() + '💰'}</button>
                         <button class="btn" onclick="closeModal()" style="background:#333;width:100%;">✗ Zrušit</button>
                     </div>
                 `);
@@ -127845,23 +127845,26 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const project = MAYOR_SYSTEM.investments.find(p => p.id === projectId);
             if (!project) return;
             
+            const adminOk = (typeof isAdmin === 'function' && isAdmin());
             const inv = getMayorInvestments();
             const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
             
-            // Re-check kasa (mezitím mohla klesnout)
-            if (publicMoney < project.cost) {
+            // Re-check kasa (mezitím mohla klesnout) — admin přeskakuje
+            if (!adminOk && publicMoney < project.cost) {
                 notifyWarning('💰 Málo peněz', 'V kase už není dost peněz.');
                 if (typeof closeModal === 'function') closeModal();
                 return;
             }
             
-            // Odečti z kasy
-            if (typeof firebaseDB !== 'undefined' && firebaseDB) {
-                firebaseDB.ref('politics/publicMoney').transaction(current => (current || 0) - project.cost)
-                    .catch(e => console.warn('🔇 Firebase:', e?.message || e));
+            // Odečti z kasy (admin neplatí)
+            if (!adminOk) {
+                if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                    firebaseDB.ref('politics/publicMoney').transaction(current => (current || 0) - project.cost)
+                        .catch(e => console.warn('🔇 Firebase:', e?.message || e));
+                }
+                if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = publicMoney - project.cost;
+                state.publicMoney = publicMoney - project.cost;
             }
-            if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = publicMoney - project.cost;
-            state.publicMoney = publicMoney - project.cost;
             
             // Inkrement totals
             inv.totals[projectId] = (inv.totals[projectId] || 0) + 1;
@@ -127886,11 +127889,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             // Kronika
             if (typeof addToMayorChronicle === 'function') {
-                addToMayorChronicle('investment_made', `Investoval ${project.cost.toLocaleString()}💰 do ${project.icon} ${project.name} (#${newTotal}, celkem ${totalBonusEntries})`);
+                const costLabel = adminOk ? 'ZDARMA (admin)' : `${project.cost.toLocaleString()}💰`;
+                addToMayorChronicle('investment_made', `Investoval ${costLabel} do ${project.icon} ${project.name} (#${newTotal}, celkem ${totalBonusEntries})`);
             }
             
-            addLog(`💰 Investice: ${project.icon} ${project.name} (#${newTotal}, ${totalBonusEntries})`, '💰');
-            notifySuccess('💰 Investováno!', `${project.name} #${newTotal} — celkový bonus: ${totalBonusEntries}`);
+            addLog(`💰 Investice${adminOk ? ' (admin)' : ''}: ${project.icon} ${project.name} (#${newTotal}, ${totalBonusEntries})`, '💰');
+            notifySuccess(`💰 Investováno!${adminOk ? ' (admin)' : ''}`, `${project.name} #${newTotal} — celkový bonus: ${totalBonusEntries}`);
             
             // Synchronizace přes Firebase (sdílený stav pro všechny hráče)
             if (typeof firebaseDB !== 'undefined' && firebaseDB) {
@@ -128116,8 +128120,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             const projectCards = MAYOR_SYSTEM.investments.map(project => {
                 const totalInvestments = inv.totals?.[project.id] || 0;
-                const canAfford = publicMoney >= project.cost;
-                const meetsDay = daysPlayed >= (project.minDays || 1);
+                const canAfford = adminOk || (publicMoney >= project.cost);
+                const meetsDay = adminOk || (daysPlayed >= (project.minDays || 1));
                 const canInvest = (isMayorPerson || adminOk) && canAfford && meetsDay;
                 
                 // Spočítej aktuální celkový bonus
@@ -128155,7 +128159,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 if (canInvest) {
                     onclick = `onclick="startMayorInvestment('${project.id}')"`;
                     statusHtml = `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.4rem;">
-                        <span style="color:#4caf50;font-weight:bold;font-size:0.85rem;">💰 Investovat ${project.cost.toLocaleString()}</span>
+                        <span style="color:#4caf50;font-weight:bold;font-size:0.85rem;">💰 Investovat ${adminOk ? '<span style="color:#ff5722;">ZDARMA</span>' : project.cost.toLocaleString()}</span>
                         <span style="color:#888;font-size:0.7rem;">klikni →</span>
                     </div>`;
                 } else if (!isMayorPerson && !adminOk) {
