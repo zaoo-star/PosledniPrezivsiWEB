@@ -41467,6 +41467,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // NPC na lokaci
                 html += renderLocationNPCs(currentLoc);
+                
+                // [NEW] Ostatní hráči na této lokaci (pokud někdo přijde do mého shelteru)
+                if (state.hideOnlinePlayers !== true) {
+                    const playersHere = window.onlinePlayersByLocation?.[currentLoc.id] || [];
+                    if (playersHere.length > 0) {
+                        const sortedHere = [...playersHere].sort((a, b) => {
+                            if (a.isReallyOnline && !b.isReallyOnline) return -1;
+                            if (!a.isReallyOnline && b.isReallyOnline) return 1;
+                            return (b.level || 0) - (a.level || 0);
+                        });
+                        const reallyOnlineHere = sortedHere.filter(p => p.isReallyOnline).length;
+                        const visiblePH = sortedHere.slice(0, 6);
+                        const overflowPH = sortedHere.length - visiblePH.length;
+                        
+                        html += '<div style="background:#1a1a1a;padding:0.6rem;border-radius:8px;margin-top:0.6rem;border:1px solid #1976d244;">';
+                        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">';
+                        html += `<span style="color:#64b5f6;font-size:0.8rem;font-weight:bold;">👥 Hráči zde (${sortedHere.length})</span>`;
+                        if (reallyOnlineHere > 0) {
+                            html += `<span style="color:#4caf50;font-size:0.65rem;">🟢 ${reallyOnlineHere} online</span>`;
+                        } else {
+                            html += '<span style="color:#888;font-size:0.65rem;">vše offline</span>';
+                        }
+                        html += '</div>';
+                        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.3rem;">';
+                        visiblePH.forEach(p => {
+                            const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                            const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
+                            const borderCol = p.isReallyOnline ? '#4caf50' : '#1976d2';
+                            const statusIcon = p.isReallyOnline ? '🟢' : '🔵';
+                            html += `<div onclick="showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
+                                style="display:flex;align-items:center;gap:0.4rem;padding:0.4rem;background:#0a0a0a;border-radius:6px;cursor:pointer;border:1px solid ${borderCol}44;"
+                                onmouseover="this.style.background='#1a1a1a'" onmouseout="this.style.background='#0a0a0a'">
+                                <div style="position:relative;flex-shrink:0;">${avatar}<span style="position:absolute;bottom:-2px;right:-2px;font-size:0.55rem;">${statusIcon}</span></div>
+                                <div style="flex:1;min-width:0;">
+                                    <div style="color:#fff;font-size:0.78rem;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.name)}</div>
+                                    <div style="color:#888;font-size:0.62rem;">Lvl ${p.level || '?'}</div>
+                                </div>
+                            </div>`;
+                        });
+                        html += '</div>';
+                        if (overflowPH > 0) {
+                            html += `<div style="text-align:center;color:#888;font-size:0.65rem;margin-top:0.3rem;">+${overflowPH} dalších</div>`;
+                        }
+                        html += '</div>';
+                    }
+                }
+                
                 html += '</div>';
             }
             
@@ -42913,16 +42960,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         }
                         
                         // Wrapper na avatary
-                        // [BUG FIX] Wrapper je pointer-events:none, takže prázdné místo PROPUSTÍ klik
-                        // na buňku lokace (cestování). Jen samotné avatary + jméno mají pointer-events:auto
-                        // a chytnou klik pro otevření profilu.
-                        const onclickHandler = `event.stopPropagation();showPlayersAtLocation('${loc.id}')`;
-                        const labelWithClick = playerNameLabel 
-                            ? playerNameLabel.replace(/^<div /, `<div onclick="${onclickHandler}" `)
-                            : '';
-                        html += `<div style="position:absolute;top:1px;left:1px;display:flex;flex-direction:column;align-items:flex-start;pointer-events:none;z-index:5;">
-                            <div onclick="${onclickHandler}" style="display:flex;align-items:center;cursor:pointer;pointer-events:auto;" title="👥 Klik pro detail: ${safeTitle}">${avatarsHtml}${overflowBadge}</div>
-                            ${labelWithClick}
+                        // [BUG FIX] Avatary jsou teď DEKORATIVNÍ — pointer-events:none.
+                        // Klik na buňku lokace otevře showLocationPreview, který má integrovanou
+                        // sekci hráčů s avatary + klikatelnými profily.
+                        // Toto vyřešilo problém že na malých buňkách bylo těžko klikat.
+                        html += `<div style="position:absolute;top:1px;left:1px;display:flex;flex-direction:column;align-items:flex-start;pointer-events:none;z-index:5;" title="👥 Klikni na lokaci pro detail: ${safeTitle}">
+                            <div style="display:flex;align-items:center;">${avatarsHtml}${overflowBadge}</div>
+                            ${playerNameLabel}
                         </div>`;
                     }
                 }
@@ -44024,6 +44068,52 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <span>📍 Vzdálenost: ${distance}</span>
                     ${travelTime ? `<span>⏱️ Cesta: ${travelTime}</span>` : ''}
                 </div>
+                
+                ${(function() {
+                    // [NEW] Sekce hráčů na lokaci — integrace s cestovním modalem
+                    const playersHere = window.onlinePlayersByLocation?.[loc.id] || [];
+                    if (playersHere.length === 0 || state.hideOnlinePlayers === true) return '';
+                    
+                    const sortedPlayers = [...playersHere].sort((a, b) => {
+                        if (a.isReallyOnline && !b.isReallyOnline) return -1;
+                        if (!a.isReallyOnline && b.isReallyOnline) return 1;
+                        return (b.level || 0) - (a.level || 0);
+                    });
+                    const reallyOnlineCount = sortedPlayers.filter(p => p.isReallyOnline).length;
+                    
+                    // Render seznam hráčů (max 6 viditelných, zbytek jako "+N další")
+                    const visiblePlayers = sortedPlayers.slice(0, 6);
+                    const overflowCount = sortedPlayers.length - visiblePlayers.length;
+                    
+                    const playerCardsHtml = visiblePlayers.map(p => {
+                        const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                        const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
+                        const borderCol = p.isReallyOnline ? '#4caf50' : '#1976d2';
+                        const statusIcon = p.isReallyOnline ? '🟢' : '🔵';
+                        return `<div onclick="closeModal();showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
+                            style="display:flex;align-items:center;gap:0.4rem;padding:0.4rem;background:#0a0a0a;border-radius:6px;cursor:pointer;border:1px solid ${borderCol}44;transition:background 0.2s;"
+                            onmouseover="this.style.background='#1a1a1a'" onmouseout="this.style.background='#0a0a0a'">
+                            <div style="position:relative;flex-shrink:0;">${avatar}<span style="position:absolute;bottom:-2px;right:-2px;font-size:0.55rem;">${statusIcon}</span></div>
+                            <div style="flex:1;min-width:0;">
+                                <div style="color:#fff;font-size:0.8rem;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(p.name)}</div>
+                                <div style="color:#888;font-size:0.65rem;">Lvl ${p.level || '?'}</div>
+                            </div>
+                        </div>`;
+                    }).join('');
+                    
+                    return `
+                        <div style="background:#1a1a1a;padding:0.7rem;border-radius:8px;margin-bottom:1rem;border:1px solid #1976d244;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                                <span style="color:#64b5f6;font-size:0.85rem;font-weight:bold;">👥 Hráči zde (${sortedPlayers.length})</span>
+                                ${reallyOnlineCount > 0 ? `<span style="color:#4caf50;font-size:0.7rem;">🟢 ${reallyOnlineCount} online</span>` : `<span style="color:#888;font-size:0.7rem;">vše offline</span>`}
+                            </div>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.3rem;">
+                                ${playerCardsHtml}
+                            </div>
+                            ${overflowCount > 0 ? `<div style="text-align:center;color:#888;font-size:0.7rem;margin-top:0.3rem;">+${overflowCount} dalších hráčů</div>` : ''}
+                        </div>
+                    `;
+                })()}
                 
                 ${loc.type === 'dungeon' ? `
                     <div style="background: #2a1a3a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.8rem; border: 1px solid #6A1B9A;">
