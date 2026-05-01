@@ -148143,6 +148143,9 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 // Snapshotuj level pro UI
                 const myLevel = state.char?.level || 1;
                 
+                // [PvP COMBAT] Vytvoř snapshot vyzývatele pro boj
+                const attackerSnapshot = (typeof createPvPCombatSnapshot === 'function') ? createPvPCombatSnapshot() : null;
+                
                 // Použij raid strukturu ale s isDuel flagem
                 await newRaidRef.set({
                     id: raidId,
@@ -148155,7 +148158,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     targetPlayerName: targetName,                 // Specifický cíl
                     scheduledTime: scheduledTime,
                     status: 'lobby',
-                    attackers: { [myName]: { name: myName, joinedAt: Date.now() } },
+                    attackers: { [myName]: { name: myName, joinedAt: Date.now(), snapshot: attackerSnapshot } },
                     defenders: {},
                     createdAt: Date.now(),
                     createdBy: myName,
@@ -148257,10 +148260,14 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 
                 const myLevel = state.char?.level || 1;
                 
+                // [PvP COMBAT] Vytvoř snapshot obránce pro boj — bez něj by walkover
+                const defenderSnapshot = (typeof createPvPCombatSnapshot === 'function') ? createPvPCombatSnapshot() : null;
+                
                 await firebaseDB.ref(`scheduledRaids/${raidId}/defenders/${myName}`).set({
                     name: myName,
                     joinedAt: Date.now(),
-                    level: myLevel
+                    level: myLevel,
+                    snapshot: defenderSnapshot
                 });
                 
                 notifySuccess('⚔️ Výzva přijata!', `Boj v ${new Date(raid.scheduledTime).toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'})}.`);
@@ -148403,8 +148410,12 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             const now = Date.now();
             const timeUntil = raid.scheduledTime - now;
             const isStarted = now >= raid.scheduledTime;
-            const isClosed = timeUntil < SCHEDULED_RAID_CONFIG.JOIN_WINDOW && !isStarted;  // 2 min před koncem registrace
             const isDuel = !!raid.isDuel;  // 🔥 1v1 mode
+            // [FIX] Pro duely (instant 30s) je 2-minutový JOIN_WINDOW absurdní — okamžitě by se zavřel
+            // Místo toho duel zůstává otevřený do scheduledTime, klanové raidy mají 2 min buffer
+            const isClosed = isDuel 
+                ? isStarted  // duel: zavřený jen po startu
+                : (timeUntil < SCHEDULED_RAID_CONFIG.JOIN_WINDOW && !isStarted);  // klanový: 2 min před
             
             // Status
             const statusInfo = {
@@ -148589,9 +148600,13 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     return;
                 }
                 
-                // Check window
-                if (Date.now() > raid.scheduledTime - SCHEDULED_RAID_CONFIG.JOIN_WINDOW) {
+                // Check window — duely povolí přihlášení kdykoli do scheduledTime
+                if (!raid.isDuel && Date.now() > raid.scheduledTime - SCHEDULED_RAID_CONFIG.JOIN_WINDOW) {
                     notifyWarning('Pozdě', 'Registrace uzavřena 2 min před startem.');
+                    return;
+                }
+                if (raid.isDuel && Date.now() > raid.scheduledTime) {
+                    notifyWarning('Pozdě', 'Souboj už začal.');
                     return;
                 }
                 
