@@ -123665,6 +123665,13 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                             <div style="font-size: 0.75rem; opacity: 0.8;">Diagnostika stavu event bannerů</div>
                         </div>
                     </button>
+                    <button class="btn" onclick="adminResetPvPLeaderboard()" style="background: linear-gradient(135deg, #c62828 0%, #6a1b1b 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem; border: 1px solid #ff5722;">
+                        <span style="font-size: 1.5rem;">🔄</span>
+                        <div style="flex:1;">
+                            <div style="font-weight: bold;">Reset PvP žebříčku</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Smaže ELO, výhry, prohry, win streak všech hráčů</div>
+                        </div>
+                    </button>
                 `;
             }
             
@@ -147996,7 +148003,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         // ═══════════════════════════════════════════════════════════════
         
         const PVP_DUEL_CONFIG = {
-            MIN_LEAD_TIME: 5 * 60 * 1000,         // 5 min min. dopředu
+            MIN_LEAD_TIME: 20 * 1000,             // 20s min. dopředu (umožňuje IHNED variantu)
             MAX_LEAD_TIME: 30 * 60 * 1000,        // Max 30 min dopředu
             EXPIRE_AFTER: 24 * 60 * 60 * 1000,    // Pokud cíl nepřijme do 24h, zruší se
             PLAYER_COOLDOWN: 30 * 60 * 1000,      // 30 min cooldown po souboji
@@ -148105,12 +148112,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     </div>
                 </div>
                 
-                <h4 style="color: #ff9800; margin: 0.5rem 0;">⏰ Kdy začít souboj?</h4>
-                <div id="pvpDuelTimeOpts" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.8rem;">
-                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 5*60*1000})" style="background: #1a3a1a; border: 1px solid #4caf50; color: #aed581; padding: 0.6rem;">⚡ Za 5 min<br><span style="font-size: 0.65rem; color: #777;">Nejdříve</span></button>
-                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 10*60*1000})" style="background: #2a2a1a; border: 1px solid #ff9800; color: #ffcc80; padding: 0.6rem;">🕐 Za 10 min<br><span style="font-size: 0.65rem; color: #777;">Doporučeno</span></button>
-                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 15*60*1000})" style="background: #2a2a1a; border: 1px solid #ff9800; color: #ffcc80; padding: 0.6rem;">🕒 Za 15 min</button>
-                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 30*60*1000})" style="background: #1a1a3a; border: 1px solid #2196f3; color: #90caf9; padding: 0.6rem;">🕒 Za 30 min<br><span style="font-size: 0.65rem; color: #777;">Nejpozději</span></button>
+                <div id="pvpDuelTimeOpts" style="display: grid; grid-template-columns: 1fr; gap: 0.4rem; margin-bottom: 0.8rem;">
+                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 30*1000})" style="background: linear-gradient(135deg, #c62828, #6a1b1b); border: 2px solid #ff5722; color: #fff; padding: 0.9rem; font-weight: bold; animation: pulse-glow 1.5s infinite; font-size: 0.95rem;">🔥 BOJOVAT IHNED<br><span style="font-size: 0.7rem; color: #ffccbc; font-weight: normal;">Souboj začne za 30 sekund — soupeř má 30s na přijetí</span></button>
                 </div>
                 
                 <button class="btn" onclick="closeModal()" style="width: 100%; background: #555;">✗ Zrušit</button>
@@ -148970,9 +148973,16 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             showModal('⚔️ Klanové nájezdy' + headerLockBadge, '<div style="text-align:center;padding:2rem;"><div class="loading-spinner"></div></div>');
             
             try {
+                // [FIX] Zajisti že clan cache je načtená — používá ji admin sandbox
+                if (typeof loadClanData === 'function') {
+                    try { await loadClanData(); } catch(_) {}
+                }
+                
+                console.log('🔄 Loading scheduledRaids...');
                 const raidsSnap = await firebaseDB.ref('scheduledRaids').once('value');
                 const allRaids = raidsSnap.val() || {};
-                const raids = Object.values(allRaids).filter(r => r.status === 'lobby' || r.status === 'starting' || r.status === 'active');
+                console.log('✅ scheduledRaids loaded, keys:', Object.keys(allRaids).length);
+                const raids = Object.values(allRaids).filter(r => r && (r.status === 'lobby' || r.status === 'starting' || r.status === 'active'));
                 raids.sort((a, b) => (a.scheduledTime || 0) - (b.scheduledTime || 0));
                 
                 let html = '';
@@ -149068,7 +149078,20 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     ${html}
                     <button class="btn" onclick="closeModal()" style="width:100%;background:#333;margin-top:0.5rem;">✕ Zavřít</button>
                 `);
-            } catch (e) { console.error('Board error:', e); }
+            } catch (e) {
+                console.error('Board error:', e);
+                showModal('⚔️ Klanové nájezdy', `
+                    <div style="background:#3a1a1a;border:1px solid #f44336;padding:1rem;border-radius:8px;margin-bottom:0.7rem;">
+                        <div style="color:#f44336;font-weight:bold;margin-bottom:0.4rem;">❌ Chyba při načítání</div>
+                        <div style="color:#aaa;font-size:0.8rem;line-height:1.4;">${escapeHtml(e.message || String(e))}</div>
+                        <div style="color:#666;font-size:0.7rem;margin-top:0.5rem;">Pokud chyba přetrvává, zkontroluj Firebase rules pro <code>scheduledRaids</code> a <code>systemLocks</code>.</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;">
+                        <button class="btn" onclick="showScheduledRaidsBoard()" style="background:#2196f3;">🔄 Zkusit znovu</button>
+                        <button class="btn" onclick="closeModal()" style="background:#555;">✕ Zavřít</button>
+                    </div>
+                `);
+            }
         }
         window.showScheduledRaidsBoard = showScheduledRaidsBoard;
         
@@ -150993,12 +151016,35 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         } catch(e) { console.error('ELO update error:', e); }
                     }
                     
-                    // Veřejné info do globálního chatu
+                    // Veřejné info do globálního chatu — bohaté info s ELO + ranking
                     let chatMsg = '';
                     if (winnerName) {
-                        chatMsg = `⚔️ ${winnerName} porazil/a ${loserName} v koloseu! ${eloChange > 0 ? `(+${eloChange} ELO)` : ''} ${reason}`;
+                        // Spočítej žebříčkové umístění vítěze
+                        let winnerRank = '?';
+                        try {
+                            const allStatsSnap = await firebaseDB.ref('pvpStats').once('value');
+                            const allStats = allStatsSnap.val() || {};
+                            // Seřaď všechny hráče podle ELO sestupně
+                            const ranked = Object.entries(allStats)
+                                .filter(([_, s]) => s && typeof s.pvpElo === 'number')
+                                .sort((a, b) => (b[1].pvpElo || 1000) - (a[1].pvpElo || 1000));
+                            const winnerIdx = ranked.findIndex(([n, _]) => n === winnerName);
+                            if (winnerIdx >= 0) winnerRank = `#${winnerIdx + 1}`;
+                        } catch(e) { /* ignore */ }
+                        
+                        // Postavit zprávu — jednoduchá ale informativní
+                        chatMsg = `⚔️ ${winnerName} porazil/a ${loserName} v koloseu!`;
+                        if (eloChange > 0 && winnerNewElo !== null) {
+                            chatMsg += `\n🏆 Vítěz: ${winnerNewElo} ELO (+${eloChange}) · ${winnerRank} v žebříčku`;
+                            if (loserNewElo !== null) {
+                                chatMsg += `\n💔 Poražený: ${loserNewElo} ELO (-${eloChange})`;
+                            }
+                        }
+                        if (reason && reason !== 'Klanový boj skončil') {
+                            chatMsg += `\n📋 ${reason}`;
+                        }
                     } else {
-                        chatMsg = `🤝 Souboj ${challenger} vs ${opponent} skončil remízou.`;
+                        chatMsg = `🤝 Souboj ${challenger} vs ${opponent} skončil remízou. ELO se nemění.`;
                     }
                     
                     firebaseDB.ref('chat/messages').push({
