@@ -104100,6 +104100,84 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const isDuelTarget = raid.isDuel && raid.targetPlayerName === myName;
                         if (!isParticipant && !isLeader && !isDuelTarget) continue;
                         
+                        // [NEW] Auto-show duel challenge modal pokud jsem target a ještě nepřijal
+                        // Funguje jako záloha pokud notification listener selhal
+                        if (raid.isDuel && raid.targetPlayerName === myName && raid.status === 'lobby' 
+                            && !(raid.defenders && raid.defenders[myName])) {
+                            const modalShownKey = `duelModalShown_${raidId}`;
+                            const timeUntilStart = (raid.scheduledTime || 0) - now;
+                            // Zobraz modal jen pokud výzva ještě platí (do scheduledTime + 60s grace)
+                            if (timeUntilStart > -60000 && !window[modalShownKey]) {
+                                window[modalShownKey] = true;
+                                console.log('⚔️ Auto-showing duel challenge modal (tick fallback) for raid:', raidId);
+                                
+                                // Vibrace pro upozornění
+                                if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                                    navigator.vibrate([400, 200, 400, 200, 800]);
+                                }
+                                
+                                // Toast jako fallback
+                                if (typeof notifyWarning === 'function') {
+                                    notifyWarning('⚔️ VÝZVA NA SOUBOJ!', `${raid.attackerLeader} tě vyzval na 1v1!`);
+                                }
+                                
+                                // Modal s tlačítky
+                                if (typeof showModal === 'function') {
+                                    const safeRaidId = raidId.replace(/'/g, "\\'");
+                                    const expiryMs = (raid.scheduledTime || Date.now()) + 60000;
+                                    const initialSecs = Math.max(0, Math.ceil((expiryMs - Date.now()) / 1000));
+                                    
+                                    if (window._duelChallengeTimer) {
+                                        clearInterval(window._duelChallengeTimer);
+                                        window._duelChallengeTimer = null;
+                                    }
+                                    
+                                    showModal('⚔️ VÝZVA NA SOUBOJ', `
+                                        <div style="background: linear-gradient(135deg, #2a0a05, #1a0500); padding: 0.8rem; border-radius: 8px; margin-bottom: 0.8rem; border: 3px solid #ff5722; text-align: center; animation: pulse-glow 1s infinite;">
+                                            <div style="color: #ff6b35; font-size: 0.65rem; letter-spacing: 2px; font-weight: bold;">⚔️ KOLOSEUM PUSTINY ⚔️</div>
+                                            <div style="color: #ffd700; font-size: 1.2rem; font-weight: bold; margin-top: 0.3rem;">${escapeHtml(raid.attackerLeader)}</div>
+                                            <div style="color: #aaa; font-size: 0.7rem; margin: 0.2rem 0;">tě vyzval na souboj cti</div>
+                                        </div>
+                                        <div style="background: #1a0a0a; border: 2px solid #f44336; padding: 1rem; border-radius: 8px; margin-bottom: 0.8rem; text-align: center;">
+                                            <div style="color: #aaa; font-size: 0.7rem; margin-bottom: 0.3rem;">⏰ ČAS NA REAKCI</div>
+                                            <div id="duelChallengeCountdown" style="color: #ff5722; font-weight: bold; font-size: 3rem; line-height: 1; font-family: monospace; text-shadow: 0 0 12px #ff572266;">${initialSecs}s</div>
+                                            <div style="color: #888; font-size: 0.65rem; margin-top: 0.4rem;">Pokud nereaguješ, prohraješ walkoverem (-ELO)</div>
+                                        </div>
+                                        <div style="display: grid; grid-template-columns: 1fr; gap: 0.4rem;">
+                                            <button class="btn" onclick="if(window._duelChallengeTimer){clearInterval(window._duelChallengeTimer);window._duelChallengeTimer=null;} closeModal(); acceptPvPDuel('${safeRaidId}');" style="background: linear-gradient(135deg, #2e7d32, #1b5e20); padding: 1rem; font-size: 1.05rem; font-weight: bold; color: #fff; border: 2px solid #4caf50; animation: pulse-glow 1.2s infinite;">
+                                                🛡️ PŘIJMOUT VÝZVU
+                                            </button>
+                                            <button class="btn" onclick="if(window._duelChallengeTimer){clearInterval(window._duelChallengeTimer);window._duelChallengeTimer=null;} closeModal(); declinePvPDuel('${safeRaidId}');" style="background: linear-gradient(135deg, #555, #333); padding: 0.6rem; color: #aaa; font-size: 0.85rem;">
+                                                ❌ Odmítnout výzvu
+                                            </button>
+                                        </div>
+                                    `);
+                                    
+                                    window._duelChallengeTimer = setInterval(() => {
+                                        const el = document.getElementById('duelChallengeCountdown');
+                                        if (!el) {
+                                            clearInterval(window._duelChallengeTimer);
+                                            window._duelChallengeTimer = null;
+                                            return;
+                                        }
+                                        const left = Math.max(0, Math.ceil((expiryMs - Date.now()) / 1000));
+                                        el.textContent = left + 's';
+                                        if (left <= 5) {
+                                            el.style.color = '#f44336';
+                                            el.style.fontSize = '3.5rem';
+                                        } else if (left <= 15) {
+                                            el.style.color = '#ff9800';
+                                        }
+                                        if (left <= 0) {
+                                            el.textContent = 'PROŠLO!';
+                                            clearInterval(window._duelChallengeTimer);
+                                            window._duelChallengeTimer = null;
+                                        }
+                                    }, 1000);
+                                }
+                            }
+                        }
+                        
                         // [NEW] Recovery: pokud boj už běží a já nemám otevřený listener, znovu se připoj
                         if (raid.status === 'active' && raid.pvpCombat && raid.pvpCombat.status === 'active') {
                             if (window._pvpCombatRaidId !== raidId) {
@@ -114257,11 +114335,32 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // [NEW] PvP Duel notifikace
                     if (v.type === 'pvp_duel_challenge' && !v.processed) {
+                        // [DEBUG] Diagnostika - log všeho co handler dostane
+                        console.log('⚔️ [DUEL CHALLENGE RECEIVED]', {
+                            key: k,
+                            challenger: v.challenger,
+                            raidId: v.raidId,
+                            scheduledTime: v.scheduledTime,
+                            timestamp: v.timestamp,
+                            myName: myName,
+                            alreadyProcessed: processedRewards.has('duel_' + k)
+                        });
+                        
+                        // Skip pokud už zpracovaná v této session (ale modal možná zmizel)
+                        if (processedRewards.has('duel_' + k)) {
+                            console.log('⏭️ Duel challenge already processed in this session, skipping');
+                            return;
+                        }
                         processedRewards.add('duel_' + k);
                         
                         // Vibrace - silnější aby si hráč všiml
                         if (typeof navigator !== 'undefined' && navigator.vibrate) {
                             navigator.vibrate([400, 200, 400, 200, 800]);
+                        }
+                        
+                        // [NEW] Toast notifikace navíc — fallback pokud modal selže
+                        if (typeof notifyWarning === 'function') {
+                            notifyWarning('⚔️ VÝZVA NA SOUBOJ!', `${v.challenger} tě vyzval na 1v1!`);
                         }
                         
                         addLog(`⚔️ ${v.challenger} tě vyzval na souboj cti!`, '⚔️');
@@ -114333,9 +114432,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                     window._duelChallengeTimer = null;
                                 }
                             }, 1000);
+                            
+                            // [FIX] Remove notification AŽ PO úspěšném zobrazení modalu
+                            // Tím se zabrání ztrátě notifikace pokud showModal selže
+                            const _safeName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                            firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                            if (_safeName !== myName) {
+                                firebaseDB.ref('notifications/' + _safeName + '/' + k).remove().catch(function(e){});
+                            }
+                        } else {
+                            // showModal nedostupný — necháme notifikaci v DB pro pozdější pokus
+                            console.warn('⚠️ showModal not available, keeping notification in DB');
                         }
-                        
-                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
                     }
                     if (v.type === 'pvp_duel_accepted' && !v.processed) {
                         processedRewards.add('duel_' + k);
