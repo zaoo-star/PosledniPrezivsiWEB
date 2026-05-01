@@ -101965,7 +101965,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <div style="color: #2196f3; font-weight: bold; margin-bottom: 0.3rem;">⚔️ Aktivní dobývači:</div>
                         <ul style="color: #ccc; margin: 0; padding-left: 1.2rem; font-size: 0.72rem;">${activesText}</ul>
                     </div>
-                    <button class="btn" onclick="showTerritoryActions()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-top: 0.6rem;">
+                        <button class="btn" onclick="closeModal()" style="background: #555;">✗ Zavřít</button>
+                        <button class="btn" onclick="closeModal(); setTimeout(() => showTerritoryActions(), 100);" style="background: #2a4a6a;">← Zpět</button>
+                    </div>
                 `);
                 console.log('🔍 [DEBUG] Territory full data:', fullData);
             } catch(e) {
@@ -101985,10 +101988,28 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 if (state.territoryCapture?.[locationId]) {
                     delete state.territoryCapture[locationId]._completing;
+                } else {
+                    // [FIX] Pokud lokální state chybí, zrekonstruuj ho z Firebase
+                    if (multiplayerEnabled && firebaseDB) {
+                        const myName = getPlayerName();
+                        const mySafeName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                        const fbSnap = await firebaseDB.ref(`territories/${locationId}/activeCaptures/${mySafeName}`).once('value');
+                        const fbCapture = fbSnap.val();
+                        if (fbCapture) {
+                            if (!state.territoryCapture) state.territoryCapture = {};
+                            state.territoryCapture[locationId] = {
+                                startTime: fbCapture.startTime,
+                                faction: fbCapture.faction,
+                                duration: 15 * 60 * 1000
+                            };
+                            console.log('🏴 [FORCE] Rekonstruoval lokální state z Firebase:', state.territoryCapture[locationId]);
+                        }
+                    }
                 }
                 await completeTerritoryCapture(locationId);
                 notifySuccess('⚡', 'Force complete dokončen');
             } catch(e) {
+                console.error('Force complete error:', e);
                 notifyWarning('❌', e.message);
             }
         }
@@ -102012,6 +102033,75 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         window.adminAddTerritoryPoints = adminAddTerritoryPoints;
+        
+        // [ADMIN] Vyčistí zaseklé captures (>15 min staré) a přizná body
+        async function adminCleanStaleCaptures(locationId) {
+            if (typeof isAdmin !== 'function' || !isAdmin()) return;
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('❌', 'Multiplayer offline');
+                return;
+            }
+            try {
+                const snap = await firebaseDB.ref(`territories/${locationId}/activeCaptures`).once('value');
+                const actives = snap.val() || {};
+                let cleaned = 0;
+                let pointsAwarded = 0;
+                
+                for (const [key, cap] of Object.entries(actives)) {
+                    const elapsed = Date.now() - cap.startTime;
+                    const elapsedMin = Math.floor(elapsed / 60000);
+                    
+                    // Pokud capture trvá > 15 min, je zaseklý → dokončit ho
+                    if (elapsed >= 15 * 60 * 1000) {
+                        console.log(`🧹 Stale capture: ${cap.player} (${cap.faction}) - ${elapsedMin} min, awarding +10 to ${cap.faction}`);
+                        
+                        // Award body klanu
+                        const factionRef = firebaseDB.ref(`territories/${locationId}/points/${cap.faction}`);
+                        await factionRef.transaction(curr => (curr || 0) + 10);
+                        pointsAwarded += 10;
+                        
+                        // Zaznamenej hráče jako kontributora
+                        await firebaseDB.ref(`territories/${locationId}/contributors/${key}`).set({
+                            player: cap.player,
+                            faction: cap.faction,
+                            timestamp: Date.now()
+                        });
+                        
+                        // Update player contribution
+                        await firebaseDB.ref(`factionMembers/${key}/contribution`).set(firebase.database.ServerValue.increment(10));
+                        
+                        // Smaž z activeCaptures
+                        await firebaseDB.ref(`territories/${locationId}/activeCaptures/${key}`).remove();
+                        
+                        // Pokud jsem to já, vyčisti i lokální state
+                        const myName = getPlayerName();
+                        if (cap.player === myName && state.territoryCapture?.[locationId]) {
+                            delete state.territoryCapture[locationId];
+                            saveGame(true);
+                        }
+                        
+                        cleaned++;
+                    }
+                }
+                
+                // Aktualizuj vlastníka po přidání bodů
+                if (cleaned > 0 && typeof checkAndUpdateTerritoryOwner === 'function') {
+                    await checkAndUpdateTerritoryOwner(locationId);
+                }
+                
+                if (cleaned === 0) {
+                    notifyInfo('🧹', 'Žádné zaseklé captures (>15 min) nenalezeny');
+                } else {
+                    notifySuccess('🧹 Vyčištěno', `${cleaned} zaseklých captures, ${pointsAwarded} bodů přiznáno`);
+                    // Refresh debug
+                    setTimeout(() => adminDebugTerritory(locationId), 800);
+                }
+            } catch(e) {
+                console.error('Clean stale error:', e);
+                notifyWarning('❌', e.message);
+            }
+        }
+        window.adminCleanStaleCaptures = adminCleanStaleCaptures;
         
         // Zobrazit akce na teritoriu (tlačítko na lokaci)
         async function showTerritoryActions() {
@@ -102283,8 +102373,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <div style="color: #ff9800; font-size: 0.65rem; font-weight: bold; margin-bottom: 0.3rem;">🛠️ ADMIN DEBUG</div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
                             <button class="btn" onclick="adminDebugTerritory('${locationId}')" style="background: #2a2a4a; padding: 0.4rem; font-size: 0.7rem;">🔍 Stav</button>
-                            ${state.territoryCapture?.[locationId] ? `<button class="btn" onclick="adminForceCompleteCapture('${locationId}')" style="background: #2a4a2a; padding: 0.4rem; font-size: 0.7rem;">⚡ Vynutit complete</button>` : ''}
-                            <button class="btn" onclick="adminAddTerritoryPoints('${locationId}')" style="background: #4a2a2a; padding: 0.4rem; font-size: 0.7rem; ${state.territoryCapture?.[locationId] ? '' : 'grid-column: span 2;'}">➕ Přidat body</button>
+                            <button class="btn" onclick="adminForceCompleteCapture('${locationId}')" style="background: #2a4a2a; padding: 0.4rem; font-size: 0.7rem;">⚡ Vynutit complete</button>
+                            <button class="btn" onclick="adminAddTerritoryPoints('${locationId}')" style="background: #4a2a2a; padding: 0.4rem; font-size: 0.7rem; grid-column: span 2;">➕ Přidat body</button>
+                            <button class="btn" onclick="adminCleanStaleCaptures('${locationId}')" style="background: #4a2a4a; padding: 0.4rem; font-size: 0.7rem; grid-column: span 2;">🧹 Vyčistit zaseklé captures (>15 min)</button>
                         </div>
                     </div>
                 ` : ''}
@@ -103437,31 +103528,62 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!multiplayerEnabled || !firebaseDB) return;
             if (!state.confirmed) return;
             
+            // [FIX] Počkej na clan data — bez toho getPlayerFaction() vrátí null
+            // a completeTerritoryCapture nemůže pokračovat
+            try {
+                if (typeof loadClanData === 'function') {
+                    await loadClanData();
+                }
+            } catch(e) { console.warn('🏴 [RESTORE] loadClanData failed:', e); }
+            
             const myName = getPlayerName();
             const mySafeName = myName.replace(/[.#$\[\]]/g, '_');
             const currentLocationId = state.world?.currentLocation;
-            // [v6-rank] Default fallback (vždy <= 15 min); per-capture duration je v state.territoryCapture[loc].duration
             const CAPTURE_DURATION = 15 * 60 * 1000;
             
             try {
+                console.log('🏴 [RESTORE] Začínám prohledávat aktivní captures...');
                 // Prohledej VŠECHNY území jestli tam nemáme aktivní capture
                 const snapshot = await firebaseDB.ref('territories').once('value');
                 const territories = snapshot.val() || {};
+                
+                let foundCount = 0;
+                let completedCount = 0;
+                let cancelledCount = 0;
+                let restoredCount = 0;
                 
                 for (const [locationId, territory] of Object.entries(territories)) {
                     // Čti z activeCaptures (PLURAL) - tam se data zapisují
                     const myCapture = territory.activeCaptures?.[mySafeName];
                     
                     if (myCapture && myCapture.player === myName) {
+                        foundCount++;
                         const elapsed = Date.now() - myCapture.startTime;
                         const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
+                        const elapsedMin = Math.floor(elapsed / 60000);
                         
-                        console.log(`🏴 Found active capture at ${locationId}: ${progress.toFixed(1)}%`);
+                        console.log(`🏴 [RESTORE] Found active capture at ${locationId}: ${progress.toFixed(1)}% (${elapsedMin} min)`);
                         
                         if (progress >= 100) {
                             // Měl být dokončen - dokonči ho!
-                            console.log('🏴 Auto-completing expired capture at', locationId);
-                            await completeTerritoryCapture(locationId);
+                            console.log('🏴 [RESTORE] Auto-completing expired capture at', locationId);
+                            try {
+                                // [FIX] Zrekonstruuj lokální state aby completeTerritoryCapture měl faction fallback
+                                if (!state.territoryCapture) state.territoryCapture = {};
+                                state.territoryCapture[locationId] = {
+                                    startTime: myCapture.startTime,
+                                    faction: myCapture.faction,
+                                    duration: CAPTURE_DURATION
+                                };
+                                await completeTerritoryCapture(locationId);
+                                completedCount++;
+                            } catch(completeErr) {
+                                console.error('🏴 [RESTORE] Auto-complete failed for', locationId, ':', completeErr);
+                                // Fallback: aspoň smaž z activeCaptures aby se zase nezasekl
+                                try {
+                                    await firebaseDB.ref(`territories/${locationId}/activeCaptures/${mySafeName}`).remove();
+                                } catch(_) {}
+                            }
                         } else if (locationId === currentLocationId) {
                             // Jsme na té lokaci - obnov lokální stav
                             if (!state.territoryCapture) state.territoryCapture = {};
@@ -103469,24 +103591,33 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 startTime: myCapture.startTime,
                                 progress: progress,
                                 faction: myCapture.faction,
-                                originalOwner: myCapture.originalOwner
+                                originalOwner: myCapture.originalOwner,
+                                duration: CAPTURE_DURATION
                             };
                             
                             // Spusť listener
-                            startTerritoryListener(locationId);
+                            if (typeof startTerritoryListener === 'function') startTerritoryListener(locationId);
                             
-                            console.log(`🏴 Capture obnoven: ${progress.toFixed(1)}%`);
+                            console.log(`🏴 [RESTORE] Capture obnoven: ${progress.toFixed(1)}%`);
                             notifyInfo('Obsazování obnoveno', `Progress: ${progress.toFixed(0)}% - pokračuj!`);
+                            restoredCount++;
                         } else {
                             // Nejsme na té lokaci - zruš capture
-                            console.log('🏴 Cancelling capture at', locationId, '- player is elsewhere');
+                            console.log('🏴 [RESTORE] Cancelling capture at', locationId, '- player is elsewhere (currentLocation:', currentLocationId, ')');
                             await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + mySafeName).remove();
-                            notifyWarning('Obsazování zrušeno', `Opustil jsi ${locationId} před dokončením`);
+                            notifyWarning('Obsazování zrušeno', `Opustil jsi lokaci před dokončením`);
+                            cancelledCount++;
                         }
                     }
                 }
+                
+                console.log(`🏴 [RESTORE] Hotovo: nalezeno=${foundCount}, dokončeno=${completedCount}, obnoveno=${restoredCount}, zrušeno=${cancelledCount}`);
+                
+                if (completedCount > 0) {
+                    notifySuccess('🏴 Auto-dokončeno', `${completedCount} starých dobývání bylo automaticky uzavřeno`);
+                }
             } catch(e) {
-                console.error('Restore capture error:', e);
+                console.error('🏴 [RESTORE] Critical error:', e);
             }
         }
         
@@ -118329,6 +118460,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     checkGifts();
                     restoreTerritoryCapture(); // Obnov rozdělaný capture po refreshi
                     startWorldBossRaidListeners(); // World Boss listener
+                    
+                    // [SELF-HEAL] Periodicky každých 60s kontroluj zaseklé captures
+                    // Pokud je activeCapture ve Firebase >15 min, dokonči ho
+                    if (typeof safeSetInterval === 'function') {
+                        safeSetInterval(() => {
+                            if (state.confirmed) restoreTerritoryCapture();
+                        }, 60 * 1000);
+                    }
                     
                     // Agresivní refresh bannerů po inicializaci listenerů
                     // Firebase .on('value') posílá data s prodlevou na mobilu
