@@ -76847,9 +76847,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             });
                         }
                         
-                        // Vyčisti pro nový den (body, contributory, dobývání)
-                        await firebaseDB.ref('territories/' + locId + '/contributors').remove();
-                        await firebaseDB.ref('territories/' + locId + '/points').remove();
+                        // [FIX] Vyčisti pro nový den — ALE jen pokud nejsou běžící captures
+                        // Pokud někdo má aktivní capture, body zachovat aby mu nezmizely
+                        const hasActiveCaptures = terrData.activeCaptures && Object.keys(terrData.activeCaptures).length > 0;
+                        if (!hasActiveCaptures) {
+                            await firebaseDB.ref('territories/' + locId + '/contributors').remove();
+                            await firebaseDB.ref('territories/' + locId + '/points').remove();
+                            console.log('🏴 [DAILY RESET] Points cleared for', locId);
+                        } else {
+                            console.log('🏴 [DAILY RESET] Skipped point reset for', locId, '- active captures running');
+                        }
                         
                         // Vyčisti staré activeCaptures
                         if (terrData.activeCaptures) {
@@ -103732,17 +103739,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + myName.replace(/[.#$\[\]]/g, '_')).remove();
                     console.log('🏴 Removed from activeCaptures');
                     
-                    // 2. Zajisti že struktura bodů existuje
-                    const existingPoints = await firebaseDB.ref(pointsPath).once('value');
-                    console.log('🏴 Existing points before:', existingPoints.val());
-                    
-                    if (!existingPoints.val()) {
-                        // Inicializuj strukturu pokud neexistuje
-                        const initPoints = {};
-                        initPoints[faction] = 0;
-                        await firebaseDB.ref(pointsPath).set(initPoints);
-                        console.log('🏴 Initialized points structure for', locationId);
-                    }
+                    // 2. [REMOVED] Init structure SET — transaction níže si poradí s null hodnotou.
+                    // Předtím byl race condition: pokud běžela paralelní transaction jiného hráče,
+                    // SET mohl přepsat čerstvě přidané body.
                     
                     // 3. Přidej body frakci pomocí transaction
                     const factionPointsPath = pointsPath + '/' + faction;
@@ -104094,7 +104093,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         if (raid.status !== 'lobby' && raid.status !== 'starting' && raid.status !== 'active') continue;
                         
                         const isParticipant = (raid.attackers && raid.attackers[myName]) || (raid.defenders && raid.defenders[myName]);
-                        if (!isParticipant) continue;
+                        // [FIX] Master/leader také prochází tickem i kdyby nebyl v attackers/defenders
+                        // (pro duel = challenger; pro klanový raid = vůdce klanu)
+                        const isLeader = raid.attackerLeader === myName;
+                        // [FIX] Pro duel: target (vyzván) také prochází i když ještě nepřijal výzvu
+                        const isDuelTarget = raid.isDuel && raid.targetPlayerName === myName;
+                        if (!isParticipant && !isLeader && !isDuelTarget) continue;
                         
                         // [NEW] Recovery: pokud boj už běží a já nemám otevřený listener, znovu se připoj
                         if (raid.status === 'active' && raid.pvpCombat && raid.pvpCombat.status === 'active') {
@@ -104107,6 +104111,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             continue;
                         }
                         
+                        // [NEW] Stuck duel detection: pokud duel čeká na soupeře >90s, trigger walkover
+                        // (i když původní master není online — kdokoliv účastník to může spustit)
+                        if (raid.isDuel && raid.status === 'starting') {
+                            const timeSinceStart = now - (raid.scheduledTime || now);
+                            const defendersCount = Object.keys(raid.defenders || {}).length;
+                            const attackersCount = Object.keys(raid.attackers || {}).length;
+                            // Po 60s grace + 30s buffer = 90s
+                            if (timeSinceStart > 90000 && (defendersCount === 0 || attackersCount === 0)) {
+                                const stuckKey = `duelStuckHandled_${raidId}`;
+                                if (!window[stuckKey]) {
+                                    window[stuckKey] = true;
+                                    console.log('⏳ Stuck duel detected, force walkover', raidId);
+                                    // Promote myself jako master pokud nikdo jiný neaktivní
+                                    if (raid.attackerLeader !== myName && (raid.attackers?.[myName] || raid.defenders?.[myName])) {
+                                        await firebaseDB.ref(`scheduledRaids/${raidId}/attackerLeader`).set(myName);
+                                    }
+                                    if (typeof initiatePvPRaidCombat === 'function') {
+                                        setTimeout(() => initiatePvPRaidCombat(raidId), 500);
+                                    }
+                                }
+                            }
+                            continue;  // Skip ostatní reminder/start logic pro 'starting' duel
+                        }
+                        
                         const timeUntil = raid.scheduledTime - now;
                         
                         // 5 min reminder
@@ -104117,8 +104145,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             if (typeof navigator !== 'undefined' && navigator.vibrate) {
                                 navigator.vibrate([150, 50, 150]);
                             }
-                            notifyWarning('⏰ Boj za 5 minut!', `Klanový nájezd ${raid.attackerClanName} vs ${raid.defenderClanName} začíná za chvíli!`);
-                            addLog(`⏰ Klanový nájezd začíná za ${Math.ceil(timeUntil/60000)} min`, '⚔️');
+                            // [FIX] Duel má vlastní notifikaci
+                            if (raid.isDuel) {
+                                notifyWarning('⏰ Souboj brzy!', `Souboj cti ${raid.attackerClanName} vs ${raid.defenderClanName} začne za chvíli.`);
+                                addLog(`⏰ Souboj cti začíná za ${Math.ceil(timeUntil/60000)} min`, '⚔️');
+                            } else {
+                                notifyWarning('⏰ Boj za 5 minut!', `Klanový nájezd ${raid.attackerClanName} vs ${raid.defenderClanName} začíná za chvíli!`);
+                                addLog(`⏰ Klanový nájezd začíná za ${Math.ceil(timeUntil/60000)} min`, '⚔️');
+                            }
                         }
                         
                         // Boj začal — otevři lobby (kritické!)
@@ -104129,8 +104163,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             if (typeof navigator !== 'undefined' && navigator.vibrate) {
                                 navigator.vibrate([300, 100, 300, 100, 500]);
                             }
-                            notifyWarning('⚔️ BOJ ZAČAL!', `${raid.attackerClanName} vs ${raid.defenderClanName} — připoj se!`);
-                            addLog(`⚔️ Klanový nájezd právě začal!`, '⚔️');
+                            // [FIX] Duel vs klanový raid mají různé hlášky
+                            if (raid.isDuel) {
+                                const defendersCount = Object.keys(raid.defenders || {}).length;
+                                if (defendersCount === 0) {
+                                    notifyWarning('⏳ Čekám na soupeře...', `${raid.defenderClanName} ještě nepřijal/a. Po 60s walkover.`);
+                                    addLog(`⏳ Souboj cti čeká na ${raid.defenderClanName}`, '⚔️');
+                                } else {
+                                    notifyWarning('⚔️ SOUBOJ CTI!', `${raid.attackerClanName} vs ${raid.defenderClanName}!`);
+                                    addLog(`⚔️ Souboj cti právě začal!`, '⚔️');
+                                }
+                            } else {
+                                notifyWarning('⚔️ BOJ ZAČAL!', `${raid.attackerClanName} vs ${raid.defenderClanName} — připoj se!`);
+                                addLog(`⚔️ Klanový nájezd právě začal!`, '⚔️');
+                            }
                             
                             // [NEW] Master election: kdo má spustit combat?
                             // Primární: vůdce útočníků (raid.attackerLeader)
@@ -114036,7 +114082,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 processingRewards = false;
             }
             
-            firebaseDB.ref('notifications/' + myName).orderByChild('timestamp').limitToLast(100).on('value', (snap) => {
+            // [FIX] Subscribe na obě cesty - raw myName (legacy) i sanitized (nový kod používá sanitized push pro duely)
+            // Tím chráníme proti situaci kde push používá replace ale listener ne, nebo naopak
+            const _notifSafeName = myName.replace(/[\/\.#$\[\]]/g, '_');
+            const _notifPaths = _notifSafeName === myName ? [myName] : [myName, _notifSafeName];
+            console.log('👥 Notification paths to listen on:', _notifPaths);
+            
+            const _notifHandler = (snap) => {
                 const notifications = snap.val() || {};
                 console.log('👥 Přijaté notifikace:', notifications);
                 friendRequests = [];
@@ -114622,6 +114674,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     console.log('👥 Celkem žádostí:', friendRequests.length);
                     updateOnlineIndicator('notification');
                 }
+            };
+            // Subscribe na obě cesty (raw i sanitized)
+            _notifPaths.forEach(path => {
+                firebaseDB.ref('notifications/' + path).orderByChild('timestamp').limitToLast(100).on('value', _notifHandler);
             });
             
             // Poslouchej soukromé zprávy
@@ -137731,12 +137787,14 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         
         // Zobrazit panel pro impeachment
         async function showImpeachmentPanel() {
+            const _isAdminUser = (typeof isAdmin === 'function' && isAdmin());
+            
             if (!currentMayor) {
                 notifyWarning('Žádný šéf', 'Není koho sesadit');
                 return;
             }
             
-            if (isMayor()) {
+            if (isMayor() && !_isAdminUser) {
                 notifyWarning('Nelze', 'Nemůžeš sesadit sám sebe. Použij "Odstoupit".');
                 return;
             }
@@ -137814,6 +137872,18 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                             </button>
                         ` : ''}
                     </div>
+                    
+                    ${(typeof isAdmin === 'function' && isAdmin()) ? `
+                        <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #4a148c;">
+                            <div style="background: linear-gradient(135deg, #2a0a2a, #1a0a1a); padding: 0.7rem; border-radius: 6px; border: 2px solid #ff5722;">
+                                <div style="color: #ff5722; font-weight: bold; font-size: 0.8rem; margin-bottom: 0.3rem;">🛠️ ADMIN PANEL</div>
+                                <div style="color: #aaa; font-size: 0.7rem; margin-bottom: 0.6rem;">Zruší aktuální hlasování (smaže všechny hlasy a cooldown).</div>
+                                <button class="btn" onclick="adminCancelImpeachment()" style="width: 100%; background: linear-gradient(135deg, #c62828, #8e0000); color: #fff; font-weight: bold; padding: 0.6rem;">
+                                    🗑️ ZRUŠIT HLASOVÁNÍ
+                                </button>
+                            </div>
+                        </div>
+                    ` : ''}
                 `;
                 
                 showModal('⚖️ IMPEACHMENT', html);
@@ -137916,6 +137986,57 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 notifyWarning('Chyba', 'Nepodařilo se hlasovat');
             }
         }
+        
+        // [ADMIN] Zrušit aktuální hlasování o sesazení (smaže votes + lastAttempt cooldown)
+        async function adminCancelImpeachment() {
+            if (typeof isAdmin !== 'function' || !isAdmin()) {
+                notifyWarning('Zakázáno', 'Pouze admin');
+                return;
+            }
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Multiplayer není dostupný');
+                return;
+            }
+            
+            const confirmMsg = 'Opravdu zrušit aktuální hlasování o sesazení?\n\nTímto se smažou:\n- Všechny hlasy\n- Cooldown po neúspěšném pokusu\n\nŠéf zůstane v úřadě.';
+            if (!confirm(confirmMsg)) return;
+            
+            try {
+                // Smaž celý impeachment objekt
+                await firebaseDB.ref('politics/impeachment').remove();
+                
+                // Zaznamenej do kroniky
+                if (typeof firebaseDB.ref === 'function' && typeof currentMayor === 'object' && currentMayor) {
+                    await firebaseDB.ref('politics/chronicle').push({
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        type: 'impeachment_cancelled',
+                        text: `🛠️ Admin zrušil hlasování o sesazení šéfa ${currentMayor.name || '?'}`,
+                        by: getPlayerName()
+                    }).catch(()=>{});
+                }
+                
+                notifySuccess('🗑️ Zrušeno', 'Hlasování o sesazení bylo smazáno');
+                addLog(`🛠️ Admin akce: zrušil hlasování o sesazení`, '⚖️');
+                
+                // Refresh modal pokud je otevřený
+                if (typeof showImpeachmentPanel === 'function') {
+                    setTimeout(() => {
+                        const modalOpen = document.querySelector('.modal.show');
+                        if (modalOpen) {
+                            // Pokud sesazení byl jediný kontext, vrátit do politiky
+                            closeModal();
+                            if (typeof showPoliticsPanel === 'function') {
+                                setTimeout(showPoliticsPanel, 200);
+                            }
+                        }
+                    }, 500);
+                }
+            } catch (e) {
+                console.error('Admin cancel impeachment error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zrušit: ' + (e.message || e));
+            }
+        }
+        window.adminCancelImpeachment = adminCancelImpeachment;
         
         // Vykonat impeachment
         async function executeImpeachment() {
@@ -148259,16 +148380,38 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 
                 const timeStr = new Date(scheduledTime).toLocaleString('cs-CZ', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric' });
                 
-                // Notifikace cíli
+                // Notifikace cíli - pošli na BOTH paths (raw i sanitized) pro maximální kompatibilitu
                 const safeTarget = targetName.replace(/[\/\.#$\[\]]/g, '_');
-                firebaseDB.ref(`notifications/${safeTarget}`).push({
+                const _challengePayload = {
                     type: 'pvp_duel_challenge',
                     timestamp: Date.now(),
                     message: `⚔️ ${myName} tě vyzval na souboj cti! Boj v ${timeStr}.`,
                     raidId: raidId,
                     scheduledTime: scheduledTime,
                     challenger: myName
-                }).catch(()=>{});
+                };
+                // Push na sanitized path (vždy)
+                await firebaseDB.ref(`notifications/${safeTarget}`).push(_challengePayload).catch(e => console.error('Push sanitized failed:', e));
+                // Push na raw path pokud se liší (pro hráče s tečkami v jméně)
+                if (safeTarget !== targetName) {
+                    await firebaseDB.ref(`notifications/${targetName}`).push(_challengePayload).catch(e => console.error('Push raw failed:', e));
+                    console.log('📨 Duel challenge pushed to BOTH paths:', targetName, 'and', safeTarget);
+                } else {
+                    console.log('📨 Duel challenge pushed to:', safeTarget);
+                }
+                
+                // [NEW] Ověř zda je cíl online
+                try {
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const onlineData = onlineSnap.val() || {};
+                    const onlinePlayerNames = Object.keys(onlineData);
+                    const targetIsOnline = onlinePlayerNames.includes(targetName) || onlinePlayerNames.includes(safeTarget);
+                    if (!targetIsOnline) {
+                        notifyWarning('⚠️ Cíl není online', `${targetName} momentálně není ve hře. Výzva čeká, ale boj proběhne walkoverem pokud nepřijme.`);
+                    } else {
+                        console.log('✅ Target is online:', targetName);
+                    }
+                } catch(_) { /* ignore */ }
                 
                 // Privátní zpráva cíli
                 firebaseDB.ref(`chat/private/${safeTarget}`).push({
