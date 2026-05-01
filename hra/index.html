@@ -105080,12 +105080,51 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // Tlačítko PvP výzvy - ZAMČENO
-            html += `
-                <button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
-                    🔒 PvP je dočasně zamčeno
-                </button>
-            `;
+            // Tlačítko PvP výzvy - dynamický lock check + admin override
+            let pvpButtonHtml = '';
+            if (isMe) {
+                // Sám sebe nelze vyzvat - skip
+            } else {
+                let pvpLocked = false;
+                try {
+                    if (!isAdmin()) {
+                        const lockSnap = await firebaseDB.ref('systemLocks/pvp').once('value');
+                        pvpLocked = lockSnap.val() === true;
+                    }
+                } catch(e) { /* ignore */ }
+                
+                const myLevel = state.char?.level || 1;
+                const targetLevel = playerData?.level || 1;
+                const minLevel = (typeof PVP_DUEL_CONFIG !== 'undefined') ? PVP_DUEL_CONFIG.MIN_LEVEL : 5;
+                const maxDiff = (typeof PVP_DUEL_CONFIG !== 'undefined') ? PVP_DUEL_CONFIG.MAX_LEVEL_DIFF : 10;
+                const levelDiff = Math.abs(myLevel - targetLevel);
+                
+                const escName = escapeHtml(playerName).replace(/'/g, "\\'");
+                
+                if (pvpLocked) {
+                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
+                        🔒 PvP je momentálně zamčeno
+                    </button>`;
+                } else if (myLevel < minLevel && !isAdmin()) {
+                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
+                        🔒 PvP od lvl ${minLevel} (máš ${myLevel})
+                    </button>`;
+                } else if (targetLevel < minLevel && !isAdmin()) {
+                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
+                        🔒 Cíl má lvl ${targetLevel} (min. ${minLevel})
+                    </button>`;
+                } else if (levelDiff > maxDiff && !isAdmin()) {
+                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
+                        🔒 Rozdíl levelu (${levelDiff}) > ${maxDiff}
+                    </button>`;
+                } else {
+                    const adminBadge = isAdmin() ? ' <span style="background:#ffd700;color:#000;font-size:0.6rem;padding:1px 4px;border-radius:3px;margin-left:0.2rem;">ADMIN</span>' : '';
+                    pvpButtonHtml = `<button class="btn" onclick="closeModal(); declarePvPDuel('${escName}');" style="background: linear-gradient(135deg, #f44336 0%, #c62828 100%); padding: 0.8rem; grid-column: span 2; font-weight: bold; color: #fff;">
+                        ⚔️ Vyzvat na souboj cti${adminBadge}
+                    </button>`;
+                }
+            }
+            html += pvpButtonHtml;
             
             // === MODERÁTORSKÁ TLAČÍTKA (podle permission) ===
             // Tlačítka se zobrazí podle role - admin vidí vše, moderátor jen co může
@@ -114197,6 +114236,60 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                         notifySuccess('🏁 Boj skončil', `${winnerLabel}!`);
                         addLog(v.message || `Klanový boj skončil`, '🏁');
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                    }
+                    
+                    // [NEW] PvP Duel notifikace
+                    if (v.type === 'pvp_duel_challenge' && !v.processed) {
+                        processedRewards.add('duel_' + k);
+                        const timeStr = new Date(v.scheduledTime).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+                        notifyWarning('⚔️ VÝZVA NA SOUBOJ!', `${v.challenger} tě vyzval! Boj v ${timeStr}.`);
+                        addLog(`⚔️ ${v.challenger} tě vyzval na souboj cti! Boj v ${timeStr}`, '⚔️');
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                            navigator.vibrate([300, 150, 300]);
+                        }
+                        // Auto-otevři lobby aby si hráč mohl vybrat přijmout/odmítnout
+                        if (typeof showPvPDuelLobby === 'function' && v.raidId) {
+                            setTimeout(() => showPvPDuelLobby(v.raidId), 1000);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                    }
+                    if (v.type === 'pvp_duel_accepted' && !v.processed) {
+                        processedRewards.add('duel_' + k);
+                        const timeStr = new Date(v.scheduledTime || Date.now()).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+                        notifySuccess('✅ Výzva přijata!', `${v.target} přijal/a tvou výzvu! Boj v ${timeStr}.`);
+                        addLog(`✅ ${v.target} přijal/a výzvu na souboj. Boj v ${timeStr}`, '⚔️');
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                            navigator.vibrate([200, 100, 200]);
+                        }
+                        // Otevři lobby — můžeš sledovat odpočet
+                        if (typeof showPvPDuelLobby === 'function' && v.raidId) {
+                            setTimeout(() => showPvPDuelLobby(v.raidId), 1000);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                    }
+                    if (v.type === 'pvp_duel_declined' && !v.processed) {
+                        processedRewards.add('duel_' + k);
+                        notifyInfo('❌ Výzva odmítnuta', `${v.target} odmítl/a tvou výzvu na souboj.`);
+                        addLog(`❌ ${v.target} odmítl/a tvou výzvu na souboj`, '⚔️');
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                    }
+                    if (v.type === 'pvp_duel_starting' && !v.processed) {
+                        processedRewards.add('duel_' + k);
+                        notifyWarning('⏰ SOUBOJ ZAČÍNÁ!', v.message || 'Připrav se na boj!');
+                        addLog('⏰ Souboj cti začíná!', '⚔️');
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                            navigator.vibrate([400, 200, 400]);
+                        }
+                        if (typeof showPvPDuelLobby === 'function' && v.raidId) {
+                            setTimeout(() => showPvPDuelLobby(v.raidId), 500);
+                        }
+                        firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
+                    }
+                    if (v.type === 'pvp_duel_cancelled' && !v.processed) {
+                        processedRewards.add('duel_' + k);
+                        notifyInfo('❌ Souboj zrušen', v.message || 'Vyzývatel zrušil výzvu.');
+                        addLog(v.message || 'Souboj cti zrušen', '⚔️');
                         firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
                     }
                     if (v.type === 'pvp_xp_reward' && !v.claimed) {
@@ -123600,6 +123693,13 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         <div style="flex:1;">
                             <div style="font-weight: bold;">Zámky systémů</div>
                             <div style="font-size: 0.75rem; opacity: 0.8;">Zamknout/odemknout PvP & Klan raidy</div>
+                        </div>
+                    </button>
+                    <button class="btn" onclick="adminDebugBanners()" style="background: linear-gradient(135deg, #455a64 0%, #263238 100%); padding: 1rem; text-align: left; display: flex; align-items: center; gap: 1rem;">
+                        <span style="font-size: 1.5rem;">🔍</span>
+                        <div style="flex:1;">
+                            <div style="font-weight: bold;">Debug bannerů</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Diagnostika stavu event bannerů</div>
                         </div>
                     </button>
                 `;
@@ -140082,27 +140182,32 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 // [NEW] Tombola banner - když je tombola aktivní a hráč ještě nevsadil
                 try {
                     const t = window.currentTombola;
-                    if (t && t.status === 'active') {
+                    // Status check: kompatibilní s tombolou bez status (legacy = active)
+                    const tombolaActive = t && (!t.status || t.status === 'active');
+                    if (tombolaActive) {
                         const myName = (typeof getPlayerName === 'function') ? getPlayerName() : '';
-                        const hasBet = t.tickets && Object.values(t.tickets).some(tk => tk?.player === myName);
+                        const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                        const myTicketCount = t.tickets?.[sanitizedName]?.count || 0;
+                        const hasBet = myTicketCount > 0;
                         const endsAt = t.endsAt || 0;
                         const minLeft = endsAt > Date.now() ? Math.ceil((endsAt - Date.now()) / 60000) : 0;
-                        const ticketsCount = t.tickets ? Object.keys(t.tickets).length : 0;
-                        const prize = t.prizePool || (ticketsCount * (t.ticketPrice || 100));
+                        const totalTickets = Object.values(t.tickets || {}).reduce((sum, tk) => sum + (tk?.count || 0), 0);
+                        const prize = t.prizePool || (totalTickets * (t.ticketPrice || 100));
+                        const tombolaName = t.name || 'Tombola';
                         
                         if (!hasBet) {
                             // Ještě jsi nevsadil - aktivní výzva
                             const timeLabel = minLeft > 60 ? `${Math.floor(minLeft / 60)}h ${minLeft % 60}min` : minLeft > 0 ? `${minLeft} min` : 'končí!';
                             html += `<div onclick="closeModal(); switchTab('multiplayer'); setTimeout(showTombola, 300);" style="cursor: pointer; background: linear-gradient(90deg, #2a2a05, #3a3a0a, #2a2a05); border: 2px solid #ffd700; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between; animation: pulse-glow 1.5s infinite;">
-                                <span style="color: #ffd700; font-size: 0.75rem; font-weight: bold;">🎰 Tombola: ${prize} 💰 v banku!</span>
-                                <span style="color: #aaa; font-size: 0.65rem;">${ticketsCount} tiketů · ${timeLabel} → Vsadit</span>
+                                <span style="color: #ffd700; font-size: 0.75rem; font-weight: bold;">🎰 ${escapeHtml(tombolaName)}: ${prize} 💰</span>
+                                <span style="color: #aaa; font-size: 0.65rem;">${totalTickets} tiketů · ${timeLabel} → Vsadit</span>
                             </div>`;
                         } else {
                             // Už vsadil - jen info
                             const timeLabel = minLeft > 60 ? `${Math.floor(minLeft / 60)}h ${minLeft % 60}min` : minLeft > 0 ? `${minLeft} min` : 'končí!';
                             html += `<div onclick="closeModal(); switchTab('multiplayer'); setTimeout(showTombola, 300);" style="cursor: pointer; background: linear-gradient(90deg, #1a1a05, #2a2a0a, #1a1a05); border: 1px solid #ffd700aa; border-radius: 4px; padding: 0.4rem 0.7rem; margin-bottom: 0.3rem; display: flex; align-items: center; justify-content: space-between;">
-                                <span style="color: #ffd700; font-size: 0.75rem; font-weight: bold;">🎰 Tombola běží: ${prize} 💰</span>
-                                <span style="color: #aaa; font-size: 0.65rem;">✓ Vsadil jsi · ${timeLabel}</span>
+                                <span style="color: #ffd700; font-size: 0.75rem; font-weight: bold;">🎰 ${escapeHtml(tombolaName)}: ${prize} 💰</span>
+                                <span style="color: #aaa; font-size: 0.65rem;">✓ ${myTicketCount}× vsadil · ${timeLabel}</span>
                             </div>`;
                         }
                     }
@@ -140185,7 +140290,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     firebaseDB.ref('politics/impeachment/votes').once('value'),
                     firebaseDB.ref('politics/decisions/active').once('value'),
                     firebaseDB.ref('politics/mayor').once('value'),
-                    firebaseDB.ref('tombola/current').once('value')
+                    firebaseDB.ref('tombola/active').once('value')
                 ]);
                 
                 // Volby
@@ -140223,8 +140328,16 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 // Pending rozhodnutí (jen pro šéfa)
                 const activeDecision = decisionSnap.val();
                 const isMyMayor = mayorName && myName && mayorName.trim().toLowerCase() === myName.trim().toLowerCase();
-                if (activeDecision && isMyMayor) {
-                    window._pendingDecision = activeDecision;
+                if (activeDecision && !activeDecision.decided && (isMyMayor || (typeof isStaff === 'function' && isStaff()))) {
+                    // [FIX] Najdi definici rozhodnutí aby měl ikonu/název (listener používá {icon, name})
+                    let decisionDef = null;
+                    if (typeof MAYOR_SYSTEM !== 'undefined') {
+                        decisionDef = [...(MAYOR_SYSTEM.dailyDecisions || []), ...(MAYOR_SYSTEM.crisisDecisions || [])]
+                            .find(d => d.id === activeDecision.id);
+                    }
+                    window._pendingDecision = decisionDef 
+                        ? { icon: decisionDef.icon, name: decisionDef.name }
+                        : { icon: '🤔', name: 'Rozhodnutí' };
                 } else {
                     window._pendingDecision = null;
                 }
@@ -140248,8 +140361,66 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     updateEventBanners();
                 }
             } catch(e) { /* ignore */ }
+            
+            // [NEW] Také naplň cache klanových raidů (fallback pokud listener nezbéhl)
+            try {
+                const raidsSnap = await firebaseDB.ref('scheduledRaids').once('value');
+                const all = raidsSnap.val() || {};
+                window._activeClanRaidsForBanner = {};
+                for (const [rid, r] of Object.entries(all)) {
+                    if (!r || r.isDuel) continue;
+                    if (r.status === 'lobby' || r.status === 'starting' || r.status === 'active') {
+                        window._activeClanRaidsForBanner[rid] = { ...r, id: rid };
+                    }
+                }
+                updateEventBanners();
+            } catch(e) { /* ignore */ }
         }
         window.refreshEventBannerData = refreshEventBannerData;
+        
+        // [DEBUG] Admin diagnostika všech event bannerů
+        async function adminDebugBanners() {
+            if (typeof isAdmin !== 'function' || !isAdmin()) {
+                console.warn('Pouze admin');
+                return;
+            }
+            await refreshEventBannerData();
+            
+            const ts = new Date().toLocaleTimeString();
+            const t = window.currentTombola;
+            const tombolaActive = t && (!t.status || t.status === 'active');
+            const myName = (typeof getPlayerName === 'function') ? getPlayerName() : '';
+            const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+            const myTickets = t?.tickets?.[sanitizedName]?.count || 0;
+            
+            const lines = [
+                `🕐 Diagnostika v ${ts}`,
+                ``,
+                `📊 Event banner data:`,
+                `  • mayorElection: ${window.mayorElection ? '✅ ' + (typeof getElectionPhase === 'function' ? (getElectionPhase()?.phase || '?') : '?') : '❌ NULL'}`,
+                `  • _activeImpeachment: ${window._activeImpeachment ? '✅ ' + window._activeImpeachment.voteCount + ' hlasů na ' + window._activeImpeachment.mayorName : '❌ NULL'}`,
+                `  • _pendingDecision: ${window._pendingDecision ? '✅ ' + window._pendingDecision.icon + ' ' + window._pendingDecision.name : '❌ NULL'}`,
+                `  • currentTombola: ${tombolaActive ? '✅ ' + (t.name || 'aktivní') + ' (status: ' + (t.status || 'undef') + ')' : '❌ NULL/inactive'}`,
+                `    └─ Moje tikety: ${myTickets}, sanitizedName: ${sanitizedName}`,
+                `  • bossStash: ${state.bossStash?.length || 0} itemů`,
+                `  • _pendingRewardsCount: ${window._pendingRewardsCount || 0}`,
+                `  • _activeClanRaidsForBanner: ${Object.keys(window._activeClanRaidsForBanner || {}).length} raidů`,
+                ``,
+                `🎰 Tombola raw:`,
+                t ? JSON.stringify(t, null, 2).substring(0, 500) : '(null)'
+            ];
+            
+            console.log(lines.join('\n'));
+            
+            showModal('🔍 Debug bannerů', `
+                <pre style="background: #0a0a0a; color: #4caf50; padding: 0.7rem; border-radius: 6px; font-size: 0.7rem; line-height: 1.4; overflow-x: auto; white-space: pre-wrap;">${lines.join('\n')}</pre>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-top: 0.5rem;">
+                    <button class="btn" onclick="adminDebugBanners()" style="background: #2196f3;">🔄 Refresh</button>
+                    <button class="btn" onclick="closeModal()" style="background: #555;">Zavřít</button>
+                </div>
+            `);
+        }
+        window.adminDebugBanners = adminDebugBanners;
         
         // Periodický refresh bannerů + HUD dlaždic (každých 15s)
         safeSetInterval(updateEventBanners, 15000);
@@ -148100,7 +148271,17 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     type: 'pvp_duel_accepted',
                     timestamp: Date.now(),
                     message: `✅ ${myName} přijal/a tvou výzvu!`,
+                    target: myName,
+                    scheduledTime: raid.scheduledTime,
                     raidId: raidId
+                }).catch(()=>{});
+                
+                // Veřejné info do globálního chatu
+                firebaseDB.ref('chat/messages').push({
+                    author: '⚔️ KOLOSEUM',
+                    text: `🔥 ${myName} přijal/a výzvu od ${raid.attackerLeader}! Boj začne v ${new Date(raid.scheduledTime).toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'})}!`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    system: true
                 }).catch(()=>{});
                 
                 showPvPDuelLobby(raidId);
@@ -148141,6 +148322,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     type: 'pvp_duel_declined',
                     timestamp: Date.now(),
                     message: `❌ ${myName} odmítl/a tvou výzvu na souboj.`,
+                    target: myName,
                     raidId: raidId
                 }).catch(()=>{});
                 
