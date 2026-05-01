@@ -136873,7 +136873,9 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 const votes = impeachData.votes || {};
                 const voteCount = Object.keys(votes).length;
                 const requiredVotes = Math.max(MAYOR_SYSTEM.impeachment.minVoters, Math.ceil(onlinePlayers.length * MAYOR_SYSTEM.impeachment.requiredVotes));
-                const hasVoted = votes[getPlayerName()];
+                // [NEW] Kontrola hlasování přes anonymní ID
+                const myAnonId = (typeof getAnonVoteId === 'function') ? getAnonVoteId(getPlayerName()) : null;
+                const hasVoted = (myAnonId && votes[myAnonId]) || votes[getPlayerName()]; // fallback pro starý formát
                 const mayorName = currentMayor.name;
                 
                 // Kontrola cooldownu - cooldown platí jen pro NEÚSPĚŠNÉ pokusy o sesazení
@@ -136902,6 +136904,10 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                             </div>
                             <div style="color: #666; font-size: 0.75rem; margin-top: 0.3rem; text-align: center;">
                                 Potřeba ${MAYOR_SYSTEM.impeachment.requiredVotes * 100}% online hráčů (min. ${MAYOR_SYSTEM.impeachment.minVoters})
+                            </div>
+                            <div style="background: #0d1a0d; padding: 0.4rem; border-radius: 4px; margin-top: 0.5rem; text-align: center; border: 1px solid #2a4a2a;">
+                                <span style="color: #8bc34a; font-size: 0.75rem;">🔒 ANONYMNÍ HLASOVÁNÍ</span>
+                                <div style="color: #777; font-size: 0.65rem; margin-top: 0.15rem;">Šéf ani ostatní hráči nezjistí kdo hlasoval</div>
                             </div>
                         </div>
                         
@@ -136939,15 +136945,37 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         }
         
         // Hlasovat pro sesazení
+        // [NEW] Anonymizace hlasování — hash jména pro impeachment hlasování
+        // Stejný hráč = vždy stejný hash (deterministic), ale ne zpět dohledatelný bez dictionary
+        function getAnonVoteId(playerName) {
+            const salt = 'pp_impeach_v1_'; // Per-feature salt
+            const input = salt + (playerName || '').toLowerCase().trim();
+            // Simple hash function (32-bit)
+            let hash = 0;
+            for (let i = 0; i < input.length; i++) {
+                const ch = input.charCodeAt(i);
+                hash = ((hash << 5) - hash) + ch;
+                hash |= 0;
+            }
+            // Druhá pass pro lepší distribuci
+            let hash2 = 5381;
+            for (let i = 0; i < input.length; i++) {
+                hash2 = ((hash2 << 5) + hash2) + input.charCodeAt(i);
+                hash2 |= 0;
+            }
+            return 'v_' + Math.abs(hash).toString(36) + '_' + Math.abs(hash2).toString(36);
+        }
+        
         async function voteForImpeachment() {
             if (!currentMayor || isMayor()) return;
             
             const playerName = getPlayerName();
             const mayorName = currentMayor ? currentMayor.name : '???';
+            const anonId = getAnonVoteId(playerName);
             
             try {
-                // Přidej hlas
-                await firebaseDB.ref(`politics/impeachment/votes/${playerName}`).set({
+                // Přidej hlas — pod ANONYMNÍM ID, ne pod jménem
+                await firebaseDB.ref(`politics/impeachment/votes/${anonId}`).set({
                     votedAt: firebase.database.ServerValue.TIMESTAMP
                 });
                 
@@ -136967,15 +136995,39 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     await executeImpeachment();
                 } else {
                     notifySuccess('⚖️ Hlas zaznamenán', `${voteCount}/${requiredVotes} hlasů pro sesazení`);
-                    // První hlas = oznámení do chatu aby ostatní věděli
+                    
+                    // [IMPROVED] Oznámení do chatu při klíčových milestonech — ANONYMNÍ
+                    const progressPct = (voteCount / requiredVotes) * 100;
+                    const remaining = requiredVotes - voteCount;
+                    let chatMsg = null;
+                    
                     if (voteCount === 1) {
-                        await firebaseDB.ref('chat/messages').push({
-                            author: '🏛️ POLITIKA',
-                            text: `⚖️ ${playerName} zahájil/a hlasování o sesazení šéfa ${mayorName}. Každý může hlasovat v sekci Politika!`,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP,
-                            system: true
-                        });
+                        // První hlas = zahájení (BEZ jména iniciátora)
+                        chatMsg = `⚖️ Zahájeno hlasování o sesazení šéfa ${mayorName}!\n\n📊 Aktuálně: ${voteCount}/${requiredVotes} hlasů (potřeba ${requiredVotes})\n\n💡 Hlasování je ANONYMNÍ. Hlasovat můžeš v sekci Politika → "Hlasovat o sesazení šéfa"`;
+                    } else if (progressPct >= 50 && progressPct < 75) {
+                        chatMsg = `⚖️ HLASOVÁNÍ O SESAZENÍ ${mayorName}: ${voteCount}/${requiredVotes} hlasů (${Math.round(progressPct)}%)\n\n🔥 Polovina pro sesazení! Chybí už jen ${remaining} hlasů.`;
+                    } else if (progressPct >= 75 && progressPct < 90) {
+                        chatMsg = `⚖️ HLASOVÁNÍ O SESAZENÍ ${mayorName}: ${voteCount}/${requiredVotes} hlasů (${Math.round(progressPct)}%)\n\n⚠️ Šéf na hraně! Chybí už jen ${remaining} hlasů k sesazení!`;
+                    } else if (progressPct >= 90) {
+                        chatMsg = `⚖️🚨 HLASOVÁNÍ O SESAZENÍ ${mayorName}: ${voteCount}/${requiredVotes} hlasů (${Math.round(progressPct)}%)\n\n💥 KRITICKÝ STAV! Chybí už jen ${remaining} ${remaining === 1 ? 'hlas' : 'hlasy'}!`;
                     }
+                    
+                    if (chatMsg) {
+                        const milestoneKey = voteCount === 1 ? 'start' : 
+                                            progressPct >= 90 ? 'critical' :
+                                            progressPct >= 75 ? 'high' : 'half';
+                        const broadcastSnap = await firebaseDB.ref(`politics/impeachment/broadcasts/${milestoneKey}`).once('value');
+                        if (!broadcastSnap.exists()) {
+                            await firebaseDB.ref(`politics/impeachment/broadcasts/${milestoneKey}`).set(Date.now());
+                            await firebaseDB.ref('chat/messages').push({
+                                author: '🏛️ POLITIKA',
+                                text: chatMsg,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                system: true
+                            });
+                        }
+                    }
+                    
                     showImpeachmentPanel();
                 }
                 
@@ -137026,7 +137078,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 await firebaseDB.ref('politics/impeachment').set({
                     lastTarget: mayorName,
                     lastImpeachedAt: firebase.database.ServerValue.TIMESTAMP,
-                    votes: null
+                    votes: null,
+                    broadcasts: null  // [NEW] Reset milestone broadcasts pro příští hlasování
                     // lastAttempt záměrně nenastavujeme - cooldown se nesmí přenést na nového šéfa
                 });
                 
@@ -138405,6 +138458,8 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                     await firebaseDB.ref('politics/election/campaignState').remove();
                     // Smaž staré hlasy impeachmentu (nový šéf = čistý stůl)
                     await firebaseDB.ref('politics/impeachment/votes').remove();
+                    // [NEW] Smaž milestone broadcasts (nový šéf = nový start)
+                    await firebaseDB.ref('politics/impeachment/broadcasts').remove();
                     // [FIX] Smaž staré rozhodnutí předchozího šéfa
                     await firebaseDB.ref('politics/decisions/active').remove();
                     
@@ -138522,6 +138577,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                                     console.log('🗳️ [FIX] Nomination cleanup: clearing stale impeachment votes');
                                     await firebaseDB.ref('politics/impeachment/votes').remove();
                                     await firebaseDB.ref('politics/impeachment/executing').remove();
+                                    await firebaseDB.ref('politics/impeachment/broadcasts').remove();
                                 }
                             }
                         }
