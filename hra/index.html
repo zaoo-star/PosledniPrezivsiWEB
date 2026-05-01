@@ -103326,6 +103326,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         async function completeTerritoryCapture(locationId) {
+            // [BUG FIX] GLOBAL DEDUP LOCK — zabrání double-call z různých zdrojů
+            // (lokální tick + restore na startu + listener můžou volat současně)
+            window._completingTerritories = window._completingTerritories || {};
+            if (window._completingTerritories[locationId]) {
+                console.log('🏴 [DEDUP] completeTerritoryCapture už probíhá pro', locationId);
+                return;
+            }
+            window._completingTerritories[locationId] = Date.now();
+            
             // [BUG FIX] Okamžitě smaž lokální stav PŘED async operacemi.
             // Důvod: completeTerritoryCapture je async, await loadClanData a Firebase trvají ~1-3s.
             // Mezitím další tick (1s) najde state.territoryCapture[locationId] a spustí complete znovu.
@@ -103334,6 +103343,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (state.territoryCapture && state.territoryCapture[locationId]) {
                 delete state.territoryCapture[locationId];
             }
+            
+            try {
             
             await loadClanData(); // Zajisti čerstvou cache
             let faction = getPlayerFaction();
@@ -103419,8 +103430,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             console.log('🏴 Transaction result - committed:', result.committed, 'value:', finalValue);
                         } catch(txErr) {
                             console.error('🏴 Transaction attempt', retries + 1, 'failed:', txErr);
-                            retries++;
                         }
+                        // [BUG FIX] Vždy zvýš retries (i pokud transaction nevhodila chybu ale committed=false)
+                        retries++;
                     }
                     
                     // Fallback - pokud transaction selže, zkus atomický increment
@@ -103499,6 +103511,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Reset flag po 3s aby neblokoval navždy
             setTimeout(() => { window._territoryCaptureJustCompleted = false; }, 3000);
+            
+            } finally {
+                // [BUG FIX] Uvolni dedup lock — vždy, i při chybě
+                if (window._completingTerritories) {
+                    delete window._completingTerritories[locationId];
+                }
+            }
         }
         
         // Zobrazit mapu území (zjednodušená)
