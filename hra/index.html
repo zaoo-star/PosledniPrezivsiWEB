@@ -104106,8 +104106,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             && !(raid.defenders && raid.defenders[myName])) {
                             const modalShownKey = `duelModalShown_${raidId}`;
                             const timeUntilStart = (raid.scheduledTime || 0) - now;
-                            // Zobraz modal jen pokud výzva ještě platí (do scheduledTime + 60s grace)
-                            if (timeUntilStart > -60000 && !window[modalShownKey]) {
+                            
+                            // [NEW] Zkontroluj busy state — nepřerušuj boj/průzkum
+                            const _isInCombatTick = (typeof isInCombat === 'function' && isInCombat()) || !!window.combatState;
+                            const _hasResultModalTick = !!window._resultModalActive;
+                            const _hasPvpCombatTick = !!window._pvpCombatRaidId;
+                            const _hasCaptureModalTick = state.territoryCapture && Object.keys(state.territoryCapture).length > 0;
+                            const _isPlayerBusy = _isInCombatTick || _hasResultModalTick || _hasPvpCombatTick || _hasCaptureModalTick;
+                            
+                            // Zobraz modal jen pokud výzva ještě platí (do scheduledTime + 60s grace) A hráč není zaneprázdněn
+                            if (timeUntilStart > -60000 && !window[modalShownKey] && !_isPlayerBusy) {
                                 window[modalShownKey] = true;
                                 console.log('⚔️ Auto-showing duel challenge modal (tick fallback) for raid:', raidId);
                                 
@@ -107533,6 +107541,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                         </button>
                                     </div>`;
                                 })()}
+                                ${msg.imageData ? `
+                                    <div style="margin-top: 0.4rem;">
+                                        <img src="${msg.imageData}" 
+                                             onclick="event.stopPropagation(); showChatImageFullscreen('${msg.imageData.replace(/'/g, "\\'")}')"
+                                             style="max-width: 100%; max-height: 200px; border-radius: 6px; cursor: pointer; border: 1px solid #3a3020; display: block;"
+                                             onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=\\'color:#666;font-size:0.7rem;\\'>📷 Obrázek nelze načíst</div>';" />
+                                    </div>
+                                ` : ''}
                             </div>
                             ${msg._key ? `<div style="display:flex;gap:0.15rem;margin-top:0.15rem;flex-wrap:wrap;${isMe ? 'justify-content:flex-end;' : ''}">
                                     ${['👍','😂','💀','❤️','🔥'].map(e => {
@@ -107794,6 +107810,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     <input type="text" id="chatInput" placeholder="${'Vysílej zprávu...'}" maxlength="200"
                         style="flex: 1; padding: 0.6rem; background: #0a0805; border: 1px solid #3a3020; border-radius: 2px; color: #c0b080; font-family: 'Share Tech Mono', monospace; font-size: 0.85rem;"
                         onkeypress="if(event.key==='Enter') sendChatFromInput()" oninput="chatTypingStart()">
+                    <input type="file" id="chatImageInput" accept="image/*" style="display:none;" onchange="handleChatImageSelect(this)">
+                    <button class="btn" onclick="document.getElementById('chatImageInput').click()" title="Přidat obrázek" style="background: linear-gradient(135deg,#3a3a5a,#2a2a40); padding: 0.6rem 0.8rem; border: 1px solid #4a4a7a; border-radius: 2px;">📷</button>
                     <button class="btn" onclick="sendChatFromInput()" style="background: linear-gradient(135deg,#3a5a20,#2a4015); padding: 0.6rem 1rem; border: 1px solid #4a7a30; border-radius: 2px; font-family: 'Share Tech Mono', monospace;">📡</button>
                 </div>
                 
@@ -107920,6 +107938,174 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             container.addEventListener('click', skipTypewriter);
         }
+        
+        // ============= CHAT IMAGE UPLOAD =============
+        async function handleChatImageSelect(input) {
+            const file = input.files?.[0];
+            if (!file) return;
+            
+            // Limit 5MB raw, komprimuje se na ~150KB
+            if (file.size > 5 * 1024 * 1024) {
+                notifyWarning('Příliš velký', 'Max 5 MB. Zkus menší obrázek.');
+                input.value = '';
+                return;
+            }
+            
+            // Mute check
+            const playerName = getPlayerName();
+            try {
+                const muteSnap = await firebaseDB.ref('mutedPlayers/' + playerName).once('value');
+                const muteData = muteSnap.val();
+                if (muteData && (muteData.until === 0 || muteData.until > Date.now())) {
+                    notifyWarning('🔇 Jsi ztlumen', 'Nemůžeš posílat obrázky');
+                    input.value = '';
+                    return;
+                }
+            } catch(_) {}
+            
+            // Rate limit - max 1 obrázek za 10s (přísnější než text)
+            if (typeof RateLimiter !== 'undefined' && !RateLimiter.canProceed('chat_image', 10000)) {
+                const remaining = Math.ceil(RateLimiter.getRemaining('chat_image', 10000) / 1000);
+                notifyWarning('Příliš rychle', `Počkej ${remaining}s před dalším obrázkem`);
+                input.value = '';
+                return;
+            }
+            
+            notifyInfo('📷 Zpracovávám...', 'Komprese obrázku probíhá');
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const rawData = e.target.result;
+                const img = new Image();
+                img.onload = function() {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        let w = img.width, h = img.height;
+                        if (w === 0 || h === 0) throw new Error('Invalid image');
+                        // Max 600px (pro chat menší než pro bug report)
+                        const maxDim = 600;
+                        if (w > maxDim || h > maxDim) {
+                            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+                            else { w = Math.round(w * maxDim / h); h = maxDim; }
+                        }
+                        canvas.width = w; canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+                        
+                        // Test že canvas není černý (Safari bug)
+                        const testData = ctx.getImageData(0, 0, Math.min(w, 10), Math.min(h, 10)).data;
+                        let allBlack = true;
+                        for (let i = 0; i < testData.length; i += 4) {
+                            if (testData[i] > 5 || testData[i+1] > 5 || testData[i+2] > 5) { allBlack = false; break; }
+                        }
+                        const finalData = (allBlack && rawData.length < 500000) ? rawData : canvas.toDataURL('image/jpeg', 0.65);
+                        
+                        // Zkontroluj velikost (Firebase limit 1MB na pole, ale lepší držet pod 200KB)
+                        if (finalData.length > 200000) {
+                            // Zkus ještě nižší kvalitu
+                            const lowerData = canvas.toDataURL('image/jpeg', 0.4);
+                            if (lowerData.length > 200000) {
+                                notifyWarning('⚠️ Obrázek příliš složitý', 'Zkus jednodušší obrázek');
+                                input.value = '';
+                                return;
+                            }
+                            sendChatImageMessage(lowerData);
+                        } else {
+                            sendChatImageMessage(finalData);
+                        }
+                    } catch(err) {
+                        console.warn('Chat image canvas error:', err);
+                        notifyWarning('Chyba', 'Nepodařilo se zpracovat obrázek');
+                    }
+                    input.value = '';
+                };
+                img.onerror = () => {
+                    notifyWarning('Chyba', 'Nepodařilo se načíst obrázek');
+                    input.value = '';
+                };
+                img.src = rawData;
+            };
+            reader.readAsDataURL(file);
+        }
+        window.handleChatImageSelect = handleChatImageSelect;
+        
+        async function sendChatImageMessage(imageDataUrl) {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            if (!imageDataUrl) return;
+            
+            // Routing pro staff channel
+            if (currentChatChannel === 'staff') {
+                notifyWarning('Nedostupné', 'Obrázky pouze v hlavním chatu');
+                return;
+            }
+            
+            const playerName = getPlayerName();
+            
+            // Inkrementuj počet zpráv (counts as 1 message)
+            state.stats = state.stats || {};
+            state.stats.chatMessagesSent = (state.stats.chatMessagesSent || 0) + 1;
+            const rank = getChatRank(state.stats.chatMessagesSent);
+            
+            // Klan
+            let myClanName = null;
+            try {
+                if (window.clanOwnershipCache) {
+                    for (const locId in window.clanOwnershipCache) {
+                        const clan = window.clanOwnershipCache[locId];
+                        if (!clan) continue;
+                        if (clan.leader === playerName ||
+                            (clan.members && Object.values(clan.members).some(m => m.name === playerName)) ||
+                            (clan.officers && Object.values(clan.officers).some(o => o.name === playerName))) {
+                            myClanName = clan.name || null;
+                            break;
+                        }
+                    }
+                }
+            } catch(_) {}
+            
+            const message = {
+                author: playerName,
+                text: '[obrázek]',  // Fallback text
+                imageData: imageDataUrl,  // Base64 data URL
+                timestamp: firebase.database.ServerValue.TIMESTAMP,
+                level: state.char?.level || 1,
+                msgCount: state.stats.chatMessagesSent,
+                rankName: rank.name,
+                rankColor: rank.color,
+                clanName: myClanName || null,
+                goldNick: state.superAbility?.active ? true : null
+            };
+            
+            try {
+                await firebaseDB.ref('chat/messages').push(message);
+                updateFactionActivity();
+                notifySuccess('📷 Odesláno', 'Obrázek poslán do chatu');
+                window._chatForceScrollBottom = true;
+            } catch(e) {
+                console.error('Chyba při odesílání obrázku:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odeslat obrázek');
+                state.stats.chatMessagesSent = Math.max(0, (state.stats.chatMessagesSent || 1) - 1);
+            }
+        }
+        window.sendChatImageMessage = sendChatImageMessage;
+        
+        // Fullscreen lightbox pro obrázky v chatu
+        function showChatImageFullscreen(imageDataUrl) {
+            // Odstraň existující lightbox pokud existuje
+            const existing = document.getElementById('chatImageLightbox');
+            if (existing) existing.remove();
+            
+            const lightbox = document.createElement('div');
+            lightbox.id = 'chatImageLightbox';
+            lightbox.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:pointer;';
+            lightbox.innerHTML = `
+                <div style="position:absolute;top:1rem;right:1rem;color:#fff;font-size:2rem;line-height:1;">✕</div>
+                <img src="${imageDataUrl}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" />
+            `;
+            lightbox.onclick = () => lightbox.remove();
+            document.body.appendChild(lightbox);
+        }
+        window.showChatImageFullscreen = showChatImageFullscreen;
         
         function sendChatFromInput() {
             // Zastavit typewriter pokud běží
@@ -114345,6 +114531,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             myName: myName,
                             alreadyProcessed: processedRewards.has('duel_' + k)
                         });
+                        
+                        // [NEW] Skip pokud je hráč v boji nebo má aktivní result modal (průzkum/lov/těžba)
+                        // Notifikaci NESMAŽEME — tick fallback ji zobrazí později když se uživatel vrátí
+                        const _isInCombat = (typeof isInCombat === 'function' && isInCombat()) || !!window.combatState;
+                        const _hasResultModal = !!window._resultModalActive;
+                        const _hasPvpCombat = !!window._pvpCombatRaidId;
+                        const _hasCaptureModal = state.territoryCapture && Object.keys(state.territoryCapture).length > 0;
+                        
+                        if (_isInCombat || _hasResultModal || _hasPvpCombat || _hasCaptureModal) {
+                            console.log('⏸️ Duel challenge ODLOŽENO - hráč zaneprázdněn:', {
+                                inCombat: _isInCombat,
+                                resultModal: _hasResultModal,
+                                pvpCombat: _hasPvpCombat,
+                                captureModal: _hasCaptureModal
+                            });
+                            // Jen tichá vibrace + toast aby se hráč dozvěděl, ale boj/průzkum nepřerušujeme
+                            if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                                navigator.vibrate([100]);
+                            }
+                            if (typeof notifyInfo === 'function') {
+                                notifyInfo('⚔️ Výzva čeká', `${v.challenger} tě vyzval na souboj. Modal se zobrazí po skončení akce.`);
+                            }
+                            // Nechat notifikaci v DB — tick fallback ji ukáže až bude hráč volný
+                            return;
+                        }
                         
                         // Skip pokud už zpracovaná v této session (ale modal možná zmizel)
                         if (processedRewards.has('duel_' + k)) {
