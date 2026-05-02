@@ -14132,6 +14132,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
             
             // Odeber starého
+            window._lastCompanionDismissAt = Date.now();  // [FIX BUG #1] Explicit dismiss marker
             state.companions.splice(oldIndex, 1);
             addLog(`${oldIcon} ${oldName} odešel`, '👋');
             
@@ -15758,7 +15759,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '4.0.2';
+        const GAME_VERSION = '4.0.3';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -18862,6 +18863,43 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return materials;
         }
         
+        // [SAFETY] Wrapper aby se zabránilo náhodné ztrátě companionů
+        // Sleduje změny state.companions arrayi a loguje kdy a kde se zmenší
+        (function setupCompanionSafety() {
+            if (typeof Object.defineProperty !== 'function') return;
+            let _lastSnapshot = null;
+            
+            // Periodicky kontroluj změny (každých 5s)
+            setInterval(() => {
+                try {
+                    if (!state || !state.companions) return;
+                    const current = state.companions.map(c => ({
+                        id: c.id,
+                        uniqueId: c.uniqueId,
+                        name: c.name,
+                        isDead: c.isDead,
+                        invCount: (c.inventory || []).length,
+                        equippedCount: Object.values(c.equipped || {}).filter(Boolean).length
+                    }));
+                    
+                    if (_lastSnapshot && _lastSnapshot.length > current.length) {
+                        const lostIds = _lastSnapshot.filter(s => !current.find(c => 
+                            (c.uniqueId === s.uniqueId) || (c.id === s.id && c.name === s.name)
+                        ));
+                        if (lostIds.length > 0) {
+                            console.error('🚨 [COMPANION LOST]', {
+                                before: _lastSnapshot.length,
+                                after: current.length,
+                                lost: lostIds,
+                                stack: new Error().stack
+                            });
+                        }
+                    }
+                    _lastSnapshot = current;
+                } catch(_) {}
+            }, 5000);
+        })();
+        
         function confirmRecycle(itemIndex) {
             const item = state.inv[itemIndex];
             if (!item) { closeModal(); return; }
@@ -18877,6 +18915,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const matName = RESOURCE_NAMES[mat] || mat;
                 const matIcon = RESOURCE_ICONS[mat] || '📦';
                 gained.push(`+${amount} ${matIcon} ${matName}`);
+            }
+            
+            // [FIX] Pokud je item nasazený, sundej ho ze všech equipped slotů
+            // Bez tohoto by item zmizel z inv ale zůstal nasazený = duplikace efektů
+            if (state.equipped) {
+                ['weapon', 'armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
+                    const eq = state.equipped[slot];
+                    if (eq && (eq === item || (eq.id === item.id && eq.type === item.type && state.inv.indexOf(eq) === itemIndex))) {
+                        state.equipped[slot] = null;
+                        console.log(`♻️ Recyklovaný předmět byl nasazený v slotu ${slot} — sundán`);
+                    }
+                });
             }
             
             // Odeber item
@@ -29721,6 +29771,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             let returnedCount = 0;
             let droppedCount = 0;
+            let droppedItems = [];  // [NEW] Trackuj co spadlo
             
             comp.inventory.forEach(item => {
                 const itemWeight = (item.weight || 0) * (item.count || 1);
@@ -29742,16 +29793,33 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     // Nevejde se – hoď na zem
                     addToGroundLoot({...item});
                     droppedCount += (item.count || 1);
+                    droppedItems.push(`${item.icon || '📦'} ${item.name} ×${item.count || 1}`);  // [NEW] Track
                 }
             });
             
             comp.inventory = [];
             
             if (returnedCount > 0) {
-                notifyInfo('Vrácené věci', `${returnedCount} předmětů vráceno z batohu ${comp.name || 'společníka'}`);
+                notifyInfo('📦 Vrácené věci', `${returnedCount} předmětů vráceno z batohu ${comp.name || 'společníka'}`);
             }
             if (droppedCount > 0) {
-                notifyWarning('Plný inventář', `${droppedCount} předmětů spadlo na zem!`);
+                // [FIX] Detailní notifikace + vypiš PŘESNĚ co spadlo a kde
+                const locationName = (typeof getLocName === 'function') 
+                    ? getLocName(state.world?.currentLocation) 
+                    : 'aktuální lokace';
+                const itemsText = droppedItems.slice(0, 5).join(', ') + (droppedItems.length > 5 ? `, +${droppedItems.length-5} dalších` : '');
+                notifyWarning(
+                    '⚠️ Plný batoh — předměty na zemi!',
+                    `${droppedCount} předmětů spadlo na zem v lokaci "${locationName}". Vrať se pro ně!`
+                );
+                addLog(`⚠️ ${droppedCount} předmětů z batohu ${comp.name || 'společníka'} spadlo na zem v ${locationName}: ${itemsText}`, '⚠️');
+                console.log(`📦 [INVENTORY DROP]`, {
+                    location: state.world?.currentLocation,
+                    locationName,
+                    items: droppedItems,
+                    companion: comp.name,
+                    weight: { current: calculateCurrentWeight(), max: calculateMaxWeight() }
+                });
             }
             updateCarryWeight();
         }
@@ -30142,16 +30210,65 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const level = comp?.level || 1;
             const displayName = comp?.name || companion?.name || 'Společník';
             
-            showModal('Propustit společníka?', `
-                <div style="text-align: center; margin-bottom: 1rem;">
-                    <div style="font-size: 3rem;">${companion?.icon || '🐾'}</div>
-                    <h3>${displayName}</h3>
-                    <p style="color: #ff9800;">Level ${level}</p>
+            // [NEW] Spočítej co všechno se vrátí
+            const invItems = comp?.inventory || [];
+            const invCount = invItems.reduce((sum, i) => sum + (i.count || 1), 0);
+            const invWeight = invItems.reduce((sum, i) => sum + (i.weight || 0) * (i.count || 1), 0);
+            
+            const equipped = comp?.equipped || {};
+            const equippedSlots = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory']
+                .filter(slot => equipped[slot]);
+            const equippedNames = equippedSlots.map(slot => {
+                const item = equipped[slot];
+                return `${item.icon || '⚔️'} ${item.name}`;
+            });
+            
+            // Náhled inventáře (max 5 itemů)
+            const invPreview = invItems.slice(0, 5).map(i => {
+                const cnt = i.count > 1 ? ` ×${i.count}` : '';
+                return `${i.icon || '📦'} ${i.name}${cnt}`;
+            });
+            const invMore = invItems.length > 5 ? ` a ${invItems.length - 5} dalších...` : '';
+            
+            const bondLevel = comp?.bond || 0;
+            
+            showModal('⚠️ Propustit společníka?', `
+                <div style="text-align: center; margin-bottom: 0.8rem;">
+                    <div style="font-size: 3rem;">${companion?.icon || comp?.icon || '🐾'}</div>
+                    <h3 style="margin: 0.2rem 0;">${displayName}</h3>
+                    <div style="color: #ff9800; font-size: 0.85rem;">Level ${level} · Pouto ${bondLevel}%</div>
                 </div>
-                <p style="color: #c62828; text-align: center;">⚠️ Ztratíš všechny jeho dovednosti a level!</p>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn" onclick="showCompanionsInfo()" style="background: #555;">❌ Ne</button>
-                    <button class="btn" onclick="dismissCompanion('${companionId}'); closeModal();" style="background: #c62828;">✓ Propustit</button>
+                
+                ${equippedSlots.length > 0 ? `
+                    <div style="background: #1a1a2a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid #2a4a5a;">
+                        <div style="color: #64b5f6; font-size: 0.8rem; font-weight: bold; margin-bottom: 0.3rem;">🛡️ Vybavení (${equippedSlots.length}):</div>
+                        <div style="color: #aaa; font-size: 0.75rem; line-height: 1.5;">${equippedNames.join(', ')}</div>
+                    </div>
+                ` : ''}
+                
+                ${invItems.length > 0 ? `
+                    <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid #2a5a3a;">
+                        <div style="color: #8bc34a; font-size: 0.8rem; font-weight: bold; margin-bottom: 0.3rem;">📦 Batoh: ${invCount} předmětů (${invWeight.toFixed(1)} kg)</div>
+                        <div style="color: #aaa; font-size: 0.75rem; line-height: 1.5;">${invPreview.join(', ')}${invMore}</div>
+                    </div>
+                ` : ''}
+                
+                <div style="background: #2a1a1a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.6rem; border: 1px solid #c62828;">
+                    <div style="color: #ff5722; font-size: 0.8rem; font-weight: bold; margin-bottom: 0.2rem;">⚠️ Ztratíš:</div>
+                    <ul style="color: #ddd; font-size: 0.75rem; margin: 0; padding-left: 1.2rem; line-height: 1.5;">
+                        <li>Všechny dovednosti (level ${level})</li>
+                        <li>Pouto a quest progress</li>
+                        ${invItems.length > 0 || equippedSlots.length > 0 ? `<li>Předměty co se nevejdou do tvého batohu spadnou na zem</li>` : ''}
+                    </ul>
+                </div>
+                
+                <p style="color: #aaa; font-size: 0.75rem; text-align: center; margin: 0.5rem 0; font-style: italic;">
+                    Tato akce je <strong style="color:#ff5722">NEVRATNÁ</strong>.
+                </p>
+                
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                    <button class="btn" onclick="closeModal(); showCompanionsInfo();" style="background: linear-gradient(135deg, #2e7d32, #1b5e20); padding: 0.7rem; font-weight: bold; color: #fff; border: 2px solid #4caf50;">❌ NE, ZACHOVAT</button>
+                    <button class="btn" onclick="dismissCompanion('${companionId}'); closeModal();" style="background: #555; color: #aaa; padding: 0.7rem;">Propustit</button>
                 </div>
             `);
         }
@@ -35316,6 +35433,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Odstraň společníka
+            window._lastCompanionDismissAt = Date.now();  // [FIX BUG #1] Explicit dismiss marker
             state.companions.splice(compIndex, 1);
             
             closeModal();
@@ -35691,6 +35809,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const compName = comp.name || COMPANIONS.find(c => c.id === comp.id)?.name || 'Společník';
             
             // Přesuň ze state.companions do garrison
+            window._lastCompanionDismissAt = Date.now();  // [FIX BUG #1] Explicit dismiss marker
             state.companions = state.companions.filter(c => (c.uniqueId || c.id) !== compId);
             state.settlement.garrison.push(comp);
             
@@ -35735,6 +35854,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const garrisonName = garrisonComp.name || COMPANIONS.find(c => c.id === garrisonComp.id)?.name || 'Společník';
             
             // Přesuň aktivního do garrison, garrisonovaného do týmu
+            window._lastCompanionDismissAt = Date.now();  // [FIX BUG #1] Explicit dismiss marker (swap not loss)
             state.companions = state.companions.filter(c => (c.uniqueId || c.id) !== activeCompId);
             state.settlement.garrison.push(activeComp);
             state.companions.push(garrisonComp);
@@ -35780,6 +35900,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Odeber společníka - použij uniqueId pokud existuje, jinak id
             const compUniqueId = comp.uniqueId || comp.id;
+            window._lastCompanionDismissAt = Date.now();  // [FIX BUG #1] Explicit dismiss marker
             state.companions = state.companions.filter(c => {
                 const cUniqueId = c.uniqueId || c.id;
                 return cUniqueId !== compUniqueId;
@@ -83657,6 +83778,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [FIX] Guard: blokuj akci pokud probíhá AI tah nebo přechod
             if (cs._turnLocked || cs._actionInProgress) return;
             cs._actionInProgress = true;
+            cs._actionInProgressAt = Date.now();  // [FIX BUG #5] Watchdog timestamp
             
             // [FIX BUG] Zaručit reset _actionInProgress při chybě nebo neočekávaném konci
             // Safety net: pokud funkce skončí bez explicitního resetu, timeout to udělá za 2s
@@ -84143,7 +84265,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const unit = cs.selectedUnit;
             if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
             // 🛡️ Blokuj klikání během AI/companion tahu
-            if (cs._turnLocked) return;
+            // [FIX BUG #5] Watchdog na stale _turnLocked — pokud lock visí >3s, automaticky uvolnit
+            if (cs._turnLocked) {
+                const lockAge = Date.now() - (cs._turnLockedAt || 0);
+                if (lockAge > 3000) {
+                    console.warn('⚠️ clickCell: _turnLocked visí ' + lockAge + 'ms — auto-reset');
+                    cs._turnLocked = false;
+                    cs._turnLockedAt = 0;
+                    cs._actionInProgress = false;
+                    // Nepřerušuj — pokračuj v kliknutí
+                } else {
+                    return;
+                }
+            }
+            // [FIX BUG #5] Watchdog na stale _actionInProgress — pokud visí >3s, uvolnit
+            if (cs._actionInProgress) {
+                const actionAge = Date.now() - (cs._actionInProgressAt || 0);
+                if (actionAge > 3000) {
+                    console.warn('⚠️ clickCell: _actionInProgress visí ' + actionAge + 'ms — auto-reset');
+                    cs._actionInProgress = false;
+                    cs._actionInProgressAt = 0;
+                    // Pokračuj v kliknutí
+                }
+            }
             if (!unit.isPlayer && !(unit.isCompanion && cs.manualCompanions)) return;
             
             // Auto-attack: kliknutí na nepřítele bez vybrané akce → automaticky zaútoč
@@ -84287,6 +84431,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const target = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'enemy');
                 if (target && cs.validTargets.includes(target)) {
                     playerAttackTarget(target);
+                } else if (target) {
+                    // [FIX BUG #5] Cíl existuje ale není ve validTargets — recalculate a zkus znovu
+                    // Stalo se: zbraň ammoType undefined po save/load, validTargets počítány s pěstmi (range 1)
+                    // Po recalculate validTargets se cíl objeví → útok proběhne
+                    const logLenBefore = cs.log.length;
+                    calculateValidTargets(unit);
+                    if (cs.validTargets.includes(target)) {
+                        console.log('🎯 [BUG #5 FIX] validTargets recalculated, target nyní platný');
+                        playerAttackTarget(target);
+                    } else {
+                        // Pokud se ani po recalc neobjeví, vysvětli proč
+                        if (cs.log.length === logLenBefore) {
+                            cs.log.push(`${target.name} je mimo dosah.`);
+                        }
+                        renderHeroesCombatUI();
+                    }
+                } else {
+                    // Klik na prázdné políčko s vybraným útokem — zruš výběr a uvolni
+                    cs.log.push('⚠️ Žádný cíl v této buňce.');
+                    renderHeroesCombatUI();
                 }
             }
         }
@@ -84302,6 +84466,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (cs._bossFleeTriggered) return; // BOSS FLEE
             if (cs._actionInProgress) return; // [FIX] Blokuj double-click
             cs._actionInProgress = true;
+            cs._actionInProgressAt = Date.now();  // [FIX BUG #5] Watchdog timestamp
             
             // 🛡️ GUARD: Blokuj útok pokud NENÍ tah hráče/manuálního společníka
             if (!unit.isPlayer && !(unit.isCompanion && cs.manualCompanions)) {
@@ -87000,6 +87165,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         function handleCombatDefeat() {
             const cs = window.combatState;
             
+            // [FIX BUG #4] Guard proti opakovanému volání
+            if (window._combatDefeatHandled) {
+                console.log('🛡️ handleCombatDefeat už byl zpracován - skipping druhé volání');
+                return;
+            }
+            window._combatDefeatHandled = true;
+            
             // [FIX] Cleanup floating button
             var _fb = document.getElementById('combatFloatingBtn'); if (_fb) _fb.remove();
             
@@ -87249,6 +87421,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function startCombat(enemy, isAmbush = false, isVillageRaid = false, forceEnemyCount = null) {
             window._combatScrolledToTop = false;
+            // [FIX BUG #4] Reset victory/defeat guards při startu nového boje
+            window._combatVictoryHandled = false;
+            window._combatDefeatHandled = false;
+            
             // Ulož aktuální zbraň před bojem (pro případ změny během boje při cestování)
             if (state.map?.traveling && state.equipped?.weapon) {
                 state.preCombatWeapon = { ...state.equipped.weapon };
@@ -88702,6 +88878,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function handleCombatVictory() {
             const cs = window.combatState;
+            
+            // [FIX BUG #4] Guard proti opakovanému volání — pokud už byl modal zobrazen, neopakuj
+            // Bez tohoto guards: modal se zobrazí, pak druhý caller ho přepíše s jiným loot
+            // Příčina: cs.units kontroluje 'všichni nepřátelé mrtví', ale tato podmínka se může
+            // spustit z více míst (po útoku, po DOT damage, po companion attack...)
+            if (window._combatVictoryHandled) {
+                console.log('🛡️ handleCombatVictory už byl zpracován - skipping druhé volání');
+                return;
+            }
+            window._combatVictoryHandled = true;
             
             // [FIX] Cleanup floating button
             var _fb = document.getElementById('combatFloatingBtn'); if (_fb) _fb.remove();
@@ -92397,6 +92583,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (typeof _ensureEquippedInInventory === 'function') _ensureEquippedInInventory(slot);
                 });
             }
+            
+            // [FIX BUG #1] Companion safety: detekuj náhle zmizelé společníky
+            // Pokud array výrazně klesne oproti poslední uložené verzi BEZ explicitního dismiss,
+            // varuj uživatele a obnovuj z poslední verze.
+            try {
+                const _currentCompanions = state.companions || [];
+                const _lastSaveData = window._lastSaveCompanions || [];
+                if (_lastSaveData.length > 0 && _currentCompanions.length < _lastSaveData.length) {
+                    const _diff = _lastSaveData.length - _currentCompanions.length;
+                    // Pokud klesl o víc než by dismiss/bury vysvětlil v rozumném čase
+                    const _timeSinceLastSave = Date.now() - (window._lastSaveTime || 0);
+                    if (_diff >= 1 && _timeSinceLastSave < 5000) {
+                        console.error('🚨 [COMPANION LOSS DETECTED] Save aborted! Companions reduced from ' + _lastSaveData.length + ' → ' + _currentCompanions.length + ' in ' + _timeSinceLastSave + 'ms');
+                        console.error('🚨 Stored companions:', _lastSaveData.map(c => ({id: c.id, name: c.name})));
+                        console.error('🚨 Current companions:', _currentCompanions.map(c => ({id: c.id, name: c.name})));
+                        
+                        // Pokud žádný explicit dismiss/bury (window._lastDismissAt blízko teď), obnovit
+                        const _lastDismiss = window._lastCompanionDismissAt || 0;
+                        if (Date.now() - _lastDismiss > 3000) {
+                            // Žádný explicit dismiss → restore!
+                            console.error('🛡️ Recovering companions from last snapshot');
+                            state.companions = _lastSaveData.map(c => JSON.parse(JSON.stringify(c)));
+                            if (typeof notifyWarning === 'function') {
+                                notifyWarning('🛡️ Záchrana společníků', 'Detekováno neočekávané zmizení společníků — obnoveno!');
+                            }
+                        }
+                    }
+                }
+                // Ulož snapshot pro příští check
+                window._lastSaveCompanions = JSON.parse(JSON.stringify(_currentCompanions));
+                window._lastSaveTime = Date.now();
+            } catch(e) { console.warn('Companion safety check failed:', e); }
             
             // Vždy uložit JSON verzi (spolehlivé)
             let jsonData;
@@ -105737,6 +105955,98 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         ];
         window.MP_BAN_FEATURES = MP_BAN_FEATURES;
         
+        // [NEW] Aktualizovat hru - hard refresh + service worker cleanup
+        // Doporučeno alespoň 1× denně, aby měl hráč nejnovější verzi
+        function confirmGameUpdate() {
+            const lastUpdate = parseInt(localStorage.getItem('lastManualUpdate') || '0');
+            const hoursSince = lastUpdate > 0 ? Math.floor((Date.now() - lastUpdate) / (60*60*1000)) : null;
+            const timeText = hoursSince === null 
+                ? 'Ještě jsi neaktualizoval ručně' 
+                : (hoursSince < 1 
+                    ? 'Naposledy: před chvílí' 
+                    : (hoursSince < 24 
+                        ? `Naposledy: před ${hoursSince} h` 
+                        : `Naposledy: před ${Math.floor(hoursSince/24)} dny`));
+            
+            const versionStr = (typeof GAME_VERSION !== 'undefined') ? GAME_VERSION : '?';
+            
+            showModal('🔄 Aktualizovat hru?', `
+                <div style="text-align: center; margin-bottom: 0.8rem;">
+                    <div style="font-size: 3rem;">🔄</div>
+                    <div style="color: #64b5f6; font-size: 0.85rem; margin-top: 0.3rem;">Verze ${versionStr}</div>
+                    <div style="color: #888; font-size: 0.75rem; margin-top: 0.2rem;">${timeText}</div>
+                </div>
+                
+                <div style="background: #1a1a2a; padding: 0.7rem; border-radius: 6px; margin-bottom: 0.6rem; border: 1px solid #2a4a5a;">
+                    <div style="color: #64b5f6; font-size: 0.8rem; font-weight: bold; margin-bottom: 0.4rem;">💡 Co aktualizace dělá:</div>
+                    <ul style="color: #ccc; font-size: 0.78rem; line-height: 1.6; margin: 0; padding-left: 1.2rem;">
+                        <li>Stáhne nejnovější verzi hry ze serveru</li>
+                        <li>Vyčistí cache prohlížeče</li>
+                        <li>Aplikuje opravy bugů a nové funkce</li>
+                    </ul>
+                </div>
+                
+                <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.6rem; border: 1px solid #2a5a3a;">
+                    <div style="color: #8bc34a; font-size: 0.78rem; font-weight: bold;">✅ Tvůj postup je v bezpečí</div>
+                    <div style="color: #aaa; font-size: 0.72rem; margin-top: 0.2rem;">Save je v Cloudu (pokud jsi přihlášen) i v paměti zařízení.</div>
+                </div>
+                
+                <p style="color: #ff9800; font-size: 0.72rem; text-align: center; margin: 0.5rem 0;">
+                    💡 Doporučeno alespoň 1× denně — abys měl/a vždy nejnovější verzi.
+                </p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                    <button class="btn" onclick="closeModal();" style="background: #555; padding: 0.6rem;">← Zrušit</button>
+                    <button class="btn" onclick="performGameUpdate();" style="background: linear-gradient(135deg, #1976d2, #0d47a1); padding: 0.6rem; color: #fff; font-weight: bold;">🔄 Aktualizovat</button>
+                </div>
+            `);
+        }
+        window.confirmGameUpdate = confirmGameUpdate;
+        
+        async function performGameUpdate() {
+            try {
+                // Ulož stav před reloadem
+                if (typeof saveGame === 'function') {
+                    saveGame(true);
+                }
+                
+                // Cloud save (pokud přihlášen)
+                if (typeof saveCloudSave === 'function' && currentUser && !currentUser.isAnonymous) {
+                    try { await saveCloudSave(); } catch(_) {}
+                }
+                
+                // Zaznamenej čas poslední aktualizace
+                localStorage.setItem('lastManualUpdate', Date.now().toString());
+                
+                // [CACHE BUST] Vyčisti service worker cache pokud existuje
+                if ('serviceWorker' in navigator && 'caches' in window) {
+                    try {
+                        const cacheNames = await caches.keys();
+                        await Promise.all(cacheNames.map(name => caches.delete(name)));
+                        console.log('🔄 Service worker cache cleared');
+                    } catch(e) { console.warn('Cache clear failed:', e); }
+                }
+                
+                // Unregister service workers (force fresh fetch)
+                if ('serviceWorker' in navigator) {
+                    try {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        await Promise.all(regs.map(r => r.unregister()));
+                    } catch(e) {}
+                }
+                
+                // Reload s cache-bust query parametrem
+                const url = new URL(location.href);
+                url.searchParams.set('v', Date.now().toString(36));
+                location.replace(url.toString());
+            } catch(e) {
+                console.error('Update error:', e);
+                // Fallback - obyčejný reload
+                location.reload();
+            }
+        }
+        window.performGameUpdate = performGameUpdate;
+        
         async function showBanlist() {
             // [v4.0.1] Banlist je viditelný pro všechny hráče (transparentnost - kdo dostal ban a proč)
             // Tlačítka "Odebrat" jsou jen pro staff členy
@@ -112692,9 +113002,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     </button>
                 </div>
                 
-                <!-- OBNOVIT HRU -->
-                <button class="btn wl-btn wl-scratch wl-dirt" onclick="location.reload()" style="width: 100%; background: #0a0a0a; padding: 0.5rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; margin-bottom: 0.4rem; ">
-                    <span style="font-size: 0.75rem; color: #666;">OBNOVIT HRU</span>
+                <!-- AKTUALIZOVAT HRU -->
+                <button class="btn wl-btn wl-scratch wl-dirt" onclick="confirmGameUpdate()" style="width: 100%; background: linear-gradient(180deg, #0a1015 0%, #050810 100%); padding: 0.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.15rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; margin-bottom: 0.4rem; border: 1px solid #2a3a4a;">
+                    <span style="font-size: 0.78rem; color: #64b5f6; display: flex; align-items: center; gap: 0.4rem;">🔄 AKTUALIZOVAT HRU</span>
+                    <span style="font-size: 0.6rem; color: #555; font-weight: 400;">↻ doporučeno alespoň 1× denně</span>
                 </button>
                 
                 <!-- ÚČET -->
@@ -123467,7 +123778,7 @@ Po smrti se NERESETUJE daily postup:
 
 <strong>📡 EPITAPH (AI)</strong>
 
-Po smrti AI (Gemini) vygeneruje:
+Po smrti AI (Claude Haiku) vygeneruje:
 • Krátký poetický epitaph
 • Pozadí příběhu
 • Reaguje na cause smrti
@@ -124368,7 +124679,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                         <span style="font-size: 1.5rem;">🤖</span>
                         <div>
                             <div style="font-weight: bold;">AI Nastavení</div>
-                            <div style="font-size: 0.75rem; opacity: 0.8;">Gemini/Claude API, model, limity</div>
+                            <div style="font-size: 0.75rem; opacity: 0.8;">Claude Haiku API, proxy, limity</div>
                         </div>
                     </button>
                     
@@ -155127,10 +155438,10 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
 })();
 
 // ======== 🤖 AI ENGINE ========
-const AI_ENGINE={geminiKey:null,geminiProxy:null,claudeProxy:null,model:'gemini-2.5-flash',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:60,lastReset:Date.now(),enabled:false,
-// [FIX AI] Telemetrie — sleduj co a kolik
-_stats:{geminiCalls:0,geminiFails:0,geminiTokens:0,claudeCalls:0,claudeFails:0,cacheHits:0,cacheMisses:0},
-async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.geminiKey)this.geminiKey=c.geminiKey;if(c.geminiProxy)this.geminiProxy=c.geminiProxy;if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.model=c.model||this.model;this.maxReq=c.maxReqPerHour||60;this.enabled=!!(this.geminiKey||this.geminiProxy||this.claudeProxy);console.log('🤖 AI:',this.enabled?'ON':'OFF',this.model,this.geminiProxy?'(via proxy)':'');}
+const AI_ENGINE={claudeProxy:null,model:'claude-haiku-4-5-20251001',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:60,lastReset:Date.now(),enabled:false,
+// [FIX AI] Telemetrie — sleduj co a kolik (Claude-only po odstranění Gemini)
+_stats:{claudeCalls:0,claudeFails:0,claudeTokens:0,cacheHits:0,cacheMisses:0},
+async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.maxReq=c.maxReqPerHour||60;this.enabled=!!this.claudeProxy;console.log('🤖 AI:',this.enabled?'ON':'OFF','Claude Haiku',this.claudeProxy?'(via proxy)':'(NO PROXY)');}
 // [FIX AI] Načti cache z localStorage (přežije reload)
 try{const saved=localStorage.getItem('aiCache_v1');if(saved){const arr=JSON.parse(saved);const now=Date.now();arr.forEach(([k,v])=>{if(v&&v.t&&(now-v.t)<this.cacheTTL)this.cache.set(k,v);});console.log('🤖 AI cache restored:',this.cache.size,'entries');}}catch(e){}
 }catch(e){console.error('🤖 AI init error:',e);}},
@@ -155141,59 +155452,36 @@ _rate(){if(Date.now()-this.lastReset>3600000){this.requestCount=0;this.lastReset
 _refund(){if(this.requestCount>0)this.requestCount--;},
 _gc(k){const e=this.cache.get(k);return(e&&Date.now()-e.t<this.cacheTTL)?e.v:null;},
 _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>100)this.cache.delete(this.cache.keys().next().value);this._cacheDirty=true;},
-async callGemini(sys,msg,maxTok){if(!this.geminiKey&&!this.geminiProxy)return null;
-// [FIX AI] AbortController timeoutem škálovaným podle maxTok (dlouhé odpovědi potřebují víc času)
-const ctrl=new AbortController();
-const _gemTimeoutMs = maxTok && maxTok > 1000 ? Math.min(50000, 15000 + maxTok * 8) : 15000;
-const tid=setTimeout(()=>ctrl.abort(),_gemTimeoutMs);
-try{this._stats.geminiCalls++;
-// [SECURITY] Pokud máme proxy, jdi přes ni (klíč nikdy v browseru). Jinak fallback na direct call (legacy).
-const _useProxy = !!this.geminiProxy;
-const _url = _useProxy ? this.geminiProxy : `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`;
-const _headers = _useProxy ? {'Content-Type':'application/json'} : {'Content-Type':'application/json','x-goog-api-key':this.geminiKey};
-const _body = _useProxy 
-  ? {model:this.model,system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]}
-  : {system_instruction:{parts:[{text:sys}]},contents:[{role:'user',parts:[{text:msg}]}],generationConfig:{temperature:0.85,maxOutputTokens:maxTok||500},safetySettings:[{category:'HARM_CATEGORY_HARASSMENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_HATE_SPEECH',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_SEXUALLY_EXPLICIT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_DANGEROUS_CONTENT',threshold:'BLOCK_ONLY_HIGH'},{category:'HARM_CATEGORY_CIVIC_INTEGRITY',threshold:'BLOCK_ONLY_HIGH'}]};
-const r=await fetch(_url,{method:'POST',signal:ctrl.signal,headers:_headers,body:JSON.stringify(_body)});clearTimeout(tid);if(!r.ok){this._stats.geminiFails++;const errText=await r.text().catch(()=>'');console.error('Gemini HTTP:',r.status,errText.substring(0,200));
-// [FIX AI] 401/403 = bad key, oznamit adminům
-if((r.status===401||r.status===403)&&typeof notifyWarning==='function'&&(isAdmin?.()||isStaff?.())){notifyWarning('🤖 AI klíč selhal','HTTP '+r.status+' — zkontroluj nastavení (může být referer/API restriction)');}
-return null;}const d=await r.json();const text=d?.candidates?.[0]?.content?.parts?.[0]?.text||null;const finish=d?.candidates?.[0]?.finishReason;
-// [FIX AI] Telemetrie tokenů
-if(d?.usageMetadata?.totalTokenCount)this._stats.geminiTokens+=d.usageMetadata.totalTokenCount;
-console.log('🤖 Gemini response:',{finishReason:finish,textLength:text?.length,tokensUsed:d?.usageMetadata,text:text?.substring(0,200)});if(finish==='SAFETY'){console.warn('🤖 Gemini SAFETY filter triggered!');this._stats.geminiFails++;return null;}if(finish==='MAX_TOKENS'&&text){return text.replace(/[,\s]+$/,'')+'...';}return text;}catch(e){clearTimeout(tid);this._stats.geminiFails++;console.error('Gemini:',e.name==='AbortError'?'timeout '+_gemTimeoutMs+'ms':e);return null;}},
 async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{this._stats.claudeCalls++;const ctrl=new AbortController();
 // [FIX] Timeout škáluje s maxTok - dlouhé odpovědi (3000 tokens) potřebují víc času
-// Claude Sonnet generuje ~100 tokens/s, takže 3000 tokenů = ~30s + overhead
 const timeoutMs = maxTok && maxTok > 1000 ? Math.min(60000, 20000 + maxTok * 10) : 20000;
-const tid=setTimeout(()=>ctrl.abort(),timeoutMs);const r=await fetch(this.claudeProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]}),signal:ctrl.signal});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;console.error('Claude:',r.status);return null;}const d=await r.json();return d?.content?.[0]?.text||null;}catch(e){this._stats.claudeFails++;console.error('Claude:',e.name==='AbortError'?'timeout '+(maxTok>1000?'50s':'20s'):e);return null;}},
+const tid=setTimeout(()=>ctrl.abort(),timeoutMs);const r=await fetch(this.claudeProxy,{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||this.model||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;const errText=await r.text().catch(()=>'');console.error('Claude HTTP:',r.status,errText.substring(0,200));
+// [FIX AI] 401/403 = bad key/proxy, oznamit adminům
+if((r.status===401||r.status===403)&&typeof notifyWarning==='function'&&(isAdmin?.()||isStaff?.())){notifyWarning('🤖 AI klíč selhal','HTTP '+r.status+' — zkontroluj proxy nastavení');}
+return null;}const d=await r.json();const text=d?.content?.[0]?.text||null;
+// [FIX AI] Telemetrie tokenů (Claude API formát)
+if(d?.usage)this._stats.claudeTokens+=(d.usage.input_tokens||0)+(d.usage.output_tokens||0);
+console.log('🤖 Claude response:',{textLength:text?.length,tokensUsed:d?.usage,text:text?.substring(0,200)});return text;}catch(e){this._stats.claudeFails++;console.error('Claude:',e.name==='AbortError'?'timeout '+(maxTok>1000?'50s':'20s'):e);return null;}},
+// [CLAUDE-ONLY] Quality calls — používá Claude Haiku (po odstranění Gemini)
 async generate(sys,msg,ck,maxTok){if(!this.enabled)return null;
 // [FIX AI] Check cache PŘED rate-limit (cache hit nerequirs rate)
 if(ck){const c=this._gc(ck);if(c){this._stats.cacheHits++;return c;}this._stats.cacheMisses++;}
 if(!this._rate())return null;
-// Claude Sonnet pro kvalitu, Gemini fallback
-let r=null;
-if(this.claudeProxy)r=await this.callClaude(sys,msg,maxTok,'claude-sonnet-4-5-20250514');
-if(!r&&(this.geminiKey||this.geminiProxy))r=await this.callGemini(sys,msg,maxTok);
-// [FIX AI] Refund pokud oba poskytovatelé selhali
+const r=await this.callClaude(sys,msg,maxTok,'claude-haiku-4-5-20251001');
+// [FIX AI] Refund pokud selhalo
 if(!r)this._refund();
 if(r&&ck)this._sc(ck,r);
 if(!r&&(!this._apiFailNotified||Date.now()-this._apiFailNotified>300000)){this._apiFailNotified=Date.now();if(typeof notifyInfo==='function'&&this.requestCount>2)notifyInfo('🤖 AI nedostupná','Servery neodpovídají. Hra pokračuje bez AI.');}return r;},
-// Gemini primární (levné features), Claude Haiku fallback
+// [CLAUDE-ONLY] Fast calls — také Claude Haiku (po odstranění Gemini)
 async generateFast(sys,msg,ck,maxTok){if(!this.enabled)return null;
 // [FIX AI] Check cache PŘED rate-limit
 if(ck){const c=this._gc(ck);if(c){this._stats.cacheHits++;return c;}this._stats.cacheMisses++;}
 if(!this._rate())return null;
-let r=null;
-if(this.geminiKey||this.geminiProxy)r=await this.callGemini(sys,msg,maxTok);
-if(!r&&this.claudeProxy)r=await this.callClaude(sys,msg,maxTok,'claude-haiku-4-5-20251001');
-// [FIX AI] Refund pokud oba selhali
+const r=await this.callClaude(sys,msg,maxTok,'claude-haiku-4-5-20251001');
+// [FIX AI] Refund pokud selhalo
 if(!r)this._refund();
 if(r&&ck)this._sc(ck,r);return r;},
 // [FIX AI NEW] Shared Firebase cache — stejný výstup pro všechny hráče (dramatický ušetření tokenů)
-// Použití: pro obsahy které jsou stejné pro všechny (boss taunty, epitafy, travel events per lokace)
-// sharedPath — Firebase cesta jako "shared/ai/bossTaunts/${bossName}/${bucket}"
-// Pokud v Firebase existuje záznam mladší než sharedTTL (default 24h), vrátí ho.
-// Jinak vygeneruje a uloží do Firebase (pro příští hráče).
 async generateShared(sys,msg,sharedPath,maxTok,sharedTTL){
   if(!this.enabled)return null;
   sharedTTL=sharedTTL||86400000; // 24h default
@@ -155218,8 +155506,8 @@ async generateShared(sys,msg,sharedPath,maxTok,sharedTTL){
   }
   return r;
 },
-// [FIX AI] Statistiky pro admin panel
-getStats(){const totalCalls=this._stats.geminiCalls+this._stats.claudeCalls;const failRate=totalCalls>0?Math.round((this._stats.geminiFails+this._stats.claudeFails)/totalCalls*100):0;const cacheRate=(this._stats.cacheHits+this._stats.cacheMisses)>0?Math.round(this._stats.cacheHits/(this._stats.cacheHits+this._stats.cacheMisses)*100):0;return{...this._stats,totalCalls,failRate,cacheRate,cacheSize:this.cache.size,requestsThisHour:this.requestCount,limit:this.maxReq};}
+// [FIX AI] Statistiky pro admin panel (Claude-only po odstranění Gemini)
+getStats(){const totalCalls=this._stats.claudeCalls;const failRate=totalCalls>0?Math.round(this._stats.claudeFails/totalCalls*100):0;const cacheRate=(this._stats.cacheHits+this._stats.cacheMisses)>0?Math.round(this._stats.cacheHits/(this._stats.cacheHits+this._stats.cacheMisses)*100):0;return{...this._stats,totalCalls,failRate,cacheRate,cacheSize:this.cache.size,requestsThisHour:this.requestCount,limit:this.maxReq};}
 };
 // [FIX AI] Periodická persistence cache (každých 60s)
 if(typeof window!=='undefined'){setInterval(()=>{try{AI_ENGINE._persistCache?.();}catch(e){}},60000);}
@@ -155941,25 +156229,15 @@ async function sendAIChat(){
     _aiChatCooldown = Date.now();const msg=sanitizeInput(inp.value,200);inp.value='';inp.disabled=true;const h=document.getElementById('aiH');if(h){h.innerHTML+=`<div style="margin:0.4rem 0;text-align:right"><div style="display:inline-block;max-width:85%;padding:0.5rem 0.8rem;border-radius:12px 12px 4px 12px;background:#1a3a2a;border:1px solid #2a5a3a"><div style="color:#8bc34a;font-size:0.7rem;font-weight:bold">🧑 Ty</div><div style="color:#ddd;font-size:0.85rem;margin-top:0.2rem">${escapeHtml(msg)}</div></div></div><div id="aiL" style="text-align:left;margin:0.4rem 0"><div style="display:inline-block;padding:0.5rem;border-radius:12px;background:#1a1a2a;color:#888">🔮 přemýšlím...</div></div>`;h.scrollTop=h.scrollHeight;}const r=await aiCompanionChat(msg);const ld=document.getElementById('aiL');if(ld)ld.remove();if(r&&h){h.innerHTML+=`<div style="margin:0.4rem 0;text-align:left"><div style="display:inline-block;max-width:85%;padding:0.5rem 0.8rem;border-radius:12px 12px 12px 4px;background:#1a1a2a;border:1px solid #2a2a4a"><div style="color:#ce93d8;font-size:0.7rem;font-weight:bold">🔮 Průvodce</div><div style="color:#ddd;font-size:0.85rem;margin-top:0.2rem">${escapeHtml(r)}</div></div></div>`;h.scrollTop=h.scrollHeight;}else if(h)h.innerHTML+='<div style="color:#666;font-size:0.8rem;margin:0.4rem">⚠️ Průvodce mlčí...</div>';inp.disabled=false;inp.focus();}
 function quickAI(t){const i=document.getElementById('aiIn');if(i){i.value=t;sendAIChat();}}
 async function showAIAdminPanel(){if(!isAdmin()&&!isStaff())return;let cfg={};try{const s=await firebaseDB.ref('settings/aiConfig').once('value');cfg=s.val()||{};}catch(e){}
-// [FIX SECURITY] Maskovat existující klíč — nezobrazovat ho v DOM.
-// Klíč se nezmění pokud input zůstane prázdný nebo obsahuje placeholder.
-const hasKey=!!(cfg.geminiKey&&cfg.geminiKey.length>10);
-const keyPlaceholder=hasKey?('•'.repeat(20)+cfg.geminiKey.slice(-4)):'AIzaSy...';
-// [FIX AI] Získej statistiky pro monitoring
+// [FIX AI] Získej statistiky pro monitoring (Claude-only po odstranění Gemini)
 const stats=AI_ENGINE.getStats?.()||{};
-const statsHtml=`<div style="background:#0a1a2a;border:1px solid #2196f3;padding:0.6rem;border-radius:6px;margin-bottom:1rem;font-size:0.75rem;"><div style="color:#64b5f6;font-weight:bold;margin-bottom:0.3rem;">📊 STATISTIKY (od loadu)</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;color:#aaa;"><div>Gemini: ${stats.geminiCalls||0} calls, ${stats.geminiFails||0} fails</div><div>Claude: ${stats.claudeCalls||0} calls, ${stats.claudeFails||0} fails</div><div>Tokens: ${stats.geminiTokens||0}</div><div>Cache: ${stats.cacheHits||0}/${(stats.cacheHits||0)+(stats.cacheMisses||0)} (${stats.cacheRate||0}%)</div><div style="grid-column:span 2;color:${stats.failRate>20?'#ff5722':'#8bc34a'};">Fail rate: ${stats.failRate||0}% · Cache: ${stats.cacheSize||0} entries</div></div></div>`;
-showModal('🤖 AI Nastavení',`<div style="padding:0.5rem"><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Gemini Proxy URL <span style="color:#8bc34a">(doporučeno - klíč na serveru):</span></label><input type="text" id="aiGP" value="${cfg.geminiProxy||''}" placeholder="https://gemini-proxy.workers.dev" style="width:100%;background:#0d0d0d;border:1px solid ${cfg.geminiProxy?'#4caf50':'#333'};border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:${cfg.geminiProxy?'#8bc34a':'#888'};font-size:0.7rem;margin:0.2rem 0">${cfg.geminiProxy?'✅ Proxy aktivní - klíč v browseru se nepoužívá':'⚠️ Bez proxy se klíč načítá do browseru každého hráče!'}</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Gemini API klíč ${cfg.geminiProxy?'<span style="color:#888">(deprecated - používej proxy):</span>':'<span style="color:#ff5722">(NESKRYTÝ - viditelný v browseru!):</span>'}</label><input type="password" id="aiK" value="" placeholder="${keyPlaceholder}" style="width:100%;background:#0d0d0d;border:1px solid ${cfg.geminiProxy?'#333':'#ff9800'};border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:${hasKey?'#8bc34a':'#555'};font-size:0.7rem;margin:0.2rem 0">${hasKey?'✅ Klíč je nastavený (prázdné = beze změny). Vlož nový pro přepis. Pro lepší bezpečnost použij proxy výše.':'aistudio.google.com → Get API key'}</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Claude Proxy (volitelné):</label><input type="text" id="aiP" value="${cfg.claudeProxy||''}" placeholder="https://proxy/claude" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Model:</label><select id="aiM" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><option value="gemini-2.5-flash" ${cfg.model==='gemini-2.5-flash'?'selected':''}>Gemini 2.5 Flash</option><option value="gemini-2.0-flash" ${cfg.model==='gemini-2.0-flash'?'selected':''}>Gemini 2.0 Flash</option></select></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Max req/hráč/h:</label><input type="number" id="aiR" value="${cfg.maxReqPerHour||60}" min="5" max="200" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="background:#1a2a1a;padding:0.5rem;border-radius:6px;margin-bottom:1rem"><div style="color:${AI_ENGINE.enabled?'#8bc34a':'#f44336'};font-weight:bold">${AI_ENGINE.enabled?'✅ AKTIVNÍ':'❌ NEAKTIVNÍ'}</div><div style="color:#888;font-size:0.8rem">Req: ${AI_ENGINE.requestCount}/${AI_ENGINE.maxReq} ${AI_ENGINE.geminiProxy?'(via proxy)':''}</div></div>${statsHtml}<button class="btn" onclick="saveAICfg()" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.7rem;font-weight:bold">💾 Uložit</button><button class="btn" onclick="testAI()" style="width:100%;margin-top:0.3rem;background:#7b1fa2">🧪 Test</button><button class="btn" onclick="clearAICache()" style="width:100%;margin-top:0.3rem;background:#ff6f00">🗑️ Vyčistit cache</button><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:0.3rem;background:#333">← Zpět</button></div>`);}
+const statsHtml=`<div style="background:#0a1a2a;border:1px solid #2196f3;padding:0.6rem;border-radius:6px;margin-bottom:1rem;font-size:0.75rem;"><div style="color:#64b5f6;font-weight:bold;margin-bottom:0.3rem;">📊 STATISTIKY (od loadu)</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;color:#aaa;"><div>Volání: ${stats.claudeCalls||0}</div><div>Chyby: ${stats.claudeFails||0}</div><div>Tokeny: ${stats.claudeTokens||0}</div><div>Cache: ${stats.cacheHits||0}/${(stats.cacheHits||0)+(stats.cacheMisses||0)} (${stats.cacheRate||0}%)</div><div style="grid-column:span 2;color:${stats.failRate>20?'#ff5722':'#8bc34a'};">Fail rate: ${stats.failRate||0}% · Cache: ${stats.cacheSize||0} entries</div></div></div>`;
+showModal('🤖 AI Nastavení (Claude Haiku)',`<div style="padding:0.5rem"><div style="background:#1a2a1a;padding:0.6rem;border-radius:6px;margin-bottom:1rem;border:1px solid #4caf50;"><div style="color:#8bc34a;font-weight:bold;font-size:0.85rem;">🤖 Claude Haiku 4.5</div><div style="color:#888;font-size:0.7rem;margin-top:0.2rem;">Jediný AI provider — Gemini odstraněn.</div></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Claude Proxy URL <span style="color:#ff5722">(POVINNÉ):</span></label><input type="text" id="aiP" value="${cfg.claudeProxy||''}" placeholder="https://claude-proxy.workers.dev" style="width:100%;background:#0d0d0d;border:1px solid ${cfg.claudeProxy?'#4caf50':'#ff5722'};border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"><p style="color:${cfg.claudeProxy?'#8bc34a':'#ff5722'};font-size:0.7rem;margin:0.2rem 0">${cfg.claudeProxy?'✅ Proxy nakonfigurována':'⚠️ Bez proxy AI nefunguje! Anthropic API neumožňuje přímé volání z browseru (CORS).'}</p></div><div style="margin-bottom:1rem"><label style="color:#888;font-size:0.85rem">Max req/hráč/h:</label><input type="number" id="aiR" value="${cfg.maxReqPerHour||60}" min="5" max="200" style="width:100%;background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:0.5rem;color:#fff;margin-top:0.3rem"></div><div style="background:#1a2a1a;padding:0.5rem;border-radius:6px;margin-bottom:1rem"><div style="color:${AI_ENGINE.enabled?'#8bc34a':'#f44336'};font-weight:bold">${AI_ENGINE.enabled?'✅ AKTIVNÍ':'❌ NEAKTIVNÍ'}</div><div style="color:#888;font-size:0.8rem">Req: ${AI_ENGINE.requestCount}/${AI_ENGINE.maxReq}</div></div>${statsHtml}<button class="btn" onclick="saveAICfg()" style="width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);padding:0.7rem;font-weight:bold">💾 Uložit</button><button class="btn" onclick="testAI()" style="width:100%;margin-top:0.3rem;background:#7b1fa2">🧪 Test</button><button class="btn" onclick="clearAICache()" style="width:100%;margin-top:0.3rem;background:#ff6f00">🗑️ Vyčistit cache</button><button class="btn" onclick="showAdminPanel()" style="width:100%;margin-top:0.3rem;background:#333">← Zpět</button></div>`);}
 // [FIX AI] Manuální vyčištění cache (pro admina pokud se něco pokazí)
-function clearAICache(){AI_ENGINE.cache.clear();AI_ENGINE._stats={geminiCalls:0,geminiFails:0,geminiTokens:0,claudeCalls:0,claudeFails:0,cacheHits:0,cacheMisses:0};try{localStorage.removeItem('aiCache_v1');}catch(e){}notifySuccess('🗑️ Cache vyčištěna','Statistiky resetovány');showAIAdminPanel();}
+function clearAICache(){AI_ENGINE.cache.clear();AI_ENGINE._stats={claudeCalls:0,claudeFails:0,claudeTokens:0,cacheHits:0,cacheMisses:0};try{localStorage.removeItem('aiCache_v1');}catch(e){}notifySuccess('🗑️ Cache vyčištěna','Statistiky resetovány');showAIAdminPanel();}
 async function saveAICfg(){if(!isAdmin()&&!isStaff())return;try{
-// [FIX SECURITY] Pokud input je prázdný, zachovat existující klíč (neklikat Uložit s prázdným inputem = smazat)
-const newKey=document.getElementById('aiK')?.value?.trim()||'';
-let geminiKeyToSave=null;
-if(newKey){geminiKeyToSave=newKey;}else{
-  // Ponechej existující klíč
-  try{const s=await firebaseDB.ref('settings/aiConfig/geminiKey').once('value');geminiKeyToSave=s.val()||null;}catch(e){geminiKeyToSave=null;}
-}
-await firebaseDB.ref('settings/aiConfig').set({geminiKey:geminiKeyToSave,geminiProxy:document.getElementById('aiGP')?.value?.trim()||null,claudeProxy:document.getElementById('aiP')?.value?.trim()||null,model:document.getElementById('aiM')?.value||'gemini-2.5-flash',maxReqPerHour:parseInt(document.getElementById('aiR')?.value)||30});await AI_ENGINE.init();notifySuccess('✅ Uloženo!',AI_ENGINE.enabled?'AI aktivní':'Neaktivní');showAIAdminPanel();}catch(e){notifyWarning('Chyba',e.message);}}
+// [CLAUDE-ONLY] Po odstranění Gemini ukládáme jen claudeProxy + rate limit
+await firebaseDB.ref('settings/aiConfig').set({claudeProxy:document.getElementById('aiP')?.value?.trim()||null,maxReqPerHour:parseInt(document.getElementById('aiR')?.value)||60});await AI_ENGINE.init();notifySuccess('✅ Uloženo!',AI_ENGINE.enabled?'AI aktivní':'Neaktivní');showAIAdminPanel();}catch(e){notifyWarning('Chyba',e.message);}}
 async function testAI(){if(!AI_ENGINE.enabled){notifyWarning('AI off','Nastav klíč.');return;}notifyInfo('🧪','Testuji...');const r=await AI_ENGINE.generateFast('Jsi test. Odpověz česky jednou větou.','Řekni něco o apokalypse.',null);r?notifySuccess('✅ Funguje!',r.substring(0,100)):notifyWarning('❌ Nefunguje','Zkontroluj klíč.');}
 window.showAIChatPanel=showAIChatPanel;window.sendAIChat=sendAIChat;window.quickAI=quickAI;window.showAIAdminPanel=showAIAdminPanel;window.saveAICfg=saveAICfg;window.testAI=testAI;window.clearAICache=clearAICache;
 
@@ -156102,8 +156380,8 @@ DŮLEŽITÉ:
 
 KONTEXT: Den ${days}, ${season}.${eventCtx}`;
         
-        // [FIX] Rádio používá generate (Claude Sonnet primárně) pro kvalitní literární obsah
-        // Hráči rádio čtou rádi, stojí za kvalitnější výstup než rychlé Gemini
+        // [FIX] Rádio používá generate (Claude Haiku) pro kvalitní literární obsah
+        // Hráči rádio čtou rádi, stojí za kvalitnější výstup
         broadcast = await AI_ENGINE.generate(prompt, 'Vysílej', null, 3000);
         
         if (broadcast && firebaseDB) {
