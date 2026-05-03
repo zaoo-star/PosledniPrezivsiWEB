@@ -129218,6 +129218,21 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 if (!state.mayorInvestments) state.mayorInvestments = { totals: {}, history: [] };
                 state.mayorInvestments.totals = totals;
                 console.log('🏗️ Investment totals synced:', Object.keys(totals).length, 'projects');
+                
+                // [FIX] Auto-refresh otevřený politics panel — bez tohoto se UI neaktualizuje
+                // dokud uživatel modal nezavře a znovu neotevře
+                const investmentsOverview = document.getElementById('investmentsOverview');
+                if (investmentsOverview && typeof showPoliticsPanel === 'function') {
+                    // Zachovaj jestli byl rozkliknutý
+                    const wasOpen = investmentsOverview.style.display === 'block';
+                    showPoliticsPanel().then(() => {
+                        // Po re-renderu obnov toggle stav
+                        if (wasOpen) {
+                            const newOverview = document.getElementById('investmentsOverview');
+                            if (newOverview) newOverview.style.display = 'block';
+                        }
+                    }).catch(()=>{});
+                }
             });
             
             // [NEW] Listener na sdílenou kroniku šéfů — všichni hráči vidí historii všech šéfů
@@ -129562,8 +129577,23 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             notifySuccess(`💰 Investováno!${adminOk ? ' (admin)' : ''}`, `${project.name} #${newTotal} — celkový bonus: ${totalBonusEntries}`);
             
             // Synchronizace přes Firebase (sdílený stav pro všechny hráče)
+            // [CRITICAL FIX] Použij transaction místo set() — zabrání ztrátě investic při multi-mayor race
+            // Předtím: set(localValue+1) přepsalo souběžné investice jiných hráčů.
+            // Teď: transaction atomicky inkrementuje na DB úrovni.
             if (typeof firebaseDB !== 'undefined' && firebaseDB) {
-                firebaseDB.ref(`mayorInvestments/totals/${projectId}`).set(newTotal)
+                firebaseDB.ref(`mayorInvestments/totals/${projectId}`).transaction(current => (current || 0) + 1)
+                    .then(result => {
+                        if (result.committed) {
+                            const realTotal = result.snapshot.val();
+                            console.log(`🏗️ Investment ${projectId}: real total after transaction = ${realTotal} (local was ${newTotal})`);
+                            // Sync local s realným stavem z Firebase
+                            inv.totals[projectId] = realTotal;
+                            // Re-render panel pokud je otevřený
+                            if (document.getElementById('investmentsOverview') && typeof showPoliticsPanel === 'function') {
+                                showPoliticsPanel().catch(()=>{});
+                            }
+                        }
+                    })
                     .catch(e => console.warn('🔇 Firebase:', e?.message || e));
                 
                 // Push do history
