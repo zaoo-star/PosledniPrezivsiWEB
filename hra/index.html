@@ -129854,9 +129854,31 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         window.confirmMayorPriority = confirmMayorPriority;
         
         // [NEW #5 UI] Dialog pro investiční projekty
-        function showMayorInvestmentsDialog() {
+        async function showMayorInvestmentsDialog() {
             const adminOk = (typeof isAdmin === 'function' && isAdmin());
             const isMayorPerson = (typeof isMayor === 'function' && isMayor());
+            
+            // [FIX] Fresh fetch z Firebase — listener mohl selhat / být cached
+            if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                try {
+                    const [totalsSnap, historySnap] = await Promise.all([
+                        firebaseDB.ref('mayorInvestments/totals').once('value'),
+                        firebaseDB.ref('mayorInvestments/history').limitToLast(100).once('value')
+                    ]);
+                    const freshTotals = totalsSnap.val() || {};
+                    if (!state.mayorInvestments) state.mayorInvestments = { totals: {}, history: [] };
+                    state.mayorInvestments.totals = freshTotals;
+                    
+                    const freshHistory = historySnap.val();
+                    if (freshHistory) {
+                        const arr = Object.values(freshHistory)
+                            .filter(h => h && h.projectId)
+                            .sort((a, b) => (a.investedAt || 0) - (b.investedAt || 0));
+                        state.mayorInvestments.history = arr;
+                    }
+                    console.log('🏗️ Investment dialog: fresh totals =', Object.keys(freshTotals).length, 'projects:', freshTotals);
+                } catch(e) { console.warn('Fresh fetch failed:', e); }
+            }
             
             const inv = getMayorInvestments();
             const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
@@ -133641,13 +133663,30 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
             
             try {
                 // Načti data včetně treasury stats
-                const [mayorSnap, electionSnap, decisionsSnap, publicMoneySnap, taxRateSnap] = await Promise.all([
+                const [mayorSnap, electionSnap, decisionsSnap, publicMoneySnap, taxRateSnap, invTotalsSnap, invHistorySnap] = await Promise.all([
                     firebaseDB.ref('politics/mayor').once('value'),
                     firebaseDB.ref('politics/election').once('value'),
                     firebaseDB.ref('politics/decisions/active').once('value'),
                     firebaseDB.ref('politics/publicMoney').once('value'),
-                    firebaseDB.ref('politics/taxRate').once('value')
+                    firebaseDB.ref('politics/taxRate').once('value'),
+                    // [FIX] Vždy fetch fresh investment totals — listener mohl selhat / být cached
+                    firebaseDB.ref('mayorInvestments/totals').once('value'),
+                    firebaseDB.ref('mayorInvestments/history').limitToLast(100).once('value')
                 ]);
+                
+                // [FIX] Sync local state s fresh Firebase daty
+                const freshTotals = invTotalsSnap.val() || {};
+                if (!state.mayorInvestments) state.mayorInvestments = { totals: {}, history: [] };
+                state.mayorInvestments.totals = freshTotals;
+                console.log('🏗️ Politics panel: fresh totals fetch =', Object.keys(freshTotals).length, 'projects:', freshTotals);
+                
+                const freshHistory = invHistorySnap.val();
+                if (freshHistory) {
+                    const arr = Object.values(freshHistory)
+                        .filter(h => h && h.projectId)
+                        .sort((a, b) => (a.investedAt || 0) - (b.investedAt || 0));
+                    state.mayorInvestments.history = arr;
+                }
                 
                 const mayor = mayorSnap.val();
                 const election = electionSnap.val() || {};
