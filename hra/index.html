@@ -80334,6 +80334,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         return;
                     }
                     
+                    // [CRITICAL FIX - hráč Jano] Pokud byl boj UKONČEN ale banner čeká na klik,
+                    // watchdog NESMÍ zasahovat — jinak vrátí hráče do "boje" který je už skončený.
+                    // Hráč hlásil: "Kliknu na pokračovaní k odmene a vráti do boje, okno se resizne a je stuck"
+                    // Detekce: end screen banner zobrazen NEBO všichni nepřátelé mrtví
+                    if (cs._endScreenShown) {
+                        // End screen aktivní — watchdog spí
+                        return;
+                    }
+                    const _allEnemiesDead = cs.units && !cs.units.some(u => u.team === 'enemy' && u.alive);
+                    const _playerAlive = cs.units && cs.units.some(u => u.team === 'player' && u.alive);
+                    if (_allEnemiesDead && _playerAlive) {
+                        // Boj evidentně vyhraný — buď banner už visí, nebo brzy bude
+                        // NESPOUŠTĚJ watchdog intervence (žádné startNextTurn, startNewRound atd.)
+                        return;
+                    }
+                    if (!_playerAlive) {
+                        // Hráč mrtvý, watchdog nemá co dělat
+                        return;
+                    }
+                    
                     // [CRITICAL FIX] Snapshot NESMÍ obsahovat _turnLocked / _actionInProgress!
                     // Tyto flagy se přepínají při každé watchdog intervenci (true→false→true)
                     // → snapshot se "změní" → counter se resetuje → watchdog NIKDY nedosáhne 3 stuck attempts
@@ -81539,6 +81559,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         function showCombatEndScreen(isVictory) {
             const cs = window.combatState;
             if (!cs) { (isVictory ? handleCombatVictory : handleCombatDefeat)(); return; }
+            
+            // [CRITICAL FIX - hráč Jano] Vypni watchdog ihned když se banner zobrazí
+            // Bez tohoto: watchdog stále běží 5s tikem a zkouší boj "opravit" → vrátí hráče do boje
+            if (window._combatWatchdogInterval) {
+                clearInterval(window._combatWatchdogInterval);
+                window._combatWatchdogInterval = null;
+                console.log('🏆 Watchdog vypnut - boj končí');
+            }
             
             // [CRITICAL FIX] Označ boj jako "skončený, čeká na claim" v save state.
             // Pokud hráč zamkne telefon před kliknutím "Pokračovat", restoreCombatFromState
@@ -89931,9 +89959,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // [FIX BUG #4] Guard proti opakovanému volání BĚHEM JEDNOHO BOJE
-            // Pokud cs existuje a flag je true, znamená že modal už byl zobrazen — neopakovat
+            // Pokud cs existuje a flag je true, znamená že modal už byl zobrazen — neopakovat odměny
+            // ale ZARUČENĚ vyčistit UI v případě že banner zůstal viset
             if (window._combatVictoryHandled && cs) {
-                console.log('🛡️ handleCombatVictory už byl zpracován pro tento boj - skipping');
+                console.log('🛡️ handleCombatVictory už byl zpracován — jen cleanup UI');
+                // Cleanup UI artefaktů
+                var _eb1 = document.getElementById('combatEndBanner'); if (_eb1) _eb1.remove();
+                var _fb1 = document.getElementById('combatFloatingBtn'); if (_fb1) _fb1.remove();
+                document.body.classList.remove('combat-fullscreen');
+                // Zruš combat state aby se nevrátil
+                if (typeof _cleanupCombatState === 'function') _cleanupCombatState();
+                window.combatState = null;
+                delete state.activeCombat;
+                if (typeof renderFull === 'function') renderFull();
                 return;
             }
             
