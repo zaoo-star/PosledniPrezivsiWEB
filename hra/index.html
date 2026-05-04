@@ -102171,6 +102171,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <button class="btn" onclick="confirmLoadCloud()" style="background: #2196f3; padding: 0.8rem;">
                             📥 Načíst z cloudu
                         </button>
+                        <button class="btn" onclick="showCloudHistory()" style="background: linear-gradient(135deg, #6a1b9a, #4a148c); padding: 0.8rem; color: #fff; font-weight: bold;">
+                            📜 Historie save (vybrat datum)
+                        </button>
                         <button class="btn" onclick="showChangePasswordForm()" style="background: #ff9800; padding: 0.8rem;">
                             🔑 Změnit heslo
                         </button>
@@ -102676,6 +102679,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 await firebaseDB.ref('cloudSaves/' + currentUser.uid).set(saveData);
                 console.log('☁️ Cloud save uložen úspěšně, seq=' + state._cloudSaveSeq);
                 
+                // [NEW sp3rx] Save history — 5 rolling slots pro recovery
+                // Hráč může načíst starší verzi pokud aktuální je rozbitá / udělal chybu
+                // Throttle: ukládáme do history max 1× za 10 minut (jinak by se rolovaly slotty moc rychle)
+                try {
+                    const lastHistorySave = window._lastHistorySaveAt || 0;
+                    const HISTORY_THROTTLE = 10 * 60 * 1000; // 10 min
+                    if (Date.now() - lastHistorySave > HISTORY_THROTTLE) {
+                        const historyRef = firebaseDB.ref('cloudSaves/' + currentUser.uid + '_history');
+                        const slotKey = 'slot_' + Date.now();
+                        await historyRef.child(slotKey).set({
+                            ...saveData,
+                            _historyAt: Date.now()
+                        });
+                        // Trim na max 5 slotů (smaž nejstarší)
+                        const allSlotsSnap = await historyRef.orderByChild('_historyAt').once('value');
+                        const allSlots = allSlotsSnap.val() || {};
+                        const sortedKeys = Object.keys(allSlots).sort((a, b) => 
+                            (allSlots[b]._historyAt || 0) - (allSlots[a]._historyAt || 0)
+                        );
+                        if (sortedKeys.length > 5) {
+                            for (let i = 5; i < sortedKeys.length; i++) {
+                                await historyRef.child(sortedKeys[i]).remove();
+                            }
+                            console.log(`☁️ History trimmed: smazáno ${sortedKeys.length - 5} starých slotů`);
+                        }
+                        window._lastHistorySaveAt = Date.now();
+                        console.log('☁️ History snapshot uložen:', slotKey);
+                    }
+                } catch(histErr) {
+                    console.warn('History save failed (non-critical):', histErr);
+                }
+                
                 // Reset acknowledgment po úspěšném uložení
                 window._cloudConflictAcknowledged = false;
                 
@@ -102683,6 +102718,181 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 console.error('☁️ Cloud save error:', error);
             }
         }
+        
+        // [NEW sp3rx] Zobraz historii cloud saves — hráč si může vybrat z čeho načíst
+        async function showCloudHistory() {
+            if (!currentUser || currentUser.isAnonymous || !firebaseDB) {
+                notifyWarning('🔒 Není přihlášen', 'Pro historii save musíš být přihlášen.');
+                return;
+            }
+            
+            showModal('📜 Historie cloud saves', '<div style="text-align: center; padding: 1rem; color: #888;">⏳ Načítám historii...</div>');
+            
+            try {
+                // Načti aktuální save + history slots
+                const [currentSnap, historySnap] = await Promise.all([
+                    firebaseDB.ref('cloudSaves/' + currentUser.uid).once('value'),
+                    firebaseDB.ref('cloudSaves/' + currentUser.uid + '_history').once('value')
+                ]);
+                
+                const current = currentSnap.val();
+                const history = historySnap.val() || {};
+                
+                // Sestav seznam: aktuální + history slotty (seřazené nejnovější první)
+                const allSaves = [];
+                if (current) {
+                    allSaves.push({
+                        key: 'current',
+                        savedAt: current.savedAt || 0,
+                        playerLevel: current.playerLevel || 0,
+                        playerDay: current.playerDay || 0,
+                        deviceId: current.deviceId || '',
+                        isCurrent: true,
+                        moneyApprox: current.state?.money || 0,
+                        invCount: current.state?.inv?.length || 0
+                    });
+                }
+                Object.entries(history).forEach(([slotKey, data]) => {
+                    if (!data || !data._historyAt) return;
+                    allSaves.push({
+                        key: slotKey,
+                        savedAt: data.savedAt || data._historyAt,
+                        playerLevel: data.playerLevel || 0,
+                        playerDay: data.playerDay || 0,
+                        deviceId: data.deviceId || '',
+                        isCurrent: false,
+                        moneyApprox: data.state?.money || 0,
+                        invCount: data.state?.inv?.length || 0
+                    });
+                });
+                allSaves.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+                
+                if (allSaves.length === 0) {
+                    showModal('📜 Historie save', `
+                        <div style="text-align: center; padding: 1rem; color: #888;">
+                            <div style="font-size: 2rem; opacity: 0.5;">📭</div>
+                            Žádné cloud saves.
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zavřít</button>
+                    `);
+                    return;
+                }
+                
+                // Render
+                let html = `<div style="background: rgba(255,193,7,0.05); border: 1px solid rgba(255,193,7,0.2); border-radius: 6px; padding: 0.5rem 0.7rem; margin-bottom: 0.6rem; font-size: 0.75rem; color: #ffc107;">
+                    ⚠️ Načtení starší verze <strong>přepíše</strong> aktuální postup. Aktuální stav bude ztracen.
+                </div>`;
+                
+                html += '<div style="max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
+                
+                allSaves.forEach((save, idx) => {
+                    const date = new Date(save.savedAt);
+                    const dateStr = date.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'short' });
+                    const timeStr = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+                    const ageMin = Math.round((Date.now() - save.savedAt) / 60000);
+                    let ageStr;
+                    if (ageMin < 60) ageStr = `před ${ageMin} min`;
+                    else if (ageMin < 1440) ageStr = `před ${Math.floor(ageMin / 60)} h`;
+                    else ageStr = `před ${Math.floor(ageMin / 1440)} dny`;
+                    
+                    const borderColor = save.isCurrent ? '#4caf50' : (idx === 0 ? '#1976d2' : '#444');
+                    const badge = save.isCurrent 
+                        ? '<span style="background: linear-gradient(135deg,#4caf50,#2e7d32); color: #fff; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.6rem; font-weight: bold;">AKTUÁLNÍ</span>'
+                        : '';
+                    
+                    html += `<div style="background: linear-gradient(135deg,#1a1a1a,#0d0d0d); border: 1px solid ${borderColor}; border-left: 3px solid ${borderColor}; border-radius: 6px; padding: 0.6rem 0.7rem; margin-bottom: 0.4rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <span style="font-size: 1.2rem;">${save.isCurrent ? '⭐' : '📜'}</span>
+                                <strong style="color: ${borderColor === '#4caf50' ? '#a5d6a7' : '#fff'};">${dateStr} · ${timeStr}</strong>
+                                ${badge}
+                            </div>
+                            <span style="color: #888; font-size: 0.7rem;">${ageStr}</span>
+                        </div>
+                        <div style="display: flex; gap: 0.8rem; font-size: 0.75rem; color: #aaa; flex-wrap: wrap; margin-bottom: 0.4rem;">
+                            <span>📈 Level <strong style="color: #ffd700;">${save.playerLevel}</strong></span>
+                            <span>📅 Den <strong style="color: #ffd700;">${save.playerDay}</strong></span>
+                            <span>💰 <strong style="color: #ffd700;">${save.moneyApprox}</strong></span>
+                            <span>🎒 ${save.invCount} ks</span>
+                            ${save.deviceId ? `<span style="color:#666;">${save.deviceId}</span>` : ''}
+                        </div>
+                        ${save.isCurrent 
+                            ? '<button class="btn" onclick="closeModal();" style="width: 100%; background: #2e7d32; padding: 0.4rem; font-size: 0.8rem; color: #fff;">✓ Tato verze je aktuální</button>'
+                            : `<button class="btn" onclick="loadCloudSaveFromHistory('${save.key}')" style="width: 100%; background: linear-gradient(135deg,#1976d2,#0d47a1); padding: 0.4rem; font-size: 0.8rem; color: #fff; font-weight: bold;">📥 Načíst tuto verzi</button>`
+                        }
+                    </div>`;
+                });
+                
+                html += '</div>';
+                html += '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zavřít</button>';
+                
+                showModal('📜 Historie cloud saves', html);
+            } catch(e) {
+                console.error('History load failed:', e);
+                showModal('📜 Historie save', `
+                    <div style="text-align: center; padding: 1rem; color: #f44336;">
+                        ❌ Nepodařilo se načíst historii: ${e?.message || 'neznámá chyba'}
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">← Zavřít</button>
+                `);
+            }
+        }
+        window.showCloudHistory = showCloudHistory;
+        
+        // [NEW sp3rx] Načti vybraný history slot
+        async function loadCloudSaveFromHistory(slotKey) {
+            if (!currentUser || currentUser.isAnonymous || !firebaseDB) return;
+            
+            // Confirm dialog
+            showModal('⚠️ Potvrdit načtení', `
+                <div style="text-align: center; padding: 0.5rem;">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">⚠️</div>
+                    <p style="color: #ffc107; font-size: 0.9rem; font-weight: bold;">Opravdu načíst tuto verzi?</p>
+                    <p style="color: #aaa; font-size: 0.8rem; margin-top: 0.5rem;">Aktuální postup bude <strong style="color: #f44336;">přepsán</strong> a nelze ho vrátit.</p>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                    <button class="btn" onclick="closeModal(); showCloudHistory();" style="background: #555;">✗ Zrušit</button>
+                    <button class="btn" onclick="closeModal(); _doLoadFromHistory('${slotKey}');" style="background: linear-gradient(135deg,#d32f2f,#b71c1c); color: #fff; font-weight: bold;">✓ Načíst a přepsat</button>
+                </div>
+            `);
+        }
+        window.loadCloudSaveFromHistory = loadCloudSaveFromHistory;
+        
+        async function _doLoadFromHistory(slotKey) {
+            try {
+                showModal('⏳ Načítám...', '<div style="text-align: center; padding: 1rem;">📥 Načítám historickou verzi...</div>');
+                
+                const snap = await firebaseDB.ref('cloudSaves/' + currentUser.uid + '_history/' + slotKey).once('value');
+                const cloudData = snap.val();
+                
+                if (!cloudData || !cloudData.state) {
+                    closeModal();
+                    notifyWarning('🚫 Chyba', 'Historický slot nebyl nalezen.');
+                    return;
+                }
+                
+                // Promote tuto verzi na current cloud save
+                await firebaseDB.ref('cloudSaves/' + currentUser.uid).set({
+                    state: cloudData.state,
+                    savedAt: Date.now(),
+                    playerLevel: cloudData.playerLevel,
+                    playerDay: cloudData.playerDay,
+                    deviceId: cloudData.deviceId,
+                    _restoredFromHistory: slotKey
+                });
+                
+                // Standard load
+                window._cloudConflictAcknowledged = true;
+                closeModal();
+                await loadCloudSave(true);
+                notifySuccess('📥 Načteno z historie', 'Hra obnovena z vybrané verze.');
+            } catch(e) {
+                console.error('Restore from history failed:', e);
+                closeModal();
+                notifyWarning('🚫 Chyba', 'Nepodařilo se načíst: ' + (e?.message || 'neznámá chyba'));
+            }
+        }
+        window._doLoadFromHistory = _doLoadFromHistory;
         
         async function loadCloudSave(showNotification = false) {
             console.log('☁️ loadCloudSave called, currentUser:', currentUser?.uid, 'isAnonymous:', currentUser?.isAnonymous, 'firebaseDB:', !!firebaseDB);
@@ -111660,17 +111870,84 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [NEW sp3rx] Filter + search v marketplace prodeji
+            const _marketSellFilter = window._marketSellFilter || 'all';
+            const _marketSellSearch = (window._marketSellSearch || '').trim().toLowerCase();
+            
+            // Spočítej položky per kategorie
+            const _catCount = { all: allSellable.length, weapon: 0, armor: 0, helmet: 0, gloves: 0, boots: 0, consumable: 0, tool: 0, ammo: 0, accessory: 0, resource: 0, other: 0 };
+            allSellable.forEach(it => {
+                if (it._isResource) { _catCount.resource++; return; }
+                if (_catCount[it.type] !== undefined) _catCount[it.type]++;
+                else _catCount.other++;
+            });
+            
+            // Aplikuj filter + search
+            let filteredSellable = allSellable.filter(it => {
+                // Filter
+                if (_marketSellFilter !== 'all') {
+                    if (_marketSellFilter === 'resource') {
+                        if (!it._isResource) return false;
+                    } else if (_marketSellFilter === 'other') {
+                        const knownTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'tool', 'ammo', 'accessory'];
+                        if (it._isResource || knownTypes.includes(it.type)) return false;
+                    } else {
+                        if (it.type !== _marketSellFilter || it._isResource) return false;
+                    }
+                }
+                // Search
+                if (_marketSellSearch) {
+                    const haystack = (it.name + ' ' + (it.id || '') + ' ' + (it.type || '')).toLowerCase();
+                    if (!haystack.includes(_marketSellSearch)) return false;
+                }
+                return true;
+            });
+            
             let html = `
                 <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
                     <button class="btn" onclick="showBulkListMarketplace()" style="flex: 1; background: linear-gradient(135deg, #1a3a1a, #2a5a2a); border: 1px solid #4a8a4a; color: #8bc34a; font-weight: bold;">
                         📦 Hromadný výprodej
                     </button>
-                    <button class="btn" onclick="showMarketplace()" style="background: #333; padding: 0.4rem 0.8rem;">← Zpět</button>
-                </div>
-                <div style="color: #555; font-size: 0.7rem; margin-bottom: 0.4rem; text-align: center;">— nebo prodej po jednom —</div>
+                    <button class="btn" onclick="window._marketSellFilter='all'; window._marketSellSearch=''; showMarketplace()" style="background: #333; padding: 0.4rem 0.8rem;">← Zpět</button>
+                </div>`;
+            
+            // Search bar (jen pokud má víc než 5 itemů)
+            if (allSellable.length > 5) {
+                html += `<div style="position: relative; margin-bottom: 0.5rem;">
+                    <input type="text" id="marketSellSearch" placeholder="🔍 Hledat..."
+                           value="${(window._marketSellSearch || '').replace(/"/g, '&quot;')}"
+                           oninput="window._marketSellSearch=this.value; clearTimeout(window._marketSellSearchTimeout); window._marketSellSearchTimeout=setTimeout(()=>showSellToMarketplace(),250);"
+                           style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem; box-sizing: border-box;">
+                    ${(window._marketSellSearch || '') ? `<button onclick="window._marketSellSearch=''; showSellToMarketplace();" style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer;">✕</button>` : ''}
+                </div>`;
+            }
+            
+            // Filter tabs - sjednocený styl s inventářem (jen relevantní kategorie)
+            const _filterDef = [{ f: 'all', icon: '📦', label: `Vše (${_catCount.all})` }];
+            if (_catCount.weapon > 0) _filterDef.push({ f: 'weapon', icon: '⚔️', label: `Zbraně (${_catCount.weapon})` });
+            if (_catCount.armor > 0) _filterDef.push({ f: 'armor', icon: '🛡️', label: `Zbroj (${_catCount.armor})` });
+            if (_catCount.helmet > 0) _filterDef.push({ f: 'helmet', icon: '⛑️', label: `Helma (${_catCount.helmet})` });
+            if (_catCount.gloves > 0) _filterDef.push({ f: 'gloves', icon: '🥊', label: `Ruk. (${_catCount.gloves})` });
+            if (_catCount.boots > 0) _filterDef.push({ f: 'boots', icon: '🥾', label: `Boty (${_catCount.boots})` });
+            if (_catCount.consumable > 0) _filterDef.push({ f: 'consumable', icon: '💊', label: `Spotřeb. (${_catCount.consumable})` });
+            if (_catCount.tool > 0) _filterDef.push({ f: 'tool', icon: '🔧', label: `Nástr. (${_catCount.tool})` });
+            if (_catCount.ammo > 0) _filterDef.push({ f: 'ammo', icon: '🎯', label: `Munice (${_catCount.ammo})` });
+            if (_catCount.accessory > 0) _filterDef.push({ f: 'accessory', icon: '💍', label: `Doplň. (${_catCount.accessory})` });
+            if (_catCount.resource > 0) _filterDef.push({ f: 'resource', icon: '🪨', label: `Suroviny (${_catCount.resource})` });
+            if (_catCount.other > 0) _filterDef.push({ f: 'other', icon: '📦', label: `Ostatní (${_catCount.other})` });
+            
+            if (_filterDef.length > 2) {
+                html += renderUnifiedFilterTabs(_marketSellFilter, "(function(f){window._marketSellFilter=f; showSellToMarketplace();})('%')", _filterDef);
+            }
+            
+            html += `<div style="color: #555; font-size: 0.7rem; margin-bottom: 0.4rem; text-align: center;">— prodej po jednom —</div>
                 <div style="max-height: 270px; overflow-y: auto; -webkit-overflow-scrolling: touch;">`;
             
-            allSellable.forEach((item) => {
+            if (filteredSellable.length === 0) {
+                html += '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 1rem;">Nic v této kategorii</p>';
+            }
+            
+            filteredSellable.forEach((item) => {
                 const isResource = item._isResource;
                 const realIdx = isResource ? -1 : state.inv.indexOf(item);
                 const count = item.count || 1;
