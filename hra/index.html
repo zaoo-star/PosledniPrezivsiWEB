@@ -84688,8 +84688,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (cs._bossFleeTriggered) return; // BOSS FLEE
             if (cs._actionInProgress) return; // [FIX] Blokuj double-click
+            
+            // [CRITICAL FIX FreeRiderCz bug] Anti-spam cooldown na rapid clicks
+            // Bug: hráč klikne 2× rychle → 1. klik zabije nepřítele, 2. klik útočí na mrtvého
+            // → výpočet damage běží na mrtvém targetu → engine se zaseká na undefined hodnotách
+            // Tento cooldown blokuje 2. klik dokud animace projektilu z 1. klicku nedoběhne
+            const lastAttackAt = cs._lastPlayerAttackAt || 0;
+            const sinceLastAttack = Date.now() - lastAttackAt;
+            if (sinceLastAttack < 350) {
+                console.log('⚔️ playerAttackTarget: cooldown ' + sinceLastAttack + 'ms - skipping');
+                return;
+            }
+            
+            // [CRITICAL FIX] Target musí být živý — předtím rapid clicks na umírajícího
+            // způsobily útok na MRTVÉHO targetu → JS chyby v damage výpočtech → boj zaseknutý
+            if (!target || !target.alive || target.hp <= 0) {
+                console.warn('⚔️ playerAttackTarget: target je mrtvý nebo neplatný - skipping');
+                cs.selectedAction = null;
+                cs.validTargets = [];
+                if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
+                return;
+            }
+            
             cs._actionInProgress = true;
             cs._actionInProgressAt = Date.now();  // [FIX BUG #5] Watchdog timestamp
+            cs._lastPlayerAttackAt = Date.now(); // Anti-spam tracking
             
             // 🛡️ GUARD: Blokuj útok pokud NENÍ tah hráče/manuálního společníka
             if (!unit.isPlayer && !(unit.isCompanion && cs.manualCompanions)) {
@@ -87637,6 +87660,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.dungeon.loot = [];
                 window.isDungeonCombat = false;
             }
+            
+            // [FIX BUG] Cleanup průzkumu lokace při smrti
+            // Bez tohoto: hráč umřel v boji uvnitř průzkumu → respawnul → otevřel jiný průzkum
+            // → viděl STAROU mapu (z _dungeonExploreState který nikdo nenuloval) → zaseklý
+            if (typeof _dungeonExploreState !== 'undefined' && _dungeonExploreState) {
+                console.log('🗺️ Death: čistím dungeon explore state');
+                _dungeonExploreState = null;
+            }
+            delete state.activeDungeonExplore;
             
             addLog(`💀 Prohra v boji!`, '💀');
             
@@ -97133,6 +97165,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Nahrazuje původních 11 vlastností co se musely ručně mazat (často zapomenuté).
             _cleanupCombatState();
             console.log('💀 Combat state + debuffs vyčištěny po smrti');
+            
+            // [FIX BUG] Defense in depth — pokud hráč zemřel uvnitř průzkumu lokace,
+            // explore state musí být vyčištěn (jinak se ukáže stará mapa při dalším průzkumu)
+            if (typeof _dungeonExploreState !== 'undefined' && _dungeonExploreState) {
+                console.log('🗺️ Respawn: čistím dungeon explore state');
+                _dungeonExploreState = null;
+            }
+            delete state.activeDungeonExplore;
             
             // Teleport do úkrytu
             state.world.currentLocation = 'shelter';
