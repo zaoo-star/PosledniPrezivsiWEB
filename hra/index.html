@@ -47363,10 +47363,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 sendSystemNotification('Dorazil jsi!', loc?.name || 'Nová lokace', '📍');
                 MobileNotifications.notifyTravelComplete(loc?.name || 'Nová lokace');
                 
-                // [AI] Game Master popis + náhodná příhoda
+                // [AI OPTIMIZATION] Game Master popis + náhodná příhoda
+                // Sníženo: 50% šance na GameMaster, 30% šance na travel event (předtím vždy)
                 if (typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
-                    aiGameMaster('Hráč dorazil na lokaci.').then(d => { if (d) addLog(`🔮 ${d}`, '🗺️'); }).catch(() => {});
-                    if (typeof aiTravelEvent === 'function') {
+                    if (Math.random() < 0.50) {
+                        aiGameMaster('Hráč dorazil na lokaci.').then(d => { if (d) addLog(`🔮 ${d}`, '🗺️'); }).catch(() => {});
+                    }
+                    if (typeof aiTravelEvent === 'function' && Math.random() < 0.30) {
                         aiTravelEvent().then(e => { if (e) { setTimeout(() => addLog(`🌩️ ${e}`, '🎲'), 3000); } }).catch(() => {});
                     }
                 }
@@ -48986,7 +48989,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.4rem;margin-bottom:0.8rem;">
                     <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
-                        <div style="color:#ffd700;font-size:1.1rem;">${ds.steps}</div><div style="color:#888;font-size:0.6rem;">Kroků</div>
+                        <div style="color:#ffd700;font-size:1.1rem;">${totalMoney}</div><div style="color:#888;font-size:0.6rem;">💰 Peníze</div>
                     </div>
                     <div style="background:#1a1a2a;padding:0.4rem;border-radius:6px;text-align:center;">
                         <div style="color:#f44336;font-size:1.1rem;">${ds.enemiesKilled}</div><div style="color:#888;font-size:0.6rem;">Zabito</div>
@@ -80621,15 +80624,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     cs.log.push(`😡 ${u.name} zuří! +${u.ragePerRound} DMG. To se komplikuje.`);
                 }
                 
-                // [AI] Boss taunt - každé 3. kolo
-                if (u.team === 'enemy' && (u.isBoss || u.isWorldBoss) && u.alive && cs.round % 3 === 1 && cs.round > 1) {
-                    if (typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
+                // [OPTIMIZATION] Boss taunt - statické fráze (žádné AI volání)
+                // Frekvence snížena z každé 3. kolo na každé 5. kolo + max 4× za boj (úspora i bez AI)
+                if (u.team === 'enemy' && (u.isBoss || u.isWorldBoss) && u.alive && cs.round % 5 === 1 && cs.round > 1) {
+                    const tauntCount = (cs._bossTauntCount?.[u.name] || 0);
+                    if (tauntCount < 4) {
                         const _bossName = u.name;
                         const _bossHpPct = Math.round((u.hp / (u.maxHp || u.hp)) * 100);
                         const _playerHpPct = Math.round((state.char.hp / state.char.maxHp) * 100);
                         aiBossTaunt(_bossName, _bossHpPct, _playerHpPct, cs.round).then(t => {
                             if (t && window.combatState) {
                                 window.combatState.log.push(`🗣️ ${_bossName}: "${t}"`);
+                                if (!window.combatState._bossTauntCount) window.combatState._bossTauntCount = {};
+                                window.combatState._bossTauntCount[_bossName] = (window.combatState._bossTauntCount[_bossName] || 0) + 1;
                                 renderHeroesCombatUI();
                             }
                         }).catch(() => {});
@@ -80882,7 +80889,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             `;
             
             // [AI] Post-combat narrative pro boss boje
-            if (isVictory && typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
+            // [OPTIMIZATION] Post-combat narrative — statické fráze (žádné AI volání)
+            if (isVictory) {
                 const _enemyNames = cs.units.filter(u => u.team === 'enemy').map(u => u.name);
                 const _hasBoss = cs.units.some(u => u.team === 'enemy' && (u.isBoss || u.isWorldBoss));
                 if (_hasBoss) {
@@ -97997,8 +98005,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.char.hp = Math.min(state.char.maxHp, state.char.hp + addHp);
                 }
                 state.status.energy = Math.min(100, state.status.energy + (80 / 3600) * delta); // +80 energy per hour
-                state.status.hunger = Math.max(0, state.status.hunger - (37.5 / 3600) * delta); // -37.5 hunger per hour (+25%)
-                state.status.thirst = Math.max(0, state.status.thirst - (50 / 3600) * delta); // -50 thirst per hour (+25%)
+                // [ADMIN] Imunita proti hladu/žízni/únavě + auto-restore pokud je nízko
+                if (typeof isAdmin === 'function' && isAdmin()) {
+                    if (state.status.hunger < 100) state.status.hunger = 100;
+                    if (state.status.thirst < 100) state.status.thirst = 100;
+                    if (state.status.energy < 100) state.status.energy = 100;
+                } else {
+                    state.status.hunger = Math.max(0, state.status.hunger - (37.5 / 3600) * delta); // -37.5 hunger per hour (+25%)
+                    state.status.thirst = Math.max(0, state.status.thirst - (50 / 3600) * delta); // -50 thirst per hour (+25%)
+                }
                 
                 // Skip normal consumption during sleep
             } else if (state.sleepEndTime && now >= state.sleepEndTime) {
@@ -98006,8 +98021,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.status.energy = 100;
                 const sleepHeal = 50;
                 state.char.hp = Math.min(state.char.maxHp, state.char.hp + sleepHeal);
-                state.status.hunger = Math.max(0, state.status.hunger - 37); // -37 hlad (+25%)
-                state.status.thirst = Math.max(0, state.status.thirst - 50); // -50 žízeň (+25%)
+                // [ADMIN] Imunita proti hladu/žízni
+                if (typeof isAdmin !== 'function' || !isAdmin()) {
+                    state.status.hunger = Math.max(0, state.status.hunger - 37); // -37 hlad (+25%)
+                    state.status.thirst = Math.max(0, state.status.thirst - 50); // -50 žízeň (+25%)
+                }
                 state.sleepEndTime = null;
                 state.isSleeping = false;
                 
@@ -98021,8 +98039,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 addDailyProgress('healed', sleepHeal);
                 
                 addLog('Probudil ses ze spánku! Cítíš se odpočatý.' + (hadExhaustion ? ' Vyléčil ses z vyčerpání.' : ''), '😊');
-                // [AI] Sen po spánku
-                if (typeof aiDream === 'function' && typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled) {
+                // [AI OPTIMIZATION] Sen po spánku — jen 30% šance (předtím vždy)
+                // Snižuje volání AI o 70% bez podstatného vlivu na zážitek
+                if (typeof aiDream === 'function' && typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled && Math.random() < 0.30) {
                     aiDream().then(dream => {
                         if (dream) {
                             addLog(`🌙 ${dream}`, '💭');
@@ -98180,9 +98199,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // During travel: use travel-specific rates (higher consumption)
                     // Ochrana AFK hráčů - během cesty neklesne pod 5% (takže nedostaneš damage)
                     const MIN_TRAVEL_STATUS = 5;
-                    state.status.hunger = Math.max(MIN_TRAVEL_STATUS, state.status.hunger - state.map.travelHungerRate * delta * finalConsumptionMod);
-                    state.status.thirst = Math.max(MIN_TRAVEL_STATUS, state.status.thirst - state.map.travelThirstRate * delta * finalConsumptionMod);
-                    state.status.energy = Math.max(MIN_TRAVEL_STATUS, state.status.energy - state.map.travelEnergyRate * delta);
+                    // [ADMIN] Imunita proti hladu/žízni/únavě + auto-restore
+                    if (typeof isAdmin === 'function' && isAdmin()) {
+                        if (state.status.hunger < 100) state.status.hunger = 100;
+                        if (state.status.thirst < 100) state.status.thirst = 100;
+                        if (state.status.energy < 100) state.status.energy = 100;
+                    } else {
+                        state.status.hunger = Math.max(MIN_TRAVEL_STATUS, state.status.hunger - state.map.travelHungerRate * delta * finalConsumptionMod);
+                        state.status.thirst = Math.max(MIN_TRAVEL_STATUS, state.status.thirst - state.map.travelThirstRate * delta * finalConsumptionMod);
+                        state.status.energy = Math.max(MIN_TRAVEL_STATUS, state.status.energy - state.map.travelEnergyRate * delta);
+                    }
                     
                     // 🎒 ITEM SPECIALS - CESTOVNÍ ENERGIE
                     // endurance: -30% ztráta energie při cestování (already applied above, re-grant some)
@@ -98215,7 +98241,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 } else if (!state.map.inBase) {
                     // Normal passive consumption when not traveling and not in base
-                    state.status.hunger = Math.max(0, state.status.hunger - hungerRate * delta * finalConsumptionMod * politicalConsumptionMod);
+                    // [ADMIN] Admin má imunitu proti hladu/žízni/únavě + auto-restore na 100
+                    const _adminImmune = typeof isAdmin === 'function' && isAdmin();
+                    if (_adminImmune) {
+                        if (state.status.hunger < 100) state.status.hunger = 100;
+                        if (state.status.thirst < 100) state.status.thirst = 100;
+                        if (state.status.energy < 100) state.status.energy = 100;
+                    } else {
+                        state.status.hunger = Math.max(0, state.status.hunger - hungerRate * delta * finalConsumptionMod * politicalConsumptionMod);
+                    }
                     
                     // Desert Walker (Nomad set 2) - žízeň klesá o 30% pomaleji
                     let thirstMod = 1.0;
@@ -98230,13 +98264,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         thirstMod *= currentWeather.effect.thirstMod;
                     }
                     
-                    state.status.thirst = Math.max(0, state.status.thirst - thirstRate * delta * finalConsumptionMod * thirstMod);
+                    if (!_adminImmune) {
+                        state.status.thirst = Math.max(0, state.status.thirst - thirstRate * delta * finalConsumptionMod * thirstMod);
+                    }
                     
                     // [FIX] Energie — aplikuj consumption mody + nemoci/zranění energyDrain
                     let _energyDrainMod = 1.0;
                     if (typeof getDiseaseModifiers === 'function') _energyDrainMod *= getDiseaseModifiers().energyDrain || 1.0;
                     if (typeof getInjuryModifiers === 'function') _energyDrainMod *= getInjuryModifiers().energyDrain || 1.0;
-                    state.status.energy = Math.max(0, state.status.energy - energyRate * delta * finalConsumptionMod * _energyDrainMod);
+                    if (!_adminImmune) {
+                        state.status.energy = Math.max(0, state.status.energy - energyRate * delta * finalConsumptionMod * _energyDrainMod);
+                    }
                     
                     // Automatické konzumování pokud má hráč perk (kontrola každých 10s)
                     if (Math.floor(now / 10000) !== Math.floor((now - delta * 1000) / 10000)) {
@@ -98312,9 +98350,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 } else {
                     // V základně: hlad/žízeň klesají o 50% pomaleji než venku
-                    state.status.hunger = Math.max(0, state.status.hunger - hungerRate * 0.5 * delta * finalConsumptionMod * politicalConsumptionMod);
-                    state.status.thirst = Math.max(0, state.status.thirst - thirstRate * 0.5 * delta * finalConsumptionMod);
-                    state.status.energy = Math.max(0, state.status.energy - energyRate * 0.3 * delta * finalConsumptionMod); // energie klesá o 70% pomaleji + consumption mod
+                    // [ADMIN] Imunita proti hladu/žízni/únavě + auto-restore na 100
+                    if (typeof isAdmin === 'function' && isAdmin()) {
+                        if (state.status.hunger < 100) state.status.hunger = 100;
+                        if (state.status.thirst < 100) state.status.thirst = 100;
+                        if (state.status.energy < 100) state.status.energy = 100;
+                    } else {
+                        state.status.hunger = Math.max(0, state.status.hunger - hungerRate * 0.5 * delta * finalConsumptionMod * politicalConsumptionMod);
+                        state.status.thirst = Math.max(0, state.status.thirst - thirstRate * 0.5 * delta * finalConsumptionMod);
+                        state.status.energy = Math.max(0, state.status.energy - energyRate * 0.3 * delta * finalConsumptionMod); // energie klesá o 70% pomaleji + consumption mod
+                    }
 
                     // === PŘIROZENÁ REGENERACE V ZÁKLADNĚ ===
                     // V základně se HP regeneruje rychleji - 10 HP za hodinu
@@ -156740,7 +156785,7 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
 })();
 
 // ======== 🤖 AI ENGINE ========
-const AI_ENGINE={claudeProxy:null,model:'claude-haiku-4-5-20251001',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:60,lastReset:Date.now(),enabled:false,
+const AI_ENGINE={claudeProxy:null,model:'claude-haiku-4-5-20251001',cache:new Map(),cacheTTL:1800000,requestCount:0,maxReq:30,lastReset:Date.now(),enabled:false,
 // [FIX AI] Telemetrie — sleduj co a kolik (Claude-only po odstranění Gemini)
 _stats:{claudeCalls:0,claudeFails:0,claudeTokens:0,cacheHits:0,cacheMisses:0},
 async init(){try{if(!firebaseDB){console.log('🤖 AI: No Firebase, offline mode');return;}const s=await firebaseDB.ref('settings/aiConfig').once('value');const c=s.val();if(c){if(c.claudeProxy)this.claudeProxy=c.claudeProxy;this.maxReq=c.maxReqPerHour||60;this.enabled=!!this.claudeProxy;console.log('🤖 AI:',this.enabled?'ON':'OFF','Claude Haiku',this.claudeProxy?'(via proxy)':'(NO PROXY)');}
@@ -156757,7 +156802,7 @@ _sc(k,v){this.cache.set(k,{v,t:Date.now()});if(this.cache.size>100)this.cache.de
 async callClaude(sys,msg,maxTok,useModel){if(!this.claudeProxy)return null;try{this._stats.claudeCalls++;const ctrl=new AbortController();
 // [FIX] Timeout škáluje s maxTok - dlouhé odpovědi (3000 tokens) potřebují víc času
 const timeoutMs = maxTok && maxTok > 1000 ? Math.min(60000, 20000 + maxTok * 10) : 20000;
-const tid=setTimeout(()=>ctrl.abort(),timeoutMs);const r=await fetch(this.claudeProxy,{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||this.model||'claude-haiku-4-5-20251001',max_tokens:maxTok||500,system:sys,messages:[{role:'user',content:msg}]})});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;const errText=await r.text().catch(()=>'');console.error('Claude HTTP:',r.status,errText.substring(0,200));
+const tid=setTimeout(()=>ctrl.abort(),timeoutMs);const r=await fetch(this.claudeProxy,{method:'POST',signal:ctrl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({model:useModel||this.model||'claude-haiku-4-5-20251001',max_tokens:maxTok||250,system:sys,messages:[{role:'user',content:msg}]})});clearTimeout(tid);if(!r.ok){this._stats.claudeFails++;const errText=await r.text().catch(()=>'');console.error('Claude HTTP:',r.status,errText.substring(0,200));
 // [FIX AI] 401/403 = bad key/proxy, oznamit adminům
 if((r.status===401||r.status===403)&&typeof notifyWarning==='function'&&(isAdmin?.()||isStaff?.())){notifyWarning('🤖 AI klíč selhal','HTTP '+r.status+' — zkontroluj proxy nastavení');}
 return null;}const d=await r.json();const text=d?.content?.[0]?.text||null;
@@ -157684,7 +157729,7 @@ KONTEXT: Den ${days}, ${season}.${eventCtx}`;
         
         // [FIX] Rádio používá generate (Claude Haiku) pro kvalitní literární obsah
         // Hráči rádio čtou rádi, stojí za kvalitnější výstup
-        broadcast = await AI_ENGINE.generate(prompt, 'Vysílej', null, 3000);
+        broadcast = await AI_ENGINE.generate(prompt, 'Vysílej', null, 1500);
         
         if (broadcast && firebaseDB) {
             try { await firebaseDB.ref('shared/broadcast').set({ 
@@ -158049,30 +158094,137 @@ window.aiDeathNarrative=aiDeathNarrative;window.showAIRadio=showAIRadio;window.a
 window.showBuildAdvisor=showBuildAdvisor;window.aiTravelEvent=aiTravelEvent;
 
 // 🗣️ BOSS TAUNT - boss mluví v boji
-async function aiBossTaunt(bossName, bossHpPct, playerHpPct, round) {
-    if (!AI_ENGINE.enabled) return null;
-    // [FIX AI] Shared Firebase cache — 1 boss taunt pro všechny hráče ve stejné HP fázi
-    // Typicky 16 buckets (4 boss HP × 4 player HP) × počet bossů = hodně úspora
-    const bossSafe = (bossName || 'boss').replace(/[.#$\/\[\]]/g, '_');
-    const sharedPath = `shared/ai/bossTaunts/${bossSafe}/${Math.floor(bossHpPct/25)}_${Math.floor(playerHpPct/25)}`;
-    return await AI_ENGINE.generateShared(`${AI_BASE_LITE}
-Jsi "${bossName}" — obrovská bestie v boji. Řekni JEDNU krátkou větu (provokace, výhružka, posměch).
-Tvé HP: ${bossHpPct}%. Hráčovo HP: ${playerHpPct}%. Kolo: ${round}.
-${bossHpPct > 70 ? 'Jsi silný, posmívej se.' : bossHpPct > 30 ? 'Jsi zraněný ale stále nebezpečný.' : 'Jsi téměř mrtvý — buď zoufalý nebo šílený.'}
-${playerHpPct < 30 ? 'Hráč je skoro mrtvý — dobíjej ho psychicky.' : ''}
-MAX 1 věta. Drsnější = lepší. Žádné uvozovky.`, 'Taunt', sharedPath, 150);
+// 🗣️ BOSS TAUNT — static phrase pool (replaced AI to save tokens)
+// Boss provokace bez AI volání. Vybírá se podle HP situace pro relevantní vibu.
+const _BOSS_TAUNT_POOLS = {
+    healthy_strong: [ // boss > 70% HP, hráč > 50% HP
+        "Tohle je pro tebe konec, červe!",
+        "Slyšíš to? To je zvuk tvé smrti.",
+        "Mé nohy budou mít na tobě hostinu.",
+        "Ani štít tě nezachrání.",
+        "Tvoje duše bude má.",
+        "Měl jsi zůstat v úkrytu.",
+        "Kdo tě sem poslal? Půjdou za tebou.",
+        "Cítím tvůj strach. Lahodný.",
+        "Zlomím tě jako suchou větev.",
+        "Toto je moje země, ty narušiteli."
+    ],
+    healthy_weak: [ // boss > 70% HP, hráč < 50% HP
+        "Krvácíš. Krásné.",
+        "Už nemáš sílu, viď?",
+        "Jen jeden zásah a je po tobě.",
+        "Padni. Bude to jednodušší.",
+        "Slyším tvé chrčení odsud.",
+        "Tvůj konec je blízko, červe.",
+        "Měl bys utíkat... ale už je pozdě.",
+        "Tvá krev pokropí tuto zemi.",
+        "Hra skončila. Ty jsi prohrál.",
+        "Cítím vůni tvého konce."
+    ],
+    wounded_strong: [ // boss 30-70%, hráč > 50%
+        "Tohle... to je všechno?",
+        "Píchneš jako trn, ne jako meč!",
+        "Ještě jsem ani nezačal.",
+        "Bolí to? Dobře. Nauč se.",
+        "Myslíš že stačí škrábance?",
+        "Mé rány zacelí krev tvých přátel.",
+        "Bojuješ jako děcko v plenkách.",
+        "Štěstí má svůj limit, smrtelníku.",
+        "Vraťme to tam, kde to patří!",
+        "Tvoje arogance tě zničí."
+    ],
+    wounded_weak: [ // boss 30-70%, hráč < 50%
+        "Oba krvácíme. Ale já jsem věčný.",
+        "Ještě poslední hod kostkou, červe?",
+        "Kdo z nás první padne? Ne já.",
+        "Vidím v tvých očích strach.",
+        "Jen jedna z nás přežije!",
+        "Já vydržím déle než ty.",
+        "Závěrečný akt — a ty jsi mrtvý.",
+        "Slyš tlukot mého srdce — můj rytmus tvojí smrti.",
+        "Ještě jeden zásah a padneš.",
+        "Tahle bitva skončí teď!"
+    ],
+    dying_strong: [ // boss < 30%, hráč > 50%
+        "Ne... NE! Nemůžu...",
+        "Tohle... není konec...",
+        "Vrátím se! Slyšíš?!",
+        "Můj pán mě pomstí!",
+        "Krev za krev! Pomsta!",
+        "Cítím chlad... přicházejí pro mě...",
+        "Smrtelníku... kdo jsi?!",
+        "Padám... ale ne navždy!",
+        "Prokletí na tvou hlavu!",
+        "Toto... není... možné..."
+    ],
+    dying_weak: [ // boss < 30%, hráč < 50%
+        "Pojď... zemřeme spolu!",
+        "Poslední... ránu... ty nebo já!",
+        "Kdo padne první? Hra osudu!",
+        "Cítím konec... cítíš ho i ty?",
+        "Vezmu tě s sebou do pekla!",
+        "Poslední kolo. Žádné výmluvy.",
+        "Tvoje smrt... bude... má pomsta!",
+        "Nesmíš... přežít...",
+        "Stojíme nad propastí, smrtelníku.",
+        "Padni první. Padni první!"
+    ]
+};
+
+function aiBossTaunt(bossName, bossHpPct, playerHpPct, round) {
+    // [OPTIMIZATION] Static pool místo AI volání — žádné tokeny
+    let pool;
+    if (bossHpPct > 70) {
+        pool = playerHpPct < 50 ? _BOSS_TAUNT_POOLS.healthy_weak : _BOSS_TAUNT_POOLS.healthy_strong;
+    } else if (bossHpPct > 30) {
+        pool = playerHpPct < 50 ? _BOSS_TAUNT_POOLS.wounded_weak : _BOSS_TAUNT_POOLS.wounded_strong;
+    } else {
+        pool = playerHpPct < 50 ? _BOSS_TAUNT_POOLS.dying_weak : _BOSS_TAUNT_POOLS.dying_strong;
+    }
+    return Promise.resolve(pool[Math.floor(Math.random() * pool.length)]);
 }
 
-// 📖 POST-COMBAT NARRATIVE
-async function aiPostCombatNarrative(enemyNames, rounds) {
-    if (!AI_ENGINE.enabled) return null;
-    const c = getAICtx();
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Napiš epický popis vítězné bitvy (3-4 věty).
-Hráč "${c.name}" (${c.cls||'přeživší'}, zbraň: ${c.weapon}) porazil: ${enemyNames.join(', ')}.
-Boj trval ${rounds} kol. ${c.comp > 0 ? c.comp + ' společníků pomáhalo.' : 'Bojoval sám.'}
-HP po boji: ${c.hp}/${c.maxHp}. Lokace: "${c.loc}".
-Piš dramaticky, česky, jako kronikář. Zmiň konkrétní momenty boje.`, 'Post-combat', null, 300);
+// 📖 POST-COMBAT NARRATIVE — static phrase pool
+const _POST_COMBAT_POOLS = {
+    short: [ // < 5 kol — rychlý boj
+        "Boj skončil dřív, než pořádně začal. Tělo nepřítele leží v prachu.",
+        "Krátký, ale brutální. Odpůrce nestihl ani pořádně reagovat.",
+        "Rychlá smrt — ta nejlepší. Pokrok přeživšího je vidět.",
+        "Tři údery, tři výstřely, ticho. Klasická pustina.",
+        "Boj byl jako blesk — krátký, oslepující, smrtící."
+    ],
+    medium: [ // 5-15 kol — normální boj
+        "Bitva trvala dlouho, ale výsledek byl jasný od začátku. Pustina dnes ztratila další obyvatele.",
+        "Dlouhý boj v prachu a krvi. Každý úder měl smysl, každá rána zanechala stopu.",
+        "Po výměně střel a úderů zbylo jen ticho. Vrátil ses na vlastních nohou — to nezvládne každý.",
+        "Pot, krev, dech — vše se mísilo v rytmu boje. Nakonec jsi přežil ty.",
+        "Tahle bitva se zapíše do tvé paměti. Nebyla snadná, ale byla tvá."
+    ],
+    long: [ // > 15 kol — vyčerpávající boj
+        "Boj se táhl jako věčnost. Každé kolo prohlubovalo vyčerpání. Jenom tvrdohlavost rozhodla — přežil jsi ty.",
+        "Měl jsi pocit že to nikdy neskončí. Když dopadl poslední úder, padl jsi na kolena. Pustina si vybírá svou daň.",
+        "Hodiny krvavého divadla. Každý úder bolel — tvůj i jeho. Nakonec stál jen jeden — a to jsi ty.",
+        "Vyčerpávající bitva — tvé svaly se třesou, dech rezaví. Ale jsi naživu. To je vše, co dnes počítá.",
+        "Když se konečně rozplynul prach, zůstal jen ty a hromada těl. Tvé vítězství stálo víc než zlato — stálo zdraví."
+    ],
+    boss: [ // proti bossovi — speciální
+        "Pustina dnes ztratila legendu. Tvé jméno se připojí k vyprávění u táboráků.",
+        "Padl. Konečně padl. Tvé ruce se třesou — ale úsměv tě neopouští.",
+        "Zabil jsi to, co terorizovalo tuhle zemi. Přeživší ti za to budou pít.",
+        "Nestvůra dotrpěla. Stojíš nad jejím tělem — vítěz, hrdina, monument.",
+        "Někteří říkají, že bossové se nikdy neumírají. Mýlí se. Ty jsi důkaz."
+    ]
+};
+
+function aiPostCombatNarrative(enemyNames, rounds) {
+    // [OPTIMIZATION] Static pool místo AI — pokrývá 95% potřeby
+    const hasBoss = enemyNames?.some(n => /boss|king|lord|hrůz|titán/i.test(n));
+    let pool;
+    if (hasBoss) pool = _POST_COMBAT_POOLS.boss;
+    else if (rounds < 5) pool = _POST_COMBAT_POOLS.short;
+    else if (rounds < 15) pool = _POST_COMBAT_POOLS.medium;
+    else pool = _POST_COMBAT_POOLS.long;
+    return Promise.resolve(pool[Math.floor(Math.random() * pool.length)]);
 }
 
 window.aiBossTaunt=aiBossTaunt;window.aiPostCombatNarrative=aiPostCombatNarrative;
@@ -158422,68 +158574,90 @@ async function aiGenerateEpitaph() {
     window._epitaphGenerated = true;
     const c = getAICtx();
     
-    // Vždy zapiš na hřbitov — s nebo bez AI
-    const defaultEpitaphs = [
-        'Odpočívej v pokoji, přeživší.',
-        'Pustina si vybrala další oběť.',
-        'Další jméno na seznamu mrtvých.',
-        'Přežil déle než většina. Ale ne dost.',
-        'Ticho je jediné, co po něm zbylo.'
-    ];
-    let epitaph = defaultEpitaphs[Math.floor(Math.random() * defaultEpitaphs.length)];
+    // [OPTIMIZATION] Rozsáhlý static pool — žádné AI volání pro epitafy (ušetří mnoho tokenů)
+    const cause = (state.stats?.lastDeathCause || state.lastDamageSource || '').toLowerCase();
     
-    // Zkus AI epitaf
-    if (AI_ENGINE.enabled) {
-        try {
-            const aiEpitaph = await AI_ENGINE.generateFast(`Napiš krátký epitaf (1-2 věty) na náhrobek přeživšího.
-"${c.name}", level ${c.lvl}, přežil ${c.day} dní. Zabití: ${c.kills}. Třída: ${c.cls||'přeživší'}.
-Styl: poetický, stručný, drsný. Jako opravdový náhrobní nápis v pustině. Bez uvozovek. Neopakuj jméno ani level ani statistiky - jen text epitafu.`, 'Epitaf', null, 150);
-            if (aiEpitaph) {
-                // [FIX] Kompletní cleanup AI výstupu
-                let cleaned = aiEpitaph
-                    .replace(/^#+\s*Epitaf\s*:?\s*/i, '')       // odstraň '# Epitaf:' heading
-                    .replace(/^#+\s*/gm, '')                    // odstraň všechny markdown headings
-                    .replace(/\*\*/g, '')                       // odstraň bold markery
-                    .replace(/[""]/g, '"').replace(/"/g, '')   // odstraň uvozovky
-                    .replace(/^["']|["']$/g, '')                // odstraň quote na začátku/konci
-                    .replace(/^\s*-\s*/, '')                    // odstraň pomlčku na začátku
-                    .trim();
-                
-                // Pokud začíná jménem nebo "level", AI echoval prompt — vyhoď úvodní větu
-                const nameLower = (c.name || '').toLowerCase();
-                if (nameLower && cleaned.toLowerCase().startsWith(nameLower)) {
-                    // Najdi konec první věty a zkontroluj jestli zbytek dává smysl
-                    const match = cleaned.match(/^[^.!?]*[.!?]\s*(.+)/);
-                    if (match && match[1].length > 20) {
-                        cleaned = match[1].trim();
-                    }
-                }
-                if (cleaned.toLowerCase().startsWith('level') || /^lvl\s*\d/i.test(cleaned)) {
-                    const match = cleaned.match(/^[^.!?]*[.!?]\s*(.+)/);
-                    if (match && match[1].length > 20) cleaned = match[1].trim();
-                }
-                
-                // Vyhoď useknuté konce (poslední neúplná věta pokud končí uprostřed slova)
-                // Pokud končí "..." nebo textem bez interpunkce, uřízni na poslední větu
-                if (!/[.!?…]$/.test(cleaned)) {
-                    const lastPunc = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf('!'), cleaned.lastIndexOf('?'));
-                    if (lastPunc > 30) {
-                        cleaned = cleaned.substring(0, lastPunc + 1);
-                    }
-                }
-                
-                // Minimum 20 znaků, maximum 250
-                if (cleaned.length >= 20 && cleaned.length <= 250) {
-                    epitaph = cleaned;
-                } else if (cleaned.length > 250) {
-                    // Useknout na poslední tečku před 250
-                    const cut = cleaned.substring(0, 250);
-                    const lastPunc = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
-                    epitaph = lastPunc > 30 ? cut.substring(0, lastPunc + 1) : cut;
-                }
-            }
-        } catch(e) { console.warn('💀 AI epitaf selhal:', e); }
-    }
+    const epitaphPools = {
+        starvation: [
+            'Hlad si vybral svou daň. Žaludek prázdný, oči zavřené.',
+            'Posledně myslel na chleba. Pustina mu ho nedala.',
+            'Plná torna lootu, prázdný žaludek. Konec.',
+            'Smrt z hladu — ironie pustiny plné konzerv.',
+            'Sníh, prach, hlad. Tři jezdci ho našli první.'
+        ],
+        thirst: [
+            'Žízeň silnější než hrdost. Padl k vyschlému prameni.',
+            'Hledal vodu. Našel věčnost.',
+            'Suché rty, suché oči, suchý hrob.',
+            'Pustina ho vysušila — tělem i duší.',
+            'Polk slzy, ale i ty došly.'
+        ],
+        radiation: [
+            'Radiace ho vzala kus po kousku. Tichá smrt.',
+            'Záření nemá tvář. Ale zanechává hroby.',
+            'Geiger zpíval, on tančil — naposledy.',
+            'Prach z reaktoru našel cestu pod kůži.',
+            'Chřadl jak květina v kyselém dešti.'
+        ],
+        combat: [
+            'Boj prohrál. Pustina nemá poražené — jen mrtvé.',
+            'Padl v boji jako přeživší. Nic víc, nic míň.',
+            'Krev vsákla do prachu. Tak to chodí.',
+            'Zbraň v ruce, sen na rtech, pak ticho.',
+            'Zemřel s tváří k nepříteli. Aspoň to.',
+            'Posledně střílel, posledně padl, posledně dýchal.',
+            'Hrdina pro někoho, jen mrtvola pro pustinu.',
+            'Bojoval do posledního dechu. Pak došel.',
+            'Neutekl. To je víc, než dokáže většina.',
+            'Mečem žil, mečem zemřel — klasika.'
+        ],
+        beast: [
+            'Zvířata byla hladová. On byl pomalý.',
+            'Skončil v žaludku něčeho většího.',
+            'Pustina je džungle. Šelma vždy vyhraje.',
+            'Smečka byla rychlejší než jeho útěk.',
+            'Stopy v písku končí krví.'
+        ],
+        boss: [
+            'Padl proti nestvůře. Aspoň zkusil.',
+            'Boss si vzal další duši. Letopisy je počítají.',
+            'Legenda o jeho odvaze přežije. Tělo ne.',
+            'Stál proti obrovi. Stál — než padl.',
+            'Hrdinská smrt v ústech bestie.'
+        ],
+        generic: [
+            'Pustina si vybrala další oběť.',
+            'Další jméno na seznamu mrtvých.',
+            'Přežil déle než většina. Ale ne dost.',
+            'Ticho je jediné, co po něm zbylo.',
+            'Odešel jak žil — bez varování.',
+            'Pustina dává, pustina bere. Tentokrát vzala.',
+            'Konec přišel rychle. Bezbolestně? Sotva.',
+            'Cestu skončil. Jiní pokračují.',
+            'Zde leží přeživší. Slovo ztratilo význam.',
+            'Pustina ho přijala mezi své.',
+            'Žil rychle, zemřel rychleji.',
+            'Když dech utichl, vítr se podivně zastavil.',
+            'Měl plány. Pustina měla jiné.',
+            'Den jako každý jiný. Ale poslední.',
+            'Hvězdy byly nad ním. Teď jsou v něm.',
+            'Tichý hrob v hlasité pustině.',
+            'Stopa v prachu — jediná památka.',
+            'Bojoval. Žil. Padl. Vzpomínka.',
+            'Konec cesty. Začátek legendy.',
+            'Odpočívej v pokoji, přeživší. Zasloužíš to.'
+        ]
+    };
+    
+    let pool = epitaphPools.generic;
+    if (cause.includes('hlad')) pool = epitaphPools.starvation;
+    else if (cause.includes('žízn') || cause.includes('zizn')) pool = epitaphPools.thirst;
+    else if (cause.includes('radia') || cause.includes('záření')) pool = epitaphPools.radiation;
+    else if (cause.includes('vlk') || cause.includes('medvěd') || cause.includes('pavouk') || cause.includes('krysa') || cause.includes('pes')) pool = epitaphPools.beast;
+    else if (cause.includes('boss') || cause.includes('king') || cause.includes('lord')) pool = epitaphPools.boss;
+    else if (cause.includes('zombie') || cause.includes('voják') || cause.includes('bandita') || cause.includes('nepřítel')) pool = epitaphPools.combat;
+    
+    const epitaph = pool[Math.floor(Math.random() * pool.length)];
     
     // VŽDY zapiš do Firebase
     if (firebaseDB) {
@@ -159985,8 +160159,8 @@ setInterval(async () => {
     // Nemluv pokud hráč je neaktivní >10 min
     if (now - _lastUserActivity > 600000) return;
     
-    // 💬 SPOLEČNÍK MLUVÍ (každou hodinu — šetření tokenů)
-    if (now - _lastCompanionComment > 3600000 && state.companions?.length > 0 && !state.isSleeping && !window.combatState) {
+    // 💬 SPOLEČNÍK MLUVÍ (každé 3 hodiny — snížená frekvence pro úsporu tokenů)
+    if (now - _lastCompanionComment > 10800000 && state.companions?.length > 0 && !state.isSleeping && !window.combatState) {
         const alive = state.companions.filter(c => !c.isDead);
         if (alive.length > 0) {
             const comp = alive[Math.floor(Math.random() * alive.length)];
