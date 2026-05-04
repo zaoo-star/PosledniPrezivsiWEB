@@ -85587,13 +85587,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         weapon = null; // Vynuluj zbraň pro tento útok = pěsti
                     } else {
                         unit.magazine = (unit.magazine || 0) - 1;
+                        // [FIX BUG barlog] Detailní log pro diagnostiku
+                        console.log(`🔫 Magazine consume: ${unit.name} ${weapon.name} mag=${unit.magazine}/${unit.maxMagazine}`);
                     }
                 } else if (!isCompanion) {
                     // Zbraně bez zásobníku (luk, fuel...) — přímá spotřeba z inventáře
                     if (!consumeAmmo(weapon.ammoType, 1)) {
                         cs.log.push(`Munice došla — melee útok!`);
                         weapon = null; // Fallback na pěsti
+                    } else {
+                        console.log(`🏹 Direct ammo consume: ${weapon.name} ammoType=${weapon.ammoType}`);
                     }
+                }
+            }
+            
+            // [CRITICAL FIX BUG barlog] Double-safety: pokud hráč pořád "má" zbraň
+            // ale je to ranged a magazine je 0 a v inv není munice → force melee
+            // Ochrana proti race conditions kde výše uvedený check selže
+            if (weapon && weapon.ammoType && !isCompanion) {
+                const _hasMag2 = weaponHasMagazine(weapon);
+                const _magEmpty = _hasMag2 && (unit.magazine || 0) <= 0;
+                const _ammoEmpty = !_hasMag2 && getAmmoCount(weapon.ammoType) <= 0;
+                if (_magEmpty || _ammoEmpty) {
+                    console.warn(`🚨 Double-safety triggered: ${weapon.name} bez munice (mag=${unit.magazine}, ammo=${getAmmoCount(weapon.ammoType)}) — force melee`);
+                    cs.log.push(`⚠️ Bez munice — pěsti!`);
+                    weapon = null;
                 }
             }
             
@@ -85615,6 +85633,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             } else {
                 damage = calculateDamage();
+                // [CRITICAL FIX barlog report] Pokud došla munice, weapon=null je nastaven lokálně,
+                // ale calculateDamage() čte state.equipped.weapon přímo → stále počítá weapon damage!
+                // Hráč pak technicky útočí bez munice ale dělá weapon damage → "neomezeně střílí"
+                // Fix: detekuj že weapon byl vynulován kvůli ammo a odečti weapon damage z výpočtu
+                const _equippedWeapon = state.equipped?.weapon;
+                if (!weapon && _equippedWeapon?.damage) {
+                    damage -= _equippedWeapon.damage; // Strhni weapon bonus — útočí pěstmi
+                    if (damage < 1) damage = 1;
+                    console.log('🥊 Bez munice: weapon damage strhnuto, melee dmg=', damage);
+                }
             }
             
             // [FIX BUG Cinky] Weapon buff (+X DMG na Y bojů) - aplikuj vždy, decrementuj JEN 1× za boj
@@ -86184,18 +86212,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // 🎯 [VISUAL] Zobraz projektil/melee efekt útoku HRÁČE (playerAttackTarget path)
             try {
-                console.log(`⚔️ playerAttackTarget: ${unit.name} → ${target.name} | attacker=[${unit.x},${unit.y}] target=[${target.x},${target.y}] weapon=${state.equipped?.weapon?.name}`);
+                console.log(`⚔️ playerAttackTarget: ${unit.name} → ${target.name} | attacker=[${unit.x},${unit.y}] target=[${target.x},${target.y}] weapon=${weapon?.name || 'pěsti (bez munice)'}`);
                 if (typeof combatAttackVisual === 'function' && unit.x !== undefined && target.x !== undefined) {
                     let attackerWeapon = null;
                     if (unit.isPlayer) {
-                        attackerWeapon = state.equipped?.weapon || null;
+                        // [CRITICAL FIX BUG barlog] Použij lokální `weapon` variable
+                        // Pokud je null (došla munice), visual ukáže melee animaci, ne pistolovou střelbu
+                        // Před fixem: state.equipped?.weapon přímo → vždy vidíš animaci pistole i když střílíš pěstí
+                        attackerWeapon = weapon || null;
                     } else if (unit.isCompanion && unit.companionId) {
                         // [FIX v4.0.1] Companion weapon je v _comp.equipped.weapon, ne _comp.weapon
                         const _comp = state.companions?.find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
                         attackerWeapon = _comp?.equipped?.weapon || { name: unit.weapon || _comp?.weapon || '' };
                     }
                     cs._attackVisualDelay = combatAttackVisual(unit, target, attackerWeapon) || 0;
-                    console.log(`⚔️ [playerAttackTarget] Visual delay = ${cs._attackVisualDelay}ms`);
+                    console.log(`⚔️ [playerAttackTarget] Visual delay = ${cs._attackVisualDelay}ms, weapon=${attackerWeapon?.name || 'melee'}`);
                 }
             } catch (e) { console.warn('⚔️ [playerAttackTarget] Visual error:', e); }
             
@@ -94138,14 +94169,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // [NEW FIX] Force cloud save - obejde throttle pro kritické momenty (level up, dungeon end, death, atd.)
         // Bez tohoto: hráč levelup → během 2min auto-save throttle → změní zařízení → cloud má starou verzi
         function forceCloudSave(reason) {
-            if (!currentUser || currentUser.isAnonymous || !firebaseDB) return;
-            if (!state.confirmed) return;
+            if (!currentUser || currentUser.isAnonymous || !firebaseDB) return Promise.resolve();
+            if (!state.confirmed) return Promise.resolve();
             
             // [FIX] In-flight guard — zabrání paralelním voláním saveCloudSave
             // (jinak by 2× volání během 1s mohlo způsobit "cloud konflikt" detekci na vlastní data)
             if (window._cloudSaveInFlight) {
                 console.log('☁️ Force cloud save skipped (in-flight):', reason || 'manual');
-                return;
+                return Promise.resolve();
             }
             
             // Reset throttle aby další auto save mohl běžet
@@ -94155,10 +94186,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             saveGame(true);
             if (typeof saveCloudSave === 'function') {
                 window._cloudSaveInFlight = true;
-                Promise.resolve(saveCloudSave())
-                    .finally(() => { window._cloudSaveInFlight = false; });
                 console.log('☁️ Force cloud save:', reason || 'manual');
+                return Promise.resolve(saveCloudSave())
+                    .finally(() => { window._cloudSaveInFlight = false; });
             }
+            return Promise.resolve();
         }
         window.forceCloudSave = forceCloudSave;
         
@@ -100526,6 +100558,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.activeCombat = window.combatState;
                 }
                 saveGame(true);
+                
+                // [FIX cross-device] Force push do cloudu při skrytí aby ostatní zařízení viděla nejnovější verzi
+                if (typeof forceCloudSave === 'function' && currentUser && !currentUser.isAnonymous) {
+                    forceCloudSave().catch(e => console.warn('Cloud save on hide failed:', e));
+                }
                 console.log('💾 Auto-save při skrytí aplikace');
             } else if (!document.hidden && state.confirmed) {
                 // Při návratu do aplikace - sync check
@@ -100540,6 +100577,60 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                         saveGame(true);
                     }, 500);
+                }
+                
+                // [FIX cross-device kolo] Při návratu do aplikace zkontroluj zda jiné zařízení neuložilo novější verzi
+                // Bez tohoto: hráč na druhém zařízení neví že na prvním uložilo novější verzi → ztrácí progres
+                if (currentUser && !currentUser.isAnonymous && firebaseDB && !window.combatState) {
+                    setTimeout(async () => {
+                        try {
+                            const cloudSnap = await firebaseDB.ref('cloudSaves/' + currentUser.uid).once('value');
+                            const cloudData = cloudSnap.val();
+                            if (!cloudData?.savedAt) return;
+                            
+                            const localSeq = state._cloudSaveSeq || 0;
+                            const cloudSeq = cloudData.state?._cloudSaveSeq || 0;
+                            const localDevice = state._lastDeviceId || localStorage.getItem('deviceId') || '';
+                            const cloudDevice = cloudData.deviceId || '';
+                            
+                            // Cloud má vyšší seq A je z jiného zařízení = jiné zařízení uložilo novější verzi
+                            if (cloudSeq > localSeq && cloudDevice && cloudDevice !== localDevice) {
+                                const cloudLevel = cloudData.playerLevel || '?';
+                                const cloudDay = cloudData.playerDay || '?';
+                                const cloudAge = Math.round((Date.now() - cloudData.savedAt) / 60000);
+                                const localLevel = state.char?.level || '?';
+                                const localDay = state.time?.days || '?';
+                                
+                                console.log(`☁️ Cross-device: Cloud seq=${cloudSeq} > local seq=${localSeq}, cloud z jiného zařízení`);
+                                
+                                showModal('☁️ Novější save z jiného zařízení', `
+                                    <div style="text-align: center; margin-bottom: 0.8rem;">
+                                        <div style="font-size: 2.5rem;">📱☁️💻</div>
+                                        <p style="color: #ffd700; font-size: 0.9rem;">Hrál jsi mezitím na jiném zařízení.</p>
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.8rem;">
+                                        <div style="background: #0d1a2a; padding: 0.6rem; border-radius: 6px; border: 1px solid #1976d2;">
+                                            <div style="color: #64b5f6; font-weight: bold; font-size: 0.85rem;">☁️ CLOUD (novější)</div>
+                                            <div style="color: #ddd; font-size: 0.8rem; margin-top: 0.3rem;">Level ${cloudLevel} · Den ${cloudDay}</div>
+                                            <div style="color: #888; font-size: 0.7rem;">před ${cloudAge} min</div>
+                                        </div>
+                                        <div style="background: #2a1a0d; padding: 0.6rem; border-radius: 6px; border: 1px solid #f57c00;">
+                                            <div style="color: #ffb74d; font-weight: bold; font-size: 0.85rem;">📱 TOTO ZAŘÍZENÍ</div>
+                                            <div style="color: #ddd; font-size: 0.8rem; margin-top: 0.3rem;">Level ${localLevel} · Den ${localDay}</div>
+                                            <div style="color: #888; font-size: 0.7rem;">starší</div>
+                                        </div>
+                                    </div>
+                                    <p style="color: #aaa; font-size: 0.78rem; text-align: center; margin-bottom: 0.6rem;">⚠️ Pokud zvolíš "Načíst cloud", lokální postup z tohoto zařízení bude přepsán cloudovou verzí.</p>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                                        <button class="btn" onclick="closeModal();" style="background: #555; padding: 0.7rem;">📱 Zůstat zde</button>
+                                        <button class="btn" onclick="closeModal(); window._cloudConflictAcknowledged=true; loadCloudSave(true);" style="background: linear-gradient(135deg, #1976d2, #0d47a1); padding: 0.7rem; font-weight: bold; color: #fff;">☁️ Načíst cloud</button>
+                                    </div>
+                                `);
+                            }
+                        } catch(e) {
+                            console.warn('Cross-device sync check failed:', e);
+                        }
+                    }, 1500); // 1.5s delay aby se UI stihlo render
                 }
             }
         });
@@ -102490,8 +102581,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     playerMaxHp: state.char?.maxHp || 100,
                     playerMoney: state.money || 0,
                     playTime: Math.floor((state.time?.totalElapsed || 0) / 60) + ' min',
-                    // [FIX BUG] Device ID pro detekci konfliktu mezi zařízeními
-                    deviceId: window._deviceId || (window._deviceId = (navigator.userAgent.includes('Mobile') ? '📱 Mobile' : '💻 PC') + '_' + Math.random().toString(36).substring(2, 8))
+                    // [FIX BUG cross-device] Device ID — PERSISTOVANÉ v localStorage
+                    // Bez persistance: každý reload = nový random ID → cross-device check vyhazuje
+                    // dialog i když jde o stejné zařízení (jen po refreshi). Teď je stabilní per-zařízení.
+                    deviceId: (() => {
+                        let id = localStorage.getItem('deviceId');
+                        if (!id) {
+                            id = (navigator.userAgent.includes('Mobile') ? '📱 Mobile' : '💻 PC') + '_' + Math.random().toString(36).substring(2, 8);
+                            localStorage.setItem('deviceId', id);
+                        }
+                        window._deviceId = id;
+                        return id;
+                    })()
                 };
                 
                 // Odstraň citlivá data
@@ -102558,8 +102659,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const _keepFactionAt = state._lastFactionIncomeAt || 0;
                     const _keepUpdateDay = state.settlement?.lastUpdateDay || 0;
                     
-                    // Nastav state
-                    Object.assign(state, loadedState);
+                    // [CRITICAL FIX - kolo] KOMPLETNÍ REPLACEMENT místo Object.assign
+                    // Object.assign(state, loaded) nechává lokální klíče které v cloudu nejsou
+                    // → "neslouči se" — položky/itemy/data z lokální verze přežily mix se zastaralou cloud verzí
+                    // Cloud save MUSÍ být autoritativní zdroj. Smaž všechny klíče a přepiš cloud verzí.
+                    const _preservedKeys = ['settings']; // Klíče které zachováváme z lokálu
+                    const _preservedValues = {};
+                    _preservedKeys.forEach(k => { if (k in state) _preservedValues[k] = state[k]; });
+                    
+                    // Smaž všechny existující klíče
+                    Object.keys(state).forEach(k => { delete state[k]; });
+                    
+                    // Naplň cloud daty
+                    Object.keys(loadedState).forEach(k => { state[k] = loadedState[k]; });
+                    
+                    // Obnov zachované lokální klíče
+                    Object.keys(_preservedValues).forEach(k => { state[k] = _preservedValues[k]; });
                     
                     // Obnov pojistky pokud jsou lokální novější
                     if (state.settlement) {
@@ -102634,6 +102749,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const savedDate = cloudData.savedAt ? new Date(cloudData.savedAt).toLocaleString('cs-CZ') : 'Neznámé';
                         notifySuccess('☁️ Cloud save načten', 'Ze dne: ' + savedDate);
                     }
+                    
+                    // [FIX kolo] Po úspěšném loadu vyčisti konfliktní flag — další save bude clean
+                    window._cloudConflictAcknowledged = false;
                     
                     // [FIX] Obnov boj PŘED renderFull() — aby se modal otevřel se správným obsahem
                     // a renderFull() viděl window.combatState při kreslení (UI mu pak nepřekreslí)
@@ -156313,90 +156431,136 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
         }
         
         async function clanVaultWithdraw(locationId) {
-            const amount = parseInt(document.getElementById('vaultWithdraw')?.value || 0);
-            await loadClanData();
-            const clan = getClanData(locationId);
+            const amountInput = document.getElementById('vaultWithdraw');
+            const amountStr = amountInput?.value?.trim() || '';
+            const amount = parseInt(amountStr);
             
-            // [FIX] Backend permission check (UI button je už skrytý pro members,
-            // ale bez backend checku by se dalo obejít DevTools manipulací)
-            if (!canManageClan(locationId)) {
-                notifyWarning('🔒 Nedostatek oprávnění', 'Vybírat z kasy může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.');
+            // [FIX BUG report] Validace BEFORE async — okamžitý feedback
+            if (!amountStr) {
+                notifyWarning('🚫 Prázdné pole', 'Zadej částku kterou chceš vybrat.');
+                if (amountInput) amountInput.focus();
+                return;
+            }
+            if (isNaN(amount) || amount <= 0) {
+                notifyWarning('🚫 Neplatná částka', `Zadal jsi "${amountStr}" — musí to být kladné číslo.`);
+                if (amountInput) amountInput.focus();
                 return;
             }
             
-            if (!amount || amount <= 0 || amount > (clan?.vault || 0)) {
-                notifyWarning('Chyba', 'Neplatná částka nebo nedostatek v kase!');
+            // [FIX BUG report] Force-refresh clan data — nečerpat ze 30s cache
+            // Bez tohoto: pokud vault byl mezitím změněn (jiný člen vybral), uvidíš starou hodnotu
+            window.clanOwnershipCacheTime = 0;
+            await loadClanData();
+            const clan = getClanData(locationId);
+            
+            if (!clan) {
+                notifyWarning('🚫 Klan nenalezen', 'Nepodařilo se načíst data klanu. Zkontroluj připojení.');
+                return;
+            }
+            
+            // [FIX] Backend permission check
+            if (!canManageClan(locationId)) {
+                const myRole = getClanRole(locationId);
+                if (!myRole) {
+                    notifyWarning('🔒 Nejsi člen', 'Vybírat z kasy mohou jen členové klanu.');
+                } else {
+                    const rd = getRankDef(myRole);
+                    notifyWarning('🔒 Nedostatek oprávnění', `Tvoje hodnost: ${rd.icon} ${rd.name}. Vybírat může jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.`);
+                }
+                return;
+            }
+            
+            const currentVault = clan.vault || 0;
+            if (amount > currentVault) {
+                notifyWarning('🚫 Nedostatek v kase', `V kase je ${currentVault} 💰, ale chceš vybrat ${amount} 💰.`);
                 return;
             }
             
             // [NEW v6-rank] Denní limit podle hodnosti
-            // Officer: 500/den, Commander: 2000/den, Leader: neomezeno
             const myRole = getClanRole(locationId);
             const rankDef = getRankDef(myRole);
             const dailyLimit = rankDef.vaultDailyLimit;
             const myName = getPlayerName();
             const myKey = myName.replace(/[.#$\/\[\]]/g, '_');
             
-            if (dailyLimit !== -1) {  // -1 = neomezeno (Leader)
-                // [v6-rank] Načti dnešní výběr — používáme lokální datum (lokální půlnoc reset)
-                const _now = new Date();
-                const todayKey = _now.getFullYear() + '-' + 
-                    String(_now.getMonth() + 1).padStart(2, '0') + '-' + 
-                    String(_now.getDate()).padStart(2, '0');
+            const _now = new Date();
+            const todayKey = _now.getFullYear() + '-' + 
+                String(_now.getMonth() + 1).padStart(2, '0') + '-' + 
+                String(_now.getDate()).padStart(2, '0');
+            
+            if (dailyLimit !== -1) {
                 let todayWithdrawn = 0;
                 try {
                     const snap = await firebaseDB.ref(`clans/${locationId}/vaultWithdrawTracking/${todayKey}/${myKey}`).once('value');
                     todayWithdrawn = snap.val() || 0;
-                } catch(e) { console.warn('Vault tracking read:', e); }
+                } catch(e) { 
+                    console.warn('Vault tracking read failed:', e);
+                    // Tolerujeme — pokud read selže, povolíme transakci (nezablokujeme hráče)
+                }
                 
                 if (todayWithdrawn + amount > dailyLimit) {
                     const remaining = Math.max(0, dailyLimit - todayWithdrawn);
                     notifyWarning('🔒 Denní limit překročen', 
-                        `${rankDef.icon} ${rankDef.name}: limit ${dailyLimit}💰/den. Dnes jsi vybral ${todayWithdrawn}💰, zbývá ${remaining}💰.`);
+                        `${rankDef.icon} ${rankDef.name}: limit ${dailyLimit}💰/den. Dnes vybráno ${todayWithdrawn}💰, zbývá ${remaining}💰. Limit se obnoví zítra.`);
                     return;
                 }
-                
-                // Uložíme výběr do trackingu
-                try {
-                    await firebaseDB.ref(`clans/${locationId}/vaultWithdrawTracking/${todayKey}/${myKey}`).transaction(current => (current || 0) + amount);
-                } catch(e) { console.warn('Vault tracking write:', e); }
             }
             
             try {
-                // [FIX] Transaction místo read+set — zabraní výběru více než je v kase
+                // KROK 1: Vault transaction (atomic)
                 const vaultRef = firebaseDB.ref(`clans/${locationId}/vault`);
                 let newVault = 0;
                 const transResult = await vaultRef.transaction(current => {
-                    const currentVault = current || 0;
-                    if (currentVault < amount) return; // Abort — nedostatek
-                    newVault = currentVault - amount;
+                    const cv = current || 0;
+                    if (cv < amount) return; // Abort
+                    newVault = cv - amount;
                     return newVault;
                 });
+                
                 if (!transResult.committed) {
-                    notifyWarning('Nedostatek', 'V kase není dostatek peněz!');
+                    notifyWarning('🚫 Nedostatek', 'V kase už není dostatek peněz (mezitím vybral jiný člen).');
                     return;
                 }
-                state.money += amount;
-                // Zaloguj transakci
-                const txKey2 = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-                await firebaseDB.ref(`clans/${locationId}/vaultLog/${txKey2}`).set({
-                    type: 'withdraw', player: getPlayerName(), amount: amount,
-                    balance: newVault, timestamp: firebase.database.ServerValue.TIMESTAMP
-                });
+                
+                // KROK 2: Money inkrement (vault committed = transakce úspěšná)
+                state.money = (state.money || 0) + amount;
+                
+                // KROK 3: Tracking write (po úspěchu)
+                if (dailyLimit !== -1) {
+                    try {
+                        await firebaseDB.ref(`clans/${locationId}/vaultWithdrawTracking/${todayKey}/${myKey}`).transaction(current => (current || 0) + amount);
+                    } catch(e) { console.warn('Vault tracking write failed (non-critical):', e); }
+                }
+                
+                // KROK 4: Log (non-critical)
+                try {
+                    const txKey2 = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+                    await firebaseDB.ref(`clans/${locationId}/vaultLog/${txKey2}`).set({
+                        type: 'withdraw', player: myName, amount: amount,
+                        balance: newVault, timestamp: firebase.database.ServerValue.TIMESTAMP
+                    });
+                } catch(logErr) {
+                    console.warn('Vault log write failed (non-critical):', logErr);
+                }
+                
+                // Activity log (non-critical)
+                try {
+                    addClanActivity(locationId, 'withdraw',
+                        `💸 ${myName} vybral ${amount} 💰 z kasy`,
+                        myName, { amount: amount });
+                } catch(actErr) {
+                    console.warn('Activity log failed (non-critical):', actErr);
+                }
+                
                 window.clanOwnershipCacheTime = 0;
-                
-                // [NEW] Activity log
-                addClanActivity(locationId, 'withdraw',
-                    `💸 ${getPlayerName()} vybral ${amount} 💰 z kasy`,
-                    getPlayerName(), { amount: amount });
-                
-                notifySuccess(`-${amount} 💰 vybráno`, `Klanová kasa: ${newVault} 💰`);
+                notifySuccess(`✓ +${amount} 💰`, `Vybráno z kasy. Zůstatek v kase: ${newVault} 💰. Tvoje peníze: ${state.money} 💰`);
                 addLog(`🏦 Vybral ${amount} 💰 z klanové kasy`, '🏦');
-                saveGame();
+                saveGame(true);
                 showClanVault(locationId);
+                
             } catch(e) {
-                state.money -= amount;
-                notifyWarning('Chyba', 'Nepodařilo se vybrat peníze');
+                console.error('🏦 Vault withdraw critical error:', e);
+                notifyWarning('🚫 Chyba', 'Nepodařilo se vybrat peníze: ' + (e?.message || 'síťová chyba — zkontroluj připojení'));
             }
         }
         
