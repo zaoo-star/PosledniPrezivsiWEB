@@ -12813,7 +12813,12 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 icon: '🏕️',
                 chance: 0.15,
                 trigger: () => {
-                    const loot = ITEMS.filter(i => i.findChance > 0 && (i.rarity === 'common' || i.rarity === 'uncommon'));
+                    // [OPTIMIZATION] Vyfiltruj lore knihy které hráč už má
+                    const _ownedLoreCamp = new Set(state.inv.filter(i => i.type === 'lore').map(i => i.id));
+                    const loot = ITEMS.filter(i => 
+                        i.findChance > 0 && (i.rarity === 'common' || i.rarity === 'uncommon') &&
+                        (i.type !== 'lore' || !_ownedLoreCamp.has(i.id))
+                    );
                     const found = loot[Math.floor(Math.random() * loot.length)];
                     if (found && canAddItem(found, 1)) {
                         // Použij addItemToInventory pro quest counter + patchování ikon
@@ -18108,6 +18113,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 defenseBonus: 0,
                 expires: 0
             },
+            runeBook: {}, // [NEW] Sbírka run podle písmena: { A: 3, B: 2, ... } — runy mimo inventář
             // === DALŠÍ NOVÉ SYSTÉMY ===
             factions: { // Reputace s frakcemi (-100 až +100)
                 traders: 0,
@@ -19521,6 +19527,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Centrální funkce pro přidání předmětu do inventáře se stackováním
         function addItemToInventory(item, count = 1, silent = false) {
             if (!item) return false;
+            
+            // [NEW FreeRiderCz] Runová kniha - runy jdou do oddělené sbírky, ne do inventáře
+            // Důvod: hráči mívají 10-20 run v inventáři které zabírají sloty
+            if (item.type === 'rune' && item.id?.startsWith('rune_')) {
+                const letter = item.id.replace('rune_', '');
+                if (!state.runeBook) state.runeBook = {};
+                state.runeBook[letter] = (state.runeBook[letter] || 0) + count;
+                if (!silent) {
+                    const runeData = (typeof RUNES !== 'undefined') ? RUNES[item.id] : null;
+                    const name = runeData?.name || item.name || `Runa ${letter}`;
+                    const icon = runeData?.icon || item.icon || '🪬';
+                    if (typeof notifySuccess === 'function') notifySuccess('📖 Runová kniha', `${icon} ${name} přidána do sbírky.`);
+                    if (typeof addLog === 'function') addLog(`📖 ${icon} ${name} → Runová kniha`, '🪬');
+                }
+                return true;
+            }
             
             // Resources jdou do state.resources, ne do inv
             if (item.type === 'resource') {
@@ -29845,6 +29867,86 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateCarryWeight();
         }
         
+        // [NEW sp3rx] Helper pro render seznamu itemů v companion equipment dialogu
+        // Group identical itemy + sort by relevant stat + filter by search
+        function renderCompanionItemList(items, slot, companionId, statKey, statIcon) {
+            if (!items || items.length === 0) {
+                return '<div style="color: #555; font-size: 0.75rem; padding: 0.4rem; text-align: center;">Žádné v inventáři</div>';
+            }
+            
+            // Filter podle search
+            const query = (window._compEquipSearch || '').trim().toLowerCase();
+            let filtered = items;
+            if (query) {
+                filtered = items.filter(i => 
+                    (getItemName(i.id) || i.name || '').toLowerCase().includes(query) ||
+                    (i.id || '').toLowerCase().includes(query)
+                );
+                if (filtered.length === 0) return '<div style="color:#555;font-size:0.75rem;padding:0.4rem;text-align:center;font-style:italic;">Žádný match</div>';
+            }
+            
+            // Group identical items (stejné ID + bracket durability)
+            const grouped = new Map();
+            const order = []; // udržuj order
+            filtered.forEach((item, origIdx) => {
+                let key = item.id;
+                if (typeof item.durability === 'number' && item.maxDurability) {
+                    const dPct = Math.round((item.durability / item.maxDurability) * 4); // 0-4 bracket
+                    key = item.id + '_d' + dPct;
+                }
+                if (!grouped.has(key)) {
+                    grouped.set(key, { item, count: 1 });
+                    order.push(key);
+                } else {
+                    grouped.get(key).count++;
+                }
+            });
+            
+            // Sort: nejdřív rarity, pak stat hodnota desc, pak abeceda
+            const rarityRank = { legendary: 0, epic: 1, rare: 2, uncommon: 3, common: 4 };
+            const sortedKeys = order.sort((aK, bK) => {
+                const a = grouped.get(aK).item;
+                const b = grouped.get(bK).item;
+                const ra = rarityRank[a.rarity] ?? 5;
+                const rb = rarityRank[b.rarity] ?? 5;
+                if (ra !== rb) return ra - rb;
+                const sa = a[statKey] || 0;
+                const sb = b[statKey] || 0;
+                if (sa !== sb) return sb - sa;
+                return (getItemName(a.id) || a.name || '').localeCompare(getItemName(b.id) || b.name || '');
+            });
+            
+            const rarityColors = { legendary: '#ff9800', epic: '#9c27b0', rare: '#2196f3', uncommon: '#4caf50', common: '#888' };
+            
+            let html = '<div style="margin-top: 0.5rem; max-height: 140px; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
+            sortedKeys.forEach(key => {
+                const { item, count } = grouped.get(key);
+                const stat = item[statKey] || 0;
+                const rc = rarityColors[item.rarity] || '#666';
+                const stackBadge = count > 1 ? `<span style="margin-left: auto; background: linear-gradient(135deg,#d4935f,#8a5a30); color: #1a0d0a; font-size: 0.65rem; font-weight: bold; padding: 0.1rem 0.35rem; border-radius: 8px;">×${count}</span>` : '';
+                
+                // Durability indikátor
+                let durBar = '';
+                if (typeof item.durability === 'number' && item.maxDurability) {
+                    const pct = Math.round((item.durability / item.maxDurability) * 100);
+                    const dColor = pct > 50 ? '#4caf50' : pct > 20 ? '#ff9800' : '#f44336';
+                    durBar = `<span style="color: ${dColor}; font-size: 0.65rem; margin-left: 0.4rem;">${pct}%</span>`;
+                }
+                
+                html += `<button class="btn" onclick="equipCompanionItem('${companionId}', '${slot}', '${item.id}')" 
+                        style="display: flex; align-items: center; gap: 0.4rem; width: 100%; margin-bottom: 0.25rem; padding: 0.4rem 0.5rem; background: linear-gradient(135deg,#1a2330,#0d1620); border: 1px solid ${rc}40; border-left: 3px solid ${rc}; text-align: left; font-size: 0.8rem; color: #ddd;">
+                    <span style="font-size: 1.1rem; flex-shrink: 0;">${item.icon || '📦'}</span>
+                    <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${getItemName(item.id) || item.name}</span>
+                    ${stat > 0 ? `<span style="color: ${rc}; font-weight: bold; flex-shrink: 0;">${statIcon}${stat}</span>` : ''}
+                    ${durBar}
+                    ${stackBadge}
+                </button>`;
+            });
+            html += '</div>';
+            return html;
+        }
+        window.renderCompanionItemList = renderCompanionItemList;
+        
         // === VYBAVENÍ SPOLEČNÍKŮ ===
         function showCompanionEquipment(companionId) {
             const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
@@ -29896,7 +29998,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal(`🎽 ${'Vybavení:'} ${compName}`, `
                 <div style="max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">
                     <!-- Header -->
-                    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; background: #1a2a1a; padding: 0.8rem; border-radius: 8px;">
+                    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; background: #1a2a1a; padding: 0.8rem; border-radius: 8px;">
                         <div style="font-size: 2.5rem;">${compIcon}</div>
                         <div>
                             <h4 style="margin: 0;">${compName}</h4>
@@ -29904,6 +30006,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 ⚔️ ${getCompanionStat(comp, 'damage')} | 🛡️ ${getCompanionStat(comp, 'defense')}
                             </div>
                         </div>
+                    </div>
+                    
+                    <!-- [NEW sp3rx] Search bar pro filtrování věcí přes všechny sloty -->
+                    <div style="display: flex; gap: 0.4rem; margin-bottom: 0.6rem;">
+                        <input type="text" id="compEquipSearch" placeholder="🔍 Hledat věc..."
+                               value="${(window._compEquipSearch || '').replace(/"/g, '&quot;')}"
+                               oninput="window._compEquipSearch=this.value; document.getElementById('compEquipRefreshBtn')?.click();"
+                               style="flex: 1; background: #0d1420; border: 1px solid #2a3a4a; border-radius: 6px; padding: 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem;">
+                        ${(window._compEquipSearch || '') ? `<button onclick="window._compEquipSearch=''; showCompanionEquipment('${companionId}');" style="padding: 0.4rem 0.6rem; background: #555; color: #fff; border: none; border-radius: 6px; cursor: pointer;">✕</button>` : ''}
+                        <button id="compEquipRefreshBtn" onclick="showCompanionEquipment('${companionId}')" style="display: none;"></button>
                     </div>
                     
                     <!-- ZBRAŇ -->
@@ -29920,16 +30032,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">${'Žádná zbraň'}</div>
                         `}
-                        ${weapons.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${weapons.map(w => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'weapon', '${w.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #2a3a4a; text-align: left; font-size: 0.8rem;">
-                                        ${w.icon || '⚔️'} ${getItemName(w.id)} (⚔️+${w.damage || 0})
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : `<div style="color: #555; font-size: 0.75rem;">${'Žádné zbraně v inventáři'}</div>`}
+                        ${renderCompanionItemList(weapons, 'weapon', companionId, 'damage', '⚔️+')}
                     </div>
                     
                     <!-- ZBROJ -->
@@ -29945,16 +30048,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">${'Žádná zbroj'}</div>
                         `}
-                        ${armors.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${armors.map(a => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'armor', '${a.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #2a4a4a; text-align: left; font-size: 0.8rem;">
-                                        ${a.icon || '🛡️'} ${getItemName(a.id)} (🛡️+${a.defense || 0})
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : `<div style="color: #555; font-size: 0.75rem;">${'Žádné zbroje v inventáři'}</div>`}
+                        ${renderCompanionItemList(armors, 'armor', companionId, 'defense', '🛡️+')}
                     </div>
                     
                     <!-- HELMA -->
@@ -29970,16 +30064,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">${'Žádná helma'}</div>
                         `}
-                        ${helmets.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${helmets.map(h => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'helmet', '${h.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #4a3a2a; text-align: left; font-size: 0.8rem;">
-                                        ${h.icon || '⛑️'} ${getItemName(h.id)} (🛡️+${h.defense || 0})
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : '<div style="color: #555; font-size: 0.75rem;">' + ('Žádné helmy v inventáři') + '</div>'}
+                        ${renderCompanionItemList(helmets, 'helmet', companionId, 'defense', '🛡️+')}
                     </div>
                     
                     <!-- DOPLNĚK -->
@@ -29995,16 +30080,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">${'Žádný doplněk'}</div>
                         `}
-                        ${accessories.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${accessories.map(acc => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'accessory', '${acc.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #4a4a2a; text-align: left; font-size: 0.8rem;">
-                                        ${acc.icon || '💍'} ${getItemName(acc.id)}
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : '<div style="color: #555; font-size: 0.75rem;">' + ('Žádné doplňky v inventáři') + '</div>'}
+                        ${accessories.length > 0 ? renderCompanionItemList(accessories, 'accessory', companionId, 'defense', '✨') : '<div style="color: #555; font-size: 0.75rem;">' + ('Žádné doplňky v inventáři') + '</div>'}
                     </div>
                     
                     <!-- RUKAVICE -->
@@ -30020,16 +30096,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">Žádné rukavice</div>
                         `}
-                        ${gloves.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${gloves.map(g => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'gloves', '${g.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #4a3a2a; text-align: left; font-size: 0.8rem;">
-                                        ${g.icon || '🥊'} ${g.name} (🛡️+${g.defense || 0})
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : '<div style="color: #555; font-size: 0.75rem;">Žádné rukavice v inventáři</div>'}
+                        ${renderCompanionItemList(gloves, 'gloves', companionId, 'defense', '🛡️+')}
                     </div>
                     
                     <!-- BOTY -->
@@ -30045,16 +30112,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ` : `
                             <div style="color: #666; font-size: 0.85rem; margin-bottom: 0.3rem;">Žádné boty</div>
                         `}
-                        ${boots.length > 0 ? `
-                            <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
-                                ${boots.map(b => `
-                                    <button class="btn" onclick="equipCompanionItem('${companionId}', 'boots', '${b.id}')" 
-                                            style="display: block; width: 100%; margin-bottom: 0.2rem; padding: 0.3rem; background: #2a3a4a; text-align: left; font-size: 0.8rem;">
-                                        ${b.icon || '🥾'} ${b.name} (🛡️+${b.defense || 0})
-                                    </button>
-                                `).join('')}
-                            </div>
-                        ` : '<div style="color: #555; font-size: 0.75rem;">Žádné boty v inventáři</div>'}
+                        ${renderCompanionItemList(boots, 'boots', companionId, 'defense', '🛡️+')}
                     </div>
                     
                     <!-- NÁBOJE -->
@@ -30071,7 +30129,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ` : ''}
                 </div>
                 
-                <button class="btn" onclick="showCompanionsInfo()" style="width: 100%; margin-top: 0.5rem; background: #555;">← ${'Zpět'}</button>
+                <button class="btn" onclick="window._compEquipSearch=''; showCompanionsInfo()" style="width: 100%; margin-top: 0.5rem; background: #555;">← ${'Zpět'}</button>
             `);
         }
         
@@ -35957,7 +36015,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
                         // Základ: běžné předměty s findChance + bonus dle danger zóny lokace
                         const dangerLvl = loc?.dangerLevel || 1;
-                        const lootPool = ITEMS.filter(i => i.findChance > 0 && i.type !== 'trophy' && i.type !== 'quest');
+                        // [OPTIMIZATION] Vyfiltruj lore knihy které hráč už má
+                        const _ownedLoreIds35 = new Set(state.inv.filter(i => i.type === 'lore').map(i => i.id));
+                        const lootPool = ITEMS.filter(i => 
+                            i.findChance > 0 && i.type !== 'trophy' && i.type !== 'quest' &&
+                            (i.type !== 'lore' || !_ownedLoreIds35.has(i.id))
+                        );
                         const foundItems = [];
                         const count = 2 + Math.floor(Math.random() * 3); // 2-4 předměty
                         for (let i = 0; i < count; i++) {
@@ -38128,8 +38191,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         </div>
                     </div>
                     
-                    <!-- HLAVNÍ LAYOUT: Equipment + Suroviny -->
-                    <div class="responsive-2col" style="margin-bottom: 1rem;">
+                    <!-- HLAVNÍ LAYOUT: Equipment (full width) -->
+                    <div style="margin-bottom: 1rem;">
                         
                         <!-- VYBAVENÍ - Character Slots -->
                         <div style="background: linear-gradient(135deg, #1a1a1a, #0d0d0d); padding: 0.8rem; border-radius: 8px; border: 2px solid var(--rust);">
@@ -38329,69 +38392,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 `;
                             })()}
                         </div>
-                        
-                        <!-- SUROVINY -->
-                        <div style="background: linear-gradient(135deg, #1a1a1a, #0d0d0d); padding: 0.8rem; border-radius: 8px; border: 2px solid var(--rust);">
-                            <h3 style="margin: 0 0 0.5rem 0; color: var(--rust-light); font-size: 0.8rem; text-align: center;">📦 ${'SUROVINY'}</h3>
-                            
-                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.2rem;">
-                                ${[
-                                    { key: 'raw_meat', icon: '🥩', name: 'Maso', color: '#D32F2F', desc: 'Syrové maso ze zvířat. ⚠️ Kazí se za 2 dny! Upeč ho nebo prodej.' },
-                                    { key: 'fish', icon: '🐟', name: 'Ryby', color: '#1976D2', desc: 'Čerstvé ryby. ⚠️ Kazí se za 2 dny! Chytáš u jezer a řek.' },
-                                    { key: 'wood', icon: '🌲', name: 'Dřevo', color: '#8B4513', desc: 'Základní surovina pro stavbu a topení. Najdeš v lesích a hájích.' },
-                                    { key: 'metal', icon: '⚙️', name: 'Kov', color: '#607D8B', desc: 'Kovový šrot a součástky. Najdeš všude, nejvíc v ruinách a továrnách.' },
-                                    { key: 'stone', icon: '🗿', name: 'Kámen', color: '#757575', desc: 'Pevný materiál pro stavbu a nástroje. Běžně dostupný.' },
-                                    { key: 'cloth', icon: '🧵', name: 'Látka', color: '#9C27B0', desc: 'Textilie pro výrobu oblečení a obvazů. Najdeš v obchodech a domech.' },
-                                    { key: 'leather', icon: '🦴', name: 'Kůže', color: '#795548', desc: 'Vydělané kůže pro lehkou zbroj. Získáš z lovu zvířat v lesích.' },
-                                    { key: 'herbs', icon: '🌿', name: 'Byliny', color: '#4CAF50', desc: 'Léčivé rostliny. ⚠️ Kazí se za 10 dní! Rostou v lesích a u laboratoří.' },
-                                    { key: 'chemicals', icon: '🧪', name: 'Chem', color: '#00BCD4', desc: 'Různé chemické látky. Najdeš v nemocnicích, laboratořích a továrnách.' },
-                                    { key: 'electronics', icon: '💾', name: 'Elek', color: '#2196F3', desc: 'Součástky z elektronických zařízení. Hledej ve městech a laboratořích.' },
-                                    { key: 'fuel', icon: '⛽', name: 'Palivo', color: '#FF5722', desc: 'Hořlavina pro generátory a motorové zbraně. Najdeš na benzínkách a v továrnách.' },
-                                    { key: 'gunpowder', icon: '💥', name: 'Prach', color: '#F44336', desc: 'Nebezpečná látka pro výrobu munice. Vyrábí se z chemikálií.' },
-                                    { key: 'scrap', icon: '🔩', name: 'Šrot', color: '#9E9E9E', desc: 'Směs kovu a plastů. Všude v ruinách, továrnách a městech.' },
-                                    { key: 'glass', icon: '🔮', name: 'Sklo', color: '#03A9F4', desc: 'Střepy a skleněné části. Najdeš ve městech, obchodech a nemocnicích.' },
-                                    { key: 'rope', icon: '➰', name: 'Provaz', color: '#8D6E63', desc: 'Lana a provazy. Vyrábíš z látky, najdeš ve skladech a na stavbách.' }
-                                ].map(r => {
-                                    const cSrc = ITEM_CUSTOM_ICONS[r.key];
-                                    const rIcon = cSrc ? `<img src="${cSrc}" alt="${r.icon}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML=this.alt">` : r.icon;
-                                    const count = state.resources[r.key] || 0;
-                                    const hasAny = count > 0;
-                                    return `
-                                    <div onclick="showResourceInfoByKey('${r.key}')" style="cursor: pointer; background: ${hasAny ? '#0d0d0d' : '#08080a'}; padding: 0.15rem 0.1rem; border-radius: 3px; text-align: center; border: 1px solid ${hasAny ? r.color + '88' : '#1a1a1a'}; opacity: ${hasAny ? 1 : 0.35}; transition: all 0.15s;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.08)'" onmouseout="this.style.opacity='${hasAny ? 1 : 0.35}';this.style.transform='scale(1)'">
-                                        <div style="font-size: 0.85rem; line-height: 1.1;">${rIcon}</div>
-                                        <div style="font-size: 0.6rem; font-weight: bold; color: ${hasAny ? r.color : '#333'}; line-height: 1;">${count}</div>
-                                        <div style="font-size: 0.45rem; color: ${hasAny ? '#666' : '#222'}; line-height: 1; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.name}</div>
-                                    </div>
-                                `}).join('')}
-                            </div>
-                            
-                            <!-- Vzácné suroviny -->
-                            <div style="margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--metal-light);">
-                                <div style="font-size: 0.7rem; color: #666; margin-bottom: 0.4rem; text-align: center;">💎 ${'VZÁCNÉ'}</div>
-                                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.3rem;">
-                                    ${[
-                                        { key: 'copper', icon: '🟤', name: 'Měď', desc: 'Vodivý kov pro elektroniku a munici.' },
-                                        { key: 'silver', icon: '⬜', name: 'Stříbro', desc: 'Vzácný kov s antimikrobiálními vlastnostmi.' },
-                                        { key: 'gold', icon: '🟡', name: 'Zlato', desc: 'Velmi cenný kov. Používá se jako měna.' },
-                                        { key: 'crystal', icon: '💠', name: 'Krystal', desc: 'Záhadné krystaly s energetickými vlastnostmi.' },
-                                        { key: 'sulfur', icon: '💛', name: 'Síra', desc: 'Hořlavý minerál. Klíčová surovina pro střelný prach.' },
-                                        { key: 'fur', icon: '🦊', name: 'Kožešina', desc: 'Teplá kožešina ze zvířat. Pro zimní výstroj.' },
-                                        { key: 'mutant_blood', icon: '🩸', name: 'M.krev', desc: 'Toxická krev mutantů. Pro speciální zbroje.' }
-                                    ].map(r => {
-                                        const cSrc2 = ITEM_CUSTOM_ICONS[r.key];
-                                        const rIcon2 = cSrc2 ? `<img src="${cSrc2}" alt="${r.icon}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML=this.alt">` : r.icon;
-                                        const cnt = state.resources[r.key] || 0;
-                                        const has = cnt > 0;
-                                        return `
-                                        <div onclick="showResourceInfoByKey('${r.key}')" style="cursor: pointer; background: ${has ? '#0a0a0d' : '#08080a'}; padding: 0.2rem; border-radius: 4px; text-align: center; border: 1px solid ${has ? 'var(--warning-yellow)' : '#1a1a1a'}; opacity: ${has ? 1 : 0.3}; transition: all 0.15s;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.08)'" onmouseout="this.style.opacity='${has ? 1 : 0.3}';this.style.transform='scale(1)'">
-                                            <div style="font-size: 0.9rem; line-height: 1.1;">${rIcon2}</div>
-                                            <div style="font-size: 0.65rem; font-weight: bold; color: ${has ? 'var(--warning-yellow)' : '#333'}; line-height: 1;">${cnt}</div>
-                                            <div style="font-size: 0.45rem; color: ${has ? '#777' : '#222'}; line-height: 1; margin-top: 1px;">${r.name}</div>
-                                        </div>
-                                    `}).join('')}
-                                </div>
-                            </div>
-                        </div>
                     </div>
                     
                     <!-- SET BONUS INFO -->
@@ -38403,39 +38403,70 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <h3 style="margin: 0; color: var(--rust-light);">🎒 ${ui('items')} (${state.inv.length})</h3>
                             <div style="display: flex; gap: 0.2rem; flex-wrap: wrap; align-items: center;">
                                 <button onclick="mergeInventoryStacks()" class="btn" style="padding: 0.25rem 0.4rem; font-size: 0.7rem; background: #2a2a3a; border: 1px solid #444;" title="Spojit rozdělené stacky">🔗</button>
+                                ${(() => {
+                                    const totalRunes = Object.values(state.runeBook || {}).reduce((s, n) => s + (n || 0), 0);
+                                    const hasRunes = totalRunes > 0;
+                                    return `<button onclick="showRuneBook()" class="btn" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: linear-gradient(135deg,#3a1a4a 0%,#1a0828 100%); border: 1px solid ${hasRunes ? '#9c27b0' : '#4a148c'}; color: #ce93d8; ${hasRunes ? 'box-shadow: 0 0 8px rgba(156,39,176,0.4);' : ''} position: relative; font-weight: bold;" title="Runová kniha (${totalRunes} run)">
+                                        📖${hasRunes ? `<span style="position:absolute;top:-5px;right:-5px;background:linear-gradient(135deg,#d4935f,#8a5a30);color:#1a0d0a;font-size:0.6rem;font-weight:bold;border-radius:8px;min-width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;padding:0 0.25rem;box-shadow:0 1px 3px rgba(0,0,0,0.5);">${totalRunes}</span>` : ''}
+                                    </button>`;
+                                })()}
                                 ${typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled ? '<button onclick="showBuildAdvisor()" class="btn" style="padding: 0.25rem 0.4rem; font-size: 0.7rem; background: #0a1a2a; border: 1px solid #2196f3; color: #2196f3;" title="AI analýza buildu">🧠</button>' : ''}
-                                ${[
-                                    { f: 'all', icon: 'Vše', bg: '#3a4a3a' },
-                                    { f: 'healing', icon: '❤️', bg: '#3a2a2a' },
-                                    { f: 'consumable', icon: '🍖', bg: '#3a3020' },
-                                    { f: 'weapon', icon: '⚔️', bg: '#3a2020' },
-                                    { f: 'armor', icon: '🛡️', bg: '#20303a' },
-                                    { f: 'helmet', icon: '⛑️', bg: '#2a203a' },
-                                    { f: 'gloves', icon: '🥊', bg: '#3a3020' },
-                                    { f: 'boots', icon: '🥾', bg: '#203a3a' },
-                                    { f: 'tool', icon: '🔧', bg: '#2a2a20' },
-                                    { f: 'ammo', icon: '🎯', bg: '#3a3a20' },
-                                    { f: 'rune', icon: '🔮', bg: '#2a1a3a' },
-                                    { f: 'unequipped', icon: '💰', bg: '#4a3a1a' }
-                                ].map(btn => {
-                                    const isAct = (window.inventoryFilter || 'all') === btn.f;
-                                    return `<button onclick="filterInventory('${btn.f}')" class="btn" style="padding: 0.3rem 0.4rem; font-size: 0.75rem; min-width: 2rem; ${isAct ? 'background:' + btn.bg + '; border: 1.5px solid #888; box-shadow: 0 0 6px ' + btn.bg + '88;' : 'background: #0d0d0d; border: 1px solid #222; opacity: 0.6;'}">${btn.icon}</button>`;
-                                }).join('')}
                             </div>
                         </div>
                         
+                        <!-- [sp3rx] FILTR ZÁLOŽKY - horizontální scroll, kompaktní jediný řádek -->
+                        <div style="display: flex; gap: 0.25rem; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0.3rem; margin-bottom: 0.6rem; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); scrollbar-width: thin;">
+                            ${[
+                                { f: 'all', icon: '🎒', label: 'Vše' },
+                                { f: 'healing', icon: '❤️', label: 'Léčení' },
+                                { f: 'consumable', icon: '🍖', label: 'Jídlo' },
+                                { f: 'weapon', icon: '⚔️', label: 'Zbraně' },
+                                { f: 'armor', icon: '🛡️', label: 'Zbroj' },
+                                { f: 'helmet', icon: '⛑️', label: 'Helma' },
+                                { f: 'gloves', icon: '🥊', label: 'Ruk.' },
+                                { f: 'boots', icon: '🥾', label: 'Boty' },
+                                { f: 'tool', icon: '🔧', label: 'Nástr.' },
+                                { f: 'ammo', icon: '🎯', label: 'Munice' },
+                                { f: 'unequipped', icon: '💰', label: 'Prodat' }
+                            ].map(btn => {
+                                const isAct = (window.inventoryFilter || 'all') === btn.f;
+                                const baseStyle = `flex-shrink: 0; padding: 0.4rem 0.7rem; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.3px; border-radius: 6px; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 0.3rem; font-family: 'Rajdhani', sans-serif; white-space: nowrap;`;
+                                const activeStyle = `background: rgba(212, 147, 95, 0.15); border: 1px solid rgba(212, 147, 95, 0.5); color: var(--rust-accent, #d4935f); box-shadow: 0 0 10px rgba(212, 147, 95, 0.15);`;
+                                const inactiveStyle = `background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); color: #888;`;
+                                return `<button onclick="filterInventory('${btn.f}')" style="${baseStyle} ${isAct ? activeStyle : inactiveStyle}">
+                                    <span style="font-size: 0.95rem; ${isAct ? '' : 'filter: grayscale(0.4) brightness(0.85);'}">${btn.icon}</span>
+                                    <span style="text-transform: uppercase;">${btn.label}</span>
+                                </button>`;
+                            }).join('')}
+                        </div>
+                        
+                        <!-- [NEW sp3rx] Search bar v inventáři -->
+                        <div style="position: relative; margin-bottom: 0.5rem;">
+                            <input type="text" id="invSearchInput" placeholder="🔍 Hledat v inventáři..." 
+                                   oninput="filterInventoryBySearch(this.value); document.getElementById('invSearchClear').style.display = this.value ? 'block' : 'none';" 
+                                   value="${window._invSearchQuery || ''}"
+                                   style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem; box-sizing: border-box;">
+                            <button id="invSearchClear" onclick="window._invSearchQuery=''; document.getElementById('invSearchInput').value=''; this.style.display='none'; filterInventoryBySearch('');" 
+                                    style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer; display: ${(window._invSearchQuery || '').length > 0 ? 'block' : 'none'};">✕</button>
+                        </div>
+                        
                         <!-- Nosnost bar -->
-                        <div style="background: #0a0a0a; padding: 0.4rem; border-radius: 4px; margin-bottom: 0.8rem; border: 1px solid var(--metal-light);">
-                            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 0.2rem;">
+                        <div style="background: #0a0a0a; padding: 0.4rem; border-radius: 4px; margin-bottom: 0.6rem; border: 1px solid var(--metal-light);">
+                            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; margin-bottom: 0.2rem;">
                                 <span>📦 ${ui('capacity')}</span>
-                                <span style="color: ${state.carryWeight > state.maxCarryWeight * 0.8 ? '#ff9800' : 'var(--toxic-green)'};">${state.carryWeight.toFixed(1)} / ${state.maxCarryWeight} kg</span>
+                                <div style="display: flex; gap: 0.4rem; align-items: center;">
+                                    <span style="color: ${state.carryWeight > state.maxCarryWeight * 0.8 ? '#ff9800' : 'var(--toxic-green)'};">${state.carryWeight.toFixed(1)} / ${state.maxCarryWeight} kg</span>
+                                    <button onclick="showInventorySortMenu()" style="padding: 0.15rem 0.4rem; font-size: 0.65rem; background: #1a2a3a; border: 1px solid #2a4a6a; border-radius: 4px; color: #8ab4f8; cursor: pointer;" title="Třídění">
+                                        ${(() => {
+                                            const labels = { default: '📋', weight_desc: '⚖️↓', weight_asc: '⚖️↑', name: '🔤', type: '📦', value: '💰', rarity: '⭐' };
+                                            return labels[window._invSortMode || 'default'] || '📋';
+                                        })()}
+                                    </button>
+                                </div>
                             </div>
                             <div style="background: #1a1a1a; height: 6px; border-radius: 3px; overflow: hidden;">
                                 <div style="height: 100%; width: ${Math.min(100, (state.carryWeight / state.maxCarryWeight) * 100)}%; background: linear-gradient(90deg, var(--toxic-green), ${state.carryWeight > state.maxCarryWeight * 0.8 ? '#ff9800' : 'var(--toxic-green)'});"></div>
                             </div>
-                            <button onclick="showLootFilterSettings()" style="width: 100%; margin-top: 0.4rem; padding: 0.3rem; font-size: 0.7rem; background: #2a2a3a; border: 1px solid #444; border-radius: 4px; color: #888; cursor: pointer;">
-                                🎒 Auto-loot nastavení
-                            </button>
                         </div>
                         
                         ${(() => {
@@ -38472,6 +38503,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 filteredInv = []; // Runy se zobrazují v sekci níže
                             } else {
                                 filteredInv = state.inv.filter(i => i.type === currentFilter && !i._ownedByCompanion);
+                            }
+                            
+                            // [NEW sp3rx] Třídění inventáře — podle váhy, jména, typu, hodnoty
+                            const sortMode = window._invSortMode || 'default';
+                            if (sortMode === 'weight_desc') {
+                                filteredInv = [...filteredInv].sort((a, b) => (b.weight || 0) - (a.weight || 0));
+                            } else if (sortMode === 'weight_asc') {
+                                filteredInv = [...filteredInv].sort((a, b) => (a.weight || 0) - (b.weight || 0));
+                            } else if (sortMode === 'name') {
+                                filteredInv = [...filteredInv].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'cs'));
+                            } else if (sortMode === 'type') {
+                                filteredInv = [...filteredInv].sort((a, b) => (a.type || '').localeCompare(b.type || ''));
+                            } else if (sortMode === 'value') {
+                                filteredInv = [...filteredInv].sort((a, b) => (b.price || 0) - (a.price || 0));
+                            } else if (sortMode === 'rarity') {
+                                const rarityRank = { legendary: 5, epic: 4, rare: 3, uncommon: 2, common: 1 };
+                                filteredInv = [...filteredInv].sort((a, b) => (rarityRank[b.rarity] || 0) - (rarityRank[a.rarity] || 0));
                             }
                             
                             // === RUNY - kompaktní rozklikávací sekce ===
@@ -38660,8 +38708,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     const rarityGlow = !isItemEquipped(i) && rarityGlows[itemRarity] ? rarityGlows[itemRarity] : '';
                                     const durPct = i.durability !== undefined ? Math.round((i.durability/i.maxDurability)*100) : -1;
                                     
+                                    // [sp3rx] Rozšířený search field
+                                    const _searchTerms = [
+                                        i.name || getItemName(i.id) || i.id || '',
+                                        i.type === 'consumable' ? 'jídlo léčivo lék' : '',
+                                        i.type === 'weapon' ? 'zbraň' : '',
+                                        i.type === 'armor' ? 'zbroj' : '',
+                                        i.type === 'helmet' ? 'helma přilba' : '',
+                                        i.type === 'boots' ? 'boty' : '',
+                                        i.type === 'gloves' ? 'rukavice' : '',
+                                        i.type === 'tool' ? 'nástroj' : '',
+                                        i.type === 'ammo' ? 'munice náboje' : '',
+                                        i.effect === 'health' ? 'zdraví hp léčí' : '',
+                                        i.effect === 'hunger' ? 'hlad jídlo' : '',
+                                        i.effect === 'thirst' ? 'žízeň pití' : '',
+                                        i.effect === 'energy' ? 'energie' : '',
+                                        i.effect === 'radiation' ? 'radiace' : '',
+                                        i.ammoType ? (typeof getAmmoName === 'function' ? getAmmoName(i.ammoType) : i.ammoType) : '',
+                                        i.desc || _iDef?.desc || ''
+                                    ].join(' ');
+                                    
                                     return `
-                                        <div class="card" onclick="${clickAction}" 
+                                        <div class="card" data-inv-item-name="${_searchTerms.replace(/"/g, '&quot;')}" onclick="${clickAction}" 
                                             style="background: ${tc.bg}; border: 1.5px solid ${rarityBorder}; padding: 0.35rem 0.3rem; cursor: ${isClickable ? 'pointer' : 'default'}; position: relative; ${isItemEquipped(i) ? 'box-shadow: inset 0 0 12px rgba(76, 175, 80, 0.3);' : (rarityGlow ? 'box-shadow: ' + rarityGlow + ';' : '')}">
                                             
                                             ${isItemEquipped(i) ? '<div style="position: absolute; top: 1px; left: 2px; right: 2px; background: #2a4a2a; padding: 0.05rem 0.2rem; border-radius: 2px; font-size: 0.45rem; font-weight: bold; color: #8bc34a; text-align: center; border: 1px solid #4caf50;">✓ NASAZENO</div>' : ''}
@@ -38691,6 +38759,69 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 }).join('')}
                             </div>`;
                         })()}
+                    </div>
+                    
+                    <!-- SUROVINY (přesunuto pod inventář — sp3rx feedback) -->
+                    <div style="background: linear-gradient(135deg, #1a1a1a, #0d0d0d); padding: 0.8rem; border-radius: 8px; border: 2px solid var(--rust); margin-top: 1rem;">
+                        <h3 style="margin: 0 0 0.5rem 0; color: var(--rust-light); font-size: 0.8rem; text-align: center;">📦 ${'SUROVINY'}</h3>
+                        
+                        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.2rem;">
+                            ${[
+                                { key: 'raw_meat', icon: '🥩', name: 'Maso', color: '#D32F2F', desc: 'Syrové maso ze zvířat. ⚠️ Kazí se za 2 dny! Upeč ho nebo prodej.' },
+                                { key: 'fish', icon: '🐟', name: 'Ryby', color: '#1976D2', desc: 'Čerstvé ryby. ⚠️ Kazí se za 2 dny! Chytáš u jezer a řek.' },
+                                { key: 'wood', icon: '🌲', name: 'Dřevo', color: '#8B4513', desc: 'Základní surovina pro stavbu a topení. Najdeš v lesích a hájích.' },
+                                { key: 'metal', icon: '⚙️', name: 'Kov', color: '#607D8B', desc: 'Kovový šrot a součástky. Najdeš všude, nejvíc v ruinách a továrnách.' },
+                                { key: 'stone', icon: '🗿', name: 'Kámen', color: '#757575', desc: 'Pevný materiál pro stavbu a nástroje. Běžně dostupný.' },
+                                { key: 'cloth', icon: '🧵', name: 'Látka', color: '#9C27B0', desc: 'Textilie pro výrobu oblečení a obvazů. Najdeš v obchodech a domech.' },
+                                { key: 'leather', icon: '🦴', name: 'Kůže', color: '#795548', desc: 'Vydělané kůže pro lehkou zbroj. Získáš z lovu zvířat v lesích.' },
+                                { key: 'herbs', icon: '🌿', name: 'Byliny', color: '#4CAF50', desc: 'Léčivé rostliny. ⚠️ Kazí se za 10 dní! Rostou v lesích a u laboratoří.' },
+                                { key: 'chemicals', icon: '🧪', name: 'Chem', color: '#00BCD4', desc: 'Různé chemické látky. Najdeš v nemocnicích, laboratořích a továrnách.' },
+                                { key: 'electronics', icon: '💾', name: 'Elek', color: '#2196F3', desc: 'Součástky z elektronických zařízení. Hledej ve městech a laboratořích.' },
+                                { key: 'fuel', icon: '⛽', name: 'Palivo', color: '#FF5722', desc: 'Hořlavina pro generátory a motorové zbraně. Najdeš na benzínkách a v továrnách.' },
+                                { key: 'gunpowder', icon: '💥', name: 'Prach', color: '#F44336', desc: 'Nebezpečná látka pro výrobu munice. Vyrábí se z chemikálií.' },
+                                { key: 'scrap', icon: '🔩', name: 'Šrot', color: '#9E9E9E', desc: 'Směs kovu a plastů. Všude v ruinách, továrnách a městech.' },
+                                { key: 'glass', icon: '🔮', name: 'Sklo', color: '#03A9F4', desc: 'Střepy a skleněné části. Najdeš ve městech, obchodech a nemocnicích.' },
+                                { key: 'rope', icon: '➰', name: 'Provaz', color: '#8D6E63', desc: 'Lana a provazy. Vyrábíš z látky, najdeš ve skladech a na stavbách.' }
+                            ].map(r => {
+                                const cSrc = ITEM_CUSTOM_ICONS[r.key];
+                                const rIcon = cSrc ? `<img src="${cSrc}" alt="${r.icon}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML=this.alt">` : r.icon;
+                                const count = state.resources[r.key] || 0;
+                                const hasAny = count > 0;
+                                return `
+                                <div onclick="showResourceInfoByKey('${r.key}')" style="cursor: pointer; background: ${hasAny ? '#0d0d0d' : '#08080a'}; padding: 0.15rem 0.1rem; border-radius: 3px; text-align: center; border: 1px solid ${hasAny ? r.color + '88' : '#1a1a1a'}; opacity: ${hasAny ? 1 : 0.35}; transition: all 0.15s;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.08)'" onmouseout="this.style.opacity='${hasAny ? 1 : 0.35}';this.style.transform='scale(1)'">
+                                    <div style="font-size: 0.85rem; line-height: 1.1;">${rIcon}</div>
+                                    <div style="font-size: 0.6rem; font-weight: bold; color: ${hasAny ? r.color : '#333'}; line-height: 1;">${count}</div>
+                                    <div style="font-size: 0.45rem; color: ${hasAny ? '#666' : '#222'}; line-height: 1; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.name}</div>
+                                </div>
+                            `}).join('')}
+                        </div>
+                        
+                        <!-- Vzácné suroviny -->
+                        <div style="margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--metal-light);">
+                            <div style="font-size: 0.7rem; color: #666; margin-bottom: 0.4rem; text-align: center;">💎 ${'VZÁCNÉ'}</div>
+                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.3rem;">
+                                ${[
+                                    { key: 'copper', icon: '🟤', name: 'Měď', desc: 'Vodivý kov pro elektroniku a munici.' },
+                                    { key: 'silver', icon: '⬜', name: 'Stříbro', desc: 'Vzácný kov s antimikrobiálními vlastnostmi.' },
+                                    { key: 'gold', icon: '🟡', name: 'Zlato', desc: 'Velmi cenný kov. Používá se jako měna.' },
+                                    { key: 'crystal', icon: '💠', name: 'Krystal', desc: 'Záhadné krystaly s energetickými vlastnostmi.' },
+                                    { key: 'sulfur', icon: '💛', name: 'Síra', desc: 'Hořlavý minerál. Klíčová surovina pro střelný prach.' },
+                                    { key: 'fur', icon: '🦊', name: 'Kožešina', desc: 'Teplá kožešina ze zvířat. Pro zimní výstroj.' },
+                                    { key: 'mutant_blood', icon: '🩸', name: 'M.krev', desc: 'Toxická krev mutantů. Pro speciální zbroje.' }
+                                ].map(r => {
+                                    const cSrc2 = ITEM_CUSTOM_ICONS[r.key];
+                                    const rIcon2 = cSrc2 ? `<img src="${cSrc2}" alt="${r.icon}" style="width:1.3em;height:1.3em;vertical-align:middle;border-radius:3px;object-fit:cover" onerror="this.outerHTML=this.alt">` : r.icon;
+                                    const cnt = state.resources[r.key] || 0;
+                                    const has = cnt > 0;
+                                    return `
+                                    <div onclick="showResourceInfoByKey('${r.key}')" style="cursor: pointer; background: ${has ? '#0a0a0d' : '#08080a'}; padding: 0.2rem; border-radius: 4px; text-align: center; border: 1px solid ${has ? 'var(--warning-yellow)' : '#1a1a1a'}; opacity: ${has ? 1 : 0.3}; transition: all 0.15s;" onmouseover="this.style.opacity='1';this.style.transform='scale(1.08)'" onmouseout="this.style.opacity='${has ? 1 : 0.3}';this.style.transform='scale(1)'">
+                                        <div style="font-size: 0.9rem; line-height: 1.1;">${rIcon2}</div>
+                                        <div style="font-size: 0.65rem; font-weight: bold; color: ${has ? 'var(--warning-yellow)' : '#333'}; line-height: 1;">${cnt}</div>
+                                        <div style="font-size: 0.45rem; color: ${has ? '#777' : '#222'}; line-height: 1; margin-top: 1px;">${r.name}</div>
+                                    </div>
+                                `}).join('')}
+                            </div>
+                        </div>
                     </div>
                     
                     ${state.map.inBase ? `
@@ -48910,8 +49041,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (setEffects.psychicVision) loreChance *= 1.25;
             
             if (Math.random() < loreChance) {
+                // [FIX FreeRiderCz] Filtruj out i přečtené deníky (state.readBooks)
                 const ownedLore = state.inv.filter(i => i.id?.startsWith('lore_')).map(i => i.id);
-                const availableLore = ITEMS.filter(i => i.id?.startsWith('lore_') && !ownedLore.includes(i.id));
+                const readLore = state.readBooks || [];
+                const availableLore = ITEMS.filter(i => 
+                    i.id?.startsWith('lore_') && 
+                    !ownedLore.includes(i.id) &&
+                    !readLore.includes(i.id)
+                );
                 if (availableLore.length > 0) {
                     availableLore.sort((a, b) => a.id.localeCompare(b.id));
                     const loreBook = availableLore[0];
@@ -48933,7 +49070,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const rd = RUNES[runeKey];
                 const runeDef = ITEMS.find(i => i.id === runeKey);
                 if (runeDef) {
-                    state.inv.push({ ...runeDef });
+                    addItemToInventory(runeDef, 1, true); // tichá - notifikace se přidá v results
                     results.push({ name: rd.name, icon: rd.icon, count: 1 });
                     ds.loot.push({ type: 'item', id: runeKey });
                 }
@@ -49610,6 +49747,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Fallback pokud je lootPool prázdný
             if (lootPool.length === 0) lootPool = ITEMS.filter(i => i.type === 'consumable' || i.type === 'resource').slice(0, 20);
             
+            // [OPTIMIZATION FreeRiderCz] Vyfiltruj lore knihy které hráč už má
+            // Bez tohoto: hráč najde stejný deník opakovaně a jen ho zahazuje
+            const _ownedLoreIds = new Set(state.inv.filter(i => i.type === 'lore').map(i => i.id));
+            if (_ownedLoreIds.size > 0) {
+                lootPool = lootPool.filter(i => i.type !== 'lore' || !_ownedLoreIds.has(i.id));
+            }
+            
             // Šance na prázdný nález (VÝRAZNĚ ZVÝŠENO)
             let emptyChance = 0.65; // [REBALANCE] 65% default
             if (loc.zone === 'safe') emptyChance = 0.72;
@@ -49739,9 +49883,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             if (Math.random() < loreChance) {
-                // Najdi lore knihu kterou hráč ještě nemá
+                // Najdi lore knihu kterou hráč ještě nemá A ANI NEPŘEČETL
+                // [FIX FreeRiderCz] Předtím se generovaly i deníky které hráč už přečetl a vyhodil
+                // → spam s "VZÁCNÉ!" notifikacemi pro něco co už má v deníku
                 const ownedLore = state.inv.filter(i => i.id?.startsWith('lore_')).map(i => i.id);
-                const availableLore = ITEMS.filter(i => i.id?.startsWith('lore_') && !ownedLore.includes(i.id));
+                const readLore = state.readBooks || [];
+                const availableLore = ITEMS.filter(i => 
+                    i.id?.startsWith('lore_') && 
+                    !ownedLore.includes(i.id) &&
+                    !readLore.includes(i.id)
+                );
                 
                 if (availableLore.length > 0) {
                     // Dej přednost knihám v pořadí (lore_2 před lore_3 atd.)
@@ -52837,6 +52988,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let unsellableItems = [];
             
             state.inv.forEach(function(item, index) {
+                // [sp3rx] Runy zcela vyloučit z prodejního view — patří do Runové knihy
+                if (item.type === 'rune' || item.id?.startsWith('rune_')) return;
+                
                 const itemData = ITEMS.find(function(i) { return i.id === item.id; }) || item;
                 const price = itemData.price || item.price;
                 const isEquipped = isItemEquipped(item);
@@ -52888,7 +53042,31 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             let html = '';
             
+            // [NEW sp3rx] Banner s rychlým přístupem k Runové knize (runy se neprodávají v obchodě)
+            const _totalRunesInBook = Object.values(state.runeBook || {}).reduce((s, n) => s + (n || 0), 0);
+            if (_totalRunesInBook > 0) {
+                html += `<div onclick="showRuneBook()" style="cursor: pointer; background: linear-gradient(135deg, #1a0d2a, #0d0518); border: 1px solid #4a148c; border-radius: 6px; padding: 0.4rem 0.6rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; transition: all 0.2s;" onmouseover="this.style.borderColor='#9c27b0'" onmouseout="this.style.borderColor='#4a148c'">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-size: 1.2rem;">📖</span>
+                        <div>
+                            <div style="color: #ce93d8; font-size: 0.8rem; font-weight: bold;">Runová kniha — ${_totalRunesInBook} run</div>
+                            <div style="color: #888; font-size: 0.65rem;">Runy se zde neprodávají · klikni pro přehled</div>
+                        </div>
+                    </div>
+                    <span style="color: #4a148c; font-size: 1.2rem;">→</span>
+                </div>`;
+            }
+            
             // Ovládání: řazení + filtr
+            html += '<div style="position: relative; margin-bottom: 0.5rem;">';
+            // [NEW sp3rx] Search bar pro prodej s dynamickým ✕ tlačítkem
+            html += `<input type="text" id="sellSearchInput" placeholder="🔍 Hledat..." 
+                     value="${(window._sellSearchQuery || '').replace(/"/g, '&quot;')}"
+                     oninput="window._sellSearchQuery=this.value; filterSellBySearch(this.value); document.getElementById('sellSearchClear').style.display = this.value ? 'block' : 'none';" 
+                     style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.8rem; box-sizing: border-box;">`;
+            html += `<button id="sellSearchClear" onclick="window._sellSearchQuery=''; document.getElementById('sellSearchInput').value=''; this.style.display='none'; filterSellBySearch('');" 
+                     style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer; display: ${(window._sellSearchQuery || '').length > 0 ? 'block' : 'none'};">✕</button>`;
+            html += '</div>';
             html += '<div style="display: flex; gap: 0.3rem; flex-wrap: wrap; margin-bottom: 0.5rem;">';
             // Filtr kategorie
             const filterBtns = [
@@ -52928,14 +53106,105 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 html += `<div style="margin-bottom: 0.3rem;">`;
                 html += `<div style="color: #888; font-size: 0.7rem; padding: 0.2rem 0; border-bottom: 1px solid #333;">${cat.name} (${cat.items.length})</div>`;
                 
-                cat.items.forEach(({ item, index, itemData, sellPrice, weight, blockReason, isLocked, isEquipped }) => {
+                // [NEW FreeRiderCz] Seskup stejné itemy které jdou prodat dohromady
+                // Itemy se stejným ID + bez blockReason + stejnou durability bracket → 1 řádek
+                // Equipped/locked/quest itemy zůstávají oddělené
+                const grouped = new Map();
+                const ungrouped = [];
+                cat.items.forEach(entry => {
+                    const { item, blockReason } = entry;
+                    // Equipped/locked/quest itemy nesjednocujeme
+                    if (blockReason) {
+                        ungrouped.push(entry);
+                        return;
+                    }
+                    // Stack-able (consumable s count) zůstávají jak jsou
+                    if (item.count && item.count > 1) {
+                        ungrouped.push(entry);
+                        return;
+                    }
+                    // Group key = ID + durability bracket (pokud má durability)
+                    let key = item.id;
+                    if (typeof item.durability === 'number') {
+                        // Bracket podle 25% buckets — itemy podobné kondice se sjednotí
+                        const dPct = item.maxDurability ? Math.round((item.durability / item.maxDurability) * 4) : 4;
+                        key = item.id + '_dur' + dPct;
+                    }
+                    if (!grouped.has(key)) {
+                        grouped.set(key, { ...entry, _stackIndices: [entry.index], _stackCount: 1 });
+                    } else {
+                        const g = grouped.get(key);
+                        g._stackIndices.push(entry.index);
+                        g._stackCount++;
+                    }
+                });
+                
+                // Render seskupené (s tlačítkem "Prodat vše X×")
+                grouped.forEach(entry => {
+                    const { item, index, sellPrice, weight, isLocked, isEquipped, _stackCount, _stackIndices } = entry;
+                    const stackCount = _stackCount || 1;
+                    const totalSellPrice = sellPrice * stackCount;
+                    const weightText = weight > 0 ? `⚖️${(weight * stackCount).toFixed(1)}kg` : '';
+                    const isStack = stackCount > 1;
+                    
+                    // Rarity color pro card outline
+                    const rarityCol = ({uncommon:'#4caf50', rare:'#2196f3', epic:'#9c27b0', legendary:'#ff9800'})[item.rarity] || '#444';
+                    const bgGradient = isLocked 
+                        ? 'linear-gradient(135deg, #1a1a2a, #15151f)'
+                        : isStack 
+                            ? 'linear-gradient(135deg, #2a2520, #1a1810)' 
+                            : 'linear-gradient(135deg, #2a2a2a, #1f1f1f)';
+                    const borderLeft = isEquipped ? '3px solid #2196f3' : (isLocked ? '3px solid #ff9800' : (isStack ? '3px solid ' + rarityCol : '2px solid transparent'));
+                    
+                    html += `<div data-sell-item-name="${(item.name || '').replace(/"/g, '&quot;')}" style="background: ${bgGradient}; padding: 0.5rem 0.6rem; margin: 0.2rem 0; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; border-left: ${borderLeft}; ${isStack ? 'box-shadow: 0 2px 6px rgba(0,0,0,0.3), 2px 2px 0 -1px rgba(' + (item.rarity === 'epic' ? '156,39,176' : item.rarity === 'rare' ? '33,150,243' : '212,114,46') + ',0.3), 4px 4px 0 -2px rgba(' + (item.rarity === 'epic' ? '156,39,176' : item.rarity === 'rare' ? '33,150,243' : '212,114,46') + ',0.15);' : ''} position: relative;">`;
+                    
+                    // STACK BADGE — pravý horní roh
+                    if (isStack) {
+                        html += `<div style="position: absolute; top: -6px; right: -6px; background: linear-gradient(135deg, #d4722e, #8a4810); color: #fff; font-weight: bold; font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.5); border: 1px solid #ffb074; min-width: 24px; text-align: center; z-index: 2;">×${stackCount}</div>`;
+                    }
+                    
+                    // Ikona + info
+                    html += `<div style="display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0;">`;
+                    html += `<div style="font-size: 1.4rem; flex-shrink: 0; ${isStack ? 'filter: drop-shadow(0 0 4px ' + rarityCol + '55);' : ''}">${item.icon || '📦'}</div>`;
+                    html += `<div style="min-width: 0; overflow: hidden;">`;
+                    html += `<div style="font-size: 0.85rem; font-weight: ${isStack ? 'bold' : 'normal'}; color: ${isStack ? '#fff' : '#ddd'}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.name}</div>`;
+                    if (isStack) {
+                        html += `<div style="font-size: 0.7rem; color: #888; margin-top: 0.1rem;">
+                            <span style="color: #ffd700;">💰 ${sellPrice}/ks</span>
+                            <span style="color: #555;"> · </span>
+                            <span style="color: #ffeb3b; font-weight: bold;">celkem ${totalSellPrice}</span>
+                            ${weightText ? '<span style="color:#555;"> · </span><span style="color:#888;">' + weightText + '</span>' : ''}
+                        </div>`;
+                    } else {
+                        html += `<div style="font-size: 0.7rem; color: #888;"><span style="color: #ffd700;">💰${sellPrice}</span> ${weightText}</div>`;
+                    }
+                    html += `</div></div>`;
+                    
+                    // Tlačítka
+                    html += `<div style="display: flex; gap: 0.25rem; flex-shrink: 0; align-items: center;">`;
+                    if (isStack) {
+                        // 1× tlačítko (subtilní)
+                        html += `<button class="btn" onclick="showSellDialogByIndex(${index})" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: #3a2a1a; border: 1px solid #5a4020; color: #d4935f;" title="Prodat 1 kus">1×</button>`;
+                        // VŠE tlačítko (hlavní akce)
+                        html += `<button class="btn" onclick="bulkSellByIndices('${_stackIndices.join(',')}')" style="padding: 0.3rem 0.7rem; font-size: 0.75rem; background: linear-gradient(135deg, #d4722e, #b85a1a); border: 1px solid #ff8a3d; color: #fff; font-weight: bold; box-shadow: 0 2px 4px rgba(212,114,46,0.3);" title="Prodat všechny ${stackCount} ks za ${totalSellPrice} 💰">Vše</button>`;
+                    } else {
+                        html += `<button class="btn" onclick="showSellDialogByIndex(${index})" style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #d4722e; color: #fff;">Prodat</button>`;
+                    }
+                    if (!isEquipped && !item.cantSell && item.type !== 'quest' && item.type !== 'quest_item') {
+                        html += `<button onclick="toggleItemLock('${item.id}')" style="padding: 0.25rem 0.35rem; font-size: 0.7rem; background: ${isLocked ? '#ff9800' : '#2a2a2a'}; border: 1px solid ${isLocked ? '#ff9800' : '#444'}; color: #fff; border-radius: 4px; cursor: pointer;" title="${isLocked ? 'Odemknout' : 'Zamknout'}">${isLocked ? '🔓' : '🔒'}</button>`;
+                    }
+                    html += `</div></div>`;
+                });
+                
+                // Render ungrouped (equipped, locked, quest, stackable)
+                ungrouped.forEach(({ item, index, itemData, sellPrice, weight, blockReason, isLocked, isEquipped }) => {
                     const countText = (item.count && item.count > 1) ? ` (${item.count}x)` : '';
                     const weightText = weight > 0 ? `⚖️${weight.toFixed(1)}kg` : '';
                     const blocked = !!blockReason;
                     const bgColor = blocked ? '#1a1a1a' : (isLocked ? '#1a1a2a' : '#2a2a2a');
                     const borderLeft = isEquipped ? '3px solid #2196f3' : (isLocked ? '3px solid #ff9800' : (blocked ? '3px solid #333' : 'none'));
                     
-                    html += `<div style="background: ${bgColor}; padding: 0.35rem 0.5rem; margin: 0.15rem 0; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; border-left: ${borderLeft}; opacity: ${blocked ? '0.6' : '1'};">`;
+                    html += `<div data-sell-item-name="${(item.name || '').replace(/"/g, '&quot;')}" style="background: ${bgColor}; padding: 0.35rem 0.5rem; margin: 0.15rem 0; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; border-left: ${borderLeft}; opacity: ${blocked ? '0.6' : '1'};">`;
                     html += `<div style="display: flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 0;">`;
                     html += `<span style="font-size: 1.1rem; flex-shrink: 0;">${item.icon || '📦'}</span>`;
                     html += `<div style="min-width: 0; overflow: hidden;">`;
@@ -52948,7 +53217,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!blocked) {
                         html += `<button class="btn" onclick="showSellDialogByIndex(${index})" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: #d4722e;">Prodat</button>`;
                     }
-                    // Zámek tlačítko (ne pro equipped a quest itemy)
                     if (!isEquipped && !item.cantSell && item.type !== 'quest' && item.type !== 'quest_item') {
                         html += `<button onclick="toggleItemLock('${item.id}')" style="padding: 0.2rem 0.3rem; font-size: 0.7rem; background: ${isLocked ? '#ff9800' : '#333'}; border: 1px solid ${isLocked ? '#ff9800' : '#555'}; color: #fff; border-radius: 3px; cursor: pointer;">${isLocked ? '🔓' : '🔒'}</button>`;
                     }
@@ -52975,6 +53243,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const sellSection = document.getElementById('shopSellSection');
             if (sellSection) {
                 sellSection.innerHTML = '<h4 style="color: #ff9800; font-size: 0.85rem; margin: 0.5rem 0;">📦 Předměty</h4>' + renderSellItems() + '<h4 style="color: #8bc34a; font-size: 0.85rem; margin: 0.8rem 0 0.3rem 0;">📦 Suroviny</h4>' + renderSellResources();
+                // Re-aplikuj search query po re-renderu
+                if (window._sellSearchQuery && typeof filterSellBySearch === 'function') {
+                    filterSellBySearch(window._sellSearchQuery);
+                }
             }
         }
         window.toggleItemLock = toggleItemLock;
@@ -52992,7 +53264,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Sdílený výpočet - konzistentní se zbytkem
                 let sellPrice = calculateNpcSellPrice(itemData.price);
                 
-                html += '<div style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
+                html += '<div data-sell-item-name="' + (itemData.name || '').replace(/"/g, '&quot;') + '" style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
                 html += '<div style="display: flex; align-items: center; gap: 0.5rem;">';
                 html += '<span style="font-size: 1.3rem;">' + itemData.icon + '</span>';
                 html += '<div><div style="font-weight: bold; font-size: 0.85rem;">' + itemData.name + '</div>';
@@ -53077,6 +53349,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const _shopScrollEl = document.querySelector('#modal .shop-items-container, #modal [style*="overflow-y: auto"]');
             const _savedShopScroll = _shopScrollEl ? _shopScrollEl.scrollTop : 0;
             const _savedShopFilter = window._shopBuyFilter || 'all';
+            // [FIX UX] Pokud je obchod otevřen čerstvě (ne re-render po prodeji), vyresetuj search
+            // Bez tohoto: hráč hledá "puška", zavře obchod, otevře → vidí jen pušky → matoucí
+            if (!window._shopRefreshing) {
+                window._shopSearchQuery = '';
+                window._sellSearchQuery = '';
+            }
             
             // Zavři NPC overlay pokud existuje (volání z NPC dialogu)
             const npcOverlay = document.getElementById('npcModalOverlay');
@@ -53207,7 +53485,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const canAfford = getMoney() >= displayPrice;
                 const hasDiscount = displayPrice < originalPrice;
                 
-                let html = '<div style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
+                // [sp3rx] Rozšířený search: jméno + typ + effect + desc (hráč napíše 'energie' najde 'káva')
+                const searchTerms = [
+                    getItemName(item.id) || item.name || '',
+                    item.type === 'consumable' ? 'jídlo léčivo lék' : '',
+                    item.type === 'weapon' ? 'zbraň' : '',
+                    item.type === 'armor' ? 'zbroj' : '',
+                    item.type === 'helmet' ? 'helma přilba' : '',
+                    item.type === 'boots' ? 'boty' : '',
+                    item.type === 'gloves' ? 'rukavice' : '',
+                    item.type === 'tool' ? 'nástroj' : '',
+                    item.type === 'ammo' ? 'munice náboje' : '',
+                    item.effect === 'health' ? 'zdraví hp léčí' : '',
+                    item.effect === 'hunger' ? 'hlad jídlo' : '',
+                    item.effect === 'thirst' ? 'žízeň pití' : '',
+                    item.effect === 'energy' ? 'energie' : '',
+                    item.effect === 'radiation' ? 'radiace' : '',
+                    item.ammoType ? getAmmoName(item.ammoType) : '',
+                    item.desc || ''
+                ].join(' ');
+                let html = '<div data-shop-item-name="' + searchTerms.replace(/"/g, '&quot;') + '" style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">';
                 html += '<div style="display: flex; align-items: center; gap: 0.5rem; flex: 1;">';
                 html += '<span style="font-size: 1.5rem;">' + itemIcon(item.id, item.icon, '1.5rem') + '</span>';
                 html += '<div style="flex: 1;">';
@@ -53327,6 +53624,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 <!-- Koupit sekce -->
                 <div id="shopBuySection">
+                    <!-- [NEW] Search bar (sp3rx feedback) - dynamický ✕ button přes CSS -->
+                    <div style="position: relative; margin-bottom: 0.5rem;">
+                        <input type="text" id="shopSearchInput" placeholder="🔍 Hledat (jméno, typ, efekt)..." 
+                               oninput="filterShopBySearch(this.value); document.getElementById('shopSearchClear').style.display = this.value ? 'block' : 'none';" 
+                               value="${window._shopSearchQuery || ''}"
+                               style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem; box-sizing: border-box;">
+                        <button id="shopSearchClear" onclick="window._shopSearchQuery=''; document.getElementById('shopSearchInput').value=''; this.style.display='none'; filterShopBySearch('');" 
+                                style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer; display: ${(window._shopSearchQuery || '').length > 0 ? 'block' : 'none'};">✕</button>
+                    </div>
+                    
                     <!-- Filtry -->
                     <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem;">
                         <button class="btn shop-filter ${_savedShopFilter==='all'?'active':''}" onclick="filterShop('all')" data-filter="all" style="padding: 0.2rem 0.5rem; font-size: 0.75rem; background: ${_savedShopFilter==='all'?'#4caf50':'#333'};">Vše</button>
@@ -53441,7 +53748,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function refreshShopSellTab() {
             const sellContainer = document.getElementById('shopSellSection');
             const savedScroll = sellContainer ? sellContainer.scrollTop : 0;
+            window._shopRefreshing = true;  // [FIX UX] Zachovat search query při refreshi
             openShop();
+            window._shopRefreshing = false;
             switchShopTab('sell');
             requestAnimationFrame(() => {
                 const newContainer = document.getElementById('shopSellSection');
@@ -53473,7 +53782,65 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     cat.style.display = 'none';
                 }
             });
+            // Re-aplikuj search filter pokud existuje
+            if (window._shopSearchQuery) filterShopBySearch(window._shopSearchQuery);
         }
+        
+        // [NEW sp3rx] Search bar v obchodě - filtruje podle názvu
+        // Helper: odstraní diakritiku pro vyhledávání ('Lékárnička' → 'lekarnicka')
+        function _normalizeForSearch(s) {
+            return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        }
+        function filterShopBySearch(query) {
+            window._shopSearchQuery = query || '';
+            const q = _normalizeForSearch(query).trim();
+            
+            // Najdi všechny shop item karty + skryj/zobraz podle hledání
+            document.querySelectorAll('.shop-category').forEach(cat => {
+                const items = cat.querySelectorAll('[data-shop-item-name]');
+                let visibleCount = 0;
+                items.forEach(item => {
+                    const name = _normalizeForSearch(item.dataset.shopItemName);
+                    const visible = !q || name.includes(q);
+                    item.style.display = visible ? '' : 'none';
+                    if (visible) visibleCount++;
+                });
+                
+                // Skryj celou kategorii pokud nic nezbylo (a hledání běží)
+                const heading = cat.querySelector('h4');
+                if (q) {
+                    cat.style.display = visibleCount > 0 ? 'block' : 'none';
+                    // Update heading count
+                    if (heading && visibleCount > 0) {
+                        const origText = heading.dataset.origText || heading.textContent;
+                        if (!heading.dataset.origText) heading.dataset.origText = origText;
+                        const m = origText.match(/^(.+?)\s*\(\d+\)$/);
+                        if (m) heading.textContent = `${m[1]} (${visibleCount})`;
+                    }
+                } else {
+                    // Reset bez hledání
+                    if (heading?.dataset.origText) {
+                        heading.textContent = heading.dataset.origText;
+                    }
+                    // Re-aplikuj kategorie filter
+                    const currentFilter = window._shopBuyFilter || 'all';
+                    cat.style.display = (currentFilter === 'all' || cat.dataset.type === currentFilter) ? 'block' : 'none';
+                }
+            });
+        }
+        window.filterShopBySearch = filterShopBySearch;
+        
+        // [NEW sp3rx] Search bar pro prodejní tab
+        function filterSellBySearch(query) {
+            window._sellSearchQuery = query || '';
+            const q = _normalizeForSearch(query).trim();
+            const items = document.querySelectorAll('[data-sell-item-name]');
+            items.forEach(item => {
+                const name = _normalizeForSearch(item.dataset.sellItemName);
+                item.style.display = (!q || name.includes(q)) ? '' : 'none';
+            });
+        }
+        window.filterSellBySearch = filterSellBySearch;
         
         function buyItem(itemId, amount = 1) {
             // 🏪 KONTROLA LOKACE
@@ -54079,6 +54446,115 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             updateCarryWeight();
             refreshShopSellTab(); // [FIX] Refresh se zachováním scrollu
         }
+        
+        // [NEW FreeRiderCz] Bulk sell — prodá více stejných itemů najednou bez doomscrollu
+        function bulkSellByIndices(indicesStr) {
+            // 🏪 KONTROLA LOKACE
+            if (typeof canSellHere === 'function' && !canSellHere()) {
+                notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka.');
+                return;
+            }
+            // 🦠 KARANTÉNA
+            if (typeof areShopsClosed === 'function') {
+                const quarantine = areShopsClosed();
+                if (quarantine.closed) {
+                    notifyWarning('🦠 Karanténa!', 'Obchody jsou zavřené.');
+                    return;
+                }
+            }
+            
+            const indices = indicesStr.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+            if (indices.length === 0) return;
+            
+            // Vezmi referenci na první item pro confirm dialog
+            const firstItem = state.inv[indices[0]];
+            if (!firstItem) return;
+            const itemData = ITEMS.find(i => i.id === firstItem.id) || firstItem;
+            const sellPricePerItem = calculateNpcSellPrice(itemData.price || firstItem.price || 0);
+            const totalEarn = sellPricePerItem * indices.length;
+            
+            // Confirm dialog
+            showModal(`💰 Prodat všechny?`,
+                `<div style="text-align: center;">
+                    <div style="font-size: 2.5rem; margin: 0.5rem 0;">${firstItem.icon || '📦'}</div>
+                    <p style="color: #ccc; font-size: 0.95rem; font-weight: bold;">${firstItem.name}</p>
+                    <p style="color: #aaa; font-size: 0.85rem; margin: 0.4rem 0;">Počet: <strong style="color: #fff;">${indices.length}×</strong></p>
+                    <p style="color: #ffd700; font-size: 1.2rem; margin: 0.5rem 0;">Získáš: <strong>+${totalEarn} 💰</strong></p>
+                    <p style="color: #888; font-size: 0.7rem;">${sellPricePerItem} 💰 × ${indices.length} ks</p>
+                    <p style="color: #f44336; font-size: 0.75rem; margin-top: 0.6rem;">⚠️ Tato akce je nevratná!</p>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                    <button class="btn" onclick="confirmBulkSell('${indicesStr}');" style="background: #d4722e; font-weight: bold;">✓ Prodat ${indices.length}×</button>
+                    <button class="btn" onclick="closeModal()" style="background: #555;">✗ Zrušit</button>
+                </div>`
+            );
+        }
+        window.bulkSellByIndices = bulkSellByIndices;
+        
+        function confirmBulkSell(indicesStr) {
+            closeModal();
+            const indices = indicesStr.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+            if (indices.length === 0) return;
+            
+            // Setříď indices SESTUPNĚ — abychom mohli odstraňovat z inv pole bez posunu indexů
+            indices.sort((a, b) => b - a);
+            
+            let soldCount = 0;
+            let totalEarned = 0;
+            let firstItemName = '';
+            let firstItemIcon = '';
+            
+            for (const idx of indices) {
+                const item = state.inv[idx];
+                if (!item) continue;
+                
+                // Re-validate — item se mohl změnit od posledního renderu
+                if (state.lockedItems?.includes(item.id)) continue;
+                if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') continue;
+                if (item.crafted || item.fromCaravan || item.fromShop || item._ownedByCompanion) continue;
+                if (isItemEquipped(item)) continue;
+                
+                const itemData = ITEMS.find(i => i.id === item.id) || item;
+                const sellPrice = calculateNpcSellPrice(itemData.price || item.price || 0);
+                if (sellPrice <= 0) continue;
+                
+                // Kontrola peněz obchodu
+                const currentShopMoney = getShopMoney();
+                if (currentShopMoney < sellPrice) {
+                    notifyWarning('🏦 Nedostatek peněz', `Obchodník nemá víc peněz (zbývá ${currentShopMoney} 💰).`);
+                    break;
+                }
+                
+                if (!firstItemName) {
+                    firstItemName = item.name;
+                    firstItemIcon = item.icon || '📦';
+                }
+                
+                // Odstraň item z inv
+                state.inv.splice(idx, 1);
+                addMoney(sellPrice);
+                reduceShopMoney(sellPrice);
+                soldCount++;
+                totalEarned += sellPrice;
+            }
+            
+            if (soldCount === 0) {
+                notifyWarning('Nic neprodáno', 'Žádný item nebylo možné prodat.');
+                return;
+            }
+            
+            // Stats
+            state.stats.itemsSold = (state.stats.itemsSold || 0) + soldCount;
+            addDailyProgress('sold', soldCount);
+            
+            notifySuccess(`💰 Prodáno ${soldCount}×`, `${firstItemIcon} ${firstItemName} → +${totalEarned} 💰`);
+            addLog(`💰 Prodal jsi ${soldCount}× ${firstItemName} za ${totalEarned} 💰`, '🏪');
+            
+            updateCarryWeight();
+            saveGame(true);
+            refreshShopSellTab();
+        }
+        window.confirmBulkSell = confirmBulkSell;
 
         function updateSellDialog() {
             const item = state.inv.find(i => i.id === window.currentSellItem);
@@ -54379,8 +54855,69 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Musíme znovu vykreslit celý inventář
             if (state.activeTab === 'inv') {
                 renderGame();
+                // Re-aplikuj search po renderu
+                if (window._invSearchQuery && typeof filterInventoryBySearch === 'function') {
+                    requestAnimationFrame(() => filterInventoryBySearch(window._invSearchQuery));
+                }
             }
         }
+        
+        // [NEW sp3rx] Třídění inventáře
+        window._invSortMode = localStorage.getItem('_invSortMode') || 'default';
+        function setInventorySort(mode) {
+            window._invSortMode = mode;
+            try { localStorage.setItem('_invSortMode', mode); } catch(e) {}
+            if (state.activeTab === 'inv') {
+                renderGame();
+                if (window._invSearchQuery && typeof filterInventoryBySearch === 'function') {
+                    requestAnimationFrame(() => filterInventoryBySearch(window._invSearchQuery));
+                }
+            }
+        }
+        window.setInventorySort = setInventorySort;
+        
+        // [NEW sp3rx] Modal pro výběr třídění (lepší než <select> dropdown)
+        function showInventorySortMenu() {
+            const sorts = [
+                { id: 'default', label: 'Výchozí', icon: '📋', desc: 'Pořadí přidávání' },
+                { id: 'weight_desc', label: 'Váha ↓', icon: '⚖️', desc: 'Nejtěžší první (co odhodit)' },
+                { id: 'weight_asc', label: 'Váha ↑', icon: '⚖️', desc: 'Nejlehčí první' },
+                { id: 'name', label: 'Jméno', icon: '🔤', desc: 'Abecedně' },
+                { id: 'type', label: 'Typ', icon: '📦', desc: 'Seskupit podobné' },
+                { id: 'value', label: 'Cena ↓', icon: '💰', desc: 'Nejdražší první' },
+                { id: 'rarity', label: 'Vzácnost', icon: '⭐', desc: 'Legendární první' }
+            ];
+            const current = window._invSortMode || 'default';
+            const html = sorts.map(s => `
+                <button onclick="setInventorySort('${s.id}'); closeModal();" 
+                        style="display: block; width: 100%; padding: 0.7rem; margin-bottom: 0.4rem; background: ${current === s.id ? 'linear-gradient(135deg, #1a3a5a, #0d2540)' : '#1a1a1a'}; border: 1px solid ${current === s.id ? '#4a8ac8' : '#333'}; border-radius: 6px; color: #fff; cursor: pointer; text-align: left; font-family: inherit;">
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="font-size: 1.4rem;">${s.icon}</span>
+                        <div style="flex: 1;">
+                            <div style="font-weight: bold; font-size: 0.95rem; color: ${current === s.id ? '#8ab4f8' : '#ddd'};">${s.label} ${current === s.id ? '✓' : ''}</div>
+                            <div style="font-size: 0.7rem; color: #888;">${s.desc}</div>
+                        </div>
+                    </div>
+                </button>
+            `).join('');
+            showModal('🔄 Třídění inventáře', html);
+        }
+        window.showInventorySortMenu = showInventorySortMenu;
+        
+        // [NEW sp3rx] Search v inventáři - klient-side, žádný re-render
+        window._invSearchQuery = '';
+        function filterInventoryBySearch(query) {
+            window._invSearchQuery = query || '';
+            const q = (typeof _normalizeForSearch === 'function' ? _normalizeForSearch(query) : (query || '').toLowerCase()).trim();
+            const items = document.querySelectorAll('[data-inv-item-name]');
+            items.forEach(item => {
+                const name = typeof _normalizeForSearch === 'function' 
+                    ? _normalizeForSearch(item.dataset.invItemName)
+                    : (item.dataset.invItemName || '').toLowerCase();
+                item.style.display = (!q || name.includes(q)) ? '' : 'none';
+            });
+        }
+        window.filterInventoryBySearch = filterInventoryBySearch;
         
         // === MOŽNOSTI PRO ZBRANĚ ===
         function showWeaponOptions(itemId) {
@@ -65573,15 +66110,161 @@ function openFullscreenMap() {
         }
         
         function countRune(letter) {
-            // [FIX] Sčítej count property — koupené runy mohou mít count > 1 v jednom slotu
-            return (state.inv || []).filter(i => i.id === `rune_${letter}`).reduce((sum, i) => sum + (i.count || 1), 0);
+            // [NEW] Primárně z runeBook, fallback na inventář (kvůli starým savům před migrací)
+            const fromBook = (state.runeBook && state.runeBook[letter]) || 0;
+            const fromInv = (state.inv || []).filter(i => i.id === `rune_${letter}`).reduce((sum, i) => sum + (i.count || 1), 0);
+            return fromBook + fromInv;
         }
         
+        // 📖 RUNOVÁ KNIHA — standalone přehled celé sbírky run
+        function showRuneBook() {
+            if (!state.runeBook) state.runeBook = {};
+            const totalRunes = Object.values(state.runeBook).reduce((s, n) => s + (n || 0), 0);
+            const uniqueTypes = Object.keys(state.runeBook).filter(k => state.runeBook[k] > 0).length;
+            const allRuneLetters = Object.keys(RUNES || {}).map(k => RUNES[k].letter).filter(Boolean);
+            const totalUniqueAvailable = allRuneLetters.length;
+            const completionPct = totalUniqueAvailable > 0 ? Math.round((uniqueTypes / totalUniqueAvailable) * 100) : 0;
+            
+            // Rozděl runy podle vzácnosti
+            const rareRunes = [];
+            const epicRunes = [];
+            for (const k of Object.keys(RUNES || {})) {
+                const r = RUNES[k];
+                if (!r.letter) continue;
+                if (r.rarity === 'epic') epicRunes.push(r);
+                else rareRunes.push(r);
+            }
+            rareRunes.sort((a, b) => a.letter.localeCompare(b.letter));
+            epicRunes.sort((a, b) => a.letter.localeCompare(b.letter));
+            
+            // Hlavička — pergamenový vzhled
+            let html = `<div style="background: linear-gradient(135deg, #2a1810 0%, #1a0d0a 50%, #2a1810 100%); border: 2px solid #4a2818; border-radius: 12px 12px 4px 4px; padding: 1rem 0.8rem 0.8rem 0.8rem; margin: -1rem -1rem 0.8rem -1rem; box-shadow: inset 0 -2px 8px rgba(0,0,0,0.6), inset 0 2px 4px rgba(212,147,95,0.1); position: relative;">
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem; filter: drop-shadow(0 0 12px rgba(212,147,95,0.4));">📖</div>
+                    <div style="font-family: 'Cinzel', 'Rajdhani', serif; font-size: 1.05rem; color: #d4935f; letter-spacing: 3px; font-weight: bold; margin: 0.2rem 0; text-shadow: 0 0 8px rgba(212,147,95,0.3);">RUNOVÁ KNIHA</div>
+                    <div style="color: #a8826a; font-size: 0.7rem; font-style: italic; margin-bottom: 0.5rem;">— Codex Runarum —</div>
+                </div>
+                
+                <!-- Statistiky + progress -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.4rem;">
+                    <div style="background: rgba(0,0,0,0.4); border: 1px solid #4a2818; border-radius: 6px; padding: 0.3rem 0.5rem; text-align: center;">
+                        <div style="font-size: 0.6rem; color: #888; letter-spacing: 1px; text-transform: uppercase;">Posbíráno</div>
+                        <div style="color: #ffd700; font-size: 1.1rem; font-weight: bold;">🪬 ${totalRunes}</div>
+                    </div>
+                    <div style="background: rgba(0,0,0,0.4); border: 1px solid #4a2818; border-radius: 6px; padding: 0.3rem 0.5rem; text-align: center;">
+                        <div style="font-size: 0.6rem; color: #888; letter-spacing: 1px; text-transform: uppercase;">Druhy</div>
+                        <div style="color: #9c7cff; font-size: 1.1rem; font-weight: bold;">${uniqueTypes}/${totalUniqueAvailable}</div>
+                    </div>
+                </div>
+                
+                <!-- Progress bar -->
+                <div style="margin-top: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: #a8826a; margin-bottom: 0.15rem;">
+                        <span>SBÍRKA</span><span>${completionPct}%</span>
+                    </div>
+                    <div style="background: #0a0505; height: 8px; border-radius: 4px; overflow: hidden; border: 1px solid #2a1810;">
+                        <div style="height: 100%; width: ${completionPct}%; background: linear-gradient(90deg, #4a148c, #7b1fa2, #d4935f); box-shadow: 0 0 6px rgba(212,147,95,0.5); transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            </div>`;
+            
+            if (totalRunes === 0) {
+                html += `<div style="text-align: center; padding: 1.5rem 1rem; color: #888; font-size: 0.85rem; font-style: italic; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px dashed #333;">
+                    <div style="font-size: 2rem; opacity: 0.4; margin-bottom: 0.5rem;">📜</div>
+                    Stránky knihy jsou prázdné...<br>
+                    <span style="font-size: 0.75rem; color: #666;">Runy získáš v boji s nepřáteli nebo v dungeonech.</span>
+                </div>`;
+            } else {
+                // Helper pro render runy
+                const renderRuneCard = (rune) => {
+                    const count = state.runeBook[rune.letter] || 0;
+                    const owned = count > 0;
+                    const isEpic = rune.rarity === 'epic';
+                    const ownedBg = isEpic 
+                        ? 'linear-gradient(135deg, #2a1538, #1a0a28)' 
+                        : 'linear-gradient(135deg, #0d1a2a, #0a1020)';
+                    const ownedBorder = isEpic ? '#9c27b0' : '#1976d2';
+                    const ownedGlow = isEpic 
+                        ? 'box-shadow: 0 0 8px rgba(156,39,176,0.4), inset 0 1px 0 rgba(255,255,255,0.05);' 
+                        : 'box-shadow: 0 0 6px rgba(25,118,210,0.3), inset 0 1px 0 rgba(255,255,255,0.05);';
+                    const lockedBg = '#0a0808';
+                    const lockedBorder = '#1a1a1a';
+                    
+                    if (owned) {
+                        return `<div title="${rune.name}: ${rune.desc || ''}" style="background: ${ownedBg}; border: 1px solid ${ownedBorder}; border-radius: 8px; padding: 0.4rem 0.3rem; text-align: center; min-width: 48px; ${ownedGlow} position: relative;">
+                            <div style="font-size: 1.3rem; line-height: 1; filter: drop-shadow(0 0 4px ${isEpic ? 'rgba(206,147,216,0.6)' : 'rgba(144,202,249,0.5)'});">${rune.icon}</div>
+                            <div style="font-size: 0.65rem; color: ${isEpic ? '#ce93d8' : '#90caf9'}; font-weight: bold; letter-spacing: 1px; margin-top: 0.15rem;">${rune.letter}</div>
+                            <div style="position: absolute; top: -4px; right: -4px; background: linear-gradient(135deg, #d4935f, #8a5a30); color: #1a0d0a; font-size: 0.6rem; font-weight: bold; border-radius: 8px; min-width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; padding: 0 0.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.5);">×${count}</div>
+                        </div>`;
+                    } else {
+                        return `<div title="Zatím nenalezena" style="background: ${lockedBg}; border: 1px dashed ${lockedBorder}; border-radius: 8px; padding: 0.4rem 0.3rem; text-align: center; min-width: 48px; opacity: 0.4;">
+                            <div style="font-size: 1.3rem; line-height: 1; filter: grayscale(1) brightness(0.4);">${rune.icon}</div>
+                            <div style="font-size: 0.65rem; color: #444; font-weight: bold; letter-spacing: 1px; margin-top: 0.15rem;">${rune.letter}</div>
+                        </div>`;
+                    }
+                };
+                
+                // RARE sekce
+                if (rareRunes.length > 0) {
+                    const rareOwned = rareRunes.filter(r => (state.runeBook[r.letter] || 0) > 0).length;
+                    html += `<div style="margin-bottom: 0.8rem;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                            <div style="height: 1px; flex: 1; background: linear-gradient(90deg, transparent, #1976d2);"></div>
+                            <div style="font-size: 0.75rem; color: #90caf9; letter-spacing: 2px; font-weight: bold;">VZÁCNÉ ${rareOwned}/${rareRunes.length}</div>
+                            <div style="height: 1px; flex: 1; background: linear-gradient(90deg, #1976d2, transparent);"></div>
+                        </div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;">
+                            ${rareRunes.map(renderRuneCard).join('')}
+                        </div>
+                    </div>`;
+                }
+                
+                // EPIC sekce
+                if (epicRunes.length > 0) {
+                    const epicOwned = epicRunes.filter(r => (state.runeBook[r.letter] || 0) > 0).length;
+                    html += `<div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                            <div style="height: 1px; flex: 1; background: linear-gradient(90deg, transparent, #9c27b0);"></div>
+                            <div style="font-size: 0.75rem; color: #ce93d8; letter-spacing: 2px; font-weight: bold;">EPICKÉ ${epicOwned}/${epicRunes.length}</div>
+                            <div style="height: 1px; flex: 1; background: linear-gradient(90deg, #9c27b0, transparent);"></div>
+                        </div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;">
+                            ${epicRunes.map(renderRuneCard).join('')}
+                        </div>
+                    </div>`;
+                }
+            }
+            
+            // Akce
+            const hasDecoder = state._hasRuneDecoder || state.inv.some(i => i.id === 'rune_decoder');
+            html += '<div style="display: grid; gap: 0.3rem; margin-top: 0.8rem;">';
+            if (hasDecoder) {
+                html += '<button class="btn" onclick="closeModal(); showRuneDecoder();" style="background: linear-gradient(135deg, #4a148c, #7b1fa2); font-weight: bold; border: 1px solid #ce93d8; box-shadow: 0 0 12px rgba(156,39,176,0.3);">🔮 Otevřít dekodér</button>';
+            } else {
+                html += `<div style="background: linear-gradient(135deg, #1a0d0d, #0d0808); border: 1px solid #4a2020; border-radius: 6px; padding: 0.6rem; color: #aaa; font-size: 0.78rem; text-align: center;">
+                    <div style="color: #ff9800; margin-bottom: 0.2rem;">⚠️ Potřebuješ Runový dekodér</div>
+                    <div style="color: #888; font-size: 0.7rem;">Pre-War přístroj — najdi ho v dungeonech</div>
+                </div>`;
+            }
+            html += '<button class="btn" onclick="closeModal();" style="background: #2a2018; border: 1px solid #4a2818; color: #a8826a;">✗ Zavřít</button>';
+            html += '</div>';
+            
+            showModal('', html);
+        }
+        window.showRuneBook = showRuneBook;
+        
         function removeRunes(letters) {
+            if (!state.runeBook) state.runeBook = {};
             for (const letter of letters) {
+                // Nejdřív zkus odebrat z runeBook
+                if (state.runeBook[letter] && state.runeBook[letter] > 0) {
+                    state.runeBook[letter]--;
+                    if (state.runeBook[letter] <= 0) delete state.runeBook[letter];
+                    continue;
+                }
+                // Fallback: odeber z inventáře (legacy)
                 const idx = state.inv.findIndex(i => i.id === `rune_${letter}`);
                 if (idx >= 0) {
-                    // [FIX] Pokud má count > 1, sniž count místo smazání celého slotu
                     if (state.inv[idx].count && state.inv[idx].count > 1) {
                         state.inv[idx].count--;
                     } else {
@@ -65636,10 +66319,12 @@ function openFullscreenMap() {
             // Dostupné runy (kliknutelné)
             let availHtml = '';
             const availEntries = Object.entries(availableRunes).sort((a,b) => a[0].localeCompare(b[0]));
+            const totalRunesInBook = Object.values(state.runeBook || {}).reduce((s, n) => s + (n || 0), 0);
             if (availEntries.length === 0 && window._decoderSlots.length === 0) {
-                availHtml = '<div style="color: #555; text-align: center; padding: 0.5rem; font-size: 0.8rem;">Žádné runy v inventáři.</div>';
+                availHtml = '<div style="color: #555; text-align: center; padding: 0.5rem; font-size: 0.8rem;">📖 Runová kniha je prázdná. Najdi runy v boji nebo dungeonech.</div>';
             } else {
-                availHtml = '<div style="display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;">';
+                availHtml = `<div style="text-align:center;color:#9c7cff;font-size:0.7rem;margin-bottom:0.3rem;">📖 Runová kniha: ${totalRunesInBook} run (${availEntries.length} druhů)</div>`;
+                availHtml += '<div style="display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;">';
                 for (const [letter, count] of availEntries) {
                     const rune = RUNES[`rune_${letter}`];
                     availHtml += `<div onclick="runeDecoderAddRune('${letter}')" style="cursor: pointer; background: #1a1a2a; border: 1px solid #4a148c; border-radius: 6px; padding: 0.25rem 0.4rem; text-align: center; min-width: 38px; transition: all 0.2s;" title="${rune.name}">
@@ -80855,6 +81540,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cs = window.combatState;
             if (!cs) { (isVictory ? handleCombatVictory : handleCombatDefeat)(); return; }
             
+            // [CRITICAL FIX] Označ boj jako "skončený, čeká na claim" v save state.
+            // Pokud hráč zamkne telefon před kliknutím "Pokračovat", restoreCombatFromState
+            // tento flag uvidí a spustí handleCombatVictory/Defeat správně.
+            cs._endScreenShown = true;
+            cs._endScreenIsVictory = isVictory;
+            cs._endScreenShownAt = Date.now();
+            // Ulož ihned aby telefon-lock nezvrátil progres
+            try {
+                if (typeof saveGame === 'function') saveGame(true);
+            } catch(e) { console.warn('Save before end screen failed:', e); }
+            
             // Přidej závěrečný log
             cs.log.push(isVictory ? '🏆 === VÍTĚZSTVÍ! ===' : '💀 === PROHRA! ===');
             // Auto-rozbal log po boji aby hráč viděl celou historii
@@ -86646,7 +87342,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             ` : ''}
                             <span style="color: #4ecdc4; font-size: 0.85rem;">👥 ${playerUnits.length}</span>
                             <span style="color: #ff6b6b; font-size: 0.85rem;">💀 ${enemyUnits.length}</span>
-                            <button onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){_cleanupCombatState();closeModal();renderFull();saveGame(true);}" style="background: #333; border: 1px solid #555; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; cursor: pointer; color: #888;" title="Nouzový odchod z boje">✕</button>
                         </div>
                     </div>
                     
@@ -86774,7 +87469,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             </button>
                             ` : ''}
                         </div>
-                        <div style="display: grid; grid-template-columns: repeat(${isCompanionTurn ? 2 : 3}, 1fr); gap: 0.3rem; margin-bottom: 0.5rem;">
+                        <div style="display: grid; grid-template-columns: repeat(${isCompanionTurn ? 2 : 4}, 1fr); gap: 0.3rem; margin-bottom: 0.5rem;">
                             ${!isCompanionTurn ? `
                             <button class="btn" onclick="showCombatInventory()" style="padding: 0.4rem; font-size: 0.8rem; background: #1565c0;">
                                 🎒 Item
@@ -86793,6 +87488,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 🏃 Útěk
                             </button>
                             `}
+                            <button class="btn" onclick="if(confirm('⚠️ Nouzový odchod z boje! Přijdeš o postup. Pokračovat?')){_cleanupCombatState();closeModal();renderFull();saveGame(true);}" style="padding: 0.4rem; font-size: 0.75rem; background: linear-gradient(135deg, #4a1a1a, #2a0a0a); border: 1px solid #6a2a2a; color: #ff8a8a;" title="Nouzový odchod z boje (přijdeš o postup)">
+                                ✕ Ukončit
+                            </button>
                             ` : `
                             <button class="btn" onclick="letCompanionAI()" style="padding: 0.4rem; font-size: 0.8rem; background: #ff9800;">
                                 🤖 AI tah
@@ -89461,9 +90159,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const runeData = RUNES[runeKey];
                         const runeDef = ITEMS.find(i => i.id === runeKey);
                         if (runeDef) {
-                            state.inv.push({ ...runeDef });
-                            addLog(`🪬 Nalezena ${runeData.icon} ${runeData.name}!`, '🪬');
-                            notifySuccess('🪬 Runa!', `${runeData.icon} ${runeData.name} - cítíš podivnou moc...`);
+                            addItemToInventory(runeDef, 1, true); // tichá - notifikace ručně níže
+                            addLog(`🪬 Nalezena ${runeData.icon} ${runeData.name}! Přidána do 📖 Runové knihy.`, '🪬');
+                            notifySuccess('🪬 Runa!', `${runeData.icon} ${runeData.name} → Runová kniha`);
                         }
                     }
                 }
@@ -92789,9 +93487,94 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return false;
             }
             
+            const playerAlive = _csr.units?.some(u => u.team === 'player' && u.alive);
+            const enemyAlive = _csr.units?.some(u => u.team === 'enemy' && u.alive);
             const combatValid = _csr.units && Array.isArray(_csr.units) && _csr.units.length > 0 &&
-                _csr.units.some(u => u.team === 'player' && u.alive) &&
-                _csr.units.some(u => u.team === 'enemy' && u.alive);
+                playerAlive && enemyAlive;
+            
+            // [CRITICAL FIX #1] Boj měl zobrazený end screen ale hráč nestihl kliknout
+            // Tohle je HRÁČŮV REPORT: "Zamknul sem telefón, souboj byl skončený..."
+            // _endScreenShown flag se uloží v showCombatEndScreen → tady ho detekujeme
+            if (_csr._endScreenShown) {
+                const wasVictory = _csr._endScreenIsVictory !== false; // default victory pokud chybí flag
+                console.warn(`🏆 Combat restore: end screen byl zobrazen ale neclaimnut — spouštím ${wasVictory ? 'handleCombatVictory' : 'handleCombatDefeat'}`);
+                window.combatState = _csr;
+                // Synchronizuj HP zpět
+                const _pu = _csr.units?.find(u => u.isPlayer);
+                if (_pu && wasVictory) state.char.hp = Math.max(1, _pu.hp);
+                setTimeout(() => {
+                    try {
+                        if (wasVictory && typeof handleCombatVictory === 'function') {
+                            handleCombatVictory();
+                            notifySuccess('🏆 Vítězství obnoveno!', 'Odměny ti byly přiznány.');
+                        } else if (!wasVictory && typeof handleCombatDefeat === 'function') {
+                            handleCombatDefeat();
+                        }
+                    } catch (e) {
+                        console.error('Restore end-screen claim failed:', e);
+                        delete state.activeCombat;
+                        delete state.savedCombatState;
+                        window.combatState = null;
+                        if (typeof saveGame === 'function') saveGame(true);
+                    }
+                }, 300);
+                return true;
+            }
+            
+            // [CRITICAL FIX #2] Pokud hráč žije a všichni nepřátelé jsou mrtví, boj byl VYHRANÝ
+            // ale hráč nestihl kliknout "Pokračovat" před zamčením telefonu.
+            // Bez tohoto fixu: state.activeCombat se zahodí → ZTRÁTA odměn (XP, loot, peníze).
+            if (_csr.units && _csr.units.length > 0 && playerAlive && !enemyAlive) {
+                console.warn('🏆 Combat restore: všichni nepřátelé mrtví — spouštím handleCombatVictory');
+                window.combatState = _csr;
+                const _pu = _csr.units.find(u => u.isPlayer);
+                if (_pu) state.char.hp = Math.max(1, _pu.hp);
+                _csr.units.filter(u => u.isCompanion).forEach(cu => {
+                    const comp = state.companions.find(c => c.uniqueId === cu.companionId || c.id === cu.companionId);
+                    if (comp) {
+                        comp.hp = Math.max(0, Math.min(cu.hp, comp.maxHp || 50));
+                        if (!cu.alive || cu.hp <= 0) {
+                            comp.isDead = true;
+                            comp.hp = 0;
+                        }
+                    }
+                });
+                setTimeout(() => {
+                    try {
+                        if (typeof handleCombatVictory === 'function') {
+                            handleCombatVictory();
+                            notifySuccess('🏆 Vítězství obnoveno!', 'Souboj byl ukončen — odměny ti byly přiznány.');
+                        }
+                    } catch (e) {
+                        console.error('Restore victory failed:', e);
+                        delete state.activeCombat;
+                        delete state.savedCombatState;
+                        window.combatState = null;
+                        if (typeof saveGame === 'function') saveGame(true);
+                    }
+                }, 300);
+                return true;
+            }
+            
+            // [CRITICAL FIX #3] Stejně i pro PROHRU — pokud hráč mrtvý a nestihl kliknout "Pokračovat"
+            if (_csr.units && _csr.units.length > 0 && !playerAlive) {
+                console.warn('💀 Combat restore: hráč mrtvý — spouštím handleCombatDefeat');
+                window.combatState = _csr;
+                setTimeout(() => {
+                    try {
+                        if (typeof handleCombatDefeat === 'function') {
+                            handleCombatDefeat();
+                        }
+                    } catch (e) {
+                        console.error('Restore defeat failed:', e);
+                        delete state.activeCombat;
+                        delete state.savedCombatState;
+                        window.combatState = null;
+                        if (typeof saveGame === 'function') saveGame(true);
+                    }
+                }, 300);
+                return true;
+            }
             
             if (!combatValid) {
                 console.warn('⚠️ Combat state nevalidní - zahazuji');
@@ -93617,6 +94400,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [FIX BUG] Guard: state.combatBonuses musí být objekt (starý save bez něj → rage/stealth crash)
             if (!state.combatBonuses || typeof state.combatBonuses !== 'object' || Array.isArray(state.combatBonuses)) {
                 state.combatBonuses = { damageBonus: 0, defenseBonus: 0, expires: 0 };
+            }
+            
+            // [NEW FreeRiderCz] Migrace run z inventáře do runové knihy
+            // Hráči mívali 10-20 run v inventáři (každá v samostatném slotu)
+            // Po migraci jsou v state.runeBook { A: 3, B: 2, ... } a inventář je čistý
+            if (!state.runeBook) state.runeBook = {};
+            if (Array.isArray(state.inv)) {
+                let migratedCount = 0;
+                const newInv = [];
+                for (const item of state.inv) {
+                    if (item?.type === 'rune' && item.id?.startsWith('rune_')) {
+                        const letter = item.id.replace('rune_', '');
+                        const cnt = item.count || 1;
+                        state.runeBook[letter] = (state.runeBook[letter] || 0) + cnt;
+                        migratedCount += cnt;
+                    } else {
+                        newInv.push(item);
+                    }
+                }
+                if (migratedCount > 0) {
+                    state.inv = newInv;
+                    console.log(`📖 Migration: ${migratedCount} run přesunuto z inv do runové knihy.`);
+                }
             }
             
             // [v4.0.1] Migrace: vyčisti _ownedByCompanion flagy z inventáře
@@ -156551,6 +157357,9 @@ Posílej via UI tlačítko "Bug Report" - admin uvidí.
                 if (container.tagName === 'CANVAS') return;
                 if (container.id?.includes('combat') || container.id?.includes('dungeon-grid')) return;
                 if (container.id === 'npcChatHistory') return;
+                // [FIX FreeRiderCz] Skip i pokud container OBSAHUJE combat element (modal s combat uvnitř)
+                // Bez tohoto: šipky scroll v modalu překrývají ✕ tlačítko ukončit boj
+                if (container.querySelector?.('#combatContainer, #combatGridContainer, #combatGridAnchor')) return;
                 
                 container.dataset.scrollArrows = '1';
                 
