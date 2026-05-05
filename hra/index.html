@@ -159134,7 +159134,74 @@ PRAVIDLA ODPOVĚDI:
     }
     
     return reply;
-}async function aiGameMaster(ev,ex){if(!AI_ENGINE.enabled)return null;const c=getAICtx();return await AI_ENGINE.generateFast(`Jsi vypravěč. Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}" — ${c.locDesc}. ${c.zone} zóna, ${c.tod}, den ${c.day}. ${c.comp>0?c.comp+' společníků.':'Sám.'} ${ex||''}\n2-3 věty co vidí/slyší/cítí.`,ev,`gm_${ev}_${c.loc}_${c.tod}`);}
+}
+// [OPTIMIZATION] aiGameMaster — PŘEVEDEN NA STATIC POOL.
+// Před: každý 2. příchod na lokaci = AI volání (~150-200 tokenů). Velmi drahé!
+// Po: vybíráme z fráze podle zóny + denní doby + samota
+function aiGameMaster(ev, ex) {
+    const c = getAICtx();
+    
+    // Static pool podle zóny
+    const _gmPools = {
+        safe: [
+            'V dálce hoří oheň, hlasy se nesou tichem.',
+            'Klid pustiny narušuje jen tvůj vlastní dech.',
+            'Vítr šeptá v ruinách, ale hrozba je daleko.',
+            'Stará silnice vede neznámo kam. Ticho.',
+            'Slunce hřeje na rezavých plechách. Nikdo není v dohledu.',
+            'Pták krouží nad ruinami. Pokojný okamžik.',
+            'Vzduch chutná po prachu a starých vzpomínkách.',
+            'Rezavá značka skřípe ve větru. Nikdo neodpovídá.',
+        ],
+        medium: [
+            'Něco se pohnulo za rohem. Možná jen vítr.',
+            'Stopy v písku — někdo tu byl nedávno.',
+            'V ruinách znějí kroky. Tvoje nebo cizí?',
+            'Stín se mihl mezi troskami. Buď ostražitý.',
+            'Cítíš nepokojnou atmosféru. Tady to není bezpečné.',
+            'Šelest. Vrána? Nebo něco horšího?',
+            'Krev na zemi. Ne čerstvá, ale ne stará.',
+            'Trosky aut blokují cestu. Někdo tu lovil.',
+        ],
+        danger: [
+            'Páchne to tu smrtí. Drž se zbraně.',
+            'Vidíš stopy boje. Krev, prázdné nábojnice, kosti.',
+            'Zde se neopustí lehkomyslnost. Tady umírají.',
+            'Nepřátelské oči někde sledují každý tvůj krok.',
+            'Vzduch je hustý jako olověný plášť. Nebezpečí.',
+            'Mrtvé tělo opřené o zeď. Varování pro nezvané.',
+            'Strach lne k troskám jako mlha. Tohle je špatné místo.',
+            'Slyšíš vzdálené výkřiky. Nikdo nepřijde na pomoc.',
+        ],
+        deadly: [
+            'Smrt je tu jako stálice. Připrav se na nejhorší.',
+            'Nikdo, kdo sem došel, se nikdy nevrátil.',
+            'Cítíš jak ti mráz leze po zádech. Zde je peklo.',
+            'Dusíš se ve vlastním strachu. Tohle není místo pro živé.',
+            'Mrtvoly povrchu, kosti hluboko v písku. Příběh nikdy nedoříkán.',
+            'Tady se ani vrány neusadí. Něco větší o ně dbá.',
+            'Pro někoho tu byl konec. Nebudeš první ani poslední.',
+            'Ozvěna, která neodpovídá tvým krokům. Někdo... nebo něco.',
+        ]
+    };
+    
+    const _todModifiers = {
+        night: ['Tma houstne. Měsíc nesvítí — radioaktivní mraky.', 'Noc je živá. Slyšíš věci kterým bys raději nerozuměl.'],
+        evening: ['Slunce zapadá rudě. Stíny se prodlužují.', 'Soumrak proměnil pustinu v hřbitov barev.'],
+        morning: ['Ranní mlha přilíná k zemi. Svět spí.', 'Den se rodí — pomalu, neochotně.'],
+        day: ['Slunce pálí bez milosti. Všechno je viditelné.', 'Polední vedro tě udeří jako kladivo.'],
+    };
+    
+    const pool = _gmPools[c.zone] || _gmPools.medium;
+    const main = pool[Math.floor(Math.random() * pool.length)];
+    
+    // 30% šance přidat denní dobu pro variabilitu
+    if (Math.random() < 0.3 && _todModifiers[c.tod]) {
+        const tod = _todModifiers[c.tod][Math.floor(Math.random() * _todModifiers[c.tod].length)];
+        return Promise.resolve(`${tod} ${main}`);
+    }
+    return Promise.resolve(main);
+}
 let _aiHist=[];
 async function aiCompanionChat(msg){
     if(!AI_ENGINE.enabled) return null;
@@ -159696,18 +159763,64 @@ window.showAIQuestPanel=showAIQuestPanel;window.generateNewAIQuest=generateNewAI
 window.completeAIQuest=completeAIQuest;window.claimAIQuest=claimAIQuest;window.clearAIQuests=clearAIQuests;
 
 // 🌩️ DYNAMIC TRAVEL EVENT
+// [OPTIMIZATION] aiTravelEvent — STATIC POOL (replace AI to save tokens)
+// Před: 30% šance na AI volání při cestování (~150 tokenů). Mnoho cestování = mnoho tokenů.
+// Po: 30% šance na náhodnou frázi z poolu — žádné AI
 async function aiTravelEvent() {
-    if (!AI_ENGINE.enabled) return null;
-    if (Math.random() > 0.3) return null; // 30% šance na event
+    if (Math.random() > 0.3) return null; // 30% šance na event (zachováno)
+    
     const c = getAICtx();
-    // [FIX AI] Cache podle lokace+zóny+denní doby — stejné místo stejnou denní dobu = stejný event (30min TTL)
-    // Ušetří Gemini calls při opakovaném cestování do stejných lokací
-    const cacheKey = `travel_${c.loc}_${c.zone}_${c.tod}_lvl${Math.floor(c.lvl/5)}`;
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Vygeneruj KRÁTKOU náhodnou příhodu (3-4 věty) co hráč potká na cestě.
-Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}", ${c.zone} zóna, ${c.tod}.
-Typ příhod: potká cizince, najde něco zajímavého, uslyší zvuk, uvidí stopu, najde zprávu, potká zvíře.
-NEUDĚLUJ žádné odměny — jen atmosféra a příběh. Piš jako by se to dělo TEĎKA.`, 'Travel event', cacheKey);
+    
+    const _travelPools = {
+        // Bezpečné zóny — peaceful encounters
+        safe: [
+            'Mineš starou kovovou tabuli s vybledlým "VÍTEJTE". Někdo na ni vyrýval ❤️.',
+            'Zaslechneš dětský smích kdesi za kopcem. Stará nahrávka? Nebo... lepší nezjišťovat.',
+            'Najdeš kus papíru ve větru. Recept na koláč. Roky starý.',
+            'Stará studna se silnou vůní vlhkosti. Voda dávno vyschla.',
+            'Stopy bot v písku — někdo tu šel těsně před tebou. Zmizel.',
+            'Mineš srubek s knihovnou. Knihy ohlodány od myší.',
+            'Rezivá auta tvoří baricádu. Někdo si tu udělal úkryt.',
+            'Slyšíš ozvěnu rádia z dálky. Když se přiblížíš, ticho.',
+        ],
+        // Střední zóny — mírné napětí
+        medium: [
+            'Cizinec s tváří v kapuci tě sleduje, ale otočí se a zmizí v ruinách.',
+            'Najdeš jámu plnou kostí. Některé jsou lidské, jiné… ne.',
+            'Pak zaslechneš vrčení. Není to pes. Tiše projdeš dál.',
+            'Na zemi leží rozstřílená helma. Krev ještě vidět.',
+            'Stopa krve vede do bunkru. Nejdeš za ní.',
+            'Šepot ve vlnách rádia: "...slyší mě někdo? ...prosím..."',
+            'Tělo opřené o strom. Šíp v zádech. Pomník nebo varování?',
+            'Mihne se ti něco ve výhledu. Když se obrátíš, je pryč.',
+            'Stará rezavá auta s kostrami uvnitř. Někteří se nestihli vystřelit.',
+        ],
+        // Nebezpečné zóny — hrozba
+        danger: [
+            'Mrtvola raidera s ustřelenou hlavou. V kapse najdeš dopis "domů — kdyby...".',
+            'Slyšíš výstřely v dálce. Pak ticho. Někdo právě prohrál.',
+            'Stopy mutanta — drápy obrovské, kroky daleko. Lepší se schovat.',
+            'Pach hořícího masa z vesnice nedaleko. Někdo zaútočil.',
+            'Skupina supů krouží nad údolím. Hostina je čerstvá.',
+            'Zhroucený most. Pod ním třpytí v slunci nábojnice — desítky.',
+            'Vlčí smečka. Naštěstí jdou opačným směrem. Naštěstí.',
+            'Torza těl pohozená v jámě. Někdo si rád zachoval čistotu.',
+        ],
+        // Smrtící zóny — horror
+        deadly: [
+            'Slyšíš zvuky, které žádný živý tvor nedělá. Je to za tebou.',
+            'Mrtvoly povstávají z popela — ne, to je jen iluze radiace.',
+            'Nebe je zelené. Vzduch páchne kovem. Tady umírá i naděje.',
+            'Mineš krátér po výbuchu. Stále dýme. Geiger šílí.',
+            'Něco tě sleduje z toho stínu. Nedívej se. Jdi dál.',
+            'Tělo zkroucené v nemožné pozici. Něco ho tu sušilo zaživa.',
+            'Slyšíš vlastní jméno z dálky. Ale jsi sám.',
+            'Stopy po pásech. Velikost — celý dům. Doufáš že je pryč.',
+        ]
+    };
+    
+    const pool = _travelPools[c.zone] || _travelPools.medium;
+    return pool[Math.floor(Math.random() * pool.length)];
 }
 
 window.aiDeathNarrative=aiDeathNarrative;window.showAIRadio=showAIRadio;window.aiLegendaryLore=aiLegendaryLore;
@@ -159850,37 +159963,103 @@ function aiPostCombatNarrative(enemyNames, rounds) {
 window.aiBossTaunt=aiBossTaunt;window.aiPostCombatNarrative=aiPostCombatNarrative;
 
 // 🌙 AI SEN
+// [OPTIMIZATION] aiDream — STATIC POOL (no AI calls)
+// Před: každé spaní s 30% šancí → AI volání (~250 tokenů). Hráč spí často.
+// Po: vybíráme z pool snů podle jeho situace. Stejně surreal, žádné tokeny.
 async function aiDream() {
-    if (!AI_ENGINE.enabled) return null;
     const c = getAICtx();
-    // Sesbírej co hráč zažil
-    let events = [];
-    if (state.stats?.kills > 0) events.push(`Zabil ${state.stats.kills} nepřátel.`);
-    if (state.stats?.deaths > 0) events.push(`Zemřel ${state.stats.deaths}x.`);
-    if (state.stats?.bossKills > 0) events.push(`Porazil ${state.stats.bossKills} bossů.`);
-    if (state.status?.hunger < 20) events.push('Trpí hlady.');
-    if (state.status?.thirst < 20) events.push('Trpí žízní.');
-    if (state.status?.radiation > 50) events.push('Vysoká radiace.');
-    if (state.companions?.length > 0) events.push(`Má ${state.companions.length} společníků.`);
-    const evStr = events.join(' ') || 'Klidný den.';
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Jsi vypravěč snů. Napiš krátký, surreálný sen (3-5 vět) pro hráče "${c.name}" lvl ${c.lvl}.
-Co zažil: ${evStr}. Lokace: "${c.loc}". Den ${c.day}. Třída: ${c.cls||'přeživší'}.
-Sen reflektuje hráčovy zážitky, ale zkresleně — jako opravdový sen. Symbolismus, zvláštní obrazy, nečekané zvraty.
-Piš v 2. osobě ("Stojíš v...", "Vidíš..."). Konči neočekávaně — buď probuzením, nebo záhadou.`, 'Zdálo se ti', null, 300);
+    
+    // Vybereme pool podle stavu hráče (jaké snů by se mu zdály)
+    let pool;
+    if (state.status?.hunger < 20 || state.status?.thirst < 20) {
+        pool = [
+            'Stojíš u prostřeného stolu. Talíře plné. Když chceš sednout, jídlo se promění v písek.',
+            'Plaveš v moři limonády. Otevřeš ústa — slaná, jako moře. Tonu se v ní.',
+            'Lovíš zvíře, ale když ho otevřeš, je dutá. Jenom kosti a prach.',
+            'Voda všude kolem. Sahneš po ní — proteče prsty jako rtuť.',
+            'Bratr ti podává chleba. Když ho ukousneš, je to kámen. Bratr se směje a zmizí.',
+        ];
+    } else if (state.status?.radiation > 50) {
+        pool = [
+            'Tvé tělo svítí zeleně. Vidíš si pod kůži — na kostech rostou houby.',
+            'Procházíš se zářivou krajinou. Vše tě láká dál a dál do hlubin reaktoru.',
+            'Tvá ruka se mění. Prsty se prodlužují, kůže puchýře. Probudíš se vyčerpán.',
+            'Padají na tebe atomové zelené motýli. Jeden ti sedne na čelo a ty cítíš, jak ti vrtá do mozku.',
+            'Slunce je černé, obloha červená. Křičíš — ze tvého hrdla vylétají vrány.',
+        ];
+    } else if (state.stats?.bossKills > 0) {
+        pool = [
+            'Stojíš proti gigantovi. Když ho zasáhneš, rozpadne se na zlaté mince. Sbíráš je — všechny tě pálí.',
+            'Boss tě objímá jako otec. Šeptá ti tajemství. Probudíš se s jeho jménem na rtech.',
+            'Sedíš na trůnu z kostí poražených bossů. Korunu nemáš. Někdo přichází.',
+            'Vidíš sám sebe ve zrcadle — ale za zrcadlem je boss, který se právě rodí.',
+            'Tančíš s mrtvým bossem v plamenech. Jeho ruka tě drží pevně. Hudba nikdy nekončí.',
+        ];
+    } else if (state.companions?.length > 0) {
+        pool = [
+            'Tvůj společník mluví lidským hlasem. Vypráví ti o životě před apokalypsou. Když se otočíš, je sám.',
+            'Společník tě vede neznámým lesem. Stromy mají tváře. Některé se usmívají.',
+            'Sedíš s celou smečkou u ohně. Jste stejně staří. Nikdo nestárne, nikdo nezemře.',
+            'Tvůj pes ti vrátí ztracenou věc — vlastní hlavu z dětství.',
+            'Společníci se mění v ptáky a odlétají. Ty zůstáváš, vůbec ne smutný.',
+        ];
+    } else if (state.stats?.kills > 50) {
+        pool = [
+            'Zabití nepřátelé sedí kolem ohně. Vítají tě. Místo na konci stolu je prázdné — tvé.',
+            'Ruce máš krvavé. Voda nestačí. Stírej, stírej — pořád to prosakuje.',
+            'Stojíš v poli mrtvých těl. Všechna mají tvou tvář.',
+            'Slyšíš pláč dětí, které jsi nikdy nepotkal. Vědí tvé jméno.',
+            'Vlk s tváří první oběti tě následuje. Mlčí. To je horší.',
+        ];
+    } else {
+        // Klidný den — generický
+        pool = [
+            'Stojíš na lukách před apokalypsou. Tráva je zelená. Někdo volá tvé jméno z dálky. Probudíš se s úsměvem.',
+            'Plaveš v rybníce dětství. Ryby šeptají. Pak nebe potemní a ty se topíš.',
+            'Ulice tvého rodného města — prázdná. Otevřené dveře, prázdné vlaky. Domů. Ale kde je domov?',
+            'Babička pečí koláče. Kuchyně je teplá. Když ji obejmeš, je z popela.',
+            'Letíš nad pustinou. Vidíš vše. Země je krásná z výšky. Padáš.',
+            'Za oknem prší. Pustina je zelená. V dálce slyšíš píseň. Slova nerozumíš, ale rozumíš srdcem.',
+            'Sedíš v kině. Na plátně tvůj život. Odcházíš před koncem — nechceš vidět, jak to skončí.',
+            'Cestuješ vlakem do nikam. Spolucestující jsou všichni mrtví, které jsi znal. Vyprávějí ti vtipy. Smějete se.',
+        ];
+    }
+    
+    return pool[Math.floor(Math.random() * pool.length)];
 }
 
-// 🏰 DUNGEON NARRATOR
+// 🏰 DUNGEON NARRATOR — STATIC POOL (no AI)
+// Před: každé patro v dungeonu = AI volání. Hráč 10 pater × tokeny = drahé.
+// Po: vybíráme z poolu podle čísla patra (mělké/střední/hluboké)
 async function aiDungeonNarrator(dungeonName, floorName, floorNum, enemies) {
-    if (!AI_ENGINE.enabled) return null;
-    const c = getAICtx();
-    const enemyNames = (enemies || []).join(', ');
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Jsi vypravěč dungeonu. Popiš co hráč vidí/slyší/cítí na patře (2-3 věty).
-Dungeon: "${dungeonName}", patro ${floorNum}: "${floorName}".
-Nepřátelé na patře: ${enemyNames}.
-Hráč "${c.name}" lvl ${c.lvl}, zbraň: ${c.weapon}. ${c.comp>0?c.comp+' společníků.':'Sám.'}
-Atmosféra: temná, klaustrofobická, napínavá. Naznač nebezpečí ale neprozrazuj přesně co čeká.`, 'Dungeon', `dng_${dungeonName}_${floorNum}`);
+    const _depthPool = floorNum <= 3 ? 'shallow' : (floorNum <= 7 ? 'mid' : 'deep');
+    
+    const _dungeonPools = {
+        shallow: [
+            'Vstupuješ do tmavé chodby. Tvé kroky se rozléhají. Někde vpředu škrábe drápy o kámen.',
+            'Sestupuješ po vlhkých schodech. Pochodne na zdech ještě hoří — někdo tu byl nedávno.',
+            'Stěny pokryté plísní. Vzduch je těžký jako olovo. Cítíš pohyb v temnotě.',
+            'Stará knihovna ti otevírá své útroby. Knihy ohlodány, ale přízraky zůstávají.',
+            'Komnata smrduje krví. Někdo tu lovil — možná lovil tebe.',
+        ],
+        mid: [
+            'Hlubší patra, hustší atmosféra. Tady se nikdo neusmívá. Tady se umírá.',
+            'Vchody do dalších komnat blokují kosti. Někdo se snažil utéct. Nepodařilo.',
+            'Tmavé runové znaky na zdech pulzují tlumeným světlem. Tohle není přírodní.',
+            'Slyšíš vlastní krevní tep ve sluchu. Tady je tichý jako hrob — protože je to hrob.',
+            'Chlad ti polézá pod kůži. Není to chlad zimy. Je to chlad zla.',
+        ],
+        deep: [
+            'Hluboké patra. Tady už nikdo nezachraňuje. Tady už nikdo neslyší tvé výkřiky.',
+            'Vzduch hustý jako sklo. Každý dech bolí. Strach je tu hmotný.',
+            'Stěny se chvějí — ne od tvých kroků. Něco velkého spí pod tebou.',
+            'Pekelné teplo. Stěny pulzují krví. Tady si boj svádí samotná tma.',
+            'Konec hluboko nehle. Cítíš jak ti něco šeptá v hlavě — "obraťte se... obraťte se..." Nerobíš to.',
+        ]
+    };
+    
+    const pool = _dungeonPools[_depthPool];
+    return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // 🗣️ NPC DRBY
@@ -160475,13 +160654,25 @@ async function showGraveyard() {
 // =============================================
 // 📜 NALEZENÉ DENÍKY V DUNGEONECH
 // =============================================
+// [OPTIMIZATION] aiDungeonDiary — STATIC POOL (no AI)
 async function aiDungeonDiary(dungeonName, floorName, floorNum) {
-    if (!AI_ENGINE.enabled) return null;
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Napiš krátký deníkový zápis (3-4 věty) od mrtvého přeživšího nalezeného v dungeonu.
-Dungeon: "${dungeonName}", patro: "${floorName}" (#${floorNum}).
-Styl: osobní deník, poslední zápis před smrtí. Zmíň co viděl, čeho se bál, proč tam šel.
-Piš v 1. osobě. Datuj zápis (Den XX). Konči dramaticky.`, 'Deník', `diary_${dungeonName}_${floorNum}`, 400);
+    const _diaryPool = [
+        'Den 14: Slyšel jsem je za zdí. Šeptají mé jméno. Bože, kdy to skončí... Tomorrow. Tomorrow musím odejít.',
+        'Den 7: Voda nám došla. Tomáš zemřel. Já jsem jediný. Tahle pustina mě sežrala zaživa.',
+        'Den 23: Drápy mého nepřítele jsou na zdi. Já čekám až přijde pro mě.',
+        'Den 3: Sestoupil jsem hlouběji. Měl jsem se vrátit. Měl jsem... příliš pozdě.',
+        'Den 31: Nemůžu spát. Nemůžu jíst. Šepoty se zesilují. Zítra půjdu k nim. Možná pochopím.',
+        'Posledně píšu — pero v krvi mé vlastní. Pokud najdete tento deník, NIKDY se sem nevracejte.',
+        'Den 12: Svíce blikají. Sami od sebe. Přemýšlím, jestli jsem zbláznil. Ano, možná. Konečně.',
+        'Den 5: Ztratil jsem kamarády. Ztratil jsem náboje. Ztratil jsem rozum. Co mi zbývá? Tahle stránka.',
+        'Den 18: Vidím obličeje v stínech. Mluví ke mně. Říkají abych zůstal. A já chci zůstat. Takže zůstanu.',
+        'Den 9: Krev kape ze stropu. Není to moje. Doufám.',
+        'Den 6: Tohle nebyl pohřeb — tohle byla obětnice. A oni mě sem zavedli. Záměrně.',
+        'Den 22: Slyšet jak se moji vlastní soudruzi mění... krky se zlomily, kosti pukly... Jsem další.',
+        'Den 4: Žaludek pálí. Nejedl jsem dva dny. Pojídám stěny — sušený lišejník. Snad mě to nezabije.',
+        'Den 15: Jeden z nás se vrátil. Ale on už není on. Něco se mu podívalo do očí, a on se podíval zpět.',
+    ];
+    return _diaryPool[Math.floor(Math.random() * _diaryPool.length)];
 }
 
 // =============================================
@@ -161240,16 +161431,24 @@ Proroctví: tajemné, poetické, s konkrétním naznačením budoucnosti. Zmíň
 // =============================================
 // 🎲 CESTOVNÍ SETKÁNÍ S VOLBOU
 // =============================================
+// [OPTIMIZATION] aiTravelEncounter — STATIC POOL
 async function aiTravelEncounter() {
-    if (!AI_ENGINE.enabled) return null;
-    if (Math.random() > 0.15) return null; // 15% šance
-    const c = getAICtx();
-    return await AI_ENGINE.generateFast(`${AI_BASE_LITE}
-Vygeneruj krátké náhodné setkání na cestě (3-4 věty). Hráč "${c.name}" lvl ${c.lvl}, "${c.loc}", ${c.zone}.
-Na konci nabídni DVĚ volby: [A] akce (riskantní) nebo [B] akce (bezpečná). Formát:
-...popis setkání...
-[A] První volba
-[B] Druhá volba`, 'Setkání', null, 400);
+    if (Math.random() > 0.15) return null; // 15% šance (zachováno)
+    
+    const _encPool = [
+        '...starý muž sedí u ohně. Drží zrezavělou pušku, která už dávno nestřílí. Pohlédne ti do očí.\n[A] Promluv s ním (možná ti něco prozradí, ale ztratíš čas)\n[B] Pokračuj dál (nemůžeš si dovolit zdržení)',
+        '...zraněný cizinec leží u cesty. Krev mu prosakuje přes špinavý hadr. Žádá o vodu.\n[A] Pomoz mu (riskuješ že je to past)\n[B] Projdi kolem (mrzí tě to, ale přežití je první)',
+        '...slyšíš výkřik z trosek. Někdo prosí o pomoc. Mohl by to být přepad.\n[A] Jdi vyšetřit (mohlo by to vést ke kořisti nebo smrti)\n[B] Vyhni se (necháš to být — možná správně)',
+        '...karavana prodavače stojí u cesty. Sleduje tě podezřívavým pohledem.\n[A] Přibliž se a obchoduj (mohl by mít vzácné věci)\n[B] Drž se z dálky (vypadá nebezpečně)',
+        '...mladá žena tě zastaví. Ptá se na cestu k osadě. Působí důvěryhodně, ale...\n[A] Doprovod ji (společnost na cestě, ale možná lest)\n[B] Pošli ji jinou cestou (rychle a dál)',
+        '...stará mapa pohozená u silnice. Vypadá důležitě.\n[A] Vezmi mapu (mohla by ukazovat poklad — nebo léčku)\n[B] Nechej ji být (radši nezvedat věci v pustině)',
+        '...slepec hraje na harmoniku v ruinách. Pošeptá: "Vím kde jsou poklady..."\n[A] Naslouchej (možná lžu, možná pravda)\n[B] Pokračuj (slepci v pustině jsou často víc než slepci)',
+        '...nalezne ti mrtvolu se zaťatou pěstí. Dlaň skrývá něco lesklého.\n[A] Vezmi to (možná cenné, ale rušíš mrtvolu)\n[B] Nech ho na pokoji (úcta k mrtvým)',
+        '...skupina dětí v hadrech tě prosí o jídlo. Tváře špinavé, oči hluboké.\n[A] Dej jim něco (ztratíš zásoby, ale ne svědomí)\n[B] Projdi (oni přežijí — pustina je tvrdá)',
+        '...pas dvou mužů argumentuje nad mrtvolou. Zbraně viditelné.\n[A] Vmísíj se (možná tě potřebují jako svědek)\n[B] Ustup (souboj v pustině má jen oběti)',
+    ];
+    
+    return _encPool[Math.floor(Math.random() * _encPool.length)];
 }
 
 // =============================================
