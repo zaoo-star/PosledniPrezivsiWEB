@@ -107820,19 +107820,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (isMe) {
                 // Sám sebe nelze vyzvat - skip
             } else {
+                const _amIAdmin = (typeof isAdmin === 'function' && isAdmin());
+                
+                // [LOCK] Non-admin: zkontroluj zámek PvP. Admin: vždy povolen.
                 let pvpLocked = false;
-                try {
-                    if (!isAdmin()) {
+                if (!_amIAdmin) {
+                    try {
                         const lockSnap = await firebaseDB.ref('systemLocks/pvp').once('value');
                         pvpLocked = lockSnap.val() === true;
-                    }
-                } catch(e) { /* ignore */ }
-                
-                const myLevel = state.char?.level || 1;
-                const targetLevel = playerData?.level || 1;
-                const minLevel = (typeof PVP_DUEL_CONFIG !== 'undefined') ? PVP_DUEL_CONFIG.MIN_LEVEL : 5;
-                const maxDiff = (typeof PVP_DUEL_CONFIG !== 'undefined') ? PVP_DUEL_CONFIG.MAX_LEVEL_DIFF : 10;
-                const levelDiff = Math.abs(myLevel - targetLevel);
+                    } catch(e) { /* ignore */ }
+                }
                 
                 const escName = escapeHtml(playerName).replace(/'/g, "\\'");
                 
@@ -107840,20 +107837,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
                         🔒 PvP je momentálně zamčeno
                     </button>`;
-                } else if (myLevel < minLevel && !isAdmin()) {
-                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
-                        🔒 PvP od lvl ${minLevel} (máš ${myLevel})
-                    </button>`;
-                } else if (targetLevel < minLevel && !isAdmin()) {
-                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
-                        🔒 Cíl má lvl ${targetLevel} (min. ${minLevel})
-                    </button>`;
-                } else if (levelDiff > maxDiff && !isAdmin()) {
-                    pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
-                        🔒 Rozdíl levelu (${levelDiff}) > ${maxDiff}
-                    </button>`;
                 } else {
-                    const adminBadge = isAdmin() ? ' <span style="background:#ffd700;color:#000;font-size:0.6rem;padding:1px 4px;border-radius:3px;margin-left:0.2rem;">ADMIN</span>' : '';
+                    const adminBadge = _amIAdmin ? ' <span style="background:#ffd700;color:#000;font-size:0.6rem;padding:1px 4px;border-radius:3px;margin-left:0.2rem;">ADMIN</span>' : '';
                     pvpButtonHtml = `<button class="btn" onclick="closeModal(); declarePvPDuel('${escName}');" style="background: linear-gradient(135deg, #f44336 0%, #c62828 100%); padding: 0.8rem; grid-column: span 2; font-weight: bold; color: #fff;">
                         ⚔️ Vyzvat na souboj cti${adminBadge}
                     </button>`;
@@ -114693,8 +114678,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
-            // [DYNAMIC LOCK] Kontrola zámku PvP z Firebase (admin vždy povolen)
-            // [BYPASS] Hráči s pending duelem (od kohokoliv, vč. admina) lock obejdou — jinak by nemohli přijmout výzvu
+            // [DYNAMIC LOCK] Lock platí pro non-admin
+            // [BYPASS 1] Admin lock obejde
+            // [BYPASS 2] Hráč s pending duelem (od admina i kohokoliv) lock obejde — jinak by nemohl přijmout výzvu
             if (!(typeof isAdmin === 'function' && isAdmin())) {
                 try {
                     const lockSnap = await firebaseDB.ref('systemLocks/pvp').once('value');
@@ -114706,7 +114692,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             const raidsSnap = await firebaseDB.ref('scheduledRaids').once('value');
                             const raids = raidsSnap.val() || {};
                             for (const r of Object.values(raids)) {
-                                if (r && r.isDuel && r.targetPlayerName === _myName && 
+                                if (r && r.isDuel && 
+                                    (r.targetPlayerName === _myName || r.attackerLeader === _myName) && 
                                     (r.status === 'lobby' || r.status === 'starting' || r.status === 'deployment' || r.status === 'active')) {
                                     hasPendingDuel = true;
                                     break;
@@ -114728,19 +114715,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         // Hráč má pending duel — pokračuje (uvidí lobby svého duelu)
                     }
                 } catch(e) { /* ignore */ }
-            }
-            
-            const myLevel = state.char?.level || 1;
-            if (myLevel < PVP_DUEL_CONFIG.MIN_LEVEL && !(typeof isAdmin === 'function' && isAdmin())) {
-                showModal('⚔️ KOLOSEUM', `
-                    <div style="text-align: center; padding: 2rem;">
-                        <div style="font-size: 4rem;">⚔️</div>
-                        <h3 style="color: #ff9800;">Vyžadován level ${PVP_DUEL_CONFIG.MIN_LEVEL}</h3>
-                        <p style="color: #888;">Nejprve zoceluj svůj charakter v pustině. Tvůj level: ${myLevel}</p>
-                    </div>
-                    <button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>
-                `);
-                return;
             }
             
             const myName = getPlayerName();
@@ -154790,7 +154764,7 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             
             const myName = getPlayerName();
             
-            // [DYNAMIC LOCK] Kontrola zámku PvP z Firebase (admin vždy povolen)
+            // [DYNAMIC LOCK] Lock platí pro non-admin — admin vždy povolen
             if (!(typeof isAdmin === 'function' && isAdmin())) {
                 try {
                     const lockSnap = await firebaseDB.ref('systemLocks/pvp').once('value');
@@ -154806,12 +154780,8 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 return;
             }
             
-            // Min level — admin nemá level requirement
+            // [SIMPLIFIED] Level requirement úplně odstraněn — kdokoliv může vyzvat kohokoliv
             const myLevel = state.char?.level || 1;
-            if (myLevel < PVP_DUEL_CONFIG.MIN_LEVEL && !(typeof isAdmin === 'function' && isAdmin())) {
-                notifyWarning('⚔️ Příliš nízký level', `Souboj cti je dostupný od lvl ${PVP_DUEL_CONFIG.MIN_LEVEL}. Tvůj level: ${myLevel}`);
-                return;
-            }
             
             // Cooldown — admin nemá cooldown
             if (!(typeof isAdmin === 'function' && isAdmin())) {
@@ -154845,7 +154815,7 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 } catch(e) { /* ignore */ }
             }
             
-            // Najdi target level
+            // Najdi target level (jen pro UI / snapshot, žádný hard requirement)
             let targetLevel = null;
             try {
                 const lbSnap = await firebaseDB.ref('leaderboard').once('value');
@@ -154854,13 +154824,7 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 if (targetEntry) targetLevel = targetEntry.level;
             } catch(e) { /* ignore */ }
             
-            if (targetLevel) {
-                const diff = Math.abs(myLevel - targetLevel);
-                if (diff > PVP_DUEL_CONFIG.MAX_LEVEL_DIFF && !(typeof isAdmin === 'function' && isAdmin())) {
-                    notifyWarning('⚔️ Nevyrovnaný souboj', `Rozdíl levelů je ${diff} (max ${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF}). Najdi vyrovnanějšího soupeře.`);
-                    return;
-                }
-            }
+            // [SIMPLIFIED] MAX_LEVEL_DIFF check odstraněn — žádné omezení rozdílu levelů
             
             // UI: výběr času
             const minTime = Date.now() + PVP_DUEL_CONFIG.MIN_LEAD_TIME;
