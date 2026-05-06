@@ -37139,7 +37139,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const currentHp = Number(state.char.hp) || 0;
             
             // Během PvP souboje nebo PvP výzvy se death screen nezobrazuje
-            const inPvP = window.pvpChallengeOverlayActive === true || 
+            // [PvP PROTECTION] Použij globální helper pokud existuje (pokrývá víc situací)
+            const inPvP = (typeof isInPvPContext === 'function' && isInPvPContext()) ||
+                          window.pvpChallengeOverlayActive === true || 
                           document.getElementById('pvpFullscreenOverlay') ||
                           document.getElementById('pvpBattleModal') ||
                           (state.pvp && state.pvp.inBattle);
@@ -98594,6 +98596,44 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             showModal('✓ Smazáno!', '<p>Uložená hra byla smazána.</p><button class="btn" onclick="location.reload()" style="width: 100%; margin-top: 1rem;">🔄 Nová hra</button>');
         }
         
+        // === PvP SMRT-PROTECTION ===
+        // Hráč v PvP context (aktivní duel, lobby, deployment, výzva) NIKDY nesmí umřít.
+        // Volá se ve všech místech kde se aplikuje HP damage z PvE zdrojů (radiace, hlad, žízeň, otrava, nemoci, zranění).
+        function isInPvPContext() {
+            try {
+                // 1. Aktivní PvP combat (raid/duel běží)
+                if (window._pvpCombatRaidId) return true;
+                // 2. Otevřená PvP výzva (fullscreen overlay nebo modal)
+                if (window.pvpChallengeOverlayActive === true) return true;
+                if (document.getElementById('pvpFullscreenOverlay')) return true;
+                if (document.getElementById('pvpBattleModal')) return true;
+                // 3. PvP lobby/deployment fáze (mám aktivní raid v scheduledRaids cache)
+                if (state.activePvPSnapshot) return true;
+                if (state.activePvPSavedHp !== undefined && state.activePvPSavedHp !== null) return true;
+                // 4. State flag (legacy)
+                if (state.pvp && state.pvp.inBattle) return true;
+                return false;
+            } catch (e) {
+                return false;
+            }
+        }
+        window.isInPvPContext = isInPvPContext;
+        
+        // Guard helper — zajistí, že HP neklesne pod 1 pokud hráč je v PvP kontextu
+        function clampHpForPvP() {
+            try {
+                if (isInPvPContext() && state.char && state.char.hp <= 0) {
+                    state.char.hp = 1;
+                    state.isDead = false;
+                    if (window._pvpHpGuardLogged !== true) {
+                        console.log('🛡️ [PvP Guard] HP zachráněn — hráč v PvP nesmí umřít');
+                        window._pvpHpGuardLogged = true;
+                    }
+                }
+            } catch (e) { /* tichá chyba */ }
+        }
+        window.clampHpForPvP = clampHpForPvP;
+        
         // === GAME LOOP ===
         safeSetInterval(() => { try {
             const now = Date.now();
@@ -99746,6 +99786,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         // 100%: kritické - pomalá smrt (2 HP/15min) - nutné léčit!
                         const radDamage = 2 * delta / 900;
                         state.char.hp = Math.max(0, state.char.hp - radDamage);
+                        // [PvP PROTECTION] Hráč v PvP nesmí umřít na radiaci
+                        if (typeof clampHpForPvP === 'function') clampHpForPvP();
                         
                         // Log warning každou minutu
                         if (Math.floor(state.time.totalElapsed) % 60 === 0) {
@@ -99815,7 +99857,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // === SMRT ===
                 // VŽDY kontroluj HP <= 0 a zobraz death screen
                 // [FIX v4.0.1] Vyjma WB raidu - tam se smrt řeší v handleCombatDefeat (ústup, ne smrt)
-                if (state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid) {
+                // [PvP PROTECTION] Hráč v PvP NIKDY neumře — HP se zachrání na 1
+                if (isInPvPContext()) {
+                    clampHpForPvP();
+                } else if (state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid) {
                     state.isDead = true;
                     state.char.hp = 0; // Zajisti že je přesně 0
                     state.stats.deaths = (state.stats.deaths || 0) + 1;
@@ -114822,10 +114867,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <div style="color: #ffd700; font-size: 0.8rem; font-weight: bold; margin-bottom: 0.4rem;">🎯 VYZVAT HRÁČE</div>
                         ${onlinePlayers.length === 0 ? `
                             <div style="color: #666; font-size: 0.72rem; padding: 0.5rem; text-align: center; font-style: italic;">
-                                Žádný online hráč v rozsahu ±${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF} levelů.<br>Tvůj level: ${myLevel}
+                                ${_isAdminUser ? `Žádný online hráč v leaderboardu.` : `Žádný online hráč v rozsahu ±${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF} levelů.<br>Tvůj level: ${myLevel}`}
                             </div>
                         ` : `
-                            <div style="color: #888; font-size: 0.65rem; margin-bottom: 0.3rem;">Online hráči (rozsah ±${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF} lvl):</div>
+                            <div style="color: #888; font-size: 0.65rem; margin-bottom: 0.3rem;">${_isAdminUser ? 'Online hráči (admin — bez limitu):' : `Online hráči (rozsah ±${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF} lvl):`}</div>
                             <div style="max-height: 200px; overflow-y: auto;">
                                 ${onlinePlayers.map(p => {
                                     const safe = escapeHtml(p.name).replace(/'/g, "\\'");
@@ -114941,6 +114986,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!multiplayerEnabled || !firebaseDB) return;
             
             const myName = getPlayerName();
+            const _isAdmin = (typeof isAdmin === 'function' && isAdmin());
             showModal('⚔️ Vyber soupeře', `<div style="text-align:center;padding:1rem;"><div class="loading-spinner"></div><p style="color:#888;margin-top:0.5rem;">Načítám hráče...</p></div>`);
             
             try {
@@ -114948,7 +114994,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const onlineSnap = await firebaseDB.ref('online').once('value');
                 const online = onlineSnap.val() || {};
                 const onlinePlayers = Object.entries(online)
-                    .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
+                    .filter(([key, p]) => p.name && p.name !== myName && (_isAdmin || (p.level || 1) >= 5))
                     .map(([key, p]) => ({ key, ...p, isOnline: true }));
                 
                 // Načti offline hráče z leaderboardu (mají combat stats)
@@ -114956,7 +115002,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const lbData = lbSnap.val() || {};
                 const onlineNames = onlinePlayers.map(p => p.name);
                 const offlinePlayers = Object.values(lbData)
-                    .filter(p => p.name && p.name !== myName && (p.level || 1) >= 5 && !onlineNames.includes(p.name))
+                    .filter(p => p.name && p.name !== myName && (_isAdmin || (p.level || 1) >= 5) && !onlineNames.includes(p.name))
                     .map(p => ({ name: p.name, level: p.level, elo: p.pvpElo || 1000, isOnline: false }))
                     .sort((a, b) => (b.level || 1) - (a.level || 1))
                     .slice(0, 15);
@@ -115044,6 +115090,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!multiplayerEnabled || !firebaseDB) return;
             
             const myName = getPlayerName();
+            const _isAdmin = (typeof isAdmin === 'function' && isAdmin());
             const myElo = state.pvp?.elo || 1000;
             
             showModal('🎲 Hledám soupeře...', `
@@ -115059,14 +115106,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const snap = await firebaseDB.ref('online').once('value');
                 const online = snap.val() || {};
                 const candidates = Object.entries(online)
-                    .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
-                    .filter(([key, p]) => Math.abs((p.elo || 1000) - myElo) <= 300)
+                    .filter(([key, p]) => p.name && p.name !== myName && (_isAdmin || (p.level || 1) >= 5))
+                    .filter(([key, p]) => _isAdmin || Math.abs((p.elo || 1000) - myElo) <= 300)
                     .map(([key, p]) => ({ key, ...p }));
                 
                 if (candidates.length === 0) {
                     // Rozšíř hledání
                     const allPlayers = Object.entries(online)
-                        .filter(([key, p]) => p.name && p.name !== myName && (p.level || 1) >= 5)
+                        .filter(([key, p]) => p.name && p.name !== myName && (_isAdmin || (p.level || 1) >= 5))
                         .map(([key, p]) => ({ key, ...p }));
                     
                     if (allPlayers.length === 0) {
@@ -156145,31 +156192,73 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
         }
         window.createPvPCombatSnapshot = createPvPCombatSnapshot;
         
-        // [NEW] Hráč ve skutečnosti neumírá v PvP boji — jen v rámci boje
-        // Před připojením do PvP combat UI uložíme HP, po skončení obnovíme.
+        // [NEW] Hráč ve skutečnosti neumírá v PvP boji — kompletní snapshot pre/post.
+        // Po PvP boji má vše JAKO PŘED bojem (HP, status, zranění, nemoci, buffy, munice).
         // Volá se při openu PvP combat modalu.
         function savePvPPreCombatHp() {
-            if (state.activePvPSavedHp === undefined || state.activePvPSavedHp === null) {
-                state.activePvPSavedHp = state.char?.hp || 100;
-                console.log('🛡️ PvP HP před bojem uložen:', state.activePvPSavedHp);
+            if (!state.activePvPSnapshot) {
+                // Hluboká kopie všeho co může boj změnit
+                state.activePvPSnapshot = {
+                    hp: state.char?.hp || 100,
+                    isDead: state.isDead === true,
+                    status: state.status ? JSON.parse(JSON.stringify(state.status)) : null,
+                    injuries: state.injuries ? JSON.parse(JSON.stringify(state.injuries)) : [],
+                    diseases: state.diseases ? JSON.parse(JSON.stringify(state.diseases)) : [],
+                    curses: state.curses ? JSON.parse(JSON.stringify(state.curses)) : [],
+                    activeBuffs: state.activeBuffs ? JSON.parse(JSON.stringify(state.activeBuffs)) : [],
+                    activeDebuffs: state.activeDebuffs ? JSON.parse(JSON.stringify(state.activeDebuffs)) : [],
+                    statusEffects: state.statusEffects ? JSON.parse(JSON.stringify(state.statusEffects)) : null,
+                    // Munice — hráč si ji v PvP boji nesmí "vystřílet"
+                    weaponAmmo: state.equipped?.weapon?.currentMag !== undefined ? state.equipped.weapon.currentMag : null,
+                    weaponMaxMag: state.equipped?.weapon?.maxMag !== undefined ? state.equipped.weapon.maxMag : null,
+                    savedAt: Date.now()
+                };
+                // [BACKWARD COMPAT] Uchovej i staré pole pro kód co ho ještě čte
+                state.activePvPSavedHp = state.activePvPSnapshot.hp;
+                console.log('🛡️ PvP snapshot uložen:', { hp: state.activePvPSnapshot.hp, status: state.activePvPSnapshot.status });
                 if (typeof saveGame === 'function') saveGame(true);
             }
         }
         window.savePvPPreCombatHp = savePvPPreCombatHp;
+        // Alias pro nový název
+        window.savePvPPreCombatState = savePvPPreCombatHp;
         
-        // Po skončení PvP boje obnov HP (postava nesmí "umřít")
+        // Po skončení PvP boje obnov VŠE — postava má vše jako před bojem
         function restorePvPPostCombatHp() {
-            if (state.activePvPSavedHp !== undefined && state.activePvPSavedHp !== null) {
+            if (state.activePvPSnapshot) {
+                const snap = state.activePvPSnapshot;
                 if (state.char) {
-                    state.char.hp = state.activePvPSavedHp;
-                    console.log('🛡️ PvP HP po boji obnoven:', state.activePvPSavedHp);
+                    state.char.hp = snap.hp;
                 }
+                state.isDead = snap.isDead === true;
+                if (snap.status) state.status = JSON.parse(JSON.stringify(snap.status));
+                if (snap.injuries) state.injuries = JSON.parse(JSON.stringify(snap.injuries));
+                if (snap.diseases) state.diseases = JSON.parse(JSON.stringify(snap.diseases));
+                if (snap.curses) state.curses = JSON.parse(JSON.stringify(snap.curses));
+                if (snap.activeBuffs) state.activeBuffs = JSON.parse(JSON.stringify(snap.activeBuffs));
+                if (snap.activeDebuffs) state.activeDebuffs = JSON.parse(JSON.stringify(snap.activeDebuffs));
+                if (snap.statusEffects) state.statusEffects = JSON.parse(JSON.stringify(snap.statusEffects));
+                // Munice
+                if (snap.weaponAmmo !== null && state.equipped?.weapon) {
+                    state.equipped.weapon.currentMag = snap.weaponAmmo;
+                    if (snap.weaponMaxMag !== null) state.equipped.weapon.maxMag = snap.weaponMaxMag;
+                }
+                console.log('🛡️ PvP snapshot obnoven — vše jako před bojem');
+                state.activePvPSnapshot = null;
+                state.activePvPSavedHp = null;
+                if (typeof saveGame === 'function') saveGame(true);
+                if (typeof renderFull === 'function') renderFull();
+            } else if (state.activePvPSavedHp !== undefined && state.activePvPSavedHp !== null) {
+                // [LEGACY FALLBACK] Pro starý uložený save bez full snapshotu
+                if (state.char) state.char.hp = state.activePvPSavedHp;
                 state.activePvPSavedHp = null;
                 if (typeof saveGame === 'function') saveGame(true);
                 if (typeof renderFull === 'function') renderFull();
             }
         }
         window.restorePvPPostCombatHp = restorePvPPostCombatHp;
+        // Alias pro nový název
+        window.restorePvPPostCombatState = restorePvPPostCombatHp;
         
         // Vůdce raidu (master) v čas T spustí real-time combat
         // Vytvoří combat state se všemi přihlášenými hráči
