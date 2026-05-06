@@ -34848,6 +34848,84 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             addLog('Získal jsi: ' + item.name, item.icon);
             updateQuestProgress('item', itemId);
         }
+        window.pickupQuestItem = pickupQuestItem;
+        
+        // [NEW FIX] Centralizovaná funkce — AUTOMATICKÝ pickup mainQuest itemu při vstupu na lokaci
+        // (Stejný princip jako checkCompanionQuestItemPickup pro psí obojek)
+        // Volá se z více míst: travelComplete, loadGame, exploreLocation, atd.
+        function triggerQuestItemCheck() {
+            try {
+                const currentLocation = state.world?.currentLocation;
+                if (!currentLocation) return false;
+                
+                // [RECOVERY] Retroaktivní spawn pokud hráč má aktivní quest s spawnem na této lokaci
+                if (state.mainQuest?.currentQuest && !state.world.questItems?.[currentLocation]) {
+                    const _curQ = (typeof MAIN_QUESTS !== 'undefined') ? MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest) : null;
+                    if (_curQ?.spawnItem && _curQ.spawnItem.location === currentLocation) {
+                        const _sid = _curQ.spawnItem.id;
+                        if (!state.inv?.some(i => i.id === _sid)) {
+                            if (!state.world.questItems) state.world.questItems = {};
+                            state.world.questItems[currentLocation] = _sid;
+                            console.log(`📦 [questItemCheck] Retroaktivní spawn ${_sid} na ${currentLocation}`);
+                        }
+                    }
+                }
+                
+                // Pokud je quest item na lokaci, AUTOMATICKY ho přidej do inventáře
+                if (state.world.questItems?.[currentLocation]) {
+                    const _qItemId = state.world.questItems[currentLocation];
+                    const _qItem = QUEST_ITEMS.find(i => i.id === _qItemId);
+                    const _qLoc = WORLD_LOCATIONS.find(l => l.id === currentLocation);
+                    
+                    if (!_qItem) return false;
+                    
+                    // Pro dungeony se quest item sebere při vstupu (confirmEnterDungeon)
+                    if (_qLoc?.type === 'dungeon' && DUNGEON_FLOORS?.[_qLoc.id]) return false;
+                    
+                    // Už má v inventáři? Označ jako spotřebovaný a skonči
+                    if (state.inv?.some(i => i.id === _qItemId)) {
+                        delete state.world.questItems[currentLocation];
+                        return false;
+                    }
+                    
+                    // AUTOMATICKÝ PICKUP - stejně jako companion obojek
+                    const _giftItem = {..._qItem, count: 1, weight: 0}; // Quest itemy neváží
+                    const _added = (typeof addItemToInventory === 'function') 
+                        ? addItemToInventory(_giftItem, 1, true)  // silent
+                        : (state.inv.push(_giftItem), true);
+                    
+                    if (_added !== false) {
+                        delete state.world.questItems[currentLocation];
+                        if (typeof updateQuestProgress === 'function') {
+                            updateQuestProgress('item', _qItemId);
+                        }
+                        addLog('Získal jsi: ' + _qItem.name, _qItem.icon);
+                        try { saveGame(); } catch(e) {}
+                        
+                        // Zobraz modal s drobným zpožděním
+                        setTimeout(() => {
+                            try {
+                                showModal(`📜 Quest předmět nalezen!`, `
+                                    <div style="text-align: center;">
+                                        <div style="font-size: 4rem; margin-bottom: 1rem;">${_qItem.icon}</div>
+                                        <h3 style="color: #ffd700;">${_qItem.name}</h3>
+                                        <p style="color: #888;">${_qItem.desc || ''}</p>
+                                        <p style="color: #8bc34a; margin-top: 1rem;">Předmět přidán do inventáře!</p>
+                                    </div>
+                                    <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #ffd700; color: #000;">✓ Výborně!</button>
+                                `);
+                            } catch(e) {}
+                        }, 600);
+                        return true;
+                    }
+                }
+                return false;
+            } catch (_e) {
+                console.error('triggerQuestItemCheck error:', _e);
+                return false;
+            }
+        }
+        window.triggerQuestItemCheck = triggerQuestItemCheck;
         
         // === VZHLED - PROFILOVÝ OBRÁZEK ===
         // Nahradilo starý customizační systém (účesy, oblečení, tituly).
@@ -41518,6 +41596,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 setTimeout(() => checkCompanionQuestItemPickup(), 300);
             }
             
+            // === [FIX] MAIN QUEST ITEM - auto-pickup check (stejně jako companion items)
+            if (typeof triggerQuestItemCheck === 'function') {
+                setTimeout(() => triggerQuestItemCheck(), 350);
+            }
+            
             // === NAČTI FRAKČNÍ TERITORIA DO CACHE ===
             // Načteme teritoria pro zobrazení barev na mapě (refresh každých 10s nebo při prvním načtení)
             const shouldRefreshCache = !window.territoryCache || 
@@ -47436,46 +47519,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Speciální quest triggery při průzkumu
                 checkSpecialQuestTriggers(state.world.currentLocation);
                 
-                // 📜 Quest item check - zobraz nalezený quest item na lokaci
-                // Retroaktivní respawn: pokud quest item chybí v questItems ale patří sem
-                if (state.mainQuest?.currentQuest) {
-                    const _curQ = MAIN_QUESTS.find(q => q.id === state.mainQuest.currentQuest);
-                    if (_curQ?.spawnItem && _curQ.spawnItem.location === state.world.currentLocation) {
-                        const _sid = _curQ.spawnItem.id;
-                        if (!state.inv.some(i => i.id === _sid) && !state.world.questItems?.[state.world.currentLocation]) {
-                            if (!state.world.questItems) state.world.questItems = {};
-                            state.world.questItems[state.world.currentLocation] = _sid;
-                            console.log(`📦 [FIX arrival] Retroaktivní spawn ${_sid}`);
-                        }
-                    }
-                }
-                if (state.world.questItems?.[state.world.currentLocation]) {
-                    const _qItemId = state.world.questItems[state.world.currentLocation];
-                    const _qItem = QUEST_ITEMS.find(i => i.id === _qItemId);
-                    const _qLoc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
-                    if (_qItem && !state.inv.some(i => i.id === _qItemId)) {
-                        // Pro dungeony se quest item sebere při vstupu (confirmEnterDungeon)
-                        // Pro ostatní lokace zobraz popup
-                        if (!_qLoc || _qLoc.type !== 'dungeon' || !DUNGEON_FLOORS?.[_qLoc.id]) {
-                            setTimeout(() => {
-                                showModal('📜 Quest předmět nalezen!', `
-                                    <div style="text-align: center;">
-                                        <div style="font-size: 4rem; margin-bottom: 1rem;">${_qItem.icon}</div>
-                                        <h3 style="color: #ffd700;">${_qItem.name}</h3>
-                                        <p style="color: #888;">${_qItem.desc || ''}</p>
-                                    </div>
-                                    <button class="btn" onclick="pickupQuestItem('${_qItemId}')" style="width: 100%; margin-top: 1rem; background: #ffd700; color: #000;">✓ Vzít</button>
-                                `);
-                            }, 600);
-                        }
-                    }
-                }
+                // 📜 Quest item check — DEPRECATED, nahrazeno triggerQuestItemCheck() níže
+                // (stará logika s manuálním "Vzít" tlačítkem zrušena, nyní auto-pickup jako u společníků)
                 
                 // === [FIX] COMPANION QUEST ITEM - auto-pickup při příchodu ===
                 // Voláno se zpožděním aby se překreslila lokace
                 setTimeout(() => {
                     if (typeof checkCompanionQuestItemPickup === 'function') {
                         checkCompanionQuestItemPickup();
+                    }
+                    // === [FIX] MAIN QUEST ITEM - auto-pickup při příchodu (stejný princip)
+                    if (typeof triggerQuestItemCheck === 'function') {
+                        triggerQuestItemCheck();
                     }
                 }, 500);
                 
@@ -49185,13 +49240,34 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 );
                 if (pool.length > 0) {
                     const item = pool[Math.floor(Math.random() * pool.length)];
-                    if (typeof addItemToInventory === 'function') {
-                        addItemToInventory(item, 1, true);
+                    
+                    // [BUG FIX] Rarity drop chance check — předtím legendary padalo s 26% pravděpodobností!
+                    const _legBonus = (typeof getAllCompanionBonuses === 'function' ? (getAllCompanionBonuses().legendaryChance || 0) : 0);
+                    if (item.rarity === 'legendary' && Math.random() > (0.016 + _legBonus)) {
+                        // Legendary nepadne — fallback na rare/epic z pool
+                        const fallbackPool = pool.filter(p => p.rarity === 'rare' || p.rarity === 'epic');
+                        if (fallbackPool.length > 0) {
+                            const replacement = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+                            if (typeof addItemToInventory === 'function') {
+                                addItemToInventory(replacement, 1, true);
+                            } else {
+                                state.inv.push({...replacement, count: 1});
+                            }
+                            results.push({ name: replacement.name, icon: replacement.icon||'📦', count: 1 });
+                            ds.loot.push({ type: 'item', id: replacement.id });
+                        }
+                        // Pokud žádný rare/epic v pool, vůbec nic
+                    } else if (item.rarity === 'unique' && Math.random() > 0.05) {
+                        // Unique nepadne, žádná substituce
                     } else {
-                        state.inv.push({...item, count: 1});
+                        if (typeof addItemToInventory === 'function') {
+                            addItemToInventory(item, 1, true);
+                        } else {
+                            state.inv.push({...item, count: 1});
+                        }
+                        results.push({ name: item.name, icon: item.icon||'📦', count: 1 });
+                        ds.loot.push({ type: 'item', id: item.id });
                     }
-                    results.push({ name: item.name, icon: item.icon||'📦', count: 1 });
-                    ds.loot.push({ type: 'item', id: item.id });
                 }
             }
             
@@ -62703,8 +62779,23 @@ function openFullscreenMap() {
                             (i.id.includes(lootType) || i.name.toLowerCase().includes(lootType)));
                         if (matchPool.length > 0) {
                             const item = matchPool[Math.floor(Math.random() * matchPool.length)];
-                            if (canAddItem(item, 1)) { addItemToInventory(item, 1); notifyLoot(item.name, item.rarity, item.icon); }
-                            else { addToGroundLoot({...item}); }
+                            
+                            // [BUG FIX] Rarity drop chance check
+                            const _legBonus = (typeof getAllCompanionBonuses === 'function' ? (getAllCompanionBonuses().legendaryChance || 0) : 0);
+                            if (item.rarity === 'legendary' && Math.random() > (0.016 + _legBonus)) {
+                                // Legendary nepadne, fallback rare/epic z matchPool
+                                const fb = matchPool.filter(p => p.rarity === 'rare' || p.rarity === 'epic');
+                                if (fb.length > 0) {
+                                    const repl = fb[Math.floor(Math.random() * fb.length)];
+                                    if (canAddItem(repl, 1)) { addItemToInventory(repl, 1); notifyLoot(repl.name, repl.rarity, repl.icon); }
+                                    else { addToGroundLoot({...repl}); }
+                                }
+                            } else if (item.rarity === 'unique' && Math.random() > 0.05) {
+                                // Unique nepadne
+                            } else {
+                                if (canAddItem(item, 1)) { addItemToInventory(item, 1); notifyLoot(item.name, item.rarity, item.icon); }
+                                else { addToGroundLoot({...item}); }
+                            }
                         }
                     }
                     // Documents — bonus XP
@@ -104717,6 +104808,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Zobrazit akce na teritoriu (tlačítko na lokaci)
         async function showTerritoryActions() {
+            console.log('🏴 [showTerritoryActions] called for location:', state.world?.currentLocation);
+            
             // Pokud právě doběhl capture, nezobrazuj modal
             if (window._territoryCaptureJustCompleted) {
                 window._territoryCaptureJustCompleted = false;
@@ -104781,7 +104874,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                     }
                 } catch(e) {
-                    console.error('Territory load error:', e);
+                    console.error('🏴 Territory load error:', e, 'locationId:', locationId);
+                    // [FIX] Detailnější error - uživatel vidí důvod
+                    const errMsg = e?.message || e?.code || 'Neznámá chyba';
+                    notifyWarning('Chyba načítání území', `[${locationId}] ${errMsg}`);
                 }
             }
             
@@ -105905,6 +106001,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Začít obsazovat území bez strážce (30 min čekání)
         async function startTerritoryCapture(locationId) {
+            console.log('🏴 [startTerritoryCapture] CALLED for:', locationId, 'state.territoryCapture:', state.territoryCapture, 'multiplayer:', multiplayerEnabled);
             await loadClanData(); // Zajisti čerstvou cache
             const faction = getPlayerFaction();
             if (!faction) {
@@ -106014,10 +106111,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         rank: myRank                 // [FIX] Pro debug a UI
                     });
                     
-                    console.log('🏴 Capture started for', locationId);
+                    console.log('🏴 Capture started for', locationId, 'duration:', CAPTURE_DURATION, 'rank:', myRank);
                 } catch(e) {
-                    console.error('Start capture error:', e);
-                    notifyWarning('Chyba', 'Nepodařilo se začít dobývání');
+                    console.error('🏴 Start capture FB error:', e, 'locationId:', locationId);
+                    // [FIX] Detailnější error - uživatel vidí důvod
+                    const errMsg = e?.message || e?.code || 'Neznámá chyba';
+                    notifyWarning('Chyba dobývání', `[${locationId}] ${errMsg}`);
                     return;
                 }
             }
