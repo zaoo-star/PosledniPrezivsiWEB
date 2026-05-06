@@ -20046,6 +20046,29 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
          * @returns {boolean} True pokud probíhá boj
          */
         function isInCombat() {
+            // [SELF-HEAL] Pokud window.combatState existuje ale je nevalidní (prázdné units, žádný living enemy),
+            // vyčisti ho. Tohle řeší situace kdy combat zůstal zaseklý po quest item pickupu během exploreLocation,
+            // refreshi během modal-state, nebo race condition mezi quest dokončením a combat triggerem.
+            const cs = window.combatState;
+            if (cs) {
+                // Validace: musí mít units array s alespoň 1 alive enemy
+                const hasUnits = cs.units && Array.isArray(cs.units) && cs.units.length > 0;
+                const hasAliveEnemy = hasUnits && cs.units.some(u => u && u.team === 'enemy' && u.alive);
+                const hasAlivePlayer = hasUnits && cs.units.some(u => u && u.team === 'player' && u.alive);
+                
+                if (!hasUnits || !hasAliveEnemy || !hasAlivePlayer) {
+                    console.warn('🛡️ [isInCombat self-heal] Stale combat state detekován — vyčišťuji', {
+                        hasUnits, hasAliveEnemy, hasAlivePlayer, units: cs.units?.length
+                    });
+                    if (typeof _cleanupCombatState === 'function') {
+                        _cleanupCombatState();
+                    } else {
+                        window.combatState = null;
+                        delete state.activeCombat;
+                    }
+                    return false;
+                }
+            }
             return !!(window.combatState || state.inCombat || window.combatInProgress);
         }
         
@@ -84237,6 +84260,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
+            // [NEW FIX] Anti-insta-kill safeguard pro COMPANIONS — stejně jako pro hráče
+            // Hráči si stěžovali "v dungeonu spadne celý tým na 1 HP najednou".
+            // Důvod: bossy v dungeonu na patře 30+ s scaling 8x dávají 600+ DMG → AOE wipe.
+            // Cap chrání companion od insta-kill stejně jako hráče (60% maxHp v jedné ráně).
+            if (target.isCompanion && finalDamage > 0 && attacker && !attacker.isWorldBoss && !attacker.isRaidBoss) {
+                const compMaxHp = target.maxHp || 50;
+                const compDamageCap = Math.floor(compMaxHp * 0.60);
+                if (finalDamage > compDamageCap) {
+                    console.log(`🛡️ Companion insta-kill protection: ${attacker.name || 'enemy'} would deal ${finalDamage} to ${target.name} → capped at ${compDamageCap} (60% of ${compMaxHp})`);
+                    finalDamage = compDamageCap;
+                }
+            }
+            
             target.hp = Math.max(0, target.hp - finalDamage);
             
             // [FIX BUG #17] Sync HP do state.char když je target hráč — jinak raider rage,
@@ -88633,6 +88669,34 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         window._cleanupCombatState = _cleanupCombatState;
         
+        // [NEW] Recovery function pro hráče se zaseklým combat state
+        // Volatelná z dev console nebo z UI: forceEndCombat()
+        function forceEndCombat(silent = false) {
+            console.warn('🛡️ [forceEndCombat] Force cleanup combat state');
+            try {
+                _cleanupCombatState();
+            } catch(e) {
+                console.error('Force cleanup error:', e);
+                // Fallback brute-force cleanup
+                window.combatState = null;
+                delete state.activeCombat;
+                delete state.savedCombatState;
+                window.combatInProgress = false;
+                if (state) state.inCombat = false;
+            }
+            try { 
+                document.body.classList.remove('combat-fullscreen'); 
+                const _fb = document.getElementById('combatFloatingBtn'); 
+                if (_fb) _fb.remove();
+            } catch(e) {}
+            try { saveGame(true); } catch(e) {}
+            try { if (typeof renderFull === 'function') renderFull(); } catch(e) {}
+            if (!silent) {
+                try { notifySuccess('🛡️ Combat resetnut', 'Boj byl vyřešen, můžeš pokračovat.'); } catch(e) {}
+            }
+        }
+        window.forceEndCombat = forceEndCombat;
+        
         function endCombat() {
             _cleanupCombatState();
             
@@ -90115,6 +90179,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const compDef = typeof getCompanionStat === 'function' ? getCompanionStat(targetComp, 'defense') : (targetComp.defense || 5);
                     const _cMinDmg = Math.floor((enemy.damage || 1) * 0.10);
                     enemyDmg = Math.max(_cMinDmg, enemyDmg - compDef);
+                    
+                    // [NEW FIX] Anti-insta-kill safeguard pro companion v legacy combatu
+                    if (targetComp.maxHp && enemy && !enemy.isWorldBoss && !enemy.isRaidBoss) {
+                        const compDamageCap = Math.floor((targetComp.maxHp || 50) * 0.60);
+                        if (enemyDmg > compDamageCap) {
+                            console.log(`🛡️ Companion insta-kill protection (legacy): ${enemyDmg} → ${compDamageCap}`);
+                            enemyDmg = compDamageCap;
+                        }
+                    }
                     
                     if (targetComp.hp === undefined) targetComp.hp = targetComp.maxHp || 80;
                     targetComp.hp -= enemyDmg;
