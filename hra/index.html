@@ -46773,9 +46773,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem;">' +
                 '<button class="btn" onclick="adoptCompanion(\'' + companion.id + '\')" style="background: var(--toxic-dark); padding: 0.7rem; font-weight: bold;">❤️ Vzít k sobě</button>' +
                 '<button class="btn" onclick="confirmLeaveCompanion(\'' + companion.id + '\', \'' + companion.name.replace(/'/g, "\\'") + '\', \'' + companion.icon + '\')" style="background: #555; padding: 0.7rem;">✗ Nechat být</button>' +
-                '</div>'
+                '</div>' +
+                // [NEW FIX] Třetí tlačítko "Odložit" — pro hráče co nemají místo, ale chtějí společníka později
+                '<button class="btn" onclick="postponeCompanionEvent()" style="background: #2a2a4a; padding: 0.5rem; margin-top: 0.5rem; width: 100%; font-size: 0.85rem; color: #aaa;">⏰ Odložit (zobrazit jindy)</button>'
             );
         }
+        
+        // [NEW] Odložit companion event — označí jako resolved pro tuto session
+        // (nezapíše do rejectedCompanions, takže se může nabídnout v budoucnu)
+        function postponeCompanionEvent() {
+            closeModal();
+            resolveCurrentEvent();
+            // Volitelně: smaž scheduled companion event aby se neopakoval ihned
+            if (state.world?.scheduledEvents) {
+                state.world.scheduledEvents = state.world.scheduledEvents.filter(e => e.type !== 'companion');
+            }
+            saveGame(true);
+            notifyInfo('⏰ Odloženo', 'Společník se ti může objevit při dalším setkání.');
+        }
+        window.postponeCompanionEvent = postponeCompanionEvent;
         
         function confirmLeaveCompanion(companionId, name, icon) {
             // [FIX BUG] Lepší layout — symetrické tlačítka, default akce velká zelená (ZACHOVAT)
@@ -95024,6 +95040,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             console.log('🔄 Migrace uložené hry...');
             
+            // [NEW FIX] Vyčisti staré nevyřešené scheduled events (např. zaseklé companion offers)
+            // Hráči si stěžovali "po každém refreshi se mi nabídne pes/kočka/havran".
+            // Důvod: když hráč zavře hru bez kliknutí v companion modalu, event zůstane triggered+nevyřešený
+            // a checkScheduledEvents ho po každém refreshi znovu zobrazuje.
+            // Fix: pokud je event starší než 30 minut od triggerAt, smaž ho.
+            try {
+                if (state.world?.scheduledEvents && Array.isArray(state.world.scheduledEvents)) {
+                    const now = Date.now();
+                    const STALE_AGE = 30 * 60 * 1000; // 30 minut
+                    const before = state.world.scheduledEvents.length;
+                    state.world.scheduledEvents = state.world.scheduledEvents.filter(ev => {
+                        // Pokud event byl triggered ale nikdy resolved, a je starší než 30 min → smaž
+                        if (ev.triggered && !ev.resolved && ev.triggerAt && (now - ev.triggerAt) > STALE_AGE) {
+                            console.log('🗑️ migrateState: mažu stale event (',(Math.floor((now - ev.triggerAt)/60000)),'min staré):', ev.type, ev.eventId);
+                            return false;
+                        }
+                        return true;
+                    });
+                    if (state.world.scheduledEvents.length < before) {
+                        console.log(`🧹 Odstraněno ${before - state.world.scheduledEvents.length} stale eventů`);
+                    }
+                }
+            } catch(e) { console.warn('Stale events cleanup error:', e); }
+            
             // [FIX BUG] Migrace state.buffs z pole [] na objekt {} (starý formát)
             // Bez tohoto: Phoenix elixír, alchemy buffy, smuggler buffy se po save/load ztrácely
             // protože buffy přidávají klíče na pole což JSON.stringify nezachová.
@@ -105997,6 +106037,30 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         clearInterval(_territoryProgressTickInterval);
                         _territoryProgressTickInterval = null;
                     }
+                    
+                    // [NEW FIX] Safety net — pokud tick dojde na 100% ale state.territoryCapture byl smazán
+                    // (např. listenerem který detekoval změnu vlastníka), spusť recovery z Firebase
+                    // Hráči si stěžovali "progress dojde a nic se nestane" — tohle to opraví
+                    setTimeout(async () => {
+                        try {
+                            const locId = state.world?.currentLocation;
+                            if (!locId) return;
+                            
+                            // Pokud lokální state má capture, gameLoop ho dokončí — neděláme nic
+                            if (state.territoryCapture?.[locId]?._completing) return;
+                            if (state.territoryCapture?.[locId]) return;
+                            
+                            // Lokální state nemá capture, ale UI ho zobrazoval → recovery z Firebase
+                            console.warn('🏴 [progress tick recovery] Tick dosáhl 100% ale state.territoryCapture neexistuje. Spouštím recovery z Firebase.');
+                            if (typeof restoreTerritoryCapture === 'function') {
+                                await restoreTerritoryCapture();
+                            }
+                            // Force render aby UI odráželo realitu
+                            if (typeof renderFull === 'function') renderFull();
+                        } catch(e) {
+                            console.warn('🏴 Progress tick recovery error:', e);
+                        }
+                    }, 1500); // Krátký delay aby gameLoop měl šanci proběhnout
                 }
             };
             
@@ -108242,6 +108306,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 .on('value', async (snapshot) => {
                     const data = snapshot.val() || {};
                     chatMessages = Object.entries(data).map(([k,v]) => ({...v, _key: k, reactions: _chatReactionsCache[k] || {}})).sort((a, b) => a.timestamp - b.timestamp);
+                    window.chatMessages = chatMessages;  // [FIX BUG] Expose pro replyToPlayer key-based lookup
                     
                     // Připnutá zpráva — pokud není v posledních 100, donahrát z Firebase
                     if (_pinnedChatMsg?.msgKey && !chatMessages.some(m => m._key === _pinnedChatMsg.msgKey)) {
@@ -109753,12 +109818,28 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         window.toggleChatSystemFilter = toggleChatSystemFilter;
         
-        function replyToPlayer(playerName, msgIndex) {
+        function replyToPlayer(playerName, msgIndex, msgKey) {
             const chatInput = document.getElementById('chatInput');
             if (!chatInput) return;
             
-            // Ulož citaci z pole zpráv
-            const msgText = (window._chatMsgTexts && window._chatMsgTexts[msgIndex]) || '';
+            // [FIX BUG] Trojí strategie pro získání textu zprávy:
+            // 1. Pokud máme msgKey, najdi zprávu v živém chatMessages array (nemění se s rerenderem)
+            // 2. Fallback na _chatMsgTexts[msgIndex] (může být stale po rerenderu)
+            // 3. Pokud nic, prázdné = "(zpráva)" placeholder
+            // Předtím se používal jen msgIndex který byl relativní k slice(-50) a po nové zprávě
+            // ukazoval na úplně jinou zprávu → reply preview ukazoval "(zpráva)" místo textu.
+            let msgText = '';
+            try {
+                if (msgKey && Array.isArray(window.chatMessages)) {
+                    const found = window.chatMessages.find(m => m && m._key === msgKey);
+                    if (found && found.text) msgText = found.text;
+                }
+            } catch(e) { /* ignore */ }
+            // Fallback na index pole
+            if (!msgText) {
+                msgText = (window._chatMsgTexts && window._chatMsgTexts[msgIndex]) || '';
+            }
+            
             // [FIX v3.9.79] Ořízni delší citace ale zachovaj celá slova (80 znaků místo 60)
             let shortQuote = msgText;
             if (msgText.length > 80) {
@@ -110462,7 +110543,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const systemClickAction = isTombolaMsg ? 'showTombola()' : isWarZoneClick ? 'showFactionTab()' : isPoliticsClick ? 'showPoliticsPanel()' : isPokerClick ? 'showPokerLobby()' : null;
                     const messageClickHandler = isSystemMessage && systemClickAction
                         ? `onclick="${systemClickAction}" style="cursor: pointer;" title="Klikni pro otevření"`
-                        : (isMe || isSystemMessage) ? '' : `onclick="replyToPlayer('${escapeHtml(msg.author).replace(/'/g, "\'")}', ${_msgIdx}) " style="cursor: pointer;" title="Klikni pro odpověď"`;
+                        : (isMe || isSystemMessage) ? '' : `onclick="replyToPlayer('${escapeHtml(msg.author).replace(/'/g, "\'")}', ${_msgIdx}, '${(msg._key || '').replace(/'/g, "\\'")}')" style="cursor: pointer;" title="Klikni pro odpověď"`;
                     
                     // Barva systémové zprávy podle typu
                     const isWarZoneMsg = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
