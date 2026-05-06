@@ -62980,6 +62980,24 @@ function openFullscreenMap() {
                     f.name = f.name.replace(/Patro [0-9]+/, 'Patro ' + f.floor);
                     dungeonData.floors.push(f);
                 });
+                console.log(`🏰 Dungeon expanded: ${maxExisting} → ${maxExisting + 50}`);
+            }
+            // [v6.2 FIX] Safety net: pokud i po expansion patro neexistuje (např. hráč skip přes víc pater),
+            // expanduj dokud neexistuje (max 10 expansion = 500 pater).
+            let safetyCounter = 0;
+            while (dungeonData && dungeonData.isClanDungeon && state.dungeon.floor > dungeonData.floors.length && safetyCounter < 10) {
+                safetyCounter++;
+                const locationId = dungeonData.locationId;
+                const clanData = window.clanOwnershipCache && window.clanOwnershipCache[locationId];
+                const cfg = Object.assign({ monsterPool: 'mixed', entryFee: 0, minLevel: 1 },
+                    (clanData && clanData.dungeon) ? clanData.dungeon : {});
+                const maxExisting = dungeonData.floors[dungeonData.floors.length - 1].floor;
+                const newFloors = generateClanDungeonFloors(cfg);
+                newFloors.forEach(function(f) {
+                    f.floor += maxExisting;
+                    f.name = f.name.replace(/Patro [0-9]+/, 'Patro ' + f.floor);
+                    dungeonData.floors.push(f);
+                });
             }
             showDungeonUI();
         }
@@ -80690,8 +80708,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Vyber formaci podle typu boje
                 let selectedFormation;
                 let formationName;
-                const hasBoss = enemyGroup.some(e => e.isBoss || e.isWorldBoss || e.isRaidBoss);
-                const isAmbush = combatType === 'normal' && Math.random() < 0.25; // 25% šance na přepadení
+                // [v6.2 FIX] Boss detection — i isPreScaled považujeme za bosse (klanový dungeon/explore)
+                // Jinak by safe distance fix nepokrýval bosse z dungeonů.
+                const hasBoss = enemyGroup.some(e => e.isBoss || e.isWorldBoss || e.isRaidBoss || e.isPreScaled);
+                // [v6.2 FIX] Žádný ambush pokud je v group boss/preScaled — surround = boss vedle hráče = pain
+                // Hráči si stěžovali že "boss se vedle mě spawne". Toto je systémová oprava.
+                const isAmbush = !hasBoss && combatType === 'normal' && Math.random() < 0.25;
                 
                 if (combatType === 'settlement_raid' || combatType === 'horde') {
                     selectedFormation = Math.random() < 0.5 ? 'swarm' : 'wedge';
@@ -80759,7 +80781,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const _MIN_BOSS_DISTANCE = 4; // Min vzdálenost (Manhattan) pro bosse
                     
                     enemyGroup.forEach((e, idx) => {
-                        if (!e.isBoss && !e.isWorldBoss && !e.isRaidBoss) return;
+                        // [v6.2 FIX] Rozšířeno na isPreScaled — boss z klanového dungeonu/explore
+                        if (!e.isBoss && !e.isWorldBoss && !e.isRaidBoss && !e.isPreScaled) return;
                         const myPos = enemySpawnPositions[idx];
                         if (!myPos) return;
                         
@@ -87776,19 +87799,29 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cs = window.combatState;
             if (!cs) return;  // [FIX] Null guard
             
-            const item = state.inv.find(i => i.id === itemId);
-            if (!item) return;
+            // [v6.2 FIX] Double-click guard — Bez tohoto rapid-click spotřebuje 2 stimpaky najednou
+            if (cs._actionInProgress) {
+                console.warn('Combat action already in progress');
+                return;
+            }
+            cs._actionInProgress = true;
             
-            const unit = cs.selectedUnit;
-            if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
-            
-            if (item.effect === 'health') {
+            try {
+                const item = state.inv.find(i => i.id === itemId);
+                if (!item) return;
+                
+                const unit = cs.selectedUnit;
+                if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
+                
+                if (item.effect === 'health' || item.effect === 'heal_injury') {
                 // 🕳️ ABYSS MODIFIKÁTOR: no_heal - léčení zakázáno
                 if (state.abyss?.inProgress && state.abyss.activeModifiers?.includes('no_heal')) {
                     cs.log.push(`🚫 Léčiva neúčinkují v jedovatém vzduchu Propasti!`);
                     // Item se spotřebuje, ale neléčí
                     removeItemFromInventory(item, 1);
                     useAction(unit, 1);
+                    if (typeof closeModal === 'function') closeModal();
+                    if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
                     return;
                 }
                 let healAmount = item.value || 30;
@@ -87813,6 +87846,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const actualHeal = unit.hp - oldHp;
                 cs.log.push(`+${actualHeal} životů. [${unit.actionsLeft - 1} akce]`);
                 
+                // [FIX v6.2] Léčí i zranění (Stimpak léčí 'bruise', 'cut', atd.)
+                if (item.healsInjuries && item.healsInjuries.length > 0 && state.injuries) {
+                    const healedInjuries = [];
+                    state.injuries = state.injuries.filter(inj => {
+                        if (item.healsInjuries.includes(inj.type || inj.id)) {
+                            healedInjuries.push(inj.type || inj.id);
+                            return false;
+                        }
+                        return true;
+                    });
+                    if (healedInjuries.length > 0) {
+                        cs.log.push(`🩹 Vyléčeno: ${healedInjuries.join(', ')}`);
+                    }
+                }
+                
                 // Synchronizuj HP hráče
                 if (unit.isPlayer) state.char.hp = unit.hp;
                 
@@ -87820,6 +87868,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 removeItemFromInventory(item, 1);
                 
                 useAction(unit, 1);
+                
+                // [FIX v6.2] UI refresh — zavři inventory modal a re-render combat UI
+                // Bez tohoto vypadá léčení jako "nefunguje" protože HP se zobrazí až při příštím tahu.
+                if (typeof closeModal === 'function') closeModal();
+                if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
+            }
+            } catch(e) {
+                console.error('useItemInCombat error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se použít předmět');
+            } finally {
+                // [v6.2 FIX] Vždy uvolni action lock
+                if (cs) cs._actionInProgress = false;
             }
         }
         
@@ -106033,96 +106093,101 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Modal: Vyber osadníky kteří půjdou šéfovi
         async function showSettlerTaxModal(taxId, amount) {
-            if (!multiplayerEnabled || !firebaseDB) {
-                notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
-                return;
-            }
-            
-            // Ověř že daň je stále aktivní
-            const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
-            const tax = taxSnap.val();
-            if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
-                notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
-                return;
-            }
-            
-            const myName = getPlayerName();
-            const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
-            
-            // Zkontroluj zda už hráč splnil
-            const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
-            const record = recordSnap.val();
-            if (record?.status === 'paid') {
-                notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
-                return;
-            }
-            
-            const settlers = state.settlement?.settlers || [];
-            const aliveSettlers = settlers.filter(s => !s.dead && (s.hp || 100) > 0);
-            
-            if (aliveSettlers.length < amount) {
-                showModal('❌ Nedostatek osadníků', `
-                    <div style="text-align:center;padding:1rem;">
-                        <div style="font-size:3rem;">😔</div>
-                        <p style="color:#f44336;">Šéf požaduje ${amount} osadníků, ale máš jich jen ${aliveSettlers.length}.</p>
-                        <p style="color:#888;font-size:0.85rem;margin-top:0.8rem;">⚠️ Pokud nesplníš do ${new Date(tax.deadline).toLocaleTimeString('cs-CZ')}, dostaneš zákaz potulných obchodníků na 24h.</p>
-                    </div>
-                    <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
-                `);
-                return;
-            }
-            
-            window._taxSelectedSettlers = window._taxSelectedSettlers || new Set();
-            
-            const renderSettlerList = () => {
-                return aliveSettlers.map((s, idx) => {
-                    const selected = window._taxSelectedSettlers.has(idx);
-                    const settlerName = s.name || ('Osadník #' + idx);
-                    const settlerType = s.typeName || s.type || 'Osadník';
-                    const settlerIcon = s.icon || '👤';
-                    return `
-                        <div onclick="toggleTaxSettler(${idx}, ${amount})" style="background:${selected ? '#1a3a1a' : '#1a1a1a'};border:1px solid ${selected ? '#4caf50' : '#444'};padding:0.5rem 0.6rem;margin:0.25rem 0;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
-                            <div style="flex:1;">
-                                <div style="color:${selected ? '#4caf50' : '#fff'};font-size:0.85rem;">${selected ? '✅' : '⬜'} ${settlerIcon} <b>${escapeHtml(settlerName)}</b></div>
-                                <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${escapeHtml(settlerType)} · ❤️ ${s.hp || 100}</div>
-                            </div>
+            try {
+                if (!multiplayerEnabled || !firebaseDB) {
+                    notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
+                    return;
+                }
+                
+                // Ověř že daň je stále aktivní
+                const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+                const tax = taxSnap.val();
+                if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                    notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
+                    return;
+                }
+                
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                
+                // Zkontroluj zda už hráč splnil
+                const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+                const record = recordSnap.val();
+                if (record?.status === 'paid') {
+                    notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                    return;
+                }
+                
+                const settlers = state.settlement?.settlers || [];
+                const aliveSettlers = settlers.filter(s => !s.dead && (s.hp || 100) > 0);
+                
+                if (aliveSettlers.length < amount) {
+                    showModal('❌ Nedostatek osadníků', `
+                        <div style="text-align:center;padding:1rem;">
+                            <div style="font-size:3rem;">😔</div>
+                            <p style="color:#f44336;">Šéf požaduje ${amount} osadníků, ale máš jich jen ${aliveSettlers.length}.</p>
+                            <p style="color:#888;font-size:0.85rem;margin-top:0.8rem;">⚠️ Pokud nesplníš do ${new Date(tax.deadline).toLocaleTimeString('cs-CZ')}, dostaneš zákaz potulných obchodníků na 24h.</p>
                         </div>
-                    `;
-                }).join('');
-            };
-            
-            const timeLeftMin = Math.max(0, Math.ceil((tax.deadline - Date.now()) / 60000));
-            const timeLeftStr = timeLeftMin >= 60 ? `${Math.floor(timeLeftMin/60)}h ${timeLeftMin%60}min` : `${timeLeftMin}min`;
-            
-            showModal('👥 Osadnická daň šéfa', `
-                <div style="background:linear-gradient(135deg,#1a0a2a,#0a0a1a);padding:0.8rem;border-radius:8px;border:2px solid #7B1FA2;margin-bottom:0.8rem;">
-                    <div style="text-align:center;">
-                        <div style="font-size:2rem;">👥</div>
-                        <h3 style="color:#ce93d8;margin:0.3rem 0;">Šéf požaduje ${amount} osadníků</h3>
-                        <p style="color:#aaa;font-size:0.8rem;">Aktivoval: ${escapeHtml(tax.activatedBy || 'Šéf')}</p>
-                    </div>
-                </div>
+                        <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
+                    `);
+                    return;
+                }
                 
-                <div style="background:#2a1a0a;border:1px solid #ff5722;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
-                    <div style="color:#ff9800;font-size:0.85rem;font-weight:bold;">⏰ Zbývá: ${timeLeftStr}</div>
-                    <div style="color:#aaa;font-size:0.75rem;margin-top:0.2rem;">⚠️ Pokud nesplníš včas → zákaz nákupů u potulných obchodníků (24h)</div>
-                </div>
+                window._taxSelectedSettlers = window._taxSelectedSettlers || new Set();
                 
-                <div style="margin:0.5rem 0;">
-                    <div style="color:#888;font-size:0.8rem;margin-bottom:0.3rem;">Vyber přesně <b>${amount}</b> osadníků k odeslání:</div>
-                    <div id="taxSettlerList" style="max-height:35vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
-                        ${renderSettlerList()}
-                    </div>
-                    <div id="taxSettlerCount" style="text-align:center;color:#888;font-size:0.8rem;margin-top:0.4rem;">
-                        Vybráno: <span id="taxSelectedCount">${window._taxSelectedSettlers.size}</span> / ${amount}
-                    </div>
-                </div>
+                const renderSettlerList = () => {
+                    return aliveSettlers.map((s, idx) => {
+                        const selected = window._taxSelectedSettlers.has(idx);
+                        const settlerName = s.name || ('Osadník #' + idx);
+                        const settlerType = s.typeName || s.type || 'Osadník';
+                        const settlerIcon = s.icon || '👤';
+                        return `
+                            <div onclick="toggleTaxSettler(${idx}, ${amount})" style="background:${selected ? '#1a3a1a' : '#1a1a1a'};border:1px solid ${selected ? '#4caf50' : '#444'};padding:0.5rem 0.6rem;margin:0.25rem 0;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                                <div style="flex:1;">
+                                    <div style="color:${selected ? '#4caf50' : '#fff'};font-size:0.85rem;">${selected ? '✅' : '⬜'} ${settlerIcon} <b>${escapeHtml(settlerName)}</b></div>
+                                    <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${escapeHtml(settlerType)} · ❤️ ${s.hp || 100}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                };
                 
-                <button id="taxSubmitBtn" class="btn" onclick="submitSettlerTax('${taxId}', ${amount})" style="width:100%;margin-top:0.5rem;background:${window._taxSelectedSettlers.size === amount ? 'linear-gradient(135deg,#2e7d32,#1b5e20)' : '#555'};padding:0.7rem;font-weight:bold;" ${window._taxSelectedSettlers.size === amount ? '' : 'disabled'}>
-                    📤 Odeslat ${amount} osadníků šéfovi
-                </button>
-                <button class="btn" onclick="window._taxSelectedSettlers = new Set(); closeModal();" style="width:100%;margin-top:0.3rem;background:#555;">Zrušit</button>
-            `);
+                const timeLeftMin = Math.max(0, Math.ceil((tax.deadline - Date.now()) / 60000));
+                const timeLeftStr = timeLeftMin >= 60 ? `${Math.floor(timeLeftMin/60)}h ${timeLeftMin%60}min` : `${timeLeftMin}min`;
+                
+                showModal('👥 Osadnická daň šéfa', `
+                    <div style="background:linear-gradient(135deg,#1a0a2a,#0a0a1a);padding:0.8rem;border-radius:8px;border:2px solid #7B1FA2;margin-bottom:0.8rem;">
+                        <div style="text-align:center;">
+                            <div style="font-size:2rem;">👥</div>
+                            <h3 style="color:#ce93d8;margin:0.3rem 0;">Šéf požaduje ${amount} osadníků</h3>
+                            <p style="color:#aaa;font-size:0.8rem;">Aktivoval: ${escapeHtml(tax.activatedBy || 'Šéf')}</p>
+                        </div>
+                    </div>
+                    
+                    <div style="background:#2a1a0a;border:1px solid #ff5722;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
+                        <div style="color:#ff9800;font-size:0.85rem;font-weight:bold;">⏰ Zbývá: ${timeLeftStr}</div>
+                        <div style="color:#aaa;font-size:0.75rem;margin-top:0.2rem;">⚠️ Pokud nesplníš včas → zákaz nákupů u potulných obchodníků (24h)</div>
+                    </div>
+                    
+                    <div style="margin:0.5rem 0;">
+                        <div style="color:#888;font-size:0.8rem;margin-bottom:0.3rem;">Vyber přesně <b>${amount}</b> osadníků k odeslání:</div>
+                        <div id="taxSettlerList" style="max-height:35vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+                            ${renderSettlerList()}
+                        </div>
+                        <div id="taxSettlerCount" style="text-align:center;color:#888;font-size:0.8rem;margin-top:0.4rem;">
+                            Vybráno: <span id="taxSelectedCount">${window._taxSelectedSettlers.size}</span> / ${amount}
+                        </div>
+                    </div>
+                    
+                    <button id="taxSubmitBtn" class="btn" onclick="submitSettlerTax('${taxId}', ${amount})" style="width:100%;margin-top:0.5rem;background:${window._taxSelectedSettlers.size === amount ? 'linear-gradient(135deg,#2e7d32,#1b5e20)' : '#555'};padding:0.7rem;font-weight:bold;" ${window._taxSelectedSettlers.size === amount ? '' : 'disabled'}>
+                        📤 Odeslat ${amount} osadníků šéfovi
+                    </button>
+                    <button class="btn" onclick="window._taxSelectedSettlers = new Set(); closeModal();" style="width:100%;margin-top:0.3rem;background:#555;">Zrušit</button>
+                `);
+            } catch(e) {
+                console.error('showSettlerTaxModal error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se otevřít modal daně');
+            }
         }
         window.showSettlerTaxModal = showSettlerTaxModal;
         
@@ -106175,12 +106240,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Odeslání osadníků šéfovi
         async function submitSettlerTax(taxId, amount) {
-            if (!window._taxSelectedSettlers || window._taxSelectedSettlers.size !== amount) {
-                notifyWarning('Chyba', `Vyber přesně ${amount} osadníků`);
+            // [v6.2 FIX] Double-click guard
+            if (window._submittingSettlerTax) {
+                console.warn('Submit settler tax already in progress');
                 return;
             }
+            window._submittingSettlerTax = true;
             
             try {
+                if (!window._taxSelectedSettlers || window._taxSelectedSettlers.size !== amount) {
+                    notifyWarning('Chyba', `Vyber přesně ${amount} osadníků`);
+                    return;
+                }
+                
                 const myName = getPlayerName();
                 const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
                 
@@ -106193,22 +106265,36 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
+                // [v6.2 FIX] Re-check že status je pending (zabrání 2x kompenzaci)
+                const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+                const record = recordSnap.val();
+                if (record?.status === 'paid') {
+                    notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                    closeModal();
+                    return;
+                }
+                
                 // Odstraň vybrané osadníky ze sídla
                 const settlers = state.settlement?.settlers || [];
                 const aliveSettlers = settlers.filter(s => !s.dead && (s.hp || 100) > 0);
                 const selectedIndices = Array.from(window._taxSelectedSettlers);
                 const sentSettlers = selectedIndices.map(idx => aliveSettlers[idx]).filter(Boolean);
                 
-                // Odstraň z původního pole
-                const remainingSettlers = settlers.filter(s => !sentSettlers.includes(s));
-                state.settlement.settlers = remainingSettlers;
+                if (sentSettlers.length !== amount) {
+                    notifyWarning('Chyba', 'Vybraní osadníci nebyli nalezeni');
+                    return;
+                }
                 
-                // Označ daň jako splněnou
+                // Označ daň jako splněnou v Firebase NEJDŘÍVE (atomic-ish)
                 await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).update({
                     status: 'paid',
                     paidAt: Date.now(),
-                    sentSettlers: sentSettlers.map(s => ({ name: s.name, type: s.type }))
+                    sentSettlers: sentSettlers.map(s => ({ name: s.name || '', type: s.type || '' }))
                 });
+                
+                // Pak teprve modify lokální state
+                const remainingSettlers = settlers.filter(s => !sentSettlers.includes(s));
+                state.settlement.settlers = remainingSettlers;
                 
                 // Bonus: malá kompenzace
                 state.money = (state.money || 0) + 50 * amount;
@@ -106224,32 +106310,35 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } catch(e) {
                 console.error('Submit settler tax error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se odeslat daň');
+            } finally {
+                window._submittingSettlerTax = false;
             }
         }
         window.submitSettlerTax = submitSettlerTax;
         
         // Modal: Surovinová daň
         async function showResourceTaxModal(taxId, resource, amount) {
-            if (!multiplayerEnabled || !firebaseDB) {
-                notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
-                return;
-            }
-            
-            const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
-            const tax = taxSnap.val();
-            if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
-                notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
-                return;
-            }
-            
-            const myName = getPlayerName();
-            const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
-            const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
-            const record = recordSnap.val();
-            if (record?.status === 'paid') {
-                notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
-                return;
-            }
+            try {
+                if (!multiplayerEnabled || !firebaseDB) {
+                    notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
+                    return;
+                }
+                
+                const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+                const tax = taxSnap.val();
+                if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                    notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
+                    return;
+                }
+                
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+                const record = recordSnap.val();
+                if (record?.status === 'paid') {
+                    notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                    return;
+                }
             
             // Spočítej dostupné množství (player + settlement storage)
             const playerHas = state.resources?.[resource] || 0;
@@ -106297,11 +106386,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 `}
                 <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#555;">Zavřít</button>
             `);
+            } catch(e) {
+                console.error('showResourceTaxModal error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se otevřít modal daně');
+            }
         }
         window.showResourceTaxModal = showResourceTaxModal;
         
         // Odeslání suroviny šéfovi
         async function submitResourceTax(taxId, resource, amount) {
+            // [v6.2 FIX] Double-click guard
+            if (window._submittingResourceTax) {
+                console.warn('Submit resource tax already in progress');
+                return;
+            }
+            window._submittingResourceTax = true;
+            
             try {
                 const myName = getPlayerName();
                 const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
@@ -106314,6 +106414,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
+                // [v6.2 FIX] Re-check že status je pending
+                const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+                const record = recordSnap.val();
+                if (record?.status === 'paid') {
+                    notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                    closeModal();
+                    return;
+                }
+                
                 // Odečti suroviny — nejprve z hráče, pak ze sídla
                 const playerHas = state.resources?.[resource] || 0;
                 const settlementHas = state.settlement?.resources?.[resource] || 0;
@@ -106322,6 +106431,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
+                // Označ jako splněnou v Firebase NEJDŘÍVE (atomic-ish)
+                await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).update({
+                    status: 'paid',
+                    paidAt: Date.now(),
+                    sentResource: resource,
+                    sentAmount: amount
+                });
+                
+                // Pak teprve odeber suroviny
                 let remaining = amount;
                 if (playerHas > 0) {
                     const fromPlayer = Math.min(playerHas, remaining);
@@ -106331,14 +106449,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (remaining > 0 && state.settlement?.resources) {
                     state.settlement.resources[resource] = (settlementHas - remaining);
                 }
-                
-                // Označ jako splněnou
-                await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).update({
-                    status: 'paid',
-                    paidAt: Date.now(),
-                    sentResource: resource,
-                    sentAmount: amount
-                });
                 
                 // Malá kompenzace (10% peněz dle suroviny)
                 const compensation = { wood: 30, metal: 50, stone: 20, food: 25, water: 15 }[resource] || 20;
@@ -106355,6 +106465,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } catch(e) {
                 console.error('Submit resource tax error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se odeslat daň');
+            } finally {
+                window._submittingResourceTax = false;
             }
         }
         window.submitResourceTax = submitResourceTax;
@@ -147532,81 +147644,6 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 
                 console.log('🏛️ Decision effect applied:', effect);
                 
-                // === [v6.2] MAYOR TAX — osobní požadavky šéfa pro každého hráče ===
-                // Napojení na existující systém (showSettlerTaxModal, showResourceTaxModal,
-                // payMayorTaxSettlers, payMayorTaxResource, processMayorTaxExpiration, checkMayorTaxBan).
-                // Tento handler:
-                //   1) Vytvoří `politics/activeEvents/decision_mayorTax` s deadlinem
-                //   2) Pošle notifikaci 'mayor_tax_settlers' nebo 'mayor_tax_resource' všem online hráčům
-                //   3) Notifikační listener (~ř. 118939) automaticky otevře modal hráči
-                if (effect.mayorTaxSettlers || effect.mayorTaxResource) {
-                    try {
-                        const taxId = 'tax_' + now;
-                        const deadline = now + 24 * 60 * 60 * 1000;
-                        const mayorActivator = currentMayor?.name || mayorName || 'Šéf';
-                        
-                        // Společná data o dani (uloží se do politics/activeEvents/decision_mayorTax)
-                        let taxData = {
-                            taxId: taxId,
-                            activatedBy: mayorActivator,
-                            activatedAt: now,
-                            deadline: deadline,
-                            until: deadline  // pro consistency s ostatními activeEvents
-                        };
-                        
-                        if (effect.mayorTaxSettlers) {
-                            taxData.type = 'settlers';
-                            taxData.amount = effect.mayorTaxSettlers;
-                            taxData.banType = 'wandering';
-                        } else if (effect.mayorTaxResource && effect.mayorTaxResource.res) {
-                            taxData.type = 'resource';
-                            taxData.resource = effect.mayorTaxResource.res;
-                            taxData.amount = effect.mayorTaxResource.amount || 30;
-                            taxData.banType = 'marketplace';
-                        }
-                        
-                        // Zapíš aktivní daň
-                        await firebaseDB.ref('politics/activeEvents/decision_mayorTax').set(taxData);
-                        
-                        // Pošli notifikaci VŠEM online hráčům (kromě šéfa)
-                        const onlineSnap = await firebaseDB.ref('online').once('value');
-                        const onlineData = onlineSnap.val() || {};
-                        const onlinePlayers = Object.values(onlineData)
-                            .map(p => p?.name)
-                            .filter(name => name && name !== mayorActivator);
-                        
-                        const resName = { wood: 'dřeva', metal: 'kovu', food: 'jídla', stone: 'kamene', cloth: 'látky' };
-                        
-                        for (const playerName of onlinePlayers) {
-                            const safeName = playerName.replace(/[\/\.#$\[\]]/g, '_');
-                            
-                            if (taxData.type === 'settlers') {
-                                await firebaseDB.ref(`notifications/${safeName}`).push({
-                                    type: 'mayor_tax_settlers',
-                                    timestamp: now,
-                                    taxId: taxId,
-                                    amount: taxData.amount,
-                                    message: `👥 Šéf ${mayorActivator} požaduje ${taxData.amount} ${taxData.amount === 1 ? 'osadníka' : 'osadníky'}! Splň do 24h, jinak zákaz potulných obchodníků.`,
-                                    processed: false
-                                });
-                            } else if (taxData.type === 'resource') {
-                                const resTxt = resName[taxData.resource] || taxData.resource;
-                                await firebaseDB.ref(`notifications/${safeName}`).push({
-                                    type: 'mayor_tax_resource',
-                                    timestamp: now,
-                                    taxId: taxId,
-                                    resource: taxData.resource,
-                                    amount: taxData.amount,
-                                    message: `📦 Šéf ${mayorActivator} požaduje ${taxData.amount} ${resTxt}! Splň do 24h, jinak zákaz tržnice.`,
-                                    processed: false
-                                });
-                            }
-                        }
-                        
-                        console.log(`👑 Mayor tax (${taxData.type}) sent to ${onlinePlayers.length} online players, deadline:`, new Date(deadline).toLocaleString());
-                    } catch(e) { console.error('Mayor tax creation:', e); }
-                }
-                
             } catch (e) {
                 console.error('Apply decision effect error:', e);
             }
@@ -155566,9 +155603,32 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
         }
         
         function syncClanDungeonFloors(locationId, cfg) {
-            DUNGEON_FLOORS['clan_dungeon_' + locationId] = {
+            // [v6.2 FIX] Generuj dost pater pro hráčův dosavadní pokrok
+            // Bez tohoto se po refreshi vygeneruje jen 50 pater a hráč nad 50 dostane reset.
+            const dungeonId = 'clan_dungeon_' + locationId;
+            // Zjisti maximální požadované patro: dosažené hráčem nebo aktuální floor
+            const maxAchieved = (state.dungeon?.clanDungeonMax && state.dungeon.clanDungeonMax[locationId]) || 0;
+            const currentFloor = (state.dungeon?.active === dungeonId) ? (state.dungeon?.floor || 1) : 1;
+            const targetMax = Math.max(maxAchieved, currentFloor, 50);
+            // Zaokrouhli na násobek 50 (každá expansion = 50 pater)
+            const expansions = Math.ceil(targetMax / 50);
+            
+            const baseFloors = generateClanDungeonFloors(cfg);
+            let allFloors = [...baseFloors]; // 1-50
+            
+            // Přidej další skupiny po 50 patrech pokud potřeba
+            for (let exp = 1; exp < expansions; exp++) {
+                const additionalFloors = generateClanDungeonFloors(cfg);
+                additionalFloors.forEach(function(f) {
+                    f.floor += (exp * 50);
+                    f.name = f.name.replace(/Patro [0-9]+/, 'Patro ' + f.floor);
+                });
+                allFloors = allFloors.concat(additionalFloors);
+            }
+            
+            DUNGEON_FLOORS[dungeonId] = {
                 name: 'Klanový Dungeon', isClanDungeon: true, locationId: locationId,
-                floors: generateClanDungeonFloors(cfg)
+                floors: allFloors
             };
         }
         
@@ -156151,23 +156211,38 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             }
             
             // [NEW v6.1] 7. Globální raid lock — pouze 1 hráč může raidovat současně
+            // [v6.2 FIX] Atomic přes Firebase transaction (zabrání race condition)
             try {
-                const lockSnap = await firebaseDB.ref(`clans/${locationId}/raidLock`).once('value');
-                const lock = lockSnap.val();
-                const LOCK_TTL = 5 * 60 * 1000; // 5 minut TTL
-                if (lock && lock.startedAt && (Date.now() - lock.startedAt) < LOCK_TTL && lock.raider !== myName) {
-                    const elapsed = Math.floor((Date.now() - lock.startedAt) / 1000);
-                    notifyWarning('🚫 Trezor je obsazen', 
-                        `${lock.raider} už raiduje (${elapsed}s). Zkus později.`);
+                const lockRef = firebaseDB.ref(`clans/${locationId}/raidLock`);
+                const LOCK_TTL = 5 * 60 * 1000;
+                const txResult = await lockRef.transaction(currentLock => {
+                    if (currentLock && currentLock.startedAt && 
+                        (Date.now() - currentLock.startedAt) < LOCK_TTL && 
+                        currentLock.raider !== myName) {
+                        return; // Abort transaction - lock occupied
+                    }
+                    return {
+                        raider: myName,
+                        startedAt: Date.now(),
+                        phase: 'guards'
+                    };
+                });
+                
+                if (!txResult.committed) {
+                    // Lock je obsazen - načti aktuální stav pro user-friendly zprávu
+                    const currentLockSnap = await lockRef.once('value');
+                    const currentLock = currentLockSnap.val();
+                    if (currentLock && currentLock.raider) {
+                        const elapsed = Math.floor((Date.now() - currentLock.startedAt) / 1000);
+                        notifyWarning('🚫 Trezor je obsazen', 
+                            `${currentLock.raider} už raiduje (${elapsed}s). Zkus později.`);
+                    } else {
+                        notifyWarning('Chyba', 'Nepodařilo se zamknout raid');
+                    }
                     return;
                 }
-                await firebaseDB.ref(`clans/${locationId}/raidLock`).set({
-                    raider: myName,
-                    startedAt: Date.now(),
-                    phase: 'guards'
-                });
             } catch(e) {
-                console.error('Raid lock error:', e);
+                console.error('Raid lock transaction error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se zamknout raid');
                 return;
             }
