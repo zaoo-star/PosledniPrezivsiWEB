@@ -114694,19 +114694,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // [DYNAMIC LOCK] Kontrola zámku PvP z Firebase (admin vždy povolen)
+            // [BYPASS] Hráči s pending duelem (od kohokoliv, vč. admina) lock obejdou — jinak by nemohli přijmout výzvu
             if (!(typeof isAdmin === 'function' && isAdmin())) {
                 try {
                     const lockSnap = await firebaseDB.ref('systemLocks/pvp').once('value');
                     if (lockSnap.val() === true) {
-                        showModal('⚔️ KOLOSEUM', `
-                            <div style="text-align: center; padding: 2rem;">
-                                <div style="font-size: 4rem;">🔒</div>
-                                <h3 style="color: #ff9800;">PvP je momentálně uzamčeno</h3>
-                                <p style="color: #888;">Aréna je dočasně mimo provoz. Zkus to později!</p>
-                            </div>
-                            <button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>
-                        `);
-                        return;
+                        // Zkontroluj jestli mám pending duel — pokud ano, lock obejdu
+                        let hasPendingDuel = false;
+                        try {
+                            const _myName = getPlayerName();
+                            const raidsSnap = await firebaseDB.ref('scheduledRaids').once('value');
+                            const raids = raidsSnap.val() || {};
+                            for (const r of Object.values(raids)) {
+                                if (r && r.isDuel && r.targetPlayerName === _myName && 
+                                    (r.status === 'lobby' || r.status === 'starting' || r.status === 'deployment' || r.status === 'active')) {
+                                    hasPendingDuel = true;
+                                    break;
+                                }
+                            }
+                        } catch(e) { /* ignore */ }
+                        
+                        if (!hasPendingDuel) {
+                            showModal('⚔️ KOLOSEUM', `
+                                <div style="text-align: center; padding: 2rem;">
+                                    <div style="font-size: 4rem;">🔒</div>
+                                    <h3 style="color: #ff9800;">PvP je momentálně uzamčeno</h3>
+                                    <p style="color: #888;">Aréna je dočasně mimo provoz. Zkus to později!</p>
+                                </div>
+                                <button class="btn" onclick="closeModal()" style="width: 100%;">OK</button>
+                            `);
+                            return;
+                        }
+                        // Hráč má pending duel — pokračuje (uvidí lobby svého duelu)
                     }
                 } catch(e) { /* ignore */ }
             }
@@ -115413,8 +115432,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 <div style="display: flex; gap: 3px; margin-bottom: 4px; flex-wrap: wrap;">
                     <button class="btn wl-btn" onclick="showGraveyard()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;min-width:45%"><span style="font-size:0.7rem;color:#888">💀 HŘBITOV</span></button>
-                    <button class="btn wl-btn" onclick="showChronicle()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;min-width:45%"><span style="font-size:0.7rem;color:#ffd700">📊 KRONIKA</span></button>
-                    ${typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled ? `<button class="btn wl-btn" onclick="showNpcLetters()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;min-width:45%"><span style="font-size:0.7rem;color:#7986cb">💌 DOPISY${state.npcLetters?.filter(l=>!l.read).length ? ' ('+state.npcLetters.filter(l=>!l.read).length+')' : ''}</span></button>` : ''}
                     <button class="btn wl-btn" onclick="showBroadcast()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;min-width:45%;border:1px solid #2a2a1a"><span style="font-size:0.7rem;color:#ff9800">${state.inv?.some(i => i.id === 'radio' || i.bonus === 'radio') ? '📻 BUNKR 7' : '📻 BUNKR 7 (bez rádia)'}</span></button>
                 </div>
                 
@@ -125253,24 +125270,6 @@ Memoriál mrtvých hráčů:
 • Lore o postavě
 • Memorial pro ztracené postavy
 • Inspirace pro nové hráče
-
-<strong>📊 KRONIKA (chronicle)</strong>
-
-Server-wide historický záznam:
-• Major moments
-• Světový boss kills
-• Klanové vítězství
-• Rekordy hráčů
-• Special events archív
-
-<strong>💌 NPC DOPISY</strong>
-
-Personalizované zprávy od NPC:
-• <strong>AI-generated content</strong>
-• Úkolové hooky
-• Lore expansion
-• Pozadí příběhu
-• Reagují na tvé akce
 
 <strong>🛡️ TOMBOLA REMINDERS</strong>
 
@@ -165071,9 +165070,10 @@ Piš jako ${comp.type === 'dog' ? 'věrný pes (štěkej, vrč, čenichej)' : co
 
 // 🗣️ AI NPC CHAT — VYPNUTO (šetříme tokeny)
 
-// 💌 NPC DOPISY (1x za 2 hodiny)
+// 💌 NPC DOPISY — VYPNUTO (feature odstraněna z UI)
 let _lastNpcLetter = 0;
 setInterval(async () => {
+    return; // VYPNUTO — dopisy se už nezobrazují uživateli
     if (!AI_ENGINE.enabled || !firebaseDB) return;
     if (Date.now() - _lastUserActivity > 600000) return;
     if (Date.now() - _lastNpcLetter < 7200000) return; // 2h cooldown
@@ -165082,9 +165082,10 @@ setInterval(async () => {
     if (typeof aiNpcLetter === 'function') aiNpcLetter().catch(() => {});
 }, 600000); // Kontrola každých 10 min
 
-// 📊 TÝDENNÍ KRONIKA (každých 7 herních dní)
+// 📊 TÝDENNÍ KRONIKA — VYPNUTO (feature odstraněna z UI)
 let _lastChronicleDay = 0;
 setInterval(() => {
+    return; // VYPNUTO — kronika se už nezobrazuje uživateli
     if (!AI_ENGINE.enabled) return;
     const day = state.time?.days || 0;
     if (day > 0 && day % 7 === 0 && day !== _lastChronicleDay) {
