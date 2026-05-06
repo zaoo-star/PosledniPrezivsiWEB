@@ -104648,10 +104648,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 for (const [key, cap] of Object.entries(actives)) {
                     const elapsed = Date.now() - cap.startTime;
                     const elapsedMin = Math.floor(elapsed / 60000);
+                    // [FIX] Použij per-capture duration místo pevných 15 min
+                    const capDuration = cap.duration || (15 * 60 * 1000);
                     
-                    // Pokud capture trvá > 15 min, je zaseklý → dokončit ho
-                    if (elapsed >= 15 * 60 * 1000) {
-                        console.log(`🧹 Stale capture: ${cap.player} (${cap.faction}) - ${elapsedMin} min, awarding +10 to ${cap.faction}`);
+                    // Pokud capture překročil své vlastní duration, je zaseklý → dokončit ho
+                    if (elapsed >= capDuration) {
+                        console.log(`🧹 Stale capture: ${cap.player} (${cap.faction}) - ${elapsedMin} min (cíl ${Math.floor(capDuration/60000)} min), awarding +10 to ${cap.faction}`);
                         
                         // Award body klanu
                         const factionRef = firebaseDB.ref(`territories/${locationId}/points/${cap.faction}`);
@@ -104823,9 +104825,34 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 activePlayersHtml = '<div style="background: #2a2a1a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem;"><p style="color: #ffd700; margin: 0; font-size: 0.85rem;">⚔️ Právě dobývají: ' + playersList + '</p></div>';
             }
             
-            // Zobraz body klanů na území
+            // Zobraz body klanů na území — i ty s 0 body (informativnější UI)
             let pointsHtml = '';
-            const pointEntries = Object.entries(territoryPoints).filter(([_, p]) => (parseInt(p) || 0) > 0).sort((a, b) => (parseInt(b[1]) || 0) - (parseInt(a[1]) || 0));
+            
+            // [FIX] Sestavíme rozšířený seznam — vlastník + můj klan + ti co dobývali (i s 0)
+            const expandedPoints = { ...territoryPoints };
+            
+            // Přidej vlastníka pokud chybí
+            const ownerTag = window.clanOwnershipCache?.[locationId]?.tag || territoryDataCache?.[locationId]?.owner;
+            if (ownerTag && !(ownerTag in expandedPoints)) {
+                expandedPoints[ownerTag] = 0;
+            }
+            
+            // Přidej můj klan pokud chybí
+            if (clanTag && !(clanTag in expandedPoints)) {
+                expandedPoints[clanTag] = 0;
+            }
+            
+            // Přidej klany s aktivními captures (právě dobývají)
+            try {
+                const activeCapsRaw = territoryDataCache?.[locationId]?.activeCaptures || {};
+                Object.values(activeCapsRaw).forEach(cap => {
+                    if (cap?.faction && !(cap.faction in expandedPoints)) {
+                        expandedPoints[cap.faction] = 0;
+                    }
+                });
+            } catch(e) { /* ignore */ }
+            
+            const pointEntries = Object.entries(expandedPoints).sort((a, b) => (parseInt(b[1]) || 0) - (parseInt(a[1]) || 0));
             if (pointEntries.length > 0) {
                 pointsHtml = '<div style="background: #1a1a2a; padding: 0.5rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid #333;">';
                 pointsHtml += '<p style="color: #888; font-size: 0.75rem; margin: 0 0 0.3rem 0; text-align: center;">📊 Body na území: <span onclick="refreshTerritoryPoints(\'' + locationId + '\')" style="cursor:pointer;color:#64b5f6;">🔄</span></p>';
@@ -104833,9 +104860,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 pointEntries.forEach(([cTag, pts]) => {
                     const ci = getClanWarInfo(cTag);
                     const isMyTeam = cTag === clanTag;
+                    const numPts = parseInt(pts) || 0;
+                    const ptsColor = numPts > 0 ? '#ffd700' : '#666';
                     pointsHtml += `<div style="display: flex; justify-content: space-between; padding: 0.25rem 0.4rem; ${isMyTeam ? 'background: ' + (ci?.color || '#888') + '15; border-radius: 4px;' : ''}">
                         <span style="color: ${ci?.color || '#888'}; font-size: 0.85rem;">${ci?.icon || '⚔️'} [${ci?.name || cTag}]${isMyTeam ? ' ← ty' : ''}</span>
-                        <span style="color: #ffd700; font-weight: bold; font-size: 0.85rem;">${pts}</span>
+                        <span style="color: ${ptsColor}; font-weight: bold; font-size: 0.85rem;">${numPts}</span>
                     </div>`;
                 });
                 pointsHtml += '</div></div>';
@@ -105877,7 +105906,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const captureMinutes = getCaptureMinutes(myRank);
             const CAPTURE_DURATION = captureMinutes * 60 * 1000;
             
-            // KONTROLA: Už dobýváme toto území?
+            // KONTROLA: Už dobýváme toto území? (Lokální state)
             if (state.territoryCapture?.[locationId]) {
                 const lockedDuration = state.territoryCapture[locationId].duration || CAPTURE_DURATION;
                 const elapsed = Date.now() - state.territoryCapture[locationId].startTime;
@@ -105886,6 +105915,51 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     closeModal();
                     return;
                 }
+            }
+            
+            // [NEW FIX] KONTROLA Firebase - existuje pending capture i mimo lokální state?
+            // (Po vymazání save nebo na jiném zařízení může být capture v Firebase, ale ne lokálně)
+            if (multiplayerEnabled && firebaseDB) {
+                try {
+                    const safeNameCheck = myName.replace(/[.#$\[\]]/g, '_');
+                    const fbCapSnap = await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + safeNameCheck).once('value');
+                    const fbCap = fbCapSnap.val();
+                    if (fbCap && fbCap.player === myName) {
+                        const fbDuration = fbCap.duration || CAPTURE_DURATION;
+                        const fbElapsed = Date.now() - fbCap.startTime;
+                        const fbProgress = (fbElapsed / fbDuration) * 100;
+                        
+                        if (fbProgress >= 100) {
+                            // Expirovaný capture v Firebase - dokonči ho
+                            console.log('🏴 [PRE-CHECK] Found expired capture in Firebase, completing first');
+                            if (!state.territoryCapture) state.territoryCapture = {};
+                            state.territoryCapture[locationId] = {
+                                startTime: fbCap.startTime,
+                                faction: fbCap.faction,
+                                duration: fbDuration,
+                                rank: fbCap.rank || null
+                            };
+                            await completeTerritoryCapture(locationId);
+                            // Po dokončení uživatel uvidí notifikaci, může startovat znova
+                            return;
+                        } else {
+                            // Stále běží - obnov lokální state a ukončit
+                            console.log('🏴 [PRE-CHECK] Capture v Firebase stále aktivní, obnovuji lokální state');
+                            if (!state.territoryCapture) state.territoryCapture = {};
+                            state.territoryCapture[locationId] = {
+                                startTime: fbCap.startTime,
+                                faction: fbCap.faction,
+                                duration: fbDuration,
+                                rank: fbCap.rank || null
+                            };
+                            saveGame(true);
+                            const remainMin = Math.ceil((fbDuration - fbElapsed) / 60000);
+                            notifyWarning('Už dobýváš', `Pokračuje ze sessionu před: zbývá ${remainMin} min`);
+                            closeModal();
+                            return;
+                        }
+                    }
+                } catch(e) { console.warn('🏴 Pre-check error:', e); }
             }
             
             // [NEW] Pokud území má strážce, nelze pasivně dobývat — musíš s nimi nejdřív bojovat
@@ -105923,7 +105997,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     await firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + myName.replace(/[.#$\[\]]/g, '_')).set({
                         player: myName,
                         faction: faction,
-                        startTime: startTime
+                        startTime: startTime,
+                        duration: CAPTURE_DURATION,  // [FIX] Ulož duration - restore si pak ji načte správně
+                        rank: myRank                 // [FIX] Pro debug a UI
                     });
                     
                     console.log('🏴 Capture started for', locationId);
@@ -106099,10 +106175,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 if (!capture) return;
                 
+                const _myName = getPlayerName();
+                const _mySafe = _myName.replace(/[.#$\[\]]/g, '_');
+                
                 // Pokud území už vlastní naše frakce, zruš capture
                 if (currentOwner === myFaction) {
                     console.log('🏴 [Listener] Území už vlastníme - rušíme capture');
-                    firebaseDB.ref('territories/' + locationId + '/activeCapture').remove().catch(e => console.warn('🔇 Firebase silent fail:', e?.message || e));
+                    // [FIX] Odstraň hráčův záznam z plurálního activeCaptures (skutečný path)
+                    firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + _mySafe).remove().catch(e => console.warn('🔇 Firebase silent fail:', e?.message || e));
                     delete state.territoryCapture[locationId];
                     stopTerritoryListener(locationId);
                     notifyInfo('Capture zrušen', 'Území už patří tvé frakci!');
@@ -106112,7 +106192,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Pokud se vlastník změnil na jinou frakci (někdo jiný dobyl)
                 if (capture.originalOwner !== undefined && currentOwner !== capture.originalOwner && currentOwner !== null) {
                     console.log('🏴 [Listener] Vlastník se změnil - rušíme capture');
-                    firebaseDB.ref('territories/' + locationId + '/activeCapture').remove().catch(e => console.warn('🔇 Firebase silent fail:', e?.message || e));
+                    // [FIX] Odstraň hráčův záznam z plurálního activeCaptures (skutečný path)
+                    firebaseDB.ref('territories/' + locationId + '/activeCaptures/' + _mySafe).remove().catch(e => console.warn('🔇 Firebase silent fail:', e?.message || e));
                     delete state.territoryCapture[locationId];
                     stopTerritoryListener(locationId);
                     notifyWarning('Capture zrušen', 'Někdo jiný právě dobyl toto území!');
@@ -106172,11 +106253,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     if (myCapture && myCapture.player === myName) {
                         foundCount++;
+                        // [FIX] Použij duration uložený s capture (rank-specific), fallback na 15 min pro staré záznamy
+                        const myDuration = myCapture.duration || CAPTURE_DURATION;
                         const elapsed = Date.now() - myCapture.startTime;
-                        const progress = Math.min(100, (elapsed / CAPTURE_DURATION) * 100);
+                        const progress = Math.min(100, (elapsed / myDuration) * 100);
                         const elapsedMin = Math.floor(elapsed / 60000);
+                        const targetMin = Math.floor(myDuration / 60000);
                         
-                        console.log(`🏴 [RESTORE] Found active capture at ${locationId}: ${progress.toFixed(1)}% (${elapsedMin} min)`);
+                        console.log(`🏴 [RESTORE] Found active capture at ${locationId}: ${progress.toFixed(1)}% (${elapsedMin}/${targetMin} min)`);
                         
                         if (progress >= 100) {
                             // Měl být dokončen - dokonči ho!
@@ -106187,7 +106271,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 state.territoryCapture[locationId] = {
                                     startTime: myCapture.startTime,
                                     faction: myCapture.faction,
-                                    duration: CAPTURE_DURATION
+                                    duration: myDuration,
+                                    rank: myCapture.rank || null
                                 };
                                 await completeTerritoryCapture(locationId);
                                 completedCount++;
@@ -106206,13 +106291,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 progress: progress,
                                 faction: myCapture.faction,
                                 originalOwner: myCapture.originalOwner,
-                                duration: CAPTURE_DURATION
+                                duration: myDuration,                  // [FIX] Použij rank-specific duration
+                                rank: myCapture.rank || null
                             };
                             
                             // Spusť listener
                             if (typeof startTerritoryListener === 'function') startTerritoryListener(locationId);
                             
-                            console.log(`🏴 [RESTORE] Capture obnoven: ${progress.toFixed(1)}%`);
+                            console.log(`🏴 [RESTORE] Capture obnoven: ${progress.toFixed(1)}% (cíl ${targetMin} min)`);
                             notifyInfo('Obsazování obnoveno', `Progress: ${progress.toFixed(0)}% - pokračuj!`);
                             restoredCount++;
                         } else {
@@ -106232,6 +106318,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             } catch(e) {
                 console.error('🏴 [RESTORE] Critical error:', e);
+            }
+        }
+        window.restoreTerritoryCapture = restoreTerritoryCapture;
+        
+        // [GLOBAL SELF-HEAL] Periodicky každých 60s kontroluj zaseklé captures
+        // Předtím byl tento interval uvnitř initFirebase setTimeout(0) — pokud multiplayer
+        // nebyl zapnutý v ten okamžik, self-heal nikdy neběžel.
+        // Nyní je globální — funguje vždy, jakmile je multiplayer + DB k dispozici.
+        if (typeof window._territorySelfHealStarted === 'undefined') {
+            window._territorySelfHealStarted = true;
+            if (typeof safeSetInterval === 'function') {
+                safeSetInterval(() => {
+                    if (multiplayerEnabled && firebaseDB && state.confirmed) {
+                        restoreTerritoryCapture().catch(e => console.warn('🏴 Self-heal error:', e?.message || e));
+                    }
+                }, 60 * 1000);
+                console.log('🏴 Territory self-heal interval started (global, 60s)');
             }
         }
         
@@ -154363,6 +154466,20 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                     moneyLoss = Math.floor(CLAN_RAID_CONFIG.FAIL_MONEY_LOSS_MIN + Math.random() * (CLAN_RAID_CONFIG.FAIL_MONEY_LOSS_MAX - CLAN_RAID_CONFIG.FAIL_MONEY_LOSS_MIN));
                     moneyLoss = Math.min(moneyLoss, state.money || 0);
                     state.money = Math.max(0, (state.money || 0) - moneyLoss);
+                    
+                    // [NEW] Peníze ztracené při selhání jdou do kasy oběti (klan zadržel zloděje a vzal mu peníze)
+                    if (moneyLoss > 0 && multiplayerEnabled && firebaseDB) {
+                        try {
+                            await firebaseDB.ref(`clans/${locationId}/vault`).transaction(current => (current || 0) + moneyLoss);
+                            await firebaseDB.ref(`clans/${locationId}/vaultLog`).push({
+                                type: 'raid_fine',
+                                amount: moneyLoss,
+                                player: myName,
+                                timestamp: Date.now(),
+                                message: `💰 ${myName} byl zadržen — pokuta ${moneyLoss} 💰`
+                            });
+                        } catch(e) { console.error('Vault fine update failed:', e); }
+                    }
                 }
                 
                 state.activeRaid = null;
@@ -154390,24 +154507,27 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                         return firebaseDB.ref(`notifications/${safeMember}`).push({
                             type: 'clan_raid_failed',
                             timestamp: Date.now(),
-                            message: `🛡️ ${myName} se pokusil vyloupit klanovou kasu, ale BYL ODHALEN!`,
+                            message: moneyLoss > 0 
+                                ? `🛡️ ${myName} se pokusil vyloupit klanovou kasu — odhalen! Pokuta ${moneyLoss} 💰 putovala do kasy.`
+                                : `🛡️ ${myName} se pokusil vyloupit klanovou kasu, ale BYL ODHALEN!`,
                             raider: myName,
+                            fineAmount: moneyLoss,
                             locationId: locationId
                         });
                     });
                     await Promise.all(notifPromises);
                 } catch (e) {}
                 
-                const lossText = moneyLoss > 0 ? ` a ${moneyLoss} 💰` : '';
+                const lossText = moneyLoss > 0 ? ` a ${moneyLoss} 💰 (pokuta klanu)` : '';
                 notifyWarning('🛡️ NÁJEZD SELHAL', `Byl jsi odhalen! Ztratil jsi ${failDamage} HP${lossText}.`);
-                addLog(`🛡️ Nájezd na klan ${clan.name} selhal: -${failDamage} HP${moneyLoss > 0 ? `, -${moneyLoss} 💰` : ''}`, '⚠️');
+                addLog(`🛡️ Nájezd na klan ${clan.name} selhal: -${failDamage} HP${moneyLoss > 0 ? `, -${moneyLoss} 💰 (do kasy oběti)` : ''}`, '⚠️');
                 
                 // 📢 Globální chat - SELHÁNÍ
                 if (multiplayerEnabled && firebaseDB) {
                     try {
                         await firebaseDB.ref('chat/messages').push({
                             author: '🏴‍☠️ NÁJEZDY',
-                            text: `🛡️ ${myName} se pokusil vyloupit kasu klanu [${clan.name}], ale BYL ODHALEN! Ztratil ${failDamage} HP${moneyLoss > 0 ? ` a ${moneyLoss} 💰` : ''}.`,
+                            text: `🛡️ ${myName} se pokusil vyloupit kasu klanu [${clan.name}], ale BYL ODHALEN! Ztratil ${failDamage} HP${moneyLoss > 0 ? ` a ${moneyLoss} 💰 putovalo do kasy klanu [${clan.name}]` : ''}.`,
                             timestamp: firebase.database.ServerValue.TIMESTAMP,
                             system: true
                         });
@@ -163638,6 +163758,15 @@ async function showGraveyard() {
             // [FIX] Skryj generické causy které neposkytují info (Nepřítel/boj bez konkrétního enemy)
             const genericCauses = ['Nepřítel', 'nepřítel', 'boj', 'unknown', 'Neznámý'];
             if (genericCauses.includes(cause)) cause = '';
+            // [FIX] Převod 1. osoby (z hráčova UI) na 3. osobu (vhodné pro hřbitov)
+            if (cause) {
+                cause = cause
+                    .replace(/Zemřel jsi/gi, 'Zemřel')
+                    .replace(/Zabil tě:/gi, 'Zabil ho:')
+                    .replace(/Zabil tě /gi, 'Zabil ho ')
+                    .replace(/\bjsi\b/gi, '');  // Fallback pro ostatní "jsi"
+                cause = cause.replace(/\s+/g, ' ').trim();
+            }
             const causeText = cause ? `<div style="color:#c06040;font-size:0.65rem;">† ${escapeHtml(cause)}</div>` : '';
             return `<div style="background:#0a0805;border:1px solid #3a3020;border-left:3px solid #5a3020;border-radius:2px;padding:0.5rem;margin-bottom:0.3rem;font-family:'Share Tech Mono',monospace;">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
