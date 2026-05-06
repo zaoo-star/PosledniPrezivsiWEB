@@ -15942,6 +15942,91 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         const GRID_SIZE_KM = 2; // Každý bod mřížky = 2 km
         const WALK_SPEED_MIN_PER_KM = 12; // 12 minut na 1 km chůze (5 km/h)
         
+        // === GITHUB AUTO-UPDATE CHECKER ===
+        // Polling GitHub API každých 5 minut, porovnává commit datum s časem načtení stránky.
+        // Pokud byl commit po načtení → zobrazí "🆕 Nová verze!" na tlačítku Aktualizovat.
+        (function setupGitHubUpdateChecker() {
+            const GITHUB_REPO = 'zaoo-star/Posledni';  // Repo se hrou
+            const POLL_INTERVAL_MS = 5 * 60 * 1000;  // 5 minut
+            const PAGE_LOAD_TIME = Date.now();
+            
+            window._gitUpdateAvailable = false;
+            window._gitUpdateInfo = null;
+            
+            async function checkForGitHubUpdate() {
+                try {
+                    const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/main?per_page=1`, {
+                        headers: { 'Accept': 'application/vnd.github.v3+json' },
+                        cache: 'no-store'
+                    });
+                    if (!r.ok) {
+                        // Rate limit or 404 - ignore silently
+                        console.warn('GitHub check: HTTP', r.status);
+                        return;
+                    }
+                    const data = await r.json();
+                    if (!data || !data.commit || !data.commit.author) return;
+                    
+                    const commitTime = new Date(data.commit.author.date).getTime();
+                    const lastManualUpdate = parseInt(localStorage.getItem('lastManualUpdate') || '0', 10);
+                    // Baseline = pozdější z (čas načtení stránky, čas posledního manuálního updatu)
+                    const baseline = Math.max(PAGE_LOAD_TIME, lastManualUpdate);
+                    
+                    if (commitTime > baseline) {
+                        const wasAvailable = window._gitUpdateAvailable;
+                        window._gitUpdateAvailable = true;
+                        window._gitUpdateInfo = {
+                            sha: (data.sha || '').substring(0, 7),
+                            date: data.commit.author.date,
+                            message: (data.commit.message || '').split('\n')[0].substring(0, 100),
+                            author: data.commit.author.name || 'unknown'
+                        };
+                        // Aktualizuj tlačítko v reálném čase pokud je viditelné
+                        const btn = document.getElementById('game-update-btn');
+                        if (btn && !wasAvailable) {
+                            btn.style.background = 'linear-gradient(135deg, #ff5722, #c41e00)';
+                            btn.style.animation = 'pulse 1.5s infinite';
+                            btn.innerHTML = '🆕 Nová verze!';
+                        }
+                        // Tichý log (necheme spam-notifikace)
+                        if (!wasAvailable) {
+                            console.log('🆕 GitHub: Nová verze detekována!', window._gitUpdateInfo);
+                        }
+                    } else {
+                        // Commit je starší než baseline → tvá verze je aktuální
+                        if (window._gitUpdateAvailable) {
+                            window._gitUpdateAvailable = false;
+                            const btn = document.getElementById('game-update-btn');
+                            if (btn) {
+                                btn.style.background = '#3949AB';
+                                btn.style.animation = '';
+                                btn.innerHTML = '🔄 Aktualizovat';
+                            }
+                        }
+                    }
+                } catch(e) {
+                    // Network error / CORS - silent fail
+                    console.warn('GitHub check error:', e.message);
+                }
+            }
+            
+            // První check po 10s (nebýt agresivní při startu)
+            setTimeout(checkForGitHubUpdate, 10000);
+            // Pak pravidelně každých 5 minut
+            setInterval(checkForGitHubUpdate, POLL_INTERVAL_MS);
+            
+            // Expose pro debug
+            window.checkForGitHubUpdate = checkForGitHubUpdate;
+        })();
+        
+        // CSS animace pulsu pro nové verze
+        if (!document.getElementById('git-update-pulse-css')) {
+            const _pulseStyle = document.createElement('style');
+            _pulseStyle.id = 'git-update-pulse-css';
+            _pulseStyle.textContent = `@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,87,34,0.7); } 50% { box-shadow: 0 0 0 8px rgba(255,87,34,0); } }`;
+            document.head.appendChild(_pulseStyle);
+        }
+        
         const WORLD_LOCATIONS = [
             // === CENTRUM - ÚKRYT (0,0) ===
             { id: 'shelter', name: 'Tvůj úkryt', icon: '🏠', type: 'home', zone: 'safe', x: 0, y: 0,
@@ -17708,6 +17793,85 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     options: [
                         { id: 'avoid', name: 'Evakuace z mlhy', icon: '🏃', effect: { radiationProtection: true }, effectDesc: 'Ochrana před radiací (24h)', detailDesc: 'Komunita se stáhne do bezpečí. Žádná radiace z prostředí po 24 hodin.' },
                         { id: 'harvest', name: 'Sbírat spory', icon: '🧪', effect: { alchemyBonus: true }, effectDesc: 'Bonus alchymistické ingredience', detailDesc: 'Odvážní sběrači nasbírají vzácné spory. Všichni hráči dostanou bonus herbs a chemicals do surovin.' }
+                    ]
+                },
+                // === NOVÉ ROZHODNUTÍ #1: EMBARGO NA ZBRANĚ ===
+                {
+                    id: 'weapon_embargo',
+                    name: 'Embargo na zbraně',
+                    icon: '🚫',
+                    desc: 'Komise pro pořádek navrhuje regulaci. Šéf může povolit volný trh (silnější bojovníci, ale nestabilita) nebo přísné kontroly (méně násilí, ale slabší obrana).',
+                    options: [
+                        { id: 'free_market', name: 'Volný trh', icon: '🔫', effect: { damageBonus: 0.20, moodPenalty: -10 }, effectDesc: '+20% damage, -10 nálada (24h)', detailDesc: 'Šéf zruší regulace. Hráči mají +20% k poškození. Ale násilí v komunitě roste — nálada -10.' },
+                        { id: 'strict_control', name: 'Přísné kontroly', icon: '🛡️', effect: { damagePenalty: 0.25, moodBoost: 15, publicMoney: 150 }, effectDesc: '-25% damage, +15 nálada, +150 do kasy (24h)', detailDesc: 'Konfiskace ilegálních zbraní. Hráči slabší v boji (-25% DMG), ale komunita klidnější (+15 nálada) a poplatky doplní kasu o 150.' }
+                    ]
+                },
+                // === NOVÉ ROZHODNUTÍ #2: VOJENSKÁ MOBILIZACE ===
+                {
+                    id: 'military_mobilization',
+                    name: 'Vojenská mobilizace',
+                    icon: '⚔️',
+                    desc: 'Vojevůdce navrhuje totální mobilizaci proti hrozbám. Tvrdá disciplína znamená sílu, ale i obětování pohodlí. Alternativa: zachovat klid a regenerovat.',
+                    options: [
+                        { id: 'mobilize', name: 'Mobilizovat', icon: '🪖', effect: { damageBonus: 0.30, lootBonus: 0.20, regenPenalty: 0.50, travelSlowdown: 0.30 }, effectDesc: '+30% DMG, +20% loot, ALE -50% regen, +30% čas cesty (24h)', detailDesc: 'Vojenský režim. Hráči mají +30% damage, +20% loot z bojů. ALE: Tvrdé pochody zpomalí cestování o 30% a regenerace HP klesne o 50% (vojáci nespí). Tvrdý buff/debuff balanc.' },
+                        { id: 'rest_recover', name: 'Odpočinek', icon: '🌿', effect: { hungerSlower: true, thirstSlower: true, moodBoost: 20 }, effectDesc: 'Pomalejší hlad/žízeň, +20 nálada (24h)', detailDesc: 'Komunita odpočívá. Pomalejší hlad i žízeň, +20 nálada. Žádný bojový bonus, ale příjemný den.' }
+                    ]
+                },
+                // === NOVÉ ROZHODNUTÍ #3: ČERNÝ TRH ===
+                {
+                    id: 'black_market',
+                    name: 'Černý trh',
+                    icon: '🃏',
+                    desc: 'Tajemný kupec nabízí přístup k vzácnému zboží — ale za cenu rizika. Šéf může otevřít černý trh (legendary loot ale nájezdníci) nebo zachovat pořádek.',
+                    options: [
+                        { id: 'open_market', name: 'Otevřít černý trh', icon: '💎', effect: { lootBonus: 0.50, forcedEncounter: true }, effectDesc: '+50% loot, ALE 100% šance přepadení (24h)', detailDesc: '🎰 RIZIKO/ODMĚNA: +50% loot ze všech zdrojů (legendary šance výrazně vyšší). ALE: Černý trh přitahuje nájezdníky — KAŽDÁ cesta vyvolá přepadení! Připrav se na boj.' },
+                        { id: 'shut_down', name: 'Zavřít a zatknout', icon: '⚖️', effect: { publicMoney: 300, saferTravel: true }, effectDesc: '+300 do kasy, bezpečnější cesty (24h)', detailDesc: 'Šéf rozprašuje černý trh. Konfiskovaný majetek přinese 300 do kasy a cesty budou bezpečnější po 24h.' }
+                    ]
+                },
+                // === NOVÉ ROZHODNUTÍ #4: KORUPCE ===
+                {
+                    id: 'corruption_scandal',
+                    name: 'Korupční skandál',
+                    icon: '💼',
+                    desc: 'Inspektor odhalil úplatky v dílnách. Šéf může mlčet (peníze do kasy, ale řemeslníci si dávají pozor) nebo udělat veřejný proces (čistý štít, ale nepokoje).',
+                    options: [
+                        { id: 'cover_up', name: 'Ututlat to', icon: '🤐', effect: { publicMoney: 250, craftFailChance: 0.15, moodPenalty: -10 }, effectDesc: '+250 do kasy, 15% selhání craftu, -10 nálada (24h)', detailDesc: '💰 Peníze za mlčení. +250 do kasy. ALE: Řemeslníci jsou demotivovaní — 15% šance na neúspěšný craft (suroviny ztraceny). Komunita to tuší — nálada -10.' },
+                        { id: 'public_trial', name: 'Veřejný proces', icon: '⚖️', effect: { moodBoost: 25, durabilityRestore: true }, effectDesc: '+25 nálada, oprava vybavení', detailDesc: 'Spravedlnost vítězí! Korupce odhalena, řemeslníci motivovaní. +25 nálada, všem hráčům se opraví vybavení.' }
+                    ]
+                },
+                // === NOVÉ ROZHODNUTÍ #5: CESTOVNÍ OMEZENÍ ===
+                {
+                    id: 'travel_restrictions',
+                    name: 'Cestovní omezení',
+                    icon: '🚧',
+                    desc: 'Pohraničníci hlásí nárůst útoků na cestách. Šéf může zavést přísné kontroly (bezpečno ale pomalu) nebo nechat volnost (rychle ale rizikově).',
+                    options: [
+                        { id: 'lockdown', name: 'Lockdown cest', icon: '🚷', effect: { travelSlowdown: 0.30, consumptionReduction: 0.50, saferTravel: true }, effectDesc: '+30% čas cestování, -50% spotřeba, méně přepadení (24h)', detailDesc: 'Pomalejší pohyb na cestách (kontroly), ALE hráči si nesou méně zásob (-50% hlad/žízeň při cestě). Bezpečnější dík hlídkám.' },
+                        { id: 'open_roads', name: 'Volné cesty', icon: '🏃', effect: { xpBonus: 0.10, forcedEncounter: false }, effectDesc: '+10% XP (24h)', detailDesc: 'Kdo riskuje, ten získá. Volnější pohyb, hráči zkoušejí nové cesty — +10% XP. Bez omezení.' }
+                    ]
+                },
+                // === [v6.2] OSADNICKÁ DAŇ — šéf si bere lidi pro svou pevnost ===
+                {
+                    id: 'settler_tribute',
+                    name: 'Osadnická daň',
+                    icon: '👥',
+                    desc: 'Šéf staví novou pevnost a požaduje osadníky od všech klanů. Kdo nepošle, dostane sankce — zákaz nákupů u potulných obchodníků.',
+                    options: [
+                        { id: 'demand_2', name: 'Požadovat 2 osadníky', icon: '👥👥', effect: { mayorTaxSettlers: 2, banWanderingTrader: true, publicMoney: 100 }, effectDesc: '2 osadníci od každého (24h), neuposlechnutí = zákaz potulných obchodů', detailDesc: 'Každý hráč musí poslat 2 osadníky šéfovi do 24h. Kdo neposlechne, nemůže nakupovat u potulných obchodníků 24h. +100 do veřejné kasy.' },
+                        { id: 'demand_1', name: 'Požadovat 1 osadníka', icon: '👤', effect: { mayorTaxSettlers: 1, banWanderingTrader: true, publicMoney: 50 }, effectDesc: '1 osadník od každého (24h), neuposlechnutí = zákaz potulných obchodů', detailDesc: 'Každý hráč musí poslat 1 osadníka šéfovi do 24h. Kdo neposlechne, nemůže nakupovat u potulných obchodníků 24h. +50 do kasy.' },
+                        { id: 'voluntary', name: 'Dobrovolné dary', icon: '🤝', effect: { moodBoost: 15 }, effectDesc: '+15 nálada (žádný požadavek)', detailDesc: 'Šéf zruší daň. Komunita ocení gestickou — +15 nálada. Žádné peníze do kasy.' }
+                    ]
+                },
+                // === [v6.2] SUROVINOVÁ DAŇ — kdo nezaplatí, dostane zákaz tržnice ===
+                {
+                    id: 'resource_tribute',
+                    name: 'Surovinová daň',
+                    icon: '📦',
+                    desc: 'Sklady šéfa potřebují doplnit. Stanoví, jakou surovinu hráči musí poslat. Kdo nepošle, dostane zákaz vstupu na tržnici (online marketplace).',
+                    options: [
+                        { id: 'wood', name: 'Daň ze dřeva', icon: '🌲', effect: { mayorTaxResource: { res: 'wood', amount: 30 }, banMarketplace: true, publicMoney: 80 }, effectDesc: '30 dřeva od každého (24h), neuposlechnutí = zákaz tržnice', detailDesc: 'Každý hráč musí poslat 30 dřeva šéfovi do 24h. Kdo neposlechne, nemůže používat online tržnici 24h. +80 do veřejné kasy.' },
+                        { id: 'metal', name: 'Daň z kovu', icon: '⚙️', effect: { mayorTaxResource: { res: 'metal', amount: 20 }, banMarketplace: true, publicMoney: 100 }, effectDesc: '20 kovu od každého (24h), neuposlechnutí = zákaz tržnice', detailDesc: 'Každý hráč musí poslat 20 kovu šéfovi do 24h. Kdo neposlechne, nemůže používat online tržnici 24h. +100 do veřejné kasy.' },
+                        { id: 'food', name: 'Daň z jídla', icon: '🍖', effect: { mayorTaxResource: { res: 'food', amount: 25 }, banMarketplace: true, publicMoney: 60 }, effectDesc: '25 jídla od každého (24h), neuposlechnutí = zákaz tržnice', detailDesc: 'Každý hráč musí poslat 25 jídla šéfovi do 24h. Kdo neposlechne, nemůže používat online tržnici 24h. +60 do veřejné kasy.' }
                     ]
                 }
             ]
@@ -20045,6 +20209,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
          * Zjistí jestli právě probíhá boj
          * @returns {boolean} True pokud probíhá boj
          */
+        // [NEW v6.0] Helper: vrátí multiplikátor pro HP regenerace (1.0 = bez postihu, 0.5 = -50%)
+        // Použito pro všechna místa s passive regen, aby šéfovo rozhodnutí "Vojenská mobilizace"
+        // (regenPenalty) opravdu fungovalo napříč hrou.
+        function getRegenPenaltyMultiplier() {
+            try {
+                if (cachedPoliticalEffects?.decision_regenPenalty && 
+                    cachedPoliticalEffects.decision_regenPenalty.until > Date.now()) {
+                    const penalty = cachedPoliticalEffects.decision_regenPenalty.value || 0.50;
+                    return Math.max(0, 1 - penalty);
+                }
+            } catch(e) { /* ignore */ }
+            return 1.0;
+        }
+        window.getRegenPenaltyMultiplier = getRegenPenaltyMultiplier;
+        
         function isInCombat() {
             // [SELF-HEAL] Pokud window.combatState existuje ale je nevalidní (prázdné units, žádný living enemy),
             // vyčisti ho. Tohle řeší situace kdy combat zůstal zaseklý po quest item pickupu během exploreLocation,
@@ -29687,7 +29866,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (comp.inventory.length === 0 && !equippedHtml) {
                 compItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 1rem;">🎒 Batoh je prázdný</p>';
             } else {
-                compItemsHtml = comp.inventory.map((item, idx) => {
+                // [NEW] Filtrování + search pro companion items
+                const _compFilter = window._compInvFilter || 'all';
+                const _compSearch = (window._compInvSearch || '').toLowerCase().trim();
+                
+                const compFilterFn = (item) => {
+                    if (!item) return false;
+                    // Search match
+                    if (_compSearch && !(item.name || '').toLowerCase().includes(_compSearch)) return false;
+                    // Filter match
+                    if (_compFilter === 'all') return true;
+                    if (_compFilter === 'healing') return item.type === 'consumable' && (item.heal || item.effect === 'heal' || item.effect === 'health' || item.effect === 'heal_injury' || item.healsInjuries);
+                    if (_compFilter === 'consumable') return item.type === 'consumable';
+                    return item.type === _compFilter;
+                };
+                
+                const filteredCompItems = comp.inventory.filter(compFilterFn);
+                
+                if (filteredCompItems.length === 0) {
+                    compItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 1rem;">🔍 Žádné předměty v této kategorii</p>';
+                } else {
+                    compItemsHtml = filteredCompItems.map(item => {
+                        const idx = comp.inventory.indexOf(item);
                     const count = item.count || 1;
                     const countText = count > 1 ? ` x${count}` : '';
                     const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
@@ -29708,7 +29908,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 </button>
                         </div>
                     `;
-                }).join('');
+                    }).join('');
+                }
             }
             
             // Hráčovy věci k předání (filtruj nepřenosné)
@@ -29718,11 +29919,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return true;
             });
             
+            // [NEW] Filtrování + search pro player items v companion modalu
+            const _pcFilter = window._compInvFilter || 'all';
+            const _pcSearch = (window._compInvSearch || '').toLowerCase().trim();
+            const playerFilterFn = (item) => {
+                if (!item) return false;
+                if (_pcSearch && !(item.name || '').toLowerCase().includes(_pcSearch)) return false;
+                if (_pcFilter === 'all') return true;
+                if (_pcFilter === 'healing') return item.type === 'consumable' && (item.heal || item.effect === 'heal' || item.effect === 'health' || item.effect === 'heal_injury' || item.healsInjuries);
+                if (_pcFilter === 'consumable') return item.type === 'consumable';
+                return item.type === _pcFilter;
+            };
+            const filteredPlayerItems = playerItems.filter(playerFilterFn);
+            
             let playerItemsHtml = '';
-            if (playerItems.length === 0) {
-                playerItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 0.5rem;">Nemáš žádné předměty k předání</p>';
+            if (filteredPlayerItems.length === 0) {
+                playerItemsHtml = '<p style="text-align: center; color: #666; font-size: 0.85rem; padding: 0.5rem;">' +
+                    (playerItems.length === 0 ? 'Nemáš žádné předměty k předání' : '🔍 Žádné předměty v této kategorii') + '</p>';
             } else {
-                playerItemsHtml = playerItems.map((item, idx) => {
+                playerItemsHtml = filteredPlayerItems.map(item => {
                     const realIdx = state.inv.indexOf(item);
                     const count = item.count || 1;
                     const countText = count > 1 ? ` x${count}` : '';
@@ -29768,6 +29983,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         </div>
                     </div>
                 </div>
+                
+                <!-- [NEW] Filtry + search (jen pokud je co filtrovat) -->
+                ${(comp.inventory.length + playerItems.length) > 3 ? `
+                    ${renderUnifiedFilterTabs(window._compInvFilter || 'all', "setCompanionInvFilter('${compUid}', '%')", [
+                        { f: 'all', icon: '🎒', label: 'Vše' },
+                        { f: 'healing', icon: '❤️', label: 'Léčení' },
+                        { f: 'consumable', icon: '🍖', label: 'Jídlo' },
+                        { f: 'weapon', icon: '⚔️', label: 'Zbraně' },
+                        { f: 'armor', icon: '🛡️', label: 'Zbroj' },
+                        { f: 'helmet', icon: '⛑️', label: 'Helma' },
+                        { f: 'gloves', icon: '🥊', label: 'Ruk.' },
+                        { f: 'boots', icon: '🥾', label: 'Boty' },
+                        { f: 'accessory', icon: '💍', label: 'Doplňky' },
+                        { f: 'tool', icon: '🔧', label: 'Nástr.' },
+                        { f: 'ammo', icon: '🎯', label: 'Munice' }
+                    ])}
+                    <div style="position: relative; margin-bottom: 0.5rem;">
+                        <input type="text" id="compInvSearchInput" placeholder="🔍 Hledat v inventáři..."
+                               oninput="filterCompanionInvBySearch('${compUid}', this.value);"
+                               value="${(window._compInvSearch || '').replace(/"/g, '&quot;')}"
+                               style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem; box-sizing: border-box;">
+                        ${(window._compInvSearch || '').length > 0 ? `<button onclick="window._compInvSearch=''; showCompanionInventory('${compUid}');" style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer;">✕</button>` : ''}
+                    </div>
+                ` : ''}
                 
                 <!-- Společníkovy věci -->
                 <div style="margin-bottom: 0.8rem;">
@@ -37542,6 +37781,62 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 if (cachedPoliticalEffects.event_bonus_loot?.until > now) {
                                     activeBuffs.push({ icon: '🎁', name: 'Loot', value: '+50%', time: Math.ceil((cachedPoliticalEffects.event_bonus_loot.until - now) / 60000), color: '#ff9800' });
                                 }
+                                
+                                // [NEW v6.0] NEGATIVNÍ politické efekty - zobraz červeně
+                                if (cachedPoliticalEffects.decision_damagePenalty?.until > now) {
+                                    const v = Math.round((cachedPoliticalEffects.decision_damagePenalty.value || 0.25) * 100);
+                                    activeBuffs.push({ icon: '🚫', name: 'Reg.zbraní', value: `-${v}% DMG`, time: Math.ceil((cachedPoliticalEffects.decision_damagePenalty.until - now) / 60000), color: '#f44336' });
+                                }
+                                if (cachedPoliticalEffects.decision_travelSlowdown?.until > now) {
+                                    const v = Math.round((cachedPoliticalEffects.decision_travelSlowdown.value || 0.30) * 100);
+                                    activeBuffs.push({ icon: '🐌', name: 'Lockdown', value: `+${v}% čas`, time: Math.ceil((cachedPoliticalEffects.decision_travelSlowdown.until - now) / 60000), color: '#ff5722' });
+                                }
+                                if (cachedPoliticalEffects.decision_forcedEncounter?.until > now) {
+                                    activeBuffs.push({ icon: '🎯', name: 'Černý trh', value: '100% boj', time: Math.ceil((cachedPoliticalEffects.decision_forcedEncounter.until - now) / 60000), color: '#d50000' });
+                                }
+                                if (cachedPoliticalEffects.decision_craftFailChance?.until > now) {
+                                    const v = Math.round((cachedPoliticalEffects.decision_craftFailChance.value || 0.15) * 100);
+                                    activeBuffs.push({ icon: '⚒️', name: 'Korupce', value: `${v}% fail`, time: Math.ceil((cachedPoliticalEffects.decision_craftFailChance.until - now) / 60000), color: '#ff9800' });
+                                }
+                                if (cachedPoliticalEffects.decision_regenPenalty?.until > now) {
+                                    const v = Math.round((cachedPoliticalEffects.decision_regenPenalty.value || 0.50) * 100);
+                                    activeBuffs.push({ icon: '💔', name: 'Mobilizace', value: `-${v}% regen`, time: Math.ceil((cachedPoliticalEffects.decision_regenPenalty.until - now) / 60000), color: '#c62828' });
+                                }
+                                
+                                // [v6.2] AKTIVNÍ ŠÉFOVA DAŇ — pulzující banner pokud nezaplaceno
+                                if (cachedPoliticalEffects.decision_mayorTax && cachedPoliticalEffects.decision_mayorTax.deadline > now) {
+                                    const tax = cachedPoliticalEffects.decision_mayorTax;
+                                    const myTaxStatus = window._myMayorTaxStatus; // 'pending' | 'paid' | undefined
+                                    if (myTaxStatus !== 'paid') {
+                                        const minLeft = Math.ceil((tax.deadline - now) / 60000);
+                                        const isUrgent = minLeft < 60; // Méně než 1h = urgent
+                                        const taxLabel = tax.type === 'settlers' ? `${tax.amount} osad.` : 
+                                            `${tax.amount} ${({wood:'dřeva',metal:'kovu',stone:'kam.',food:'jídla',water:'vody'})[tax.resource] || tax.resource}`;
+                                        activeBuffs.push({ 
+                                            icon: tax.type === 'settlers' ? '👥' : '📦', 
+                                            name: 'DAŇ ŠÉFA',
+                                            value: taxLabel + ' POŠLI!',
+                                            time: minLeft,
+                                            color: isUrgent ? '#ff1744' : '#ff9800',
+                                            urgent: true,
+                                            clickAction: tax.type === 'settlers' 
+                                                ? `showSettlerTaxModal('${tax.taxId}', ${tax.amount})`
+                                                : `showResourceTaxModal('${tax.taxId}', '${tax.resource}', ${tax.amount})`
+                                        });
+                                    }
+                                }
+                                
+                                // [v6.2] AKTIVNÍ BAN — informuj že hráč má zákaz
+                                if (window._myMayorBans) {
+                                    if (window._myMayorBans.wandering && window._myMayorBans.wandering > now) {
+                                        const minLeft = Math.ceil((window._myMayorBans.wandering - now) / 60000);
+                                        activeBuffs.push({ icon: '🚫', name: 'BAN: Karavany', value: 'zakázáno', time: minLeft, color: '#d50000' });
+                                    }
+                                    if (window._myMayorBans.marketplace && window._myMayorBans.marketplace > now) {
+                                        const minLeft = Math.ceil((window._myMayorBans.marketplace - now) / 60000);
+                                        activeBuffs.push({ icon: '🚫', name: 'BAN: Tržnice', value: 'zakázáno', time: minLeft, color: '#d50000' });
+                                    }
+                                }
                             }
                             // Exotic XP boost (předválečná tech)
                             if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > now) {
@@ -37551,12 +37846,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             if (activeBuffs.length === 0) return '';
                             
                             return `
-                                <div onclick="showCharacter()" style="display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.3rem; cursor: pointer;" title="Klikni pro detaily">
-                                    ${activeBuffs.map(b => `
-                                        <span style="background: ${b.color}22; border: 1px solid ${b.color}; padding: 0.15rem 0.3rem; border-radius: 4px; font-size: 0.6rem; color: ${b.color}; white-space: nowrap;">
+                                <div style="display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.3rem;">
+                                    ${activeBuffs.map(b => {
+                                        const clickHandler = b.clickAction ? `onclick="event.stopPropagation();${b.clickAction}"` : `onclick="showCharacter()"`;
+                                        const pulse = b.urgent ? 'animation: pulse 1.2s infinite;' : '';
+                                        return `<span ${clickHandler} style="background: ${b.color}22; border: 1px solid ${b.color}; padding: 0.15rem 0.3rem; border-radius: 4px; font-size: 0.6rem; color: ${b.color}; white-space: nowrap; cursor: pointer; ${pulse}">
                                             ${b.icon} ${b.value} <span style="color: #888;">(${typeof b.time === 'number' ? (b.time >= 60 ? Math.floor(b.time/60) + 'h' + (b.time%60 > 0 ? b.time%60 + 'm' : '') : b.time + 'm') : b.time})</span>
-                                        </span>
-                                    `).join('')}
+                                        </span>`;
+                                    }).join('')}
                                 </div>
                             `;
                         })()}
@@ -45878,6 +46175,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const enc = getEncumbrancePenalty();
             if (enc.active) time = Math.ceil(time * enc.travelPenalty);
             
+            // 9. [NEW v6.0] Politické rozhodnutí - travel slowdown (kontroly na cestách)
+            if (cachedPoliticalEffects?.decision_travelSlowdown && cachedPoliticalEffects.decision_travelSlowdown.until > Date.now()) {
+                const slowdown = cachedPoliticalEffects.decision_travelSlowdown.value || 0.30;
+                time = Math.ceil(time * (1 + slowdown));
+            }
+            
             // Min 2 minuty
             return Math.max(2, time);
         }
@@ -46174,6 +46477,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     });
                     console.log('Scheduling event', i, 'at', eventOffset, 'ms (', new Date(eventTime).toLocaleTimeString(), ')');
                 }
+                
+                // [NEW v6.0] Forced encounter (Černý trh) - garantované přepadení uprostřed cesty
+                if (cachedPoliticalEffects?.decision_forcedEncounter && cachedPoliticalEffects.decision_forcedEncounter.until > Date.now()) {
+                    const forcedTime = startTime + (duration * 0.5); // V polovině cesty
+                    state.world.scheduledEvents.push({
+                        type: 'forced_combat',
+                        triggerAt: forcedTime,
+                        dangerLevel: Math.max(2, dangerLevel),
+                        triggered: false,
+                        reason: 'black_market'
+                    });
+                    console.log('🎯 Forced encounter scheduled (black market) at', new Date(forcedTime).toLocaleTimeString());
+                }
             }
             
             console.log('Total events scheduled:', state.world.scheduledEvents.length);
@@ -46252,6 +46568,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                 } else if (event.type === 'random') {
                     triggerTravelEvent(event.dangerLevel);
+                } else if (event.type === 'forced_combat') {
+                    // [NEW v6.0] Černý trh - vynucené přepadení
+                    console.log('🎯 Forced combat triggered (reason:', event.reason, ')');
+                    event.resolved = true; // Označ jako vyřešený
+                    // Pozastav cestu a spusť boj
+                    if (typeof pauseTravelForEvent === 'function') pauseTravelForEvent();
+                    
+                    // Vyber nepřítele podle danger level cesty
+                    const dangerLvl = event.dangerLevel || 2;
+                    const ambushPool = dangerLvl >= 4 ? ['raider', 'mutant', 'slaver', 'ghoul', 'bandit'] :
+                                       dangerLvl >= 2 ? ['raider', 'bandit', 'ghoul', 'mutant_dog'] :
+                                                        ['raider', 'bandit', 'feral'];
+                    const ambushId = ambushPool[Math.floor(Math.random() * ambushPool.length)];
+                    
+                    showModal('🎯 PŘEPADENÍ!', 
+                        '<div style="text-align: center; padding: 0.5rem;">' +
+                        '<div style="font-size: 4rem;">🃏</div>' +
+                        '<h3 style="color: #f44336; margin: 0.5rem 0;">Černý trh přilákal nájezdníky!</h3>' +
+                        '<p style="color: #ccc;">Šéfovo rozhodnutí o černém trhu má svou cenu — bandité tě obklopili na cestě. Boj je nevyhnutelný.</p>' +
+                        '</div>' +
+                        '<button class="btn" onclick="closeModal(); resolveCurrentEvent(); setTimeout(() => startCombat({id: \'' + ambushId + '\'}, true), 200);" style="width: 100%; margin-top: 1rem; background: linear-gradient(135deg, #c62828, #8b0000); padding: 0.9rem; font-weight: bold;">⚔️ Bojovat!</button>'
+                    );
                 }
             }
         }
@@ -46283,6 +46621,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     closeModal();
                     renderFull();
                 }
+            } else if (event.type === 'forced_combat') {
+                // [NEW v6.0] Po refreshi: forced encounter z Černého trhu
+                event.resolved = true;
+                if (typeof pauseTravelForEvent === 'function') pauseTravelForEvent();
+                const dangerLvl = event.dangerLevel || 2;
+                const ambushPool = dangerLvl >= 4 ? ['raider', 'mutant', 'slaver', 'ghoul', 'bandit'] :
+                                   dangerLvl >= 2 ? ['raider', 'bandit', 'ghoul', 'mutant_dog'] :
+                                                    ['raider', 'bandit', 'feral'];
+                const ambushId = ambushPool[Math.floor(Math.random() * ambushPool.length)];
+                showModal('🎯 PŘEPADENÍ!',
+                    '<div style="text-align: center; padding: 0.5rem;">' +
+                    '<div style="font-size: 4rem;">🃏</div>' +
+                    '<h3 style="color: #f44336; margin: 0.5rem 0;">Černý trh přilákal nájezdníky!</h3>' +
+                    '<p style="color: #ccc;">Šéfovo rozhodnutí o černém trhu má svou cenu — bandité tě obklopili.</p>' +
+                    '</div>' +
+                    '<button class="btn" onclick="closeModal(); resolveCurrentEvent(); setTimeout(() => startCombat({id: \'' + ambushId + '\'}, true), 200);" style="width: 100%; margin-top: 1rem; background: linear-gradient(135deg, #c62828, #8b0000); padding: 0.9rem; font-weight: bold;">⚔️ Bojovat!</button>'
+                );
             } else if (event.type === 'random' && event.selectedEventId) {
                 // Máme uložený konkrétní event - najdi ho a zpracuj
                 const savedEvent = TRAVEL_EVENTS.find(e => e.id === event.selectedEventId);
@@ -48500,6 +48855,40 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     return;
                 }
             }
+            
+            // [v6.2] Šéfův ban za nesplněnou osadnickou daň
+            if (typeof checkMayorTaxBan === 'function') {
+                checkMayorTaxBan('wandering').then(banCheck => {
+                    if (banCheck.banned) {
+                        const hours = Math.floor(banCheck.minutesLeft / 60);
+                        const mins = banCheck.minutesLeft % 60;
+                        const timeStr = hours > 0 ? `${hours}h ${mins}min` : `${mins} minut`;
+                        showModal('🚫 Šéfův zákaz', `
+                            <div style="text-align: center; padding: 1rem;">
+                                <div style="font-size: 3rem;">🐪🚫</div>
+                                <h3 style="color:#f44336;">Nemáš přístup k potulnému obchodníkovi!</h3>
+                                <p style="color: #ff9800; margin: 0.5rem 0;">Šéf ti zakázal nákupy kvůli nesplněné osadnické dani.</p>
+                                <p style="color: #888;">⏱️ Zbývá: <strong>${timeStr}</strong></p>
+                                <p style="color:#666;font-size:0.75rem;margin-top:0.8rem;">💡 Příště odpověz na šéfovo SZ a pošli osadníky včas.</p>
+                            </div>
+                            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
+                        `);
+                        return Promise.reject('banned'); // Block the rest
+                    }
+                    return banCheck;
+                }).then(banCheck => {
+                    if (!banCheck || banCheck.banned) return;
+                    _continueOpenExoticShop();
+                }).catch(e => { 
+                    if (e !== 'banned') console.error('Ban check error:', e);
+                });
+                return; // Async path — actual logic in _continueOpenExoticShop
+            }
+            
+            _continueOpenExoticShop();
+        }
+        
+        function _continueOpenExoticShop() {
             
             // Kontrola otevírací doby
             if (!isShopOpen('wandering')) {
@@ -55176,6 +55565,55 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.setBaseItemsFilter = setBaseItemsFilter;
         
+        // [NEW] Storage search (debounced)
+        let _storageSearchTimer = null;
+        function filterStorageBySearch(query) {
+            window._baseItemsSearch = query || '';
+            clearTimeout(_storageSearchTimer);
+            _storageSearchTimer = setTimeout(() => {
+                if (typeof showStorageModal === 'function') {
+                    showStorageModal();
+                    setTimeout(() => {
+                        const inp = document.getElementById('storageSearchInput');
+                        if (inp) {
+                            inp.focus();
+                            inp.setSelectionRange(inp.value.length, inp.value.length);
+                        }
+                    }, 50);
+                }
+            }, 250);
+        }
+        window.filterStorageBySearch = filterStorageBySearch;
+        
+        // [NEW] Companion inventory filter
+        function setCompanionInvFilter(companionId, type) {
+            window._compInvFilter = type;
+            if (typeof showCompanionInventory === 'function') showCompanionInventory(companionId);
+        }
+        window.setCompanionInvFilter = setCompanionInvFilter;
+        
+        // [NEW] Companion inventory search (debounced re-render)
+        let _compInvSearchTimer = null;
+        function filterCompanionInvBySearch(companionId, query) {
+            window._compInvSearch = query || '';
+            // Debounce 250ms aby se neredrawoval modal každým písmenkem
+            clearTimeout(_compInvSearchTimer);
+            _compInvSearchTimer = setTimeout(() => {
+                if (typeof showCompanionInventory === 'function') {
+                    showCompanionInventory(companionId);
+                    // Po re-renderu vrať focus zpět na search input + cursor na konec
+                    setTimeout(() => {
+                        const inp = document.getElementById('compInvSearchInput');
+                        if (inp) {
+                            inp.focus();
+                            inp.setSelectionRange(inp.value.length, inp.value.length);
+                        }
+                    }, 50);
+                }
+            }, 250);
+        }
+        window.filterCompanionInvBySearch = filterCompanionInvBySearch;
+        
         function filterInventory(type) {
             window.inventoryFilter = type;
             // Musíme znovu vykreslit celý inventář
@@ -60107,6 +60545,17 @@ function openFullscreenMap() {
             // Consume resources (× bulkAmount for bulk crafting)
             const specialComponents = ['deathclaw_hand', 'mutant_heart', 'crystal', 'gold', 'gems'];
             
+            // [NEW v6.0] Politika - korupční skandál (Ututlat) → 15% šance na neúspěch craftu
+            // Suroviny se spotřebují, ale item nevznikne — řemeslníci jsou demotivovaní.
+            let craftFailed = false;
+            if (cachedPoliticalEffects?.decision_craftFailChance && cachedPoliticalEffects.decision_craftFailChance.until > Date.now()) {
+                const failChance = cachedPoliticalEffects.decision_craftFailChance.value || 0.15;
+                if (Math.random() < failChance) {
+                    craftFailed = true;
+                    console.log('🏛️ Craft FAILED kvůli korupci (chance:', failChance, ')');
+                }
+            }
+            
             for (const [res, amt] of Object.entries(recipe.requires)) {
                 const adjustedAmt = Math.ceil(amt * engineerReduction) * bulkAmount;
                 let remaining = adjustedAmt;
@@ -60142,6 +60591,23 @@ function openFullscreenMap() {
             }
             
             // ⭐ OPRAVA: Skill Tree "Mistr řemesla" (doubleCraft) - šance na dvojitý výstup
+            // [NEW v6.0] Pokud craftFailed (korupce) → suroviny už zkonzumovány, ale item nevznikne
+            if (craftFailed) {
+                showModal('💼 Craft selhal!', 
+                    '<div style="text-align: center; padding: 0.5rem;">' +
+                    '<div style="font-size: 4rem;">⚒️💥</div>' +
+                    '<h3 style="color: #f44336; margin: 0.5rem 0;">Řemeslník zkazil výrobu!</h3>' +
+                    '<p style="color: #ccc;">Korupční skandál demoralizoval dílny. Suroviny byly spotřebovány, ale ' + recipe.name + ' nevznikl.</p>' +
+                    '<p style="color: #888; font-size: 0.85rem; margin-top: 0.5rem;">💡 Tip: Šéf by měl odhalit korupci místo ututlání.</p>' +
+                    '</div>' +
+                    '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem; background: #555;">OK</button>'
+                );
+                addLog('⚒️💥 Craft selhal kvůli korupci', '🏛️');
+                saveGame(true);
+                renderFull();
+                return;
+            }
+            
             let isDoubleCraft = false;
             if (typeof getSkillTreeBonus === 'function') {
                 const doubleCraftChance = getSkillTreeBonus('doubleCraft');
@@ -77256,19 +77722,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Předměty ve skladu — s filtrem podle typu (sp3rx feedback)
             window._baseItemsFilter = window._baseItemsFilter || 'all';
+            window._baseItemsSearch = window._baseItemsSearch || '';
             let storedItems = '';
             const allBaseItems = state.baseItems || [];
             
-            // Filtrování baseItems podle typu
+            // Filtrování baseItems podle typu + search
             const _baseFilter = window._baseItemsFilter;
-            const filteredBaseItems = _baseFilter === 'all' ? allBaseItems : allBaseItems.filter(item => {
+            const _baseSearch = (window._baseItemsSearch || '').toLowerCase().trim();
+            const filteredBaseItems = allBaseItems.filter(item => {
                 if (!item) return false;
-                if (_baseFilter === 'healing') return item.type === 'consumable' && (item.heal || item.effect === 'heal');
+                // Search match
+                if (_baseSearch && !(item.name || '').toLowerCase().includes(_baseSearch)) return false;
+                // Filter match
+                if (_baseFilter === 'all') return true;
+                if (_baseFilter === 'healing') return item.type === 'consumable' && (item.heal || item.effect === 'heal' || item.effect === 'health' || item.effect === 'heal_injury' || item.healsInjuries);
                 if (_baseFilter === 'weapon') return item.type === 'weapon';
                 if (_baseFilter === 'armor') return item.type === 'armor';
                 if (_baseFilter === 'helmet') return item.type === 'helmet';
                 if (_baseFilter === 'gloves') return item.type === 'gloves';
                 if (_baseFilter === 'boots') return item.type === 'boots';
+                if (_baseFilter === 'accessory') return item.type === 'accessory';
                 if (_baseFilter === 'tool') return item.type === 'tool';
                 if (_baseFilter === 'ammo') return item.type === 'ammo';
                 if (_baseFilter === 'consumable') return item.type === 'consumable';
@@ -77385,7 +77858,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <h4 style="color: #ff9800; font-size: 0.8rem; margin: 0.3rem 0;">📊 ${storageTexts.resources}</h4>
                         ${settlementResources || '<p style="color: #666; text-align: center; font-size: 0.8rem; padding: 0.5rem;">' + storageTexts.empty + '</p>'}
                         <h4 style="color: #9c27b0; font-size: 0.8rem; margin: 0.5rem 0 0.3rem 0;">🎒 ${storageTexts.storedItems} (${state.baseItems?.length || 0}/${state.baseCapacity})</h4>
-                        ${(state.baseItems && state.baseItems.length > 5) ? renderUnifiedFilterTabs(window._baseItemsFilter || 'all', "setBaseItemsFilter('%')", [
+                        ${(state.baseItems && state.baseItems.length > 3) ? renderUnifiedFilterTabs(window._baseItemsFilter || 'all', "setBaseItemsFilter('%')", [
                             { f: 'all', icon: '🎒', label: 'Vše' },
                             { f: 'healing', icon: '❤️', label: 'Léčení' },
                             { f: 'consumable', icon: '🍖', label: 'Jídlo' },
@@ -77394,9 +77867,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             { f: 'helmet', icon: '⛑️', label: 'Helma' },
                             { f: 'gloves', icon: '🥊', label: 'Ruk.' },
                             { f: 'boots', icon: '🥾', label: 'Boty' },
+                            { f: 'accessory', icon: '💍', label: 'Doplňky' },
                             { f: 'tool', icon: '🔧', label: 'Nástr.' },
                             { f: 'ammo', icon: '🎯', label: 'Munice' }
                         ]) : ''}
+                        ${(state.baseItems && state.baseItems.length > 5) ? `
+                            <div style="position: relative; margin-bottom: 0.5rem;">
+                                <input type="text" id="storageSearchInput" placeholder="🔍 Hledat ve skladu..."
+                                       oninput="filterStorageBySearch(this.value);"
+                                       value="${(window._baseItemsSearch || '').replace(/"/g, '&quot;')}"
+                                       style="width: 100%; background: #1a1a1a; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 2rem 0.4rem 0.6rem; color: #fff; font-family: inherit; font-size: 0.85rem; box-sizing: border-box;">
+                                ${(window._baseItemsSearch || '').length > 0 ? `<button onclick="window._baseItemsSearch=''; showStorageModal();" style="position: absolute; right: 0.3rem; top: 50%; transform: translateY(-50%); background: #555; border: none; border-radius: 3px; color: #fff; padding: 0.15rem 0.4rem; font-size: 0.7rem; cursor: pointer;">✕</button>` : ''}
+                            </div>
+                        ` : ''}
                         ${storedItems}
                     ` : `
                         <!-- U HRÁČE -->
@@ -80218,7 +80701,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     selectedFormation = dungeonForms[Math.floor(Math.random() * dungeonForms.length)];
                     formationName = 'Dungeon';
                 } else if (combatType === 'abyss') {
-                    const abyssForms = ['surround', 'pincer', 'swarm'];
+                    // [FIX] Pokud je boss v skupině, vyhnout se surround formaci
+                    // (surround spawne enemies vedle hráče → boss v melee = pain)
+                    const hasBossInGroup = enemyGroup.some(e => e.isBoss || e.isWorldBoss || e.isRaidBoss);
+                    const abyssForms = hasBossInGroup ? ['pincer', 'swarm'] : ['surround', 'pincer', 'swarm'];
                     selectedFormation = abyssForms[Math.floor(Math.random() * abyssForms.length)];
                     formationName = 'Propast';
                 } else if (combatType === 'territory_guard' || combatType === 'war_zone') {
@@ -80262,6 +80748,55 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         y: Math.floor(Math.random() * Math.floor(R / 2)) // Jen horní polovina = nepřátelská strana
                     });
                 }
+                
+                // [NEW FIX] Safe distance pro BOSSY — boss nesmí spawnnout v melee dosahu hráče
+                // Hráči si stěžovali "v Propasti se mi spawne LICH vedle mě, není šance utéct".
+                // Surround formace v abyssu má pozice { x: pX±2, y: pY } = stejná Y jako hráč → melee.
+                // Fix: pokud má enemyGroup bosse, swap jeho pozici s nejvzdálenější pozicí (max distance od hráče).
+                try {
+                    const _pX = Math.floor(COMBAT_GRID.cols / 2);
+                    const _pY = COMBAT_GRID.rows - 2; // Hráčova pozice (default)
+                    const _MIN_BOSS_DISTANCE = 4; // Min vzdálenost (Manhattan) pro bosse
+                    
+                    enemyGroup.forEach((e, idx) => {
+                        if (!e.isBoss && !e.isWorldBoss && !e.isRaidBoss) return;
+                        const myPos = enemySpawnPositions[idx];
+                        if (!myPos) return;
+                        
+                        const myDist = Math.abs(myPos.x - _pX) + Math.abs(myPos.y - _pY);
+                        if (myDist >= _MIN_BOSS_DISTANCE) return; // Boss už je dost daleko
+                        
+                        // Najdi nejvzdálenější pozici v poli (a je obsazená non-bossem nebo prázdná)
+                        let bestIdx = -1;
+                        let bestDist = myDist;
+                        for (let i = 0; i < enemySpawnPositions.length; i++) {
+                            if (i === idx) continue;
+                            // Tato pozice je obsazená jiným bossem? Skip swap (oba blízko)
+                            const occByBoss = enemyGroup[i] && (enemyGroup[i].isBoss || enemyGroup[i].isWorldBoss || enemyGroup[i].isRaidBoss);
+                            if (occByBoss) continue;
+                            const p = enemySpawnPositions[i];
+                            const d = Math.abs(p.x - _pX) + Math.abs(p.y - _pY);
+                            if (d > bestDist) {
+                                bestDist = d;
+                                bestIdx = i;
+                            }
+                        }
+                        
+                        if (bestIdx >= 0) {
+                            // Swap pozic: boss dostane vzdálenější pozici
+                            const tmp = enemySpawnPositions[idx];
+                            enemySpawnPositions[idx] = enemySpawnPositions[bestIdx];
+                            enemySpawnPositions[bestIdx] = tmp;
+                            console.log(`👑 Boss safe distance swap: ${e.name} (${tmp.x},${tmp.y}) ↔ (${enemySpawnPositions[idx].x},${enemySpawnPositions[idx].y})`);
+                        } else {
+                            // Žádná lepší pozice nebyla — force boss na top row
+                            const fallbackY = 0;
+                            const fallbackX = Math.floor(COMBAT_GRID.cols / 2);
+                            enemySpawnPositions[idx] = { x: fallbackX, y: fallbackY };
+                            console.log(`👑 Boss force-moved to top: ${e.name} → (${fallbackX},${fallbackY})`);
+                        }
+                    });
+                } catch(e) { console.warn('Boss safe distance error:', e); }
                 
                 // === BOJOVÉ MODIFIKÁTORY ===
                 let combatModifier = null;
@@ -92037,6 +92572,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         totalBonusPercent += cachedPoliticalEffects.decision_energyWeaponBonus.value || 0.15;
                     }
                 }
+                // [NEW v6.0] Damage penalty (regulace zbraní šéfem)
+                if (cachedPoliticalEffects.decision_damagePenalty && cachedPoliticalEffects.decision_damagePenalty.until > now) {
+                    totalBonusPercent -= cachedPoliticalEffects.decision_damagePenalty.value || 0.25;
+                }
             }
             
             // [NEW #8] Vojenská priorita šéfa dává damage bonus všem
@@ -97944,22 +98483,35 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         function updateGame() {
-            showModal('🔄 Reload hry', `
+            const gitInfo = window._gitUpdateInfo;
+            const hasUpdate = !!window._gitUpdateAvailable;
+            
+            const updateBanner = hasUpdate && gitInfo ? `
+                <div style="background: linear-gradient(135deg, #ff5722, #c41e00); padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; text-align: left; border: 2px solid #ff8a65;">
+                    <div style="color: #fff; font-weight: bold; font-size: 1rem; margin-bottom: 0.4rem;">🆕 Nová verze dostupná na GitHubu!</div>
+                    <div style="color: #ffe0b2; font-size: 0.8rem; margin-bottom: 0.2rem;"><b>📝 Změny:</b> ${escapeHtml(gitInfo.message || 'bez popisu')}</div>
+                    <div style="color: #ffccbc; font-size: 0.7rem;">👤 ${escapeHtml(gitInfo.author)} · 🔖 ${escapeHtml(gitInfo.sha)} · 🕐 ${new Date(gitInfo.date).toLocaleString('cs-CZ')}</div>
+                </div>
+            ` : `
+                <div style="background: #1a4d1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; text-align: left;">
+                    <p style="margin: 0; color: #8bc34a;">✅ Tvůj save zůstane zachován!</p>
+                    <p style="margin: 0.5rem 0 0 0; color: #888; font-size: 0.85rem;">Save je uložený v prohlížeči (localStorage)</p>
+                </div>
+            `;
+            
+            showModal(hasUpdate ? '🆕 Nová verze hry' : '🔄 Reload hry', `
                 <div style="text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem;">🔄</div>
-                    <h3 style="margin: 0 0 1rem 0; color: var(--toxic-green);">Načíst změny</h3>
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">${hasUpdate ? '🆕' : '🔄'}</div>
+                    <h3 style="margin: 0 0 1rem 0; color: ${hasUpdate ? '#ff8a65' : 'var(--toxic-green)'};">${hasUpdate ? 'Aktualizuj na nejnovější verzi' : 'Načíst změny'}</h3>
                     
-                    <div style="background: #1a4d1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; text-align: left;">
-                        <p style="margin: 0; color: #8bc34a;">✅ Tvůj save zůstane zachován!</p>
-                        <p style="margin: 0.5rem 0 0 0; color: #888; font-size: 0.85rem;">Save je uložený v prohlížeči (localStorage)</p>
-                    </div>
+                    ${updateBanner}
                     
                     <p style="color: #ff9800; font-size: 0.9rem; margin-bottom: 1rem;">
-                        Stránka se znovu načte a aplikují se změny v kódu.
+                        ${hasUpdate ? 'Stránka se znovu načte z GitHubu — tvůj save zůstane zachován (uložený v prohlížeči).' : 'Stránka se znovu načte a aplikují se změny v kódu.'}
                     </p>
                 </div>
                 
-                <button class="btn" onclick="forceReload()" style="width: 100%; margin-bottom: 0.5rem; background: var(--rust);">🔄 Reload teď</button>
+                <button class="btn" onclick="performGameUpdate()" style="width: 100%; margin-bottom: 0.5rem; background: ${hasUpdate ? 'linear-gradient(135deg, #ff5722, #c41e00)' : 'var(--rust)'}; padding: 0.9rem; font-weight: bold;">${hasUpdate ? '🆕 Aktualizovat na novou verzi' : '🔄 Reload teď'}</button>
                 <button class="btn" onclick="closeModal()" style="width: 100%; background: #555;">✗ Zrušit</button>
             `);
         }
@@ -99092,7 +99644,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (compRegenBonuses.regenPerMin > 0 && state.char.hp < (state.char.maxHp || 100)) {
                     // delta je v sekundách, regen je HP/minutu -> akumuluj a přidej celé HP
                     if (!state._compRegenAccum) state._compRegenAccum = 0;
-                    state._compRegenAccum += compRegenBonuses.regenPerMin * (delta / 60);
+                    // [NEW v6.0] regenPenalty z politiky
+                    const _regenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                    state._compRegenAccum += compRegenBonuses.regenPerMin * (delta / 60) * _regenMult;
                     if (state._compRegenAccum >= 1) {
                         const addHp = Math.floor(state._compRegenAccum);
                         state._compRegenAccum -= addHp;
@@ -99106,7 +99660,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const rwbRegen = getRunewordBonuses();
                 if (rwbRegen.regenPerMin > 0 && state.char.hp < (state.char.maxHp || 100)) {
                     if (!state._runeRegenAccum) state._runeRegenAccum = 0;
-                    state._runeRegenAccum += rwbRegen.regenPerMin * (delta / 60);
+                    // [NEW v6.0] regenPenalty z politiky
+                    const _rwRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                    state._runeRegenAccum += rwbRegen.regenPerMin * (delta / 60) * _rwRegenMult;
                     if (state._runeRegenAccum >= 1) {
                         const addHp = Math.floor(state._runeRegenAccum);
                         state._runeRegenAccum -= addHp;
@@ -99528,7 +100084,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // During sleep: regen HP & energy, consume hunger & thirst faster
                 // [FIX v3.9.87] Floor přes akumulátor
                 if (!state._sleepHpAccum) state._sleepHpAccum = 0;
-                state._sleepHpAccum += (50 / 3600) * delta;
+                // [NEW v6.0] regenPenalty z politiky (vojáci nespí pořádně)
+                const _sleepRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                state._sleepHpAccum += (50 / 3600) * delta * _sleepRegenMult;
                 if (state._sleepHpAccum >= 1) {
                     const addHp = Math.floor(state._sleepHpAccum);
                     state._sleepHpAccum -= addHp;
@@ -99817,7 +100375,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (!window.combatState && state.char.hp < state.char.maxHp && state.status.hunger > 20 && state.status.thirst > 20 && state.status.radiation < 50) {
                         // [FIX v3.9.87] Použít akumulátor pro zlomky aby HP zůstalo celé číslo
                         if (!state._naturalHpAccum) state._naturalHpAccum = 0;
-                        state._naturalHpAccum += (5 / 3600) * delta;
+                        // [NEW v6.0] regenPenalty z politiky
+                        const _natRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                        state._naturalHpAccum += (5 / 3600) * delta * _natRegenMult;
                         if (state._naturalHpAccum >= 1) {
                             const addHp = Math.floor(state._naturalHpAccum);
                             state._naturalHpAccum -= addHp;
@@ -99828,7 +100388,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Medic passive - regeneration (bonus navíc)
                     if (!window.combatState && state.char.classId === 'medic' && state.char.hp < state.char.maxHp) {
                         if (!state._medicHpAccum) state._medicHpAccum = 0;
-                        state._medicHpAccum += 2 * delta / 60; // +2 HP per minute
+                        // [NEW v6.0] regenPenalty z politiky
+                        const _medicRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                        state._medicHpAccum += 2 * delta / 60 * _medicRegenMult; // +2 HP per minute
                         if (state._medicHpAccum >= 1) {
                             const addHp = Math.floor(state._medicHpAccum);
                             state._medicHpAccum -= addHp;
@@ -99896,7 +100458,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // OPRAVA: Žádná HP regenerace během boje!
                     if (!window.combatState && state.char.hp < state.char.maxHp && state.status.radiation < 50) {
                         if (!state._baseHpAccum) state._baseHpAccum = 0;
-                        state._baseHpAccum += (10 / 3600) * delta; // +10 HP per hour in base
+                        // [NEW v6.0] regenPenalty z politiky
+                        const _baseRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                        state._baseHpAccum += (10 / 3600) * delta * _baseRegenMult; // +10 HP per hour in base
                         if (state._baseHpAccum >= 1) {
                             const addHp = Math.floor(state._baseHpAccum);
                             state._baseHpAccum -= addHp;
@@ -99907,7 +100471,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (!window.combatState && state.base.includes('bed')) {
                         if (!state._bedHpAccum) state._bedHpAccum = 0;
                         if (!state._bedEnAccum) state._bedEnAccum = 0;
-                        state._bedHpAccum += 2 * delta / 60;
+                        // [NEW v6.0] regenPenalty z politiky (HP only - energie není ovlivněna)
+                        const _bedRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                        state._bedHpAccum += 2 * delta / 60 * _bedRegenMult;
                         state._bedEnAccum += 2 * delta / 60;
                         if (state._bedHpAccum >= 1) {
                             const addHp = Math.floor(state._bedHpAccum);
@@ -99932,7 +100498,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (!window.combatState) {
                         const survivorLevel = (typeof getSkillLevel === 'function') ? getSkillLevel('survivor') : (state.skills?.['survivor'] || 0);
                         const regenerationLevel = (typeof getSkillLevel === 'function') ? getSkillLevel('regeneration') : 0;
-                        const totalRegenPerMin = survivorLevel * 1 + regenerationLevel * 1; // 1 HP/min per level (každý systém)
+                        let totalRegenPerMin = survivorLevel * 1 + regenerationLevel * 1; // 1 HP/min per level (každý systém)
+                        // [NEW v6.0] Politika - vojenský režim → -50% HP regen
+                        if (cachedPoliticalEffects?.decision_regenPenalty && cachedPoliticalEffects.decision_regenPenalty.until > Date.now()) {
+                            const penalty = cachedPoliticalEffects.decision_regenPenalty.value || 0.50;
+                            totalRegenPerMin = totalRegenPerMin * (1 - penalty);
+                        }
                         if (totalRegenPerMin > 0 && state.char.hp < state.char.maxHp) {
                             if (!state._survivorHpAccum) state._survivorHpAccum = 0;
                             state._survivorHpAccum += totalRegenPerMin * delta / 60;
@@ -99946,8 +100517,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // OPRAVA: Medic passive regen v základně (chybělo - fungovalo jen mimo base)
                     if (!window.combatState && state.char.classId === 'medic' && state.char.hp < state.char.maxHp) {
+                        // [NEW v6.0] Politika regenPenalty
+                        let medicRate = 2;
+                        if (cachedPoliticalEffects?.decision_regenPenalty && cachedPoliticalEffects.decision_regenPenalty.until > Date.now()) {
+                            medicRate *= (1 - (cachedPoliticalEffects.decision_regenPenalty.value || 0.50));
+                        }
                         if (!state._medicHpAccumBase) state._medicHpAccumBase = 0;
-                        state._medicHpAccumBase += 2 * delta / 60;
+                        state._medicHpAccumBase += medicRate * delta / 60;
                         if (state._medicHpAccumBase >= 1) {
                             const addHp = Math.floor(state._medicHpAccumBase);
                             state._medicHpAccumBase -= addHp;
@@ -99960,7 +100536,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const regenCompBonusesBase = getAllCompanionBonuses();
                         if (regenCompBonusesBase.regenPerMin > 0 && state.char.hp < state.char.maxHp) {
                             if (!state._compRegenAccumBase) state._compRegenAccumBase = 0;
-                            state._compRegenAccumBase += regenCompBonusesBase.regenPerMin * delta / 60;
+                            // [NEW v6.0] regenPenalty z politiky
+                            const _compBaseRegenMult = (typeof getRegenPenaltyMultiplier === 'function') ? getRegenPenaltyMultiplier() : 1.0;
+                            state._compRegenAccumBase += regenCompBonusesBase.regenPerMin * delta / 60 * _compBaseRegenMult;
                             if (state._compRegenAccumBase >= 1) {
                                 const addHp = Math.floor(state._compRegenAccumBase);
                                 state._compRegenAccumBase -= addHp;
@@ -102791,8 +103369,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 <div style="border-top: 1px solid #333; padding-top: 1rem; margin-top: 0.5rem;">
                     <p style="color: #888; font-size: 0.8rem; margin-bottom: 0.5rem; text-align: center;">Správa hry:</p>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                        <button class="btn" onclick="updateGame()" style="background: #3949AB; padding: 0.6rem; font-size: 0.85rem;">
-                            🔄 Aktualizovat
+                        <button id="game-update-btn" class="btn" onclick="updateGame()" style="background: ${window._gitUpdateAvailable ? 'linear-gradient(135deg, #ff5722, #c41e00)' : '#3949AB'}; padding: 0.6rem; font-size: 0.85rem; ${window._gitUpdateAvailable ? 'animation: pulse 1.5s infinite;' : ''}">
+                            ${window._gitUpdateAvailable ? '🆕 Nová verze!' : '🔄 Aktualizovat'}
                         </button>
                         <button class="btn" onclick="confirmNewGame()" style="background: #8B0000; padding: 0.6rem; font-size: 0.85rem;">
                             🆕 Nová hra
@@ -104170,12 +104748,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         // Definice strážců
+        // [v6.1] MELEE (na blízko) vs RANGED (na dálku) — ranged má vyšší DMG, nižší HP/DEF, vyšší cenu
         const TERRITORY_GUARDS = [
-            { id: 'rookie', name: 'Nováček', icon: '👤', hp: 80, damage: 7, defense: 3, price: 25, desc: 'Základní strážce' },
-            { id: 'soldier', name: 'Voják', icon: '💂', hp: 150, damage: 13, defense: 8, price: 75, desc: 'Zkušený bojovník' },
-            { id: 'veteran', name: 'Veterán', icon: '🎖️', hp: 250, damage: 20, defense: 12, price: 175, desc: 'Tvrdý protivník' },
-            { id: 'elite', name: 'Elita', icon: '⚔️', hp: 400, damage: 31, defense: 18, price: 400, desc: 'Nebezpečný zabiják' },
-            { id: 'champion', name: 'Šampion', icon: '🏆', hp: 600, damage: 46, defense: 25, price: 800, desc: 'Legendární bojovník' }
+            // ─── MELEE (🗡️ na blízko) ───
+            { id: 'rookie',   name: 'Nováček',  icon: '👤', hp: 80,  damage: 7,  defense: 3,  price: 25,  weapon: 'melee',  desc: '🗡️ Základní strážce — pálka' },
+            { id: 'soldier',  name: 'Voják',    icon: '💂', hp: 150, damage: 13, defense: 8,  price: 75,  weapon: 'melee',  desc: '🗡️ Zkušený bojovník — meč' },
+            { id: 'veteran',  name: 'Veterán',  icon: '🎖️', hp: 250, damage: 20, defense: 12, price: 175, weapon: 'melee',  desc: '🗡️ Tvrdý protivník — sekera' },
+            { id: 'elite',    name: 'Elita',    icon: '⚔️', hp: 400, damage: 31, defense: 18, price: 400, weapon: 'melee',  desc: '🗡️ Nebezpečný zabiják — power kladivo' },
+            { id: 'champion', name: 'Šampion',  icon: '🏆', hp: 600, damage: 46, defense: 25, price: 800, weapon: 'melee',  desc: '🗡️ Legendární bojovník — obří meč' },
+            
+            // ─── RANGED (🏹 na dálku) — vyšší DMG, nižší HP/DEF, vyšší cena ───
+            { id: 'hunter',   name: 'Lovec',         icon: '🏹', hp: 60,  damage: 10, defense: 2,  price: 30,  weapon: 'ranged', desc: '🏹 Lukostřelec — luk' },
+            { id: 'archer',   name: 'Lukostřelec',   icon: '🎯', hp: 110, damage: 18, defense: 5,  price: 90,  weapon: 'ranged', desc: '🏹 Cvičený lukostřelec — kuše' },
+            { id: 'sniper',   name: 'Snajpr',        icon: '🔫', hp: 180, damage: 28, defense: 8,  price: 200, weapon: 'ranged', desc: '🏹 Přesný střelec — puška' },
+            { id: 'marksman', name: 'Ostrostřelec',  icon: '🎯', hp: 280, damage: 45, defense: 12, price: 450, weapon: 'ranged', desc: '🏹 Mistr na dálku — odstřelovačka' },
+            { id: 'gunner',   name: 'Kanonýr',       icon: '💥', hp: 380, damage: 65, defense: 15, price: 850, weapon: 'ranged', desc: '🏹 Nejlepší střelec — minigun' }
         ];
         
         const MAX_GUARDS_PER_TERRITORY = 3;
@@ -105316,6 +105903,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 isOurTerritory = terr.owner === faction;
             } catch(e) { console.error('Load territory:', e); }
             
+            // [NEW v6.1] Klanové sídlo (clan_land) — vlastní si sám sebe (faction == locationId pro HQ)
+            // Když hráč přišel z showClanPanel pro vlastní sídlo, je to vždy "naše" území.
+            const targetLoc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            const isOwnHQ = targetLoc?.type === 'clan_land' && faction === locationId;
+            if (isOwnHQ) {
+                isOurTerritory = true;
+                // Auto-set owner v Firebase pokud chybí (pro raid logiku)
+                try {
+                    const ownerSnap = await firebaseDB.ref(`territories/${locationId}/owner`).once('value');
+                    if (!ownerSnap.val()) {
+                        await firebaseDB.ref(`territories/${locationId}/owner`).set(faction);
+                    }
+                } catch(_) {}
+            }
+            
             if (!isOurTerritory) {
                 notifyWarning('Není vaše území', 'Strážce můžete najímat pouze na vlastním území');
                 return;
@@ -105339,14 +105941,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 </div>`;
             }).join('') : '<p style="color:#666;text-align:center;padding:0.5rem;font-size:0.8rem;font-style:italic;">Žádní strážci. Území je nechráněné!</p>';
             
-            // Seznam najímatelných typů
-            const hireOptionsHtml = canHire && slotsLeft > 0 ? TERRITORY_GUARDS.map(g => {
+            // Seznam najímatelných typů — rozděleno podle weapon (melee/ranged)
+            const renderGuardOption = (g) => {
                 const canAfford = vault >= g.price;
                 return `<div style="background:#0a0a0a;border:1px solid ${canAfford ? '#2a4a2a' : '#3a1a1a'};padding:0.5rem 0.6rem;margin:0.3rem 0;border-radius:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                         <div style="flex:1;min-width:0;">
                             <div style="color:#fff;font-size:0.85rem;">${g.icon} <b>${g.name}</b></div>
-                            <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${g.desc} · ❤️ ${g.hp} HP · ⚔️ ${g.damage} · 🛡️ ${g.defense}</div>
+                            <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${g.desc}</div>
+                            <div style="color:#aaa;font-size:0.7rem;margin-top:0.1rem;">❤️ ${g.hp} HP · ⚔️ ${g.damage} DMG · 🛡️ ${g.defense} DEF</div>
                         </div>
                         <button class="btn" onclick="hireGuardFromModal('${locationId}','${g.id}')" 
                             style="background:${canAfford ? 'linear-gradient(135deg,#2e7d32,#1b5e20)' : '#444'};font-size:0.75rem;padding:0.3rem 0.6rem;flex-shrink:0;${canAfford ? '' : 'opacity:0.5;cursor:not-allowed;'}"
@@ -105355,7 +105958,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         </button>
                     </div>
                 </div>`;
-            }).join('') : '';
+            };
+            const meleeGuards = TERRITORY_GUARDS.filter(g => g.weapon === 'melee' || !g.weapon);
+            const rangedGuards = TERRITORY_GUARDS.filter(g => g.weapon === 'ranged');
+            
+            const hireOptionsHtml = canHire && slotsLeft > 0 ? `
+                <div style="margin-top:0.4rem;">
+                    <div style="background:#1a1a0a;color:#ffc107;padding:0.3rem 0.6rem;border-radius:4px;font-size:0.75rem;font-weight:bold;margin-bottom:0.2rem;">🗡️ NA BLÍZKO (vyšší HP, nižší DMG)</div>
+                    ${meleeGuards.map(renderGuardOption).join('')}
+                </div>
+                <div style="margin-top:0.6rem;">
+                    <div style="background:#0a1a1a;color:#4dd0e1;padding:0.3rem 0.6rem;border-radius:4px;font-size:0.75rem;font-weight:bold;margin-bottom:0.2rem;">🏹 NA DÁLKU (vyšší DMG, nižší HP)</div>
+                    ${rangedGuards.map(renderGuardOption).join('')}
+                </div>
+            ` : '';
             
             let infoHtml = '';
             if (!canHire) {
@@ -105410,6 +106026,533 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         window.showHireGuardModal = showHireGuardModal;
+        
+        // ============================================================
+        // [v6.2] OSADNICKÁ + SUROVINOVÁ DAŇ ŠÉFA
+        // ============================================================
+        
+        // Modal: Vyber osadníky kteří půjdou šéfovi
+        async function showSettlerTaxModal(taxId, amount) {
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
+                return;
+            }
+            
+            // Ověř že daň je stále aktivní
+            const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+            const tax = taxSnap.val();
+            if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
+                return;
+            }
+            
+            const myName = getPlayerName();
+            const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+            
+            // Zkontroluj zda už hráč splnil
+            const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+            const record = recordSnap.val();
+            if (record?.status === 'paid') {
+                notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                return;
+            }
+            
+            const settlers = state.settlement?.settlers || [];
+            const aliveSettlers = settlers.filter(s => !s.dead && (s.hp || 100) > 0);
+            
+            if (aliveSettlers.length < amount) {
+                showModal('❌ Nedostatek osadníků', `
+                    <div style="text-align:center;padding:1rem;">
+                        <div style="font-size:3rem;">😔</div>
+                        <p style="color:#f44336;">Šéf požaduje ${amount} osadníků, ale máš jich jen ${aliveSettlers.length}.</p>
+                        <p style="color:#888;font-size:0.85rem;margin-top:0.8rem;">⚠️ Pokud nesplníš do ${new Date(tax.deadline).toLocaleTimeString('cs-CZ')}, dostaneš zákaz potulných obchodníků na 24h.</p>
+                    </div>
+                    <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
+                `);
+                return;
+            }
+            
+            window._taxSelectedSettlers = window._taxSelectedSettlers || new Set();
+            
+            const renderSettlerList = () => {
+                return aliveSettlers.map((s, idx) => {
+                    const selected = window._taxSelectedSettlers.has(idx);
+                    const settlerName = s.name || ('Osadník #' + idx);
+                    const settlerType = s.typeName || s.type || 'Osadník';
+                    const settlerIcon = s.icon || '👤';
+                    return `
+                        <div onclick="toggleTaxSettler(${idx}, ${amount})" style="background:${selected ? '#1a3a1a' : '#1a1a1a'};border:1px solid ${selected ? '#4caf50' : '#444'};padding:0.5rem 0.6rem;margin:0.25rem 0;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                            <div style="flex:1;">
+                                <div style="color:${selected ? '#4caf50' : '#fff'};font-size:0.85rem;">${selected ? '✅' : '⬜'} ${settlerIcon} <b>${escapeHtml(settlerName)}</b></div>
+                                <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${escapeHtml(settlerType)} · ❤️ ${s.hp || 100}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            };
+            
+            const timeLeftMin = Math.max(0, Math.ceil((tax.deadline - Date.now()) / 60000));
+            const timeLeftStr = timeLeftMin >= 60 ? `${Math.floor(timeLeftMin/60)}h ${timeLeftMin%60}min` : `${timeLeftMin}min`;
+            
+            showModal('👥 Osadnická daň šéfa', `
+                <div style="background:linear-gradient(135deg,#1a0a2a,#0a0a1a);padding:0.8rem;border-radius:8px;border:2px solid #7B1FA2;margin-bottom:0.8rem;">
+                    <div style="text-align:center;">
+                        <div style="font-size:2rem;">👥</div>
+                        <h3 style="color:#ce93d8;margin:0.3rem 0;">Šéf požaduje ${amount} osadníků</h3>
+                        <p style="color:#aaa;font-size:0.8rem;">Aktivoval: ${escapeHtml(tax.activatedBy || 'Šéf')}</p>
+                    </div>
+                </div>
+                
+                <div style="background:#2a1a0a;border:1px solid #ff5722;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
+                    <div style="color:#ff9800;font-size:0.85rem;font-weight:bold;">⏰ Zbývá: ${timeLeftStr}</div>
+                    <div style="color:#aaa;font-size:0.75rem;margin-top:0.2rem;">⚠️ Pokud nesplníš včas → zákaz nákupů u potulných obchodníků (24h)</div>
+                </div>
+                
+                <div style="margin:0.5rem 0;">
+                    <div style="color:#888;font-size:0.8rem;margin-bottom:0.3rem;">Vyber přesně <b>${amount}</b> osadníků k odeslání:</div>
+                    <div id="taxSettlerList" style="max-height:35vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+                        ${renderSettlerList()}
+                    </div>
+                    <div id="taxSettlerCount" style="text-align:center;color:#888;font-size:0.8rem;margin-top:0.4rem;">
+                        Vybráno: <span id="taxSelectedCount">${window._taxSelectedSettlers.size}</span> / ${amount}
+                    </div>
+                </div>
+                
+                <button id="taxSubmitBtn" class="btn" onclick="submitSettlerTax('${taxId}', ${amount})" style="width:100%;margin-top:0.5rem;background:${window._taxSelectedSettlers.size === amount ? 'linear-gradient(135deg,#2e7d32,#1b5e20)' : '#555'};padding:0.7rem;font-weight:bold;" ${window._taxSelectedSettlers.size === amount ? '' : 'disabled'}>
+                    📤 Odeslat ${amount} osadníků šéfovi
+                </button>
+                <button class="btn" onclick="window._taxSelectedSettlers = new Set(); closeModal();" style="width:100%;margin-top:0.3rem;background:#555;">Zrušit</button>
+            `);
+        }
+        window.showSettlerTaxModal = showSettlerTaxModal;
+        
+        // Toggle výběru osadníka v daňovém modalu
+        function toggleTaxSettler(idx, maxAmount) {
+            window._taxSelectedSettlers = window._taxSelectedSettlers || new Set();
+            if (window._taxSelectedSettlers.has(idx)) {
+                window._taxSelectedSettlers.delete(idx);
+            } else {
+                if (window._taxSelectedSettlers.size >= maxAmount) {
+                    notifyWarning('Limit', `Můžeš vybrat max ${maxAmount} osadníků`);
+                    return;
+                }
+                window._taxSelectedSettlers.add(idx);
+            }
+            // Aktualizuj count + button stav
+            const countEl = document.getElementById('taxSelectedCount');
+            const btnEl = document.getElementById('taxSubmitBtn');
+            if (countEl) countEl.textContent = window._taxSelectedSettlers.size;
+            if (btnEl) {
+                if (window._taxSelectedSettlers.size === maxAmount) {
+                    btnEl.disabled = false;
+                    btnEl.style.background = 'linear-gradient(135deg,#2e7d32,#1b5e20)';
+                } else {
+                    btnEl.disabled = true;
+                    btnEl.style.background = '#555';
+                }
+            }
+            // Re-render list aby se aktualizovaly checkboxy
+            const listEl = document.getElementById('taxSettlerList');
+            if (listEl) {
+                const settlers = (state.settlement?.settlers || []).filter(s => !s.dead && (s.hp || 100) > 0);
+                listEl.innerHTML = settlers.map((s, i) => {
+                    const selected = window._taxSelectedSettlers.has(i);
+                    const settlerName = s.name || ('Osadník #' + i);
+                    const settlerType = s.typeName || s.type || 'Osadník';
+                    const settlerIcon = s.icon || '👤';
+                    return `
+                        <div onclick="toggleTaxSettler(${i}, ${maxAmount})" style="background:${selected ? '#1a3a1a' : '#1a1a1a'};border:1px solid ${selected ? '#4caf50' : '#444'};padding:0.5rem 0.6rem;margin:0.25rem 0;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                            <div style="flex:1;">
+                                <div style="color:${selected ? '#4caf50' : '#fff'};font-size:0.85rem;">${selected ? '✅' : '⬜'} ${settlerIcon} <b>${escapeHtml(settlerName)}</b></div>
+                                <div style="color:#888;font-size:0.7rem;margin-top:0.1rem;">${escapeHtml(settlerType)} · ❤️ ${s.hp || 100}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+        window.toggleTaxSettler = toggleTaxSettler;
+        
+        // Odeslání osadníků šéfovi
+        async function submitSettlerTax(taxId, amount) {
+            if (!window._taxSelectedSettlers || window._taxSelectedSettlers.size !== amount) {
+                notifyWarning('Chyba', `Vyber přesně ${amount} osadníků`);
+                return;
+            }
+            
+            try {
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                
+                // Re-check že daň je aktivní
+                const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+                const tax = taxSnap.val();
+                if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                    notifyWarning('Vypršela', 'Daň už není aktivní');
+                    closeModal();
+                    return;
+                }
+                
+                // Odstraň vybrané osadníky ze sídla
+                const settlers = state.settlement?.settlers || [];
+                const aliveSettlers = settlers.filter(s => !s.dead && (s.hp || 100) > 0);
+                const selectedIndices = Array.from(window._taxSelectedSettlers);
+                const sentSettlers = selectedIndices.map(idx => aliveSettlers[idx]).filter(Boolean);
+                
+                // Odstraň z původního pole
+                const remainingSettlers = settlers.filter(s => !sentSettlers.includes(s));
+                state.settlement.settlers = remainingSettlers;
+                
+                // Označ daň jako splněnou
+                await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).update({
+                    status: 'paid',
+                    paidAt: Date.now(),
+                    sentSettlers: sentSettlers.map(s => ({ name: s.name, type: s.type }))
+                });
+                
+                // Bonus: malá kompenzace
+                state.money = (state.money || 0) + 50 * amount;
+                
+                window._taxSelectedSettlers = new Set();
+                saveGame(true);
+                closeModal();
+                
+                notifySuccess('✅ Daň splněna', `Odeslal jsi ${amount} osadníků šéfovi. +${50*amount} 💰 kompenzace.`);
+                addLog(`👥 Splnil jsi osadnickou daň šéfa (${amount} osadníků poslal pryč). +${50*amount} 💰`, '🏛️');
+                
+                if (typeof renderFull === 'function') renderFull();
+            } catch(e) {
+                console.error('Submit settler tax error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odeslat daň');
+            }
+        }
+        window.submitSettlerTax = submitSettlerTax;
+        
+        // Modal: Surovinová daň
+        async function showResourceTaxModal(taxId, resource, amount) {
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Daň šéfa vyžaduje online připojení');
+                return;
+            }
+            
+            const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+            const tax = taxSnap.val();
+            if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                notifyWarning('Daň vypršela', 'Tato daň už není aktivní.');
+                return;
+            }
+            
+            const myName = getPlayerName();
+            const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+            const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).once('value');
+            const record = recordSnap.val();
+            if (record?.status === 'paid') {
+                notifyInfo('✅ Splněno', 'Tuto daň jsi už splnil.');
+                return;
+            }
+            
+            // Spočítej dostupné množství (player + settlement storage)
+            const playerHas = state.resources?.[resource] || 0;
+            const settlementHas = state.settlement?.resources?.[resource] || 0;
+            const totalHas = playerHas + settlementHas;
+            const canPay = totalHas >= amount;
+            
+            const resIcon = { wood: '🌲', metal: '⚙️', stone: '🗿', food: '🍖', water: '💧' }[resource] || '📦';
+            const resName = { wood: 'dřeva', metal: 'kovu', stone: 'kamene', food: 'jídla', water: 'vody' }[resource] || resource;
+            const resNameNom = { wood: 'Dřevo', metal: 'Kov', stone: 'Kámen', food: 'Jídlo', water: 'Voda' }[resource] || resource;
+            
+            const timeLeftMin = Math.max(0, Math.ceil((tax.deadline - Date.now()) / 60000));
+            const timeLeftStr = timeLeftMin >= 60 ? `${Math.floor(timeLeftMin/60)}h ${timeLeftMin%60}min` : `${timeLeftMin}min`;
+            
+            showModal(`${resIcon} Surovinová daň šéfa`, `
+                <div style="background:linear-gradient(135deg,#1a0a2a,#0a0a1a);padding:0.8rem;border-radius:8px;border:2px solid #7B1FA2;margin-bottom:0.8rem;">
+                    <div style="text-align:center;">
+                        <div style="font-size:2rem;">${resIcon}</div>
+                        <h3 style="color:#ce93d8;margin:0.3rem 0;">Šéf požaduje ${amount} ${resName}</h3>
+                        <p style="color:#aaa;font-size:0.8rem;">Aktivoval: ${escapeHtml(tax.activatedBy || 'Šéf')}</p>
+                    </div>
+                </div>
+                
+                <div style="background:#2a1a0a;border:1px solid #ff5722;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
+                    <div style="color:#ff9800;font-size:0.85rem;font-weight:bold;">⏰ Zbývá: ${timeLeftStr}</div>
+                    <div style="color:#aaa;font-size:0.75rem;margin-top:0.2rem;">⚠️ Pokud nesplníš včas → zákaz online tržnice (24h)</div>
+                </div>
+                
+                <div style="background:#0a1a0a;padding:0.6rem;border-radius:6px;margin-bottom:0.5rem;">
+                    <div style="color:#fff;font-size:0.85rem;margin-bottom:0.3rem;">📊 Tvoje zásoby ${resName}:</div>
+                    <div style="color:#aaa;font-size:0.75rem;">U sebe: <strong style="color:${playerHas > 0 ? '#4caf50' : '#888'};">${playerHas}</strong></div>
+                    <div style="color:#aaa;font-size:0.75rem;">Ve skladu osady: <strong style="color:${settlementHas > 0 ? '#4caf50' : '#888'};">${settlementHas}</strong></div>
+                    <div style="color:#fff;font-size:0.85rem;margin-top:0.3rem;">Celkem: <strong style="color:${canPay ? '#4caf50' : '#f44336'};">${totalHas}</strong> / ${amount}</div>
+                </div>
+                
+                ${canPay ? `
+                    <button class="btn" onclick="submitResourceTax('${taxId}', '${resource}', ${amount})" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#2e7d32,#1b5e20);padding:0.7rem;font-weight:bold;">
+                        📤 Odeslat ${amount} ${resNameNom} šéfovi
+                    </button>
+                ` : `
+                    <div style="background:#2a0a0a;padding:0.6rem;border-radius:6px;text-align:center;margin-top:0.5rem;">
+                        <div style="color:#f44336;font-weight:bold;">❌ Nedostatek ${resName}!</div>
+                        <div style="color:#888;font-size:0.75rem;margin-top:0.2rem;">Chybí ti ${amount - totalHas} ${resName}. Najdi nebo vyrob.</div>
+                    </div>
+                `}
+                <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#555;">Zavřít</button>
+            `);
+        }
+        window.showResourceTaxModal = showResourceTaxModal;
+        
+        // Odeslání suroviny šéfovi
+        async function submitResourceTax(taxId, resource, amount) {
+            try {
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                
+                const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+                const tax = taxSnap.val();
+                if (!tax || tax.taxId !== taxId || tax.deadline < Date.now()) {
+                    notifyWarning('Vypršela', 'Daň už není aktivní');
+                    closeModal();
+                    return;
+                }
+                
+                // Odečti suroviny — nejprve z hráče, pak ze sídla
+                const playerHas = state.resources?.[resource] || 0;
+                const settlementHas = state.settlement?.resources?.[resource] || 0;
+                if (playerHas + settlementHas < amount) {
+                    notifyWarning('Nedostatek', 'Nemáš dost surovin');
+                    return;
+                }
+                
+                let remaining = amount;
+                if (playerHas > 0) {
+                    const fromPlayer = Math.min(playerHas, remaining);
+                    state.resources[resource] = playerHas - fromPlayer;
+                    remaining -= fromPlayer;
+                }
+                if (remaining > 0 && state.settlement?.resources) {
+                    state.settlement.resources[resource] = (settlementHas - remaining);
+                }
+                
+                // Označ jako splněnou
+                await firebaseDB.ref(`mayorTaxRecords/${taxId}/${sanitizedName}`).update({
+                    status: 'paid',
+                    paidAt: Date.now(),
+                    sentResource: resource,
+                    sentAmount: amount
+                });
+                
+                // Malá kompenzace (10% peněz dle suroviny)
+                const compensation = { wood: 30, metal: 50, stone: 20, food: 25, water: 15 }[resource] || 20;
+                state.money = (state.money || 0) + compensation;
+                
+                saveGame(true);
+                closeModal();
+                
+                const resName = { wood: 'dřeva', metal: 'kovu', stone: 'kamene', food: 'jídla', water: 'vody' }[resource] || resource;
+                notifySuccess('✅ Daň splněna', `Odeslal jsi ${amount} ${resName} šéfovi. +${compensation} 💰 kompenzace.`);
+                addLog(`📦 Splnil jsi surovinovou daň šéfa (${amount} ${resName}). +${compensation} 💰`, '🏛️');
+                
+                if (typeof renderFull === 'function') renderFull();
+            } catch(e) {
+                console.error('Submit resource tax error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se odeslat daň');
+            }
+        }
+        window.submitResourceTax = submitResourceTax;
+        
+        // Helper: Zkontroluje zda hráč má aktivní BAN za nesplnění daně
+        // Volá se v openExoticShop() (wandering trader) a showMarketplace()
+        async function checkMayorTaxBan(banType) {
+            // banType: 'wandering' | 'marketplace'
+            if (!multiplayerEnabled || !firebaseDB) return { banned: false };
+            try {
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                // Zkontroluj jestli existuje aktivní ban
+                const banSnap = await firebaseDB.ref(`mayorTaxBans/${sanitizedName}/${banType}`).once('value');
+                const ban = banSnap.val();
+                if (ban && ban.until && ban.until > Date.now()) {
+                    const minLeft = Math.ceil((ban.until - Date.now()) / 60000);
+                    return { banned: true, minutesLeft: minLeft };
+                }
+                return { banned: false };
+            } catch(e) {
+                console.warn('checkMayorTaxBan error:', e);
+                return { banned: false };
+            }
+        }
+        window.checkMayorTaxBan = checkMayorTaxBan;
+        
+        // Při expiraci daně (deadline): aplikuj ban všem kdo neuhradil
+        // Volá se v game loop při kontrole expirace
+        async function processMayorTaxExpiration() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            try {
+                const taxSnap = await firebaseDB.ref('politics/activeEvents/decision_mayorTax').once('value');
+                const tax = taxSnap.val();
+                if (!tax || !tax.taxId || !tax.banType) return;
+                
+                // Zkontroluj jestli daň ještě neexpirovala v rámci toleranceí
+                const now = Date.now();
+                if (tax.deadline >= now) return; // Ještě běží
+                
+                // Daň expirovala — applyuj ban všem kteří NEZAPLATILI
+                const recordsSnap = await firebaseDB.ref(`mayorTaxRecords/${tax.taxId}`).once('value');
+                const records = recordsSnap.val() || {};
+                
+                const banUntil = now + 24 * 60 * 60 * 1000; // 24h ban
+                const banPromises = [];
+                
+                for (const [playerKey, record] of Object.entries(records)) {
+                    if (record?.status !== 'paid') {
+                        // Aplikuj ban
+                        banPromises.push(
+                            firebaseDB.ref(`mayorTaxBans/${playerKey}/${tax.banType}`).set({
+                                until: banUntil,
+                                reason: tax.type === 'settlers' ? 'Nezaplacení osadnické daně' : `Nezaplacení daně z ${tax.resource}`,
+                                taxId: tax.taxId,
+                                appliedAt: now
+                            }).then(() => 
+                                firebaseDB.ref(`notifications/${playerKey}`).push({
+                                    type: 'mayor_tax_failed',
+                                    banType: tax.banType,
+                                    until: banUntil,
+                                    message: tax.banType === 'wandering' 
+                                        ? '🚫 Nezaplacená daň! Šéf ti zakázal nákupy u potulných obchodníků na 24h.'
+                                        : '🚫 Nezaplacená daň! Šéf ti zakázal online tržnici na 24h.',
+                                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                                    read: false
+                                })
+                            )
+                        );
+                    }
+                }
+                
+                await Promise.all(banPromises);
+                
+                // Smaž aktivní daň (už expirovala)
+                await firebaseDB.ref('politics/activeEvents/decision_mayorTax').remove();
+                console.log(`🏛️ Mayor tax ${tax.taxId} expired, ${banPromises.length} bans applied`);
+            } catch(e) {
+                console.error('processMayorTaxExpiration error:', e);
+            }
+        }
+        window.processMayorTaxExpiration = processMayorTaxExpiration;
+        
+        // [v6.2] LATE-JOIN HANDLING — když se hráč přihlásí po startu daně,
+        // vytvoří mu pending záznam a zobrazí welcome notifikaci.
+        // Idempotentní: pokud záznam existuje, neudělá nic.
+        async function handleMayorTaxOnLogin() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            try {
+                const tax = cachedPoliticalEffects?.decision_mayorTax;
+                if (!tax || !tax.taxId || tax.deadline < Date.now()) return;
+                
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                
+                // Zkontroluj jestli už mám záznam (zabraň duplikátům)
+                const recordSnap = await firebaseDB.ref(`mayorTaxRecords/${tax.taxId}/${sanitizedName}`).once('value');
+                if (recordSnap.exists()) return; // Už mám záznam
+                
+                // Anti-spam: zkontroluj jestli jsme to už zpracovali v této session
+                if (window._processedTaxOnLogin === tax.taxId) return;
+                window._processedTaxOnLogin = tax.taxId;
+                
+                // Vytvoř pending záznam
+                await firebaseDB.ref(`mayorTaxRecords/${tax.taxId}/${sanitizedName}`).set({
+                    status: 'pending',
+                    type: tax.type,
+                    amount: tax.amount,
+                    resource: tax.resource || null,
+                    deadline: tax.deadline,
+                    createdAt: Date.now(),
+                    joinedLate: true
+                });
+                
+                // Zobraz info modal o aktivní dani (po 2s aby UI dorazilo)
+                const minLeft = Math.ceil((tax.deadline - Date.now()) / 60000);
+                const timeLeft = minLeft >= 60 ? `${Math.floor(minLeft/60)}h ${minLeft%60}min` : `${minLeft}min`;
+                
+                const taxLabel = tax.type === 'settlers' 
+                    ? `${tax.amount} osadníků`
+                    : `${tax.amount} ${({wood:'dřeva',metal:'kovu',stone:'kamene',food:'jídla',water:'vody'})[tax.resource] || tax.resource}`;
+                const banLabel = tax.banType === 'wandering' ? 'potulných obchodníků' : 'tržnice';
+                
+                setTimeout(() => {
+                    if (typeof showModal === 'function') {
+                        showModal('🏛️ Aktivní daň šéfa!', `
+                            <div style="text-align:center;padding:0.5rem;">
+                                <div style="font-size:3rem;">${tax.type === 'settlers' ? '👥' : '📦'}</div>
+                                <h3 style="color:#ce93d8;">Šéf vyhlásil daň!</h3>
+                                <p style="color:#aaa;">Šéf požaduje <strong style="color:#fff;">${taxLabel}</strong></p>
+                                <div style="background:#2a1a0a;border:1px solid #ff5722;padding:0.6rem;border-radius:6px;margin:0.8rem 0;">
+                                    <div style="color:#ff9800;font-size:0.85rem;font-weight:bold;">⏰ Zbývá: ${timeLeft}</div>
+                                    <div style="color:#aaa;font-size:0.75rem;margin-top:0.2rem;">⚠️ Pokud nesplníš včas → zákaz ${banLabel} (24h)</div>
+                                </div>
+                            </div>
+                            <button class="btn" onclick="closeModal();${tax.type === 'settlers' ? `showSettlerTaxModal('${tax.taxId}', ${tax.amount})` : `showResourceTaxModal('${tax.taxId}', '${tax.resource}', ${tax.amount})`}" style="width:100%;background:linear-gradient(135deg,#7B1FA2,#4A148C);padding:0.8rem;font-weight:bold;">📤 Splnit daň</button>
+                            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#555;">Zavřít (vidím v HUD)</button>
+                        `);
+                    }
+                }, 2000);
+                
+                console.log(`🏛️ Late-join: pending tax record created for ${myName}`);
+            } catch(e) {
+                console.error('handleMayorTaxOnLogin error:', e);
+            }
+        }
+        window.handleMayorTaxOnLogin = handleMayorTaxOnLogin;
+        
+        // [v6.2] PŘIPOMÍNKOVÝ SYSTÉM — kontroluje deadline a posílá reminder
+        // Volá se každou minutu z game loop
+        async function checkMayorTaxReminder() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            try {
+                const tax = cachedPoliticalEffects?.decision_mayorTax;
+                if (!tax || !tax.deadline) return;
+                
+                const myStatus = window._myMayorTaxStatus;
+                if (myStatus === 'paid') return; // Už zaplaceno, žádný reminder
+                
+                const minLeft = Math.ceil((tax.deadline - Date.now()) / 60000);
+                if (minLeft <= 0) return; // Vypršelo
+                
+                // Anti-spam: pamatuj si které remindery už proběhly v této session
+                window._taxRemindersShown = window._taxRemindersShown || {};
+                const key = tax.taxId;
+                window._taxRemindersShown[key] = window._taxRemindersShown[key] || {};
+                
+                // 60min reminder
+                if (minLeft <= 60 && minLeft > 30 && !window._taxRemindersShown[key].r60) {
+                    window._taxRemindersShown[key].r60 = true;
+                    notifyWarning('⚠️ Daň šéfa', `Zbývá ti jen 1 hodina! Splň daň jinak ban.`);
+                }
+                // 30min reminder
+                if (minLeft <= 30 && minLeft > 10 && !window._taxRemindersShown[key].r30) {
+                    window._taxRemindersShown[key].r30 = true;
+                    notifyWarning('⚠️ Daň šéfa - 30 min!', `Splň daň urgentně jinak ban!`);
+                    if (typeof SoundSystem !== 'undefined' && SoundSystem.play) SoundSystem.play('notification');
+                }
+                // 10min reminder
+                if (minLeft <= 10 && minLeft > 0 && !window._taxRemindersShown[key].r10) {
+                    window._taxRemindersShown[key].r10 = true;
+                    notifyWarning('🚨 POSLEDNÍ ŠANCE!', `Daň vyprší za ${minLeft} min! Splň ji teď nebo dostaneš ban!`);
+                    if (typeof SoundSystem !== 'undefined' && SoundSystem.play) SoundSystem.play('notification');
+                }
+            } catch(e) { console.warn('Tax reminder check:', e); }
+        }
+        window.checkMayorTaxReminder = checkMayorTaxReminder;
+        
+        // Spusť reminder check každou minutu
+        if (typeof window !== 'undefined' && !window._taxReminderInterval) {
+            window._taxReminderInterval = setInterval(() => {
+                if (typeof checkMayorTaxReminder === 'function') {
+                    checkMayorTaxReminder();
+                }
+            }, 60 * 1000); // Každou minutu
+        }
+        
+        // ============================================================
         window.hireGuardFromModal = hireGuardFromModal;
         window.hireGuard = hireGuard;
         
@@ -105769,6 +106912,78 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const { locationId, faction } = battle;
             const myName = getPlayerName();
+            
+            // [NEW v6.1] Vault raid flow — combat byl proti strážcům sídla, pokračuj raidem nebo zruš
+            if (battle.isVaultRaid) {
+                window.territoryBattle = null;
+                
+                // Aktualizuj HP strážců na základě combatu (pokud combat sytém nezapsal)
+                // Strážci kteří měli 0 HP po combatu jsou mrtví v Firebase
+                try {
+                    if (multiplayerEnabled && firebaseDB) {
+                        // Combat systém upravil window.combatState s aktuálním HP — synchronizuj
+                        // Ale combat skončil, takže přeneseme info z battle.originalGuards (s damage)
+                        // Pro jistotu: pokud combat dobře nepropsal, alespoň označíme všechny jako poškozené.
+                        const remainingGuards = (battle.originalGuards || []).map(g => {
+                            // Po neúspěšném combatu (smrt/útěk) zůstávají strážci s aktuálním HP.
+                            // Po vítězství strážci jsou všichni mrtví (HP = 0).
+                            return victory ? { ...g, hp: 0 } : g;
+                        });
+                        await firebaseDB.ref(`territories/${locationId}/guards`).set(remainingGuards);
+                    }
+                } catch(e) { console.warn('Guard HP sync after vault raid:', e); }
+                
+                if (!victory) {
+                    // Hráč prohrál (nebo utekl) → uvolni raid lock, nedělá raid
+                    try {
+                        await firebaseDB.ref(`clans/${locationId}/raidLock`).remove();
+                    } catch(_) {}
+                    notifyWarning('🛡️ Strážci tě porazili!', 'Klanový trezor zůstává v bezpečí.');
+                    return;
+                }
+                
+                // Vítězství → pokračuj 30s vault raid timerem
+                notifySuccess('⚔️ Strážci poraženi!', 'Začínáš 30s nájezd na trezor — zůstaň na lokaci!');
+                
+                // Update lock phase: guards → vault
+                try {
+                    await firebaseDB.ref(`clans/${locationId}/raidLock/phase`).set('vault');
+                } catch(_) {}
+                
+                // Notifikace klanu
+                try {
+                    const clan = getClanData(locationId);
+                    if (clan) {
+                        const allMembers = [
+                            ...(clan.leader ? [clan.leader] : []),
+                            ...Object.values(clan.officers || {}).map(o => o.name).filter(Boolean),
+                            ...Object.values(clan.members || {}).map(m => m.name).filter(Boolean)
+                        ];
+                        await Promise.all(allMembers.map(memberName => {
+                            const safe = memberName.replace(/[\/\.#$\[\]]/g, '_');
+                            return firebaseDB.ref(`notifications/${safe}`).push({
+                                type: 'clan_raid_started',
+                                timestamp: Date.now(),
+                                message: `🏴‍☠️ ${myName} porazil strážce a vykrádá kasu! Máš 30s.`,
+                                raider: myName,
+                                locationId: locationId,
+                                clanName: clan.name
+                            });
+                        }));
+                    }
+                } catch(e) { console.warn('Vault raid notifications:', e); }
+                
+                // Spusť raid timer
+                state.activeRaid = {
+                    locationId: locationId,
+                    startTime: Date.now(),
+                    duration: CLAN_RAID_CONFIG.RAID_DURATION,
+                    clanName: battle.clanName
+                };
+                saveGame(true);
+                setTimeout(() => completeClanRaid(locationId), CLAN_RAID_CONFIG.RAID_DURATION);
+                return;
+            }
             
             if (victory) {
                 // Vyhráli jsme - dobyli jsme území!
@@ -111973,6 +113188,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [v6.2] Šéfův ban za nesplněnou surovinovou daň
+            if (typeof checkMayorTaxBan === 'function') {
+                const banCheck = await checkMayorTaxBan('marketplace');
+                if (banCheck.banned) {
+                    const hours = Math.floor(banCheck.minutesLeft / 60);
+                    const mins = banCheck.minutesLeft % 60;
+                    const timeStr = hours > 0 ? `${hours}h ${mins}min` : `${mins} minut`;
+                    showModal('🚫 Šéfův zákaz tržnice', `
+                        <div style="text-align: center; padding: 1rem;">
+                            <div style="font-size: 3rem;">🏪🚫</div>
+                            <h3 style="color:#f44336;">Nemáš přístup na tržnici!</h3>
+                            <p style="color: #ff9800; margin: 0.5rem 0;">Šéf ti zakázal tržnici kvůli nesplněné surovinové dani.</p>
+                            <p style="color: #888;">⏱️ Zbývá: <strong>${timeStr}</strong></p>
+                            <p style="color:#666;font-size:0.75rem;margin-top:0.8rem;">💡 Příště odpověz na šéfovo SZ a pošli suroviny včas.</p>
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
+                    `);
+                    return;
+                }
+            }
+            
             // Uložit aktuální filtry
             window._marketFilter = filterType;
             window._marketSearch = searchText;
@@ -117851,6 +119087,33 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // === KRIZOVÁ ROZHODNUTÍ - notifikace ===
                     
+                    // [v6.2] 👥 Šéfova osadnická daň - klikatelná notifikace
+                    if (v.type === 'mayor_tax_settlers' && !v.processed) {
+                        // Označ jako processed aby se neopakovala
+                        firebaseDB.ref('notifications/' + myName + '/' + k).update({ processed: true });
+                        notifyWarning('👥 Šéfův požadavek!', v.message);
+                        // Otevři modal automaticky
+                        if (typeof showSettlerTaxModal === 'function') {
+                            setTimeout(() => showSettlerTaxModal(v.taxId, v.amount), 1500);
+                        }
+                    }
+                    
+                    // [v6.2] 📦 Šéfova surovinová daň - klikatelná notifikace
+                    if (v.type === 'mayor_tax_resource' && !v.processed) {
+                        firebaseDB.ref('notifications/' + myName + '/' + k).update({ processed: true });
+                        notifyWarning('📦 Šéfův požadavek!', v.message);
+                        if (typeof showResourceTaxModal === 'function') {
+                            setTimeout(() => showResourceTaxModal(v.taxId, v.resource, v.amount), 1500);
+                        }
+                    }
+                    
+                    // [v6.2] 🚫 Šéfův ban za nezaplacenou daň
+                    if (v.type === 'mayor_tax_failed' && !v.processed) {
+                        firebaseDB.ref('notifications/' + myName + '/' + k).update({ processed: true });
+                        notifyWarning('🚫 Šéfův zákaz', v.message);
+                        addLog(`🚫 Nezaplatil jsi daň šéfa — ${v.banType === 'wandering' ? 'zákaz potulných obchodníků' : 'zákaz tržnice'} (24h)`, '🏛️');
+                    }
+                    
                     // 👥 Uprchlíci přijati → nový osadník
                     if (v.type === 'crisis_settler' && !v.processed) {
                         // Přidej osadníka do hráčovy osady
@@ -122158,6 +123421,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     restoreTerritoryCapture(); // Obnov rozdělaný capture po refreshi
                     startWorldBossRaidListeners(); // World Boss listener
                     startClanRaidListener(); // [NEW] Klanové nájezdy listener
+                    startMayorDemandListener(); // [NEW v6.2] Šéfovy požadavky listener
                     
                     // [FIX] Po init listenerů čerstvě načíst data pro event bannery
                     if (typeof refreshEventBannerData === 'function') {
@@ -134984,6 +136248,22 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             firebaseDB.ref('politics/activeEvents').on('value', (snapshot) => {
                 cachedPoliticalEffects = snapshot.val() || {};
                 console.log('🏛️ Political effects updated:', Object.keys(cachedPoliticalEffects));
+                
+                // [v6.2] Zkontroluj expiraci šéfovy daně — když listener detekuje změnu,
+                // pojďme ověřit jestli aktivní daň neexpirovala.
+                if (cachedPoliticalEffects.decision_mayorTax) {
+                    const tax = cachedPoliticalEffects.decision_mayorTax;
+                    if (tax.deadline && tax.deadline < Date.now() && typeof processMayorTaxExpiration === 'function') {
+                        // Jen jeden hráč potřebuje spustit cleanup (idempotentní operace)
+                        processMayorTaxExpiration().catch(e => console.warn('Tax expiration:', e));
+                    }
+                    
+                    // [v6.2] LATE-JOIN HANDLING — pokud hráč přišel online až po startu daně,
+                    // vytvoří mu pending záznam a zobrazí notifikaci.
+                    if (tax.deadline > Date.now() && typeof handleMayorTaxOnLogin === 'function') {
+                        handleMayorTaxOnLogin().catch(e => console.warn('Tax on-login:', e));
+                    }
+                }
             });
             
             // Listener na veřejnou kasu (realtime update v HUDu)
@@ -135057,6 +136337,34 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             
             // Inicializace cache
             refreshPoliticalEffectsCache();
+            
+            // [v6.2] Listener na vlastní tax status + bany (real-time HUD aktualizace)
+            try {
+                const myName = getPlayerName();
+                const sanitizedName = myName.replace(/[\/\.#$\[\]]/g, '_');
+                
+                // Listener na vlastní tax records — pro každou aktivní daň znát svůj status
+                firebaseDB.ref('mayorTaxRecords').on('value', (snap) => {
+                    const allTaxes = snap.val() || {};
+                    window._myMayorTaxStatus = undefined;
+                    // Najdi aktivní daň a moje status
+                    if (cachedPoliticalEffects?.decision_mayorTax) {
+                        const taxId = cachedPoliticalEffects.decision_mayorTax.taxId;
+                        const myRecord = allTaxes[taxId]?.[sanitizedName];
+                        window._myMayorTaxStatus = myRecord?.status; // pending | paid | undefined
+                    }
+                });
+                
+                // Listener na vlastní bany
+                firebaseDB.ref(`mayorTaxBans/${sanitizedName}`).on('value', (snap) => {
+                    const bans = snap.val() || {};
+                    const now = Date.now();
+                    window._myMayorBans = {
+                        wandering: bans.wandering?.until > now ? bans.wandering.until : null,
+                        marketplace: bans.marketplace?.until > now ? bans.marketplace.until : null
+                    };
+                });
+            } catch(e) { console.warn('Tax/ban listener setup:', e); }
             
             // Start World Boss Raid listener
             startWorldBossRaidListeners();
@@ -139389,6 +140697,20 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 { key: 'decision_weeklyXP', icon: '🔬', name: 'Laboratoř', valueFn: e => `+${Math.round((e.value || 0.05) * 100)}% XP`, color: '#9c27b0' },
                 { key: 'decision_locationLootBonus', icon: '🗺️', name: 'Zóna prosperity', valueFn: e => `+${Math.round((e.value || 0.5) * 100)}% loot${e.locationId ? ' (' + (typeof getLocName === 'function' ? getLocName(e.locationId) : e.locationId) + ')' : ''}`, color: '#ff9800' },
                 
+                // [NEW v6.0] NEGATIVNÍ politické efekty (debuffy)
+                { key: 'decision_damagePenalty', icon: '🚫', name: 'Regulace zbraní', valueFn: e => `-${Math.round((e.value || 0.25) * 100)}% DMG`, color: '#f44336' },
+                { key: 'decision_travelSlowdown', icon: '🐌', name: 'Lockdown cest', valueFn: e => `+${Math.round((e.value || 0.30) * 100)}% čas cesty`, color: '#ff5722' },
+                { key: 'decision_forcedEncounter', icon: '🎯', name: 'Černý trh', valueFn: () => '100% boj při cestě', color: '#d50000' },
+                { key: 'decision_craftFailChance', icon: '⚒️', name: 'Korupce v dílnách', valueFn: e => `${Math.round((e.value || 0.15) * 100)}% fail craft`, color: '#ff9800' },
+                { key: 'decision_regenPenalty', icon: '💔', name: 'Vojenská mobilizace', valueFn: e => `-${Math.round((e.value || 0.50) * 100)}% HP regen`, color: '#c62828' },
+                { key: 'decision_mayorTax', icon: '🏛️', name: 'Šéfova daň', valueFn: e => {
+                    const myStatus = window._myMayorTaxStatus;
+                    const statusTxt = myStatus === 'paid' ? '✅ ZAPLACENO' : '⏳ NEZAPLACENO';
+                    if (e.type === 'settlers') return `${e.amount} osad. · ${statusTxt}`;
+                    const resName = ({wood:'dřeva',metal:'kovu',stone:'kam.',food:'jídla',water:'vody'})[e.resource] || e.resource;
+                    return `${e.amount} ${resName} · ${statusTxt}`;
+                }, color: '#7B1FA2' },
+                
                 // Šéfovské pravomoci (mayor powers)
                 { key: 'event_double_xp', icon: '⭐⭐', name: 'Double XP Event', valueFn: () => '+100% XP', color: '#ffd700' },
                 { key: 'event_bonus_loot', icon: '🎁', name: 'Bonus Loot Event', valueFn: () => '+50% loot', color: '#ff9800' },
@@ -142898,6 +144220,35 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             setTimeout(() => { window._clanRaidListenerReady = true; }, 5000);
         }
         
+        // ===========================================================================
+        // [v6.2] MAYOR TAX EXPIRATION CHECKER — periodická kontrola vypršení dani
+        // Všechny ostatní funkce už existují v kódu (showSettlerTaxModal, showResourceTaxModal,
+        // payMayorTaxSettlers, payMayorTaxResource, processMayorTaxExpiration, checkMayorTaxBan).
+        // Notifikační listener (notifications/{player}) už zachytává nové daně a otevírá modal
+        // (řádky 118939-118957). Co chybí: pravidelný checker pro deadline → spustí ban.
+        // ===========================================================================
+        function startMayorDemandListener() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            // Pravidelný check expirace daně — každou minutu
+            // Volá processMayorTaxExpiration která:
+            // 1) Najde všechny hráče kteří nezaplatili
+            // 2) Aplikuje ban (mayorTaxBans/{playerName}/{banType})
+            // 3) Pošle notifikaci 'mayor_tax_failed'
+            // 4) Smaže 'decision_mayorTax' z politics/activeEvents
+            setInterval(() => {
+                if (typeof processMayorTaxExpiration === 'function') {
+                    processMayorTaxExpiration().catch(_ => {});
+                }
+            }, 60000);
+            // Spusť hned při startu
+            setTimeout(() => {
+                if (typeof processMayorTaxExpiration === 'function') {
+                    processMayorTaxExpiration().catch(_ => {});
+                }
+            }, 5000);
+        }
+        
+        
         function startWorldBossRaidListeners() {
             if (worldBossRaidListener || !multiplayerEnabled || !firebaseDB) return;
             worldBossRaidListener = firebaseDB.ref('worldBossRaid').on('value', snap => {
@@ -145994,7 +147345,267 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                     }
                 }
                 
+                // === [NEW v6.0] NEGATIVNÍ EFEKTY PRO HRÁČE ===
+                
+                // 🚫 Damage penalty - hráči dělají méně poškození (regulace zbraní)
+                if (effect.damagePenalty) {
+                    await firebaseDB.ref('politics/activeEvents/decision_damagePenalty').set({
+                        value: effect.damagePenalty,
+                        until: dayEnd,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_damagePenalty',
+                            value: effect.damagePenalty,
+                            message: `🚫 Konfiskace zbraní! Útoky všech hráčů jsou o ${Math.round(effect.damagePenalty*100)}% slabší (24h).`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // 🐌 Travel slowdown - delší cestování
+                if (effect.travelSlowdown) {
+                    await firebaseDB.ref('politics/activeEvents/decision_travelSlowdown').set({
+                        value: effect.travelSlowdown,
+                        until: dayEnd,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_travelSlowdown',
+                            value: effect.travelSlowdown,
+                            message: `🐌 Kontroly na cestách! Cestování je o ${Math.round(effect.travelSlowdown*100)}% delší (24h).`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // 🎯 Forced encounter - vynucené přepadení při cestování
+                if (effect.forcedEncounter) {
+                    await firebaseDB.ref('politics/activeEvents/decision_forcedEncounter').set({
+                        until: dayEnd,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_forcedEncounter',
+                            message: `🎯 Černý trh přilákal nájezdníky! Každá cesta = boj (24h).`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // ⚒️ Craft fail chance - selhání craftingu
+                if (effect.craftFailChance) {
+                    await firebaseDB.ref('politics/activeEvents/decision_craftFailChance').set({
+                        value: effect.craftFailChance,
+                        until: dayEnd,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_craftFail',
+                            value: effect.craftFailChance,
+                            message: `⚒️ Demoralizovaní řemeslníci! ${Math.round(effect.craftFailChance*100)}% šance na neúspěch craftu (24h).`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // 💔 Regen penalty - pomalejší HP regenerace
+                if (effect.regenPenalty) {
+                    await firebaseDB.ref('politics/activeEvents/decision_regenPenalty').set({
+                        value: effect.regenPenalty,
+                        until: dayEnd,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'crisis_regenPenalty',
+                            value: effect.regenPenalty,
+                            message: `💔 Vojenský režim! HP regenerace -${Math.round(effect.regenPenalty*100)}% (24h).`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // === [v6.2] OSADNICKÁ DAŇ — všichni hráči musí poslat X osadníků nebo dostanou ban ===
+                if (effect.mayorTaxSettlers) {
+                    const taxId = 'settlers_' + now;
+                    await firebaseDB.ref('politics/activeEvents/decision_mayorTax').set({
+                        type: 'settlers',
+                        amount: effect.mayorTaxSettlers,
+                        deadline: dayEnd,
+                        until: dayEnd,
+                        taxId: taxId,
+                        banType: effect.banWanderingTrader ? 'wandering' : null,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    
+                    // Notifikace všem online hráčům + vytvoř pending taxRecord
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        // Vytvoř pending tax record (per-player, sleduje stav)
+                        await firebaseDB.ref(`mayorTaxRecords/${taxId}/${playerKey}`).set({
+                            status: 'pending',  // pending | paid | failed
+                            type: 'settlers',
+                            amount: effect.mayorTaxSettlers,
+                            deadline: dayEnd,
+                            createdAt: now
+                        });
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'mayor_tax_settlers',
+                            taxId: taxId,
+                            amount: effect.mayorTaxSettlers,
+                            deadline: dayEnd,
+                            message: `👥 Šéf požaduje ${effect.mayorTaxSettlers} osadníků! Vyber které pošleš (24h). Klikni pro výběr.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
+                // === [v6.2] SUROVINOVÁ DAŇ ===
+                if (effect.mayorTaxResource) {
+                    const taxId = 'resource_' + effect.mayorTaxResource.res + '_' + now;
+                    await firebaseDB.ref('politics/activeEvents/decision_mayorTax').set({
+                        type: 'resource',
+                        resource: effect.mayorTaxResource.res,
+                        amount: effect.mayorTaxResource.amount,
+                        deadline: dayEnd,
+                        until: dayEnd,
+                        taxId: taxId,
+                        banType: effect.banMarketplace ? 'marketplace' : null,
+                        activatedBy: mayorName,
+                        activatedAt: now
+                    });
+                    
+                    const resIcon = { wood: '🌲', metal: '⚙️', stone: '🗿', food: '🍖', water: '💧' }[effect.mayorTaxResource.res] || '📦';
+                    const resName = { wood: 'dřeva', metal: 'kovu', stone: 'kamene', food: 'jídla', water: 'vody' }[effect.mayorTaxResource.res] || effect.mayorTaxResource.res;
+                    
+                    const onlineSnap = await firebaseDB.ref('online').once('value');
+                    const allOnline = onlineSnap.val() ? Object.keys(onlineSnap.val()) : [];
+                    for (const playerKey of allOnline) {
+                        await firebaseDB.ref(`mayorTaxRecords/${taxId}/${playerKey}`).set({
+                            status: 'pending',
+                            type: 'resource',
+                            resource: effect.mayorTaxResource.res,
+                            amount: effect.mayorTaxResource.amount,
+                            deadline: dayEnd,
+                            createdAt: now
+                        });
+                        await firebaseDB.ref(`notifications/${playerKey}`).push({
+                            type: 'mayor_tax_resource',
+                            taxId: taxId,
+                            resource: effect.mayorTaxResource.res,
+                            amount: effect.mayorTaxResource.amount,
+                            deadline: dayEnd,
+                            message: `${resIcon} Šéf požaduje ${effect.mayorTaxResource.amount} ${resName}! Pošli do 24h jinak ban tržnice.`,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP,
+                            read: false
+                        });
+                    }
+                }
+                
                 console.log('🏛️ Decision effect applied:', effect);
+                
+                // === [v6.2] MAYOR TAX — osobní požadavky šéfa pro každého hráče ===
+                // Napojení na existující systém (showSettlerTaxModal, showResourceTaxModal,
+                // payMayorTaxSettlers, payMayorTaxResource, processMayorTaxExpiration, checkMayorTaxBan).
+                // Tento handler:
+                //   1) Vytvoří `politics/activeEvents/decision_mayorTax` s deadlinem
+                //   2) Pošle notifikaci 'mayor_tax_settlers' nebo 'mayor_tax_resource' všem online hráčům
+                //   3) Notifikační listener (~ř. 118939) automaticky otevře modal hráči
+                if (effect.mayorTaxSettlers || effect.mayorTaxResource) {
+                    try {
+                        const taxId = 'tax_' + now;
+                        const deadline = now + 24 * 60 * 60 * 1000;
+                        const mayorActivator = currentMayor?.name || mayorName || 'Šéf';
+                        
+                        // Společná data o dani (uloží se do politics/activeEvents/decision_mayorTax)
+                        let taxData = {
+                            taxId: taxId,
+                            activatedBy: mayorActivator,
+                            activatedAt: now,
+                            deadline: deadline,
+                            until: deadline  // pro consistency s ostatními activeEvents
+                        };
+                        
+                        if (effect.mayorTaxSettlers) {
+                            taxData.type = 'settlers';
+                            taxData.amount = effect.mayorTaxSettlers;
+                            taxData.banType = 'wandering';
+                        } else if (effect.mayorTaxResource && effect.mayorTaxResource.res) {
+                            taxData.type = 'resource';
+                            taxData.resource = effect.mayorTaxResource.res;
+                            taxData.amount = effect.mayorTaxResource.amount || 30;
+                            taxData.banType = 'marketplace';
+                        }
+                        
+                        // Zapíš aktivní daň
+                        await firebaseDB.ref('politics/activeEvents/decision_mayorTax').set(taxData);
+                        
+                        // Pošli notifikaci VŠEM online hráčům (kromě šéfa)
+                        const onlineSnap = await firebaseDB.ref('online').once('value');
+                        const onlineData = onlineSnap.val() || {};
+                        const onlinePlayers = Object.values(onlineData)
+                            .map(p => p?.name)
+                            .filter(name => name && name !== mayorActivator);
+                        
+                        const resName = { wood: 'dřeva', metal: 'kovu', food: 'jídla', stone: 'kamene', cloth: 'látky' };
+                        
+                        for (const playerName of onlinePlayers) {
+                            const safeName = playerName.replace(/[\/\.#$\[\]]/g, '_');
+                            
+                            if (taxData.type === 'settlers') {
+                                await firebaseDB.ref(`notifications/${safeName}`).push({
+                                    type: 'mayor_tax_settlers',
+                                    timestamp: now,
+                                    taxId: taxId,
+                                    amount: taxData.amount,
+                                    message: `👥 Šéf ${mayorActivator} požaduje ${taxData.amount} ${taxData.amount === 1 ? 'osadníka' : 'osadníky'}! Splň do 24h, jinak zákaz potulných obchodníků.`,
+                                    processed: false
+                                });
+                            } else if (taxData.type === 'resource') {
+                                const resTxt = resName[taxData.resource] || taxData.resource;
+                                await firebaseDB.ref(`notifications/${safeName}`).push({
+                                    type: 'mayor_tax_resource',
+                                    timestamp: now,
+                                    taxId: taxId,
+                                    resource: taxData.resource,
+                                    amount: taxData.amount,
+                                    message: `📦 Šéf ${mayorActivator} požaduje ${taxData.amount} ${resTxt}! Splň do 24h, jinak zákaz tržnice.`,
+                                    processed: false
+                                });
+                            }
+                        }
+                        
+                        console.log(`👑 Mayor tax (${taxData.type}) sent to ${onlinePlayers.length} online players, deadline:`, new Date(deadline).toLocaleString());
+                    } catch(e) { console.error('Mayor tax creation:', e); }
+                }
                 
             } catch (e) {
                 console.error('Apply decision effect error:', e);
@@ -154292,6 +155903,27 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 return;
             }
             
+            // [NEW v6.1] Check globálního raid locku — jestli jiný hráč už raiduje
+            try {
+                const lockSnap = await firebaseDB.ref(`clans/${locationId}/raidLock`).once('value');
+                const lock = lockSnap.val();
+                const LOCK_TTL = 5 * 60 * 1000;
+                if (lock && lock.startedAt && (Date.now() - lock.startedAt) < LOCK_TTL && lock.raider !== myName) {
+                    const elapsed = Math.floor((Date.now() - lock.startedAt) / 1000);
+                    const phaseTxt = lock.phase === 'guards' ? 'bojuje se strážci' : lock.phase === 'vault' ? 'vykrádá kasu' : 'raiduje';
+                    showModal('🚫 Trezor obsazen', 
+                        `<div style="text-align:center;padding:1rem;">
+                            <div style="font-size:3rem;">🏴‍☠️</div>
+                            <h3 style="color:#ff5722;">${escapeHtml(lock.raider)} už ${phaseTxt}!</h3>
+                            <p style="color:#aaa;">Probíhá ${elapsed}s. Počkej dokud raid neskončí (max 5 min).</p>
+                            <p style="color:#888;font-size:0.85rem;margin-top:1rem;">💡 Jen 1 hráč může raidovat současně.</p>
+                            <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;background:#555;">OK</button>
+                        </div>`
+                    );
+                    return;
+                }
+            } catch(e) { console.warn('Raid lock check:', e); }
+            
             // Check 2: Vault musí mít alespoň MIN_VAULT
             const vault = clan.vault || 0;
             if (vault < CLAN_RAID_CONFIG.MIN_VAULT) {
@@ -154340,8 +155972,16 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 successChance += CLAN_RAID_CONFIG.NO_VAULT_BONUS;
             }
             
-            // Strážci na lokaci (territory guards)
-            const guardCount = (clan.territoryGuards && Array.isArray(clan.territoryGuards) ? clan.territoryGuards.length : 0);
+            // [FIX v6.1] Strážci sídla — čteme skutečné guards z Firebase territories/{locationId}
+            // Předtím to bylo `clan.territoryGuards` které se nikdy nikam nezapisovalo (mrtvý kód).
+            let guardCount = 0;
+            let liveGuards = [];
+            try {
+                const hqSnap = await firebaseDB.ref('territories/' + locationId).once('value');
+                liveGuards = hqSnap.val()?.guards || [];
+                // Počítej jen "živé" strážce (HP > 0)
+                guardCount = liveGuards.filter(g => (g.hp || 0) > 0).length;
+            } catch(e) { console.warn('Read HQ guards:', e); }
             successChance -= Math.min(3, guardCount) * CLAN_RAID_CONFIG.GUARD_PENALTY_PER;
             
             // Online členové klanu (last 5 min)
@@ -154510,6 +156150,74 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 return;
             }
             
+            // [NEW v6.1] 7. Globální raid lock — pouze 1 hráč může raidovat současně
+            try {
+                const lockSnap = await firebaseDB.ref(`clans/${locationId}/raidLock`).once('value');
+                const lock = lockSnap.val();
+                const LOCK_TTL = 5 * 60 * 1000; // 5 minut TTL
+                if (lock && lock.startedAt && (Date.now() - lock.startedAt) < LOCK_TTL && lock.raider !== myName) {
+                    const elapsed = Math.floor((Date.now() - lock.startedAt) / 1000);
+                    notifyWarning('🚫 Trezor je obsazen', 
+                        `${lock.raider} už raiduje (${elapsed}s). Zkus později.`);
+                    return;
+                }
+                await firebaseDB.ref(`clans/${locationId}/raidLock`).set({
+                    raider: myName,
+                    startedAt: Date.now(),
+                    phase: 'guards'
+                });
+            } catch(e) {
+                console.error('Raid lock error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se zamknout raid');
+                return;
+            }
+            
+            // [NEW v6.1] 8. Boj se strážci sídla (pokud existují živí strážci)
+            // Plnohodnotný combat přes startCombatWithGroup — stejný jako útok na cizí dobyté území.
+            try {
+                const hqSnap = await firebaseDB.ref('territories/' + locationId).once('value');
+                const hqTerr = hqSnap.val() || {};
+                const liveGuards = (hqTerr.guards || []).filter(g => (g.hp || 0) > 0);
+                
+                if (liveGuards.length > 0) {
+                    window.territoryBattle = {
+                        locationId: locationId,
+                        faction: locationId,
+                        originalGuards: [...liveGuards],
+                        isVaultRaid: true,
+                        raiderName: myName,
+                        clanName: clan.name
+                    };
+                    
+                    const enemyGroup = liveGuards.map(g => {
+                        const guardDef = TERRITORY_GUARDS.find(gt => gt.id === g.type);
+                        return {
+                            id: 'territory_guard_' + g.type,
+                            name: guardDef?.name || 'Strážce',
+                            icon: guardDef?.icon || '👤',
+                            hp: g.hp || guardDef?.hp || 100,
+                            maxHp: guardDef?.hp || 100,
+                            damage: guardDef?.damage || 10,
+                            defense: guardDef?.defense || 5,
+                            xp: 0,
+                            loot: [],
+                            isGuard: true,
+                            guardType: g.type
+                        };
+                    });
+                    
+                    notifyInfo('⚔️ Strážci sídla!', `${liveGuards.length} strážců brání trezor — poraz je nejdříve!`);
+                    closeModal();
+                    
+                    if (typeof startCombatWithGroup === 'function') {
+                        startCombatWithGroup(enemyGroup, 'territory_guard', true);
+                    }
+                    return; // Raid timer se spustí AŽ po vítězství (v onTerritoryBattleEnd)
+                }
+            } catch(e) {
+                console.warn('HQ guards check error:', e);
+            }
+            
             // Notifikace všem klanovým členům
             try {
                 const allMembers = [
@@ -154572,7 +156280,14 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             let successChance = CLAN_RAID_CONFIG.BASE_SUCCESS;
             const hasVaultBuilding = !!clan.buildings?.clan_vault;
             successChance += hasVaultBuilding ? -CLAN_RAID_CONFIG.VAULT_BUILDING_PENALTY : CLAN_RAID_CONFIG.NO_VAULT_BONUS;
-            const guardCount = (clan.territoryGuards && Array.isArray(clan.territoryGuards) ? clan.territoryGuards.length : 0);
+            // [FIX v6.1] Skutečné strážce z Firebase territories/{locationId}
+            let guardCount = 0;
+            let liveGuardsList = [];
+            try {
+                const hqSnap = await firebaseDB.ref('territories/' + locationId).once('value');
+                liveGuardsList = hqSnap.val()?.guards || [];
+                guardCount = liveGuardsList.filter(g => (g.hp || 0) > 0).length;
+            } catch(e) { console.warn('Read HQ guards in raid:', e); }
             successChance -= Math.min(3, guardCount) * CLAN_RAID_CONFIG.GUARD_PENALTY_PER;
             const allMembers = [
                 ...(clan.leader ? [clan.leader] : []),
@@ -154600,6 +156315,27 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 lastTarget: clan.name,
                 lastSuccess: success
             });
+            
+            // [NEW v6.1] Strážci sídla utrpí poškození při raidu (úspěch i neúspěch)
+            // Při úspěšném raidu: strážci dostanou velké poškození (mohou padnout)
+            // Při neúspěšném raidu: strážci jsou jen lehce zraněni (úspěšně bránili)
+            if (liveGuardsList.length > 0) {
+                try {
+                    const damagedGuards = liveGuardsList.map(g => {
+                        if ((g.hp || 0) <= 0) return g; // Mrtví zůstanou mrtví
+                        const def = TERRITORY_GUARDS.find(gt => gt.id === g.type);
+                        const maxHp = def?.hp || 100;
+                        // Úspěšný raid = 30-60% maxHp damage (strážci selhali)
+                        // Neúspěšný raid = 10-25% maxHp damage (strážci ubránili)
+                        const dmgPct = success 
+                            ? (0.30 + Math.random() * 0.30) 
+                            : (0.10 + Math.random() * 0.15);
+                        const dmg = Math.ceil(maxHp * dmgPct);
+                        return { ...g, hp: Math.max(0, (g.hp || maxHp) - dmg) };
+                    });
+                    await firebaseDB.ref(`territories/${locationId}/guards`).set(damagedGuards);
+                } catch(e) { console.warn('Guard damage update:', e); }
+            }
             
             if (success) {
                 // ÚSPĚCH — vezme peníze
@@ -154688,15 +156424,33 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 
                 // Notifikace klanu OBĚTI
                 try {
+                    // [NEW v6.1] Spočítej kolik strážců padlo (HP = 0) po raidu
+                    let deadGuardsCount = 0;
+                    let totalGuardsCount = 0;
+                    try {
+                        const guardSnap = await firebaseDB.ref(`territories/${locationId}/guards`).once('value');
+                        const guards = guardSnap.val() || [];
+                        totalGuardsCount = guards.length;
+                        deadGuardsCount = guards.filter(g => (g.hp || 0) === 0).length;
+                    } catch(_) {}
+                    
+                    const guardMsg = totalGuardsCount === 0 
+                        ? '⚠️ Sídlo nemělo strážce!' 
+                        : deadGuardsCount > 0 
+                            ? `💀 ${deadGuardsCount}/${totalGuardsCount} strážců padlo — najměte nové!`
+                            : `🛡️ Strážci přežili (poškozeni)`;
+                    
                     const notifPromises = allMembers.map(memberName => {
                         const safeMember = memberName.replace(/[\/\.#$\[\]]/g, '_');
                         return firebaseDB.ref(`notifications/${safeMember}`).push({
                             type: 'clan_raid_success',
                             timestamp: Date.now(),
-                            message: `🏴‍☠️ ${myName} vyloupil klanovou kasu — ztratili jste ${taken} 💰!`,
+                            message: `🏴‍☠️ ${myName} vyloupil klanovou kasu — ztratili jste ${taken} 💰! ${guardMsg}`,
                             raider: myName,
                             amount: taken,
-                            locationId: locationId
+                            locationId: locationId,
+                            deadGuards: deadGuardsCount,
+                            totalGuards: totalGuardsCount
                         });
                     });
                     await Promise.all(notifPromises);
@@ -154799,6 +156553,13 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                 
                 renderFull();
             }
+            
+            // [NEW v6.1] Uvolni raid lock — raid skončil (success nebo fail)
+            try {
+                if (multiplayerEnabled && firebaseDB) {
+                    await firebaseDB.ref(`clans/${locationId}/raidLock`).remove();
+                }
+            } catch(_) {}
         }
         window.completeClanRaid = completeClanRaid;
         
@@ -159371,6 +161132,68 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
             let territoriesHtml = '';
             // [v6-rank] Komandér taky může spravovat strážce
             const canManageGuards = canManageClan(locationId);
+            
+            // [NEW v6.1] Strážci klanového SÍDLA (chrání trezor před raidy)
+            let hqGuardsHtml = '';
+            if (isMine && multiplayerEnabled && firebaseDB) {
+                try {
+                    // Použij stejnou Firebase strukturu jako územní strážce, ale pro clan_land lokaci
+                    const hqSnap = await firebaseDB.ref('territories/' + locationId).once('value');
+                    const hqTerr = hqSnap.val() || {};
+                    // Pro clan_land vždy nastav owner = locationId (vlastní si sám sebe)
+                    const hqGuards = hqTerr.guards || [];
+                    const hqSlotsLeft = MAX_GUARDS_PER_TERRITORY - hqGuards.length;
+                    
+                    // Vypočti HP procento strážců sídla
+                    let hqHpInfo = '';
+                    if (hqGuards.length > 0) {
+                        let totalHp = 0, totalMaxHp = 0;
+                        hqGuards.forEach(g => {
+                            const def = TERRITORY_GUARDS.find(gt => gt.id === g.type);
+                            totalHp += g.hp || 0;
+                            totalMaxHp += def?.hp || 100;
+                        });
+                        const avgPct = totalMaxHp > 0 ? Math.round((totalHp / totalMaxHp) * 100) : 100;
+                        const hpColor = avgPct > 70 ? '#4caf50' : avgPct > 30 ? '#ff9800' : '#f44336';
+                        hqHpInfo = `<span style="color:${hpColor};font-size:0.7rem;">❤️ ${avgPct}% HP</span>`;
+                    }
+                    
+                    const hqGuardIcons = hqGuards.map(g => {
+                        const def = TERRITORY_GUARDS.find(gt => gt.id === g.type);
+                        return def?.icon || '👤';
+                    }).join('');
+                    
+                    const hqStatusColor = hqGuards.length === 0 ? '#f44336' : hqGuards.length >= MAX_GUARDS_PER_TERRITORY ? '#4caf50' : '#ff9800';
+                    const hqStatusText = hqGuards.length === 0 ? '⚠️ Trezor BEZ OBRANY!' : hqGuards.length >= MAX_GUARDS_PER_TERRITORY ? '✅ Plná obrana' : `${hqGuards.length}/${MAX_GUARDS_PER_TERRITORY} strážců`;
+                    
+                    const hqActionBtn = canManageGuards 
+                        ? `<button class="btn" onclick="closeModal();showHireGuardModal('${locationId}')" style="background:${hqSlotsLeft > 0 ? 'linear-gradient(135deg,#7B1FA2,#4A148C)' : '#444'};font-size:0.75rem;padding:0.35rem 0.7rem;flex-shrink:0;">${hqSlotsLeft > 0 ? '➕ Najmout strážce' : '⚙️ Spravovat'}</button>` 
+                        : '';
+                    
+                    hqGuardsHtml = `
+                        <div style="background:linear-gradient(135deg,#1a0a2a,#0a0a1a);padding:0.7rem;border-radius:8px;border:2px solid #7B1FA2;margin-bottom:0.6rem;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.4rem;">
+                                <div style="flex:1;min-width:0;">
+                                    <div style="color:#ce93d8;font-size:0.85rem;font-weight:bold;">🛡️ Strážci sídla — ochrana trezoru</div>
+                                    <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.2rem;">
+                                        <span style="color:${hqStatusColor};font-size:0.72rem;font-weight:bold;">${hqStatusText}</span>
+                                        ${hqGuardIcons ? `<span style="font-size:0.95rem;">${hqGuardIcons}</span>` : ''}
+                                        ${hqHpInfo}
+                                    </div>
+                                </div>
+                                ${hqActionBtn}
+                            </div>
+                            <div style="color:#9e8aaf;font-size:0.65rem;font-style:italic;">
+                                ${hqGuards.length === 0 
+                                    ? '⚠️ Najmi strážce, jinak nájezdník vyloupí kasu bez odporu!' 
+                                    : '✓ Při klanovém nájezdu musí útočník nejdříve porazit tvé strážce.'}
+                            </div>
+                            ${!canManageGuards ? '<div style="color:#888;font-size:0.65rem;margin-top:0.3rem;font-style:italic;">🔒 Strážce může najímat jen ⭐ Důstojník, 💎 Komandér nebo 👑 Vůdce.</div>' : ''}
+                        </div>
+                    `;
+                } catch(e) { console.warn('HQ guards load error:', e); }
+            }
+            
             if (isMine && multiplayerEnabled && firebaseDB) {
                 try {
                     const terrSnap = await firebaseDB.ref('territories').once('value');
@@ -159560,6 +161383,7 @@ Hra rozlišuje <strong>4 různé blokační flagy</strong>: cantBuy, cantSell, c
                     </div>
                 </details>
                 
+                ${hqGuardsHtml}
                 ${territoriesHtml}
                 
                 <!-- AKCE -->
