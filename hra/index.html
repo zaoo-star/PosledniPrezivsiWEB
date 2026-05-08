@@ -29481,7 +29481,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 lifesteal: 0,              // Vampír: % z udělaného DMG se vrátí jako HP hráči
                 compThorns: 0,             // Trnitý strážce: % z přijatého DMG se vrací útočníkovi
                 executeBonus: 0,           // Kat: extra % DMG na nepřátele pod 25% HP
-                synergyBonus: 0            // Souhra: +X% DMG pokud companion má stejnou třídu jako hráč
+                synergyBonus: 0,           // Souhra: +X% DMG pokud companion má stejnou třídu jako hráč
+                bossDamageBonus: 0         // 🆕 [v6.3] Warlord: +X% DMG proti world bossům
             };
             
             if (!state.companions || state.companions.length === 0) return bonuses;
@@ -29519,6 +29520,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     case 'trader_npc':
                         bonuses.priceBonus += 0.15; // +15% lepší ceny
                         break;
+                }
+                
+                // 🆕 [v6.3] Unique reward companion bonuses (Tichý zabiják, Warlord)
+                if (comp.bonusCritChance) bonuses.critChance += comp.bonusCritChance;
+                if (comp.bonusBossDamage) {
+                    bonuses.bossDamageBonus = (bonuses.bossDamageBonus || 0) + comp.bonusBossDamage;
                 }
             });
             
@@ -84863,6 +84870,46 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (!attacker.alive || attacker.hp <= 0) return;
             
+            // 🆕 [v6.3 FIX] Combat abilities aplikace (megaBomb/poisonCloud/radBurst) při prvním útoku hráče
+            try {
+                if ((attacker.isPlayer || (attacker.team === 'player' && !attacker.isCompanion)) && state.combatBonuses) {
+                    const allEnemies = (cs.units || []).filter(u => u.team === 'enemy' && u.alive);
+                    
+                    // 💥 MEGA BOMBA — 100 damage všem nepřátelům
+                    if (state.combatBonuses.megaBomb > 0) {
+                        const bombDmg = state.combatBonuses.megaBomb;
+                        allEnemies.forEach(e => {
+                            e.hp = Math.max(0, e.hp - bombDmg);
+                            if (e.hp <= 0) e.alive = false;
+                        });
+                        cs.log.push(`💥 MEGA BOMBA: ${bombDmg} DMG všem (${allEnemies.length} cílů)!`);
+                        state.combatBonuses.megaBomb = 0; // Spotřebováno
+                    }
+                    
+                    // ☣️ POISON CLOUD — jed 3 kola na všechny enemies
+                    if (state.combatBonuses.poisonCloud > 0) {
+                        const stacks = state.combatBonuses.poisonCloud * 4; // ~3 kola jedu
+                        allEnemies.forEach(e => {
+                            e.poisoned = Math.max(e.poisoned || 0, stacks);
+                        });
+                        cs.log.push(`☣️ JEDOVÝ MRAK: všichni nepřátelé otráveni (${allEnemies.length} cílů)!`);
+                        state.combatBonuses.poisonCloud = 0;
+                    }
+                    
+                    // ☢️ RAD BURST — aoe damage + radiation
+                    if (state.combatBonuses.radBurst) {
+                        const rb = state.combatBonuses.radBurst;
+                        const rbDmg = rb.damage || 35;
+                        allEnemies.forEach(e => {
+                            e.hp = Math.max(0, e.hp - rbDmg);
+                            if (e.hp <= 0) e.alive = false;
+                        });
+                        cs.log.push(`☢️ RADIAČNÍ VÝBUCH: ${rbDmg} DMG všem!`);
+                        state.combatBonuses.radBurst = null;
+                    }
+                }
+            } catch(e) { console.warn('Combat ability error:', e); }
+            
             // [FIX v3.9.84] Bug reportoval Jano Valalík - melee jednotky mohly útočit ranged DMG
             // [FIX v3.9.86] Lepší detekce ranged - jen ammoType + name fallback
             // Range check: melee jednotky nemohou útočit když je cíl dál než 1 pole
@@ -85106,6 +85153,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (rwbDodge.dodgeBonus > 0) dodgeChance = Math.min(0.9, dodgeChance + rwbDodge.dodgeBonus);
             }
             
+            // 🆕 [v6.3 FIX] sandStorm dodge bonus (Nomád schopnost — předtím se neaplikoval)
+            try {
+                if (state.combatBonuses?.sandStorm && state.combatBonuses.sandStorm.duration > Date.now()) {
+                    dodgeChance = Math.min(0.95, dodgeChance + (state.combatBonuses.sandStorm.dodgeBonus || 0.30));
+                }
+            } catch(e) {}
+            
             // === COMBAT MODIFIER: miss/accuracy ===
             if (cs.combatModifier) {
                 if (cs.combatModifier.effect === 'accuracy') dodgeChance = Math.min(0.9, dodgeChance + Math.abs(cs.combatModifier.value));
@@ -85181,6 +85235,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // 🌧️ Počasí efekty na enemy damage
             if (attacker.team === 'enemy') {
+                // 🆕 [v6.3 FIX] Frozen unit dává -50% DMG (target.frozen byl set ale nikdo nečetl)
+                if (attacker.frozen > 0) {
+                    damage = Math.floor(damage * 0.5);
+                    attacker.frozen = Math.max(0, attacker.frozen - 1);
+                    if (attacker.frozen <= 0) cs.log.push(`❄️ ${attacker.name} se rozmrazil.`);
+                }
+                
                 const weather = getCurrentWeather();
                 if (weather?.effect?.enemyDmgMod && weather.effect.enemyDmgMod !== 1) {
                     damage = Math.floor(damage * weather.effect.enemyDmgMod);
@@ -85477,6 +85538,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (rwb.executeDamage > 0 && target.hp < target.maxHp * 0.2) {
                     damage = Math.floor(damage * (1 + rwb.executeDamage));
                 }
+            }
+            
+            // 🆕 [v6.3] Warlord companion bonus: +20% damage proti world bossům
+            if ((target.isBoss || target.isWorldBoss || target.isRaidBoss) && (attacker.isPlayer || attacker.team === 'player')) {
+                try {
+                    const _compBoss = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : null;
+                    if (_compBoss?.bossDamageBonus > 0) {
+                        damage = Math.floor(damage * (1 + _compBoss.bossDamageBonus));
+                    }
+                } catch(e) {}
             }
             
             // 🏹 Hunter animalDamage: +50% damage na zvířata ze setu (Fix: chybělo v grid)
@@ -86101,8 +86172,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // 🐉 Boss special: Jedový damage (ignoruje zbroj)
             
-            // 🪬 RUNEWORD ON-HIT EFEKTY (jen hráč/companion útočí)
-            if ((attacker.team === 'player' || attacker.isPlayer) && typeof getRunewordBonuses === 'function' && finalDamage > 0) {
+            // 🪬 RUNEWORD ON-HIT EFEKTY (JEN pro companion útoky — pro player se aplikují výše v hex combat bloku ~85800)
+            // [v6.3 FIX] Předtím se efekty aplikovaly 2× pro player attacks (hex combat blok + tento blok) → stealth buff
+            const _isPlayerDirectAttack = attacker.isPlayer || (attacker.team === 'player' && !attacker.isCompanion);
+            if (!_isPlayerDirectAttack && (attacker.team === 'player' || attacker.isCompanion) && typeof getRunewordBonuses === 'function' && finalDamage > 0) {
                 const rwbHit = getRunewordBonuses();
                 
                 // 🔥 Burn (OHEŇ)
@@ -87599,6 +87672,34 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     damage -= _equippedWeapon.damage; // Strhni weapon bonus — útočí pěstmi
                     if (damage < 1) damage = 1;
                     console.log('🥊 Bez munice: weapon damage strhnuto, melee dmg=', damage);
+                }
+                
+                // 🆕 [v6.3 - Filla14cz fix] BURST FIRE v hex combatu (Titanovo Dělo, Gatling, atd.)
+                // Předtím burst fungovalo JEN v classic combat — hex grid combat ho ignoroval
+                if (weapon?.burstFire && cs.burstModeActive && weapon.ammoType) {
+                    const burstCount = weapon.burstCount || 3;
+                    const ammoCount = getAmmoCount(weapon.ammoType);
+                    
+                    // Spotřeba dodatečné munice (1 už spotřebována výše, potřebujeme burstCount-1 navíc)
+                    const additionalAmmo = burstCount - 1;
+                    const actuallyConsumed = Math.min(additionalAmmo, ammoCount);
+                    
+                    if (actuallyConsumed > 0) {
+                        consumeAmmo(weapon.ammoType, actuallyConsumed);
+                    }
+                    
+                    // Kolik ran skutečně proběhlo (1 už byla, + actuallyConsumed dodatečných)
+                    const totalShots = 1 + actuallyConsumed;
+                    
+                    // Damage multiplier — kumulativní s decay
+                    const decay = weapon.burstDamageDecay || 0.85;
+                    let multiplier = 0;
+                    for (let i = 0; i < totalShots; i++) multiplier += Math.pow(decay, i);
+                    
+                    damage = Math.floor(damage * multiplier);
+                    
+                    cs.log.push(`🔥 DÁVKA: ${totalShots} ran (${multiplier.toFixed(2)}× DMG)${actuallyConsumed < additionalAmmo ? ' ⚠️ málo munice' : ''}`);
+                    console.log(`🔥 Burst fire: ${totalShots} shots, ${multiplier.toFixed(2)}× damage = ${damage}`);
                 }
             }
             
@@ -96803,6 +96904,59 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } catch(e) { console.warn('v6.3 retroactive rewards error:', e); }
             
             // === KRITICKÉ: Zajisti základní struktury ===
+            
+            // 🆕 [v6.3 HOTFIX - barlog report] Detekce ztracených blueprint-vyrobených zbraní
+            // Bug: hráči nahlásili ztrátu unique zbrani po opuštění propasti / save-load cyklu
+            // Příčina: blueprint zbraně mají unique IDs (např. plasma_blade_bp_1234567890),
+            // pokud při syncEquipped nemají match v inv → fallback by je měl push() zpět, ale edge case
+            // může způsobit ztrátu. Tato migrace detekuje orphaned references a zaznamená je do bossStash.
+            try {
+                if (state.equipped && Array.isArray(state.inv)) {
+                    const slots = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
+                    let recoveredCount = 0;
+                    const recoveredNames = [];
+                    
+                    slots.forEach(slot => {
+                        const eq = state.equipped[slot];
+                        if (!eq || !eq.id) return;
+                        
+                        // Najdi v inv pomocí _uniqueId (preferred) nebo id+damage match
+                        const inInv = state.inv.find(i => 
+                            (eq._uniqueId && i._uniqueId === eq._uniqueId) ||
+                            (i.id === eq.id && (i.damage || 0) === (eq.damage || 0) && (i.defense || 0) === (eq.defense || 0))
+                        );
+                        
+                        if (!inInv) {
+                            // Equipped item neexistuje v inv → pravděpodobně ztráta. Obnov.
+                            // Specialně pro blueprint-crafted (fromBlueprint) — vždy obnovit
+                            if (eq.fromBlueprint || eq.cantSell || eq.id?.includes('_bp_')) {
+                                state.inv.push({...eq}); // Deep copy
+                                recoveredCount++;
+                                recoveredNames.push(eq.name || eq.id);
+                                console.log(`🛡️ RECOVERY: Vráceno ${eq.name || eq.id} (slot=${slot}) zpět do inventáře`);
+                            }
+                        }
+                    });
+                    
+                    if (recoveredCount > 0 && !state._v63LostEquipmentRecovered) {
+                        state._v63LostEquipmentRecovered = true;
+                        setTimeout(() => {
+                            if (typeof showModal === 'function') {
+                                showModal('🛡️ Ztracené vybavení obnoveno!', `
+                                    <div style="text-align: center;">
+                                        <div style="font-size: 3rem;">⚔️</div>
+                                        <h3 style="color: #4caf50;">Vybavení vráceno!</h3>
+                                        <p style="color: #ccc; margin: 0.5rem 0;">${recoveredCount}× ztracená věc byla nalezena a vrácena do inventáře:</p>
+                                        <p style="color: #ffd54f; font-size: 0.85rem;">${recoveredNames.join(', ')}</p>
+                                        <p style="color: #888; font-size: 0.75rem; margin-top: 0.5rem;">Bug v unique zbraních byl opraven.</p>
+                                        <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 1rem; background: linear-gradient(135deg, #4caf50, #2e7d32);">✓ Děkuju!</button>
+                                    </div>
+                                `);
+                            }
+                        }, 2000);
+                    }
+                }
+            } catch(e) { console.warn('Lost equipment recovery error:', e); }
             
             // 🆕 [v6.3 HOTFIX] Zachrana zaseknutých staveb v buildQueue s NaN duration
             // Bug: před 09:55: buildTimes neměla v6.3 budovy → fallback používal undefined `totalCost` → NaN
@@ -114480,6 +114634,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (offer.item.type === 'resource') {
                         // Surovina → zpět do state.resources
                         state.resources[offer.item.id] = (state.resources[offer.item.id] || 0) + count;
+                    } else if (offer.item.type === 'rune' || offer.item.id?.startsWith('rune_')) {
+                        // 🆕 [v6.3 - OwerLord bug fix] Runa: jde do runeBooku, ne do inv
+                        const letter = offer.item.id?.replace('rune_', '') || offer.item._runeLetter;
+                        if (letter) {
+                            if (!state.runeBook) state.runeBook = {};
+                            state.runeBook[letter] = (state.runeBook[letter] || 0) + count;
+                            notifySuccess('📖 Runová kniha', `+${count}× 🪬 ${offer.item.name}`);
+                        }
                     } else {
                         const returnItem = {...offer.item, count: count};
                         // Zachovej cookedAt
@@ -115183,6 +115345,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const allSellable = [...sellableItems, ...resourceItems];
             
+            // 🆕 [v6.3] Přidej runy z runeBooku jako virtuální itemy (OwerLord bug fix)
+            try {
+                if (state.runeBook && typeof RUNES !== 'undefined') {
+                    Object.entries(state.runeBook).forEach(([letter, count]) => {
+                        if (count > 0) {
+                            const runeDef = RUNES[letter];
+                            if (runeDef) {
+                                allSellable.push({
+                                    id: 'rune_' + letter,
+                                    name: runeDef.name || ('Runa ' + letter),
+                                    icon: runeDef.icon || '🪬',
+                                    type: 'rune',
+                                    rarity: runeDef.rarity || 'rare',
+                                    price: runeDef.rarity === 'legendary' ? 5000 : runeDef.rarity === 'epic' ? 1500 : 500,
+                                    weight: 0.1,
+                                    count: count,
+                                    _isRune: true,
+                                    _runeLetter: letter
+                                });
+                            }
+                        }
+                    });
+                }
+            } catch(e) { console.warn('Rune marketplace add error:', e); }
+            
             if (allSellable.length === 0) {
                 showModal('Prodat na tržišti', `
                     <div style="text-align: center; padding: 1rem; color: #888;">
@@ -115272,7 +115459,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             filteredSellable.forEach((item) => {
                 const isResource = item._isResource;
-                const realIdx = isResource ? -1 : state.inv.indexOf(item);
+                const isRune = item._isRune;
+                const realIdx = (isResource || isRune) ? -1 : state.inv.indexOf(item);
                 const count = item.count || 1;
                 // Získej cenu z itemu nebo z ITEMS definice
                 const itemDef = ITEMS.find(i => i.id === item.id);
@@ -115300,7 +115488,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             </div>
                             <div style="font-size: 0.75rem; color: #888;">${isResource ? 'Surovina' : (desc || item.type)}</div>
                         </div>
-                        <button class="btn" onclick="${isResource ? `promptSellResource('${item.id}', ${suggestedPrice}, ${count})` : `promptSellPrice(${realIdx}, ${suggestedPrice}, ${count})`}" style="background: #ff9800; padding: 0.3rem 0.6rem; font-size: 0.8rem;">${'💰 Prodat'}</button>
+                        <button class="btn" onclick="${isRune ? `promptSellRune('${item._runeLetter}', ${suggestedPrice}, ${count})` : (isResource ? `promptSellResource('${item.id}', ${suggestedPrice}, ${count})` : `promptSellPrice(${realIdx}, ${suggestedPrice}, ${count})`)}" style="background: #ff9800; padding: 0.3rem 0.6rem; font-size: 0.8rem;">${'💰 Prodat'}</button>
                     </div>
                 `;
             });
@@ -115344,6 +115532,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             const allSellable = [...sellableItems, ...resourceItems];
+            
+            // 🆕 [v6.3] Přidej runy z runeBooku jako virtuální itemy (OwerLord bug fix)
+            try {
+                if (state.runeBook && typeof RUNES !== 'undefined') {
+                    Object.entries(state.runeBook).forEach(([letter, count]) => {
+                        if (count > 0) {
+                            const runeDef = RUNES[letter];
+                            if (runeDef) {
+                                allSellable.push({
+                                    id: 'rune_' + letter,
+                                    name: runeDef.name || ('Runa ' + letter),
+                                    icon: runeDef.icon || '🪬',
+                                    type: 'rune',
+                                    rarity: runeDef.rarity || 'rare',
+                                    price: runeDef.rarity === 'legendary' ? 5000 : runeDef.rarity === 'epic' ? 1500 : 500,
+                                    weight: 0.1,
+                                    count: count,
+                                    _isRune: true,
+                                    _runeLetter: letter
+                                });
+                            }
+                        }
+                    });
+                }
+            } catch(e) { console.warn('Rune marketplace add error:', e); }
             
             if (allSellable.length === 0) {
                 notifyWarning('Prázdný inventář', 'Nemáš nic k prodeji!');
@@ -115700,6 +115913,111 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } catch (e) {
                 // Vrať suroviny zpět při chybě
                 state.resources[resourceId] = (state.resources[resourceId] || 0) + count;
+                saveGame();
+                notifyError('Chyba', 'Nepodařilo se vytvořit nabídku: ' + e.message);
+            }
+        }
+        
+        // 🆕 [v6.3 - OwerLord bug fix] Prodej run z runeBooku
+        function promptSellRune(letter, suggestedPrice, maxCount) {
+            const runeDef = RUNES[letter];
+            if (!runeDef) { notifyWarning('Chyba', 'Runa nenalezena'); return; }
+            const available = state.runeBook?.[letter] || 0;
+            if (available <= 0) { notifyWarning('Chyba', 'Nemáš tuto runu'); return; }
+            const basePrice = runeDef.rarity === 'legendary' ? 5000 : runeDef.rarity === 'epic' ? 1500 : 500;
+            const maxPrice = basePrice * 3;
+            
+            showModal(`💰 Prodat runu ${letter}`, `
+                <div style="text-align: center;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">${runeDef.icon || '🪬'}</div>
+                    <div style="color: ${runeDef.rarity === 'legendary' ? '#ff9800' : runeDef.rarity === 'epic' ? '#9c27b0' : '#2196f3'}; font-size: 0.9rem; margin-bottom: 0.3rem; font-weight: bold;">🪬 ${runeDef.name || 'Runa ' + letter}</div>
+                    <div style="color: #888; font-size: 0.8rem; margin-bottom: 1rem;">Máš: ${available}× | Vzácnost: ${runeDef.rarity || 'rare'}</div>
+                    
+                    <div style="margin-bottom: 1rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Počet (max ${available}):</label>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; justify-content: center; margin-top: 0.5rem;">
+                            <button class="btn" onclick="adjustSellCount(-1)" style="padding: 0.3rem 0.6rem; background: #555;">-</button>
+                            <input type="number" id="sellCountInput" value="1" min="1" max="${available}"
+                                style="width: 60px; padding: 0.5rem; font-size: 1.1rem; background: #1a1a1a; border: 2px solid #9c27b0; border-radius: 8px; color: #ce93d8; text-align: center;"
+                                onchange="updateSellTotal()">
+                            <button class="btn" onclick="adjustSellCount(1)" style="padding: 0.3rem 0.6rem; background: #555;">+</button>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 1rem;">
+                        <label style="color: #888; font-size: 0.85rem;">Cena za kus (max ${maxPrice} 💰):</label>
+                        <input type="number" id="sellPriceInput" value="${suggestedPrice}" min="1" max="${maxPrice}"
+                            style="width: 100%; padding: 0.8rem; font-size: 1.3rem; background: #1a1a1a; border: 2px solid #ffd700; border-radius: 8px; color: #ffd700; text-align: center; margin-top: 0.3rem;"
+                            onchange="const v=parseInt(this.value)||0; if(v>${maxPrice}){this.value=${maxPrice};} updateSellTotal()">
+                        <div style="color: #666; font-size: 0.7rem; margin-top: 0.2rem;">💡 Doporučená: ${suggestedPrice} 💰 | Max: ${maxPrice} 💰</div>
+                    </div>
+                    
+                    <div id="sellTotalDisplay" style="background: #1a2a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #4CAF50;">
+                        <span style="color: #888;">Celkem:</span>
+                        <span style="color: #4CAF50; font-size: 1.3rem; font-weight: bold;"> ${suggestedPrice} 💰</span>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                        <button class="btn" onclick="showSellToMarketplace()" style="background: #555;">❌ Zrušit</button>
+                        <button class="btn" onclick="confirmSellRuneToMarket('${letter}')" style="background: #4CAF50;">✓ Prodat</button>
+                    </div>
+                </div>
+            `);
+        }
+        
+        async function confirmSellRuneToMarket(letter) {
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Offline', 'Tržiště není dostupné');
+                return;
+            }
+            const runeDef = RUNES[letter];
+            if (!runeDef) return;
+            
+            const priceInput = document.getElementById('sellPriceInput');
+            const countInput = document.getElementById('sellCountInput');
+            const price = parseInt(priceInput?.value) || 0;
+            const count = parseInt(countInput?.value) || 1;
+            
+            if (price < 1) { notifyWarning('Neplatná cena', 'Cena musí být alespoň 1 💰'); return; }
+            
+            const available = state.runeBook?.[letter] || 0;
+            if (count > available || count < 1) { notifyWarning('Chyba', 'Neplatný počet'); return; }
+            
+            // Odeber runy z runeBooku
+            state.runeBook[letter] = available - count;
+            saveGame();
+            
+            const totalPrice = price * count;
+            const itemForOffer = {
+                id: 'rune_' + letter,
+                name: runeDef.name || ('Runa ' + letter),
+                icon: runeDef.icon || '🪬',
+                type: 'rune',
+                rarity: runeDef.rarity || 'rare',
+                price: price,
+                weight: 0.1,
+                count: count,
+                _isRuneListing: true
+            };
+            
+            try {
+                const offer = {
+                    seller: getPlayerName(),
+                    item: itemForOffer,
+                    price: price,
+                    totalPrice: totalPrice,
+                    count: count,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP,
+                    status: 'active'
+                };
+                await firebaseDB.ref('marketplace/offers').push(offer);
+                addDailyProgress('sold', count);
+                notifySuccess('Nabídka vytvořena!', `${count}× 🪬 ${runeDef.name} za ${totalPrice} 💰`);
+                renderFull();
+                showMarketplace();
+            } catch (e) {
+                // Vrať runy zpět při chybě
+                state.runeBook[letter] = (state.runeBook[letter] || 0) + count;
                 saveGame();
                 notifyError('Chyba', 'Nepodařilo se vytvořit nabídku: ' + e.message);
             }
