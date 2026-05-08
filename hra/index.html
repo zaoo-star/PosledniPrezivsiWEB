@@ -73985,7 +73985,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // Check if already in build queue
-            if (state.buildQueue && state.buildQueue.some(b => b.id === buildingId)) {
+            // 🛡️ [v6.3 hotfix] Ignore broken (NaN duration) entries — let user re-build
+            const queueValidBuilds = (state.buildQueue || []).filter(b => 
+                typeof b.duration === 'number' && !isNaN(b.duration) && b.duration > 0
+            );
+            if (queueValidBuilds.some(b => b.id === buildingId)) {
                 console.log('🔨 BLOCKED: Already in queue');
                 showModal('Již se staví', 'Tato budova se již staví!');
                 return;
@@ -74054,18 +74058,24 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // KONTROLA: Nelze stavět více budov naráz!
             if (state.buildQueue && state.buildQueue.length > 0) {
                 const currentBuild = state.buildQueue[0];
-                const remaining = Math.max(0, Math.ceil((currentBuild.duration - (Date.now() - currentBuild.startTime)) / 60000));
-                const timeDisplay = remaining >= 60 ? Math.round(remaining / 60 * 10) / 10 + 'h' : remaining + ' min';
-                showModal('🔨 Stavba probíhá', `
-                    <div style="text-align: center;">
-                        <div style="font-size: 3rem;">${currentBuild.icon}</div>
-                        <h3>${currentBuild.name}</h3>
-                        <p style="color: #ff9800;">⏱️ Zbývá: ${timeDisplay}</p>
-                        <p style="color: #888; margin-top: 1rem;">Nelze stavět více budov najednou!</p>
-                        <p style="color: #666; font-size: 0.85rem;">Počkej až se dokončí aktuální stavba.</p>
-                    </div>
-                `);
-                return;
+                // 🛡️ [v6.3 hotfix] Pokud má current build broken duration, automaticky ho odstraň
+                if (typeof currentBuild.duration !== 'number' || isNaN(currentBuild.duration) || currentBuild.duration <= 0) {
+                    console.warn('🔨 Removing broken queue item to allow new build:', currentBuild);
+                    state.buildQueue.shift(); // Odeber broken build, pokračuj s novou stavbou
+                } else {
+                    const remaining = Math.max(0, Math.ceil((currentBuild.duration - (Date.now() - currentBuild.startTime)) / 60000));
+                    const timeDisplay = remaining >= 60 ? Math.round(remaining / 60 * 10) / 10 + 'h' : remaining + ' min';
+                    showModal('🔨 Stavba probíhá', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem;">${currentBuild.icon}</div>
+                            <h3>${currentBuild.name}</h3>
+                            <p style="color: #ff9800;">⏱️ Zbývá: ${timeDisplay}</p>
+                            <p style="color: #888; margin-top: 1rem;">Nelze stavět více budov najednou!</p>
+                            <p style="color: #666; font-size: 0.85rem;">Počkej až se dokončí aktuální stavba.</p>
+                        </div>
+                    `);
+                    return;
+                }
             }
             
             // Kontrola stavitele
@@ -74163,10 +74173,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 'cryo': 2400,        // Kryogenní sklad - 40h
                 'turret': 1920,      // Automatická věž - 32h
                 'university': 2640,  // Univerzita - 44h
-                'monument': 2880     // Monument - 48h (2 dny)
+                'monument': 2880,    // Monument - 48h (2 dny)
+                
+                // 🆕 [v6.3] Endgame produkční budovy (Lvl 5)
+                'ammo_factory': 2160,    // Továrna na munici - 36h
+                'foundry': 2160,         // Slévárna - 36h
+                'weapon_workshop': 2640, // Zbrojní dílna - 44h
+                'war_room': 2400,        // Válečná místnost (achievement reward) - 40h
+                
+                // 🆕 [v6.3] Magnát budovy (Lvl 6)
+                'trade_caravan_hub': 2880,    // Karavanní centrum - 48h
+                'industrial_complex': 3360    // Průmyslový komplex - 56h (největší)
             };
             
-            let buildTime = buildTimes[buildingId] || Math.max(240, Math.min(2880, totalCost * 10));
+            // 🆕 [v6.3] FIX: Spočítej totalCost pro fallback (předtím byla undefined → NaN buildTime!)
+            let _totalBuildCost = 0;
+            for (const [_res, _amt] of Object.entries(building.cost || {})) {
+                _totalBuildCost += _amt;
+            }
+            
+            let buildTime = buildTimes[buildingId] || Math.max(240, Math.min(2880, _totalBuildCost * 10));
             
             // 📻 Radiový rozkaz — penalizace na čas
             if (window._remoteBuildMode) {
@@ -77938,6 +77964,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 html += '<div style="background: linear-gradient(135deg, #2a2a1a 0%, #1a1a0a 100%); border: 2px solid #ff9800; border-radius: 8px; padding: 0.8rem; margin-bottom: 1rem;">';
                 html += '<h4 style="color: #ff9800; margin: 0 0 0.5rem 0;">🔨 ' + ('Ve výstavbě') + '</h4>';
                 state.buildQueue.forEach(build => {
+                    // 🛡️ [v6.3 hotfix] NaN guard — pokud má build broken duration, skipni render (rescue ho odstraní při dalším loadu)
+                    if (typeof build.duration !== 'number' || isNaN(build.duration) || build.duration <= 0) {
+                        console.warn('🔨 Skip rendering broken build:', build);
+                        return;
+                    }
                     const elapsed = Date.now() - build.startTime;
                     const progress = Math.min(100, (elapsed / build.duration) * 100);
                     const remaining = Math.max(0, Math.ceil((build.duration - elapsed) / 60000)); // minutes
@@ -96772,6 +96803,72 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } catch(e) { console.warn('v6.3 retroactive rewards error:', e); }
             
             // === KRITICKÉ: Zajisti základní struktury ===
+            
+            // 🆕 [v6.3 HOTFIX] Zachrana zaseknutých staveb v buildQueue s NaN duration
+            // Bug: před 09:55: buildTimes neměla v6.3 budovy → fallback používal undefined `totalCost` → NaN
+            // Hráči klikli "STAVĚT", suroviny zmizely, ale stavba v queue má duration=NaN, nikdy se nedokončí
+            try {
+                if (Array.isArray(state.buildQueue) && state.buildQueue.length > 0) {
+                    let rescuedCount = 0;
+                    const rescuedItems = []; // Track unique IDs aby se neopakoval refund
+                    state.buildQueue = state.buildQueue.filter(item => {
+                        // typeof NaN === 'number' takže explicit isNaN check je nutný
+                        const isBroken = (typeof item.duration !== 'number' || isNaN(item.duration) || item.duration <= 0 || item.duration > 7 * 24 * 60 * 60 * 1000);
+                        if (isBroken) {
+                            // 🛡️ Idempotency guard — pokud už jsme refundovali tento konkrétní item (startTime + id), neopakuj
+                            const refundKey = `${item.id}_${item.startTime || 0}`;
+                            state._v63BuildQueueRefunded = state._v63BuildQueueRefunded || [];
+                            if (state._v63BuildQueueRefunded.includes(refundKey)) {
+                                console.log(`🔨 SKIP refund (already done): ${refundKey}`);
+                                return false; // Just remove without refunding again
+                            }
+                            
+                            // Refund suroviny zpět do skladu osady
+                            if (item.id) {
+                                const buildingDef = (typeof BUILDINGS !== 'undefined') ? BUILDINGS.find(b => b.id === item.id) : null;
+                                if (buildingDef?.cost) {
+                                    if (!state.settlement) state.settlement = {};
+                                    if (!state.settlement.resources) state.settlement.resources = {};
+                                    for (const [res, amt] of Object.entries(buildingDef.cost)) {
+                                        state.settlement.resources[res] = (state.settlement.resources[res] || 0) + amt;
+                                    }
+                                    console.log(`🔨 RESCUE: refunded ${item.name || item.id} cost (broken duration: ${item.duration})`);
+                                    rescuedCount++;
+                                    rescuedItems.push(item.name || item.id);
+                                    state._v63BuildQueueRefunded.push(refundKey);
+                                    
+                                    // Cap historie aby neexplodovala (max 50 entries)
+                                    if (state._v63BuildQueueRefunded.length > 50) {
+                                        state._v63BuildQueueRefunded = state._v63BuildQueueRefunded.slice(-50);
+                                    }
+                                }
+                            }
+                            return false; // Odstranit z queue
+                        }
+                        return true;
+                    });
+                    if (rescuedCount > 0) {
+                        // Okamžitě ulož aby se rescue neopakoval po reloadu
+                        if (typeof saveGame === 'function') {
+                            try { saveGame(true); } catch(e) { console.warn('Rescue save failed:', e); }
+                        }
+                        setTimeout(() => {
+                            if (typeof showModal === 'function') {
+                                showModal('🔨 Stavba opravena!', `
+                                    <div style="text-align: center;">
+                                        <div style="font-size: 3rem;">⚒️</div>
+                                        <h3 style="color: #ff9800;">Zaseknutá stavba detekována!</h3>
+                                        <p style="color: #ccc; margin: 0.5rem 0;"><strong>${rescuedCount}×</strong> zaseknutá stavba (${rescuedItems.join(', ')}) byla zrušena a všechny <strong>suroviny vráceny do skladu osady</strong>.</p>
+                                        <p style="color: #888; font-size: 0.85rem;">Bug v6.3 byl opraven — nyní můžeš znovu stavět novou Magnát budovu.</p>
+                                        <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 1rem; background: linear-gradient(135deg, #4caf50, #2e7d32);">✓ Děkuju!</button>
+                                    </div>
+                                `);
+                            }
+                        }, 1500);
+                    }
+                }
+            } catch(e) { console.warn('BuildQueue rescue error:', e); }
+            
             if (!state.char) state.char = { name: 'Survivor', gender: null, level: 1, xp: 0, xpNeed: 400, totalXP: 0, hp: 100, maxHp: 100, attrs: { str: 5, int: 5, agi: 5, per: 5, end: 5, lck: 5 } };
             if (!state.status) state.status = { hunger: 100, thirst: 100, energy: 100, mood: 100, radiation: 0 };
             if (!state.weather) state.weather = { current: 'clear', lastChange: Date.now(), duration: 3600000 };
