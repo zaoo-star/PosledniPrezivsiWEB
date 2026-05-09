@@ -20182,7 +20182,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             try {
                 if (!state._firstTimeShown) state._firstTimeShown = {};
                 
-                // Plánek: poprvé
+                // 🆕 [v6.3.1] Plánek: VŽDY notifikace + odkaz na inv (dřív jen first time)
+                if (item.type === 'blueprint' && !silent) {
+                    // Notifikace pro každý nový plánek (i opakovaně)
+                    if (typeof notifyInfo === 'function') {
+                        notifyInfo('📜 Plánek nalezen!', 
+                            `${item.icon || '📜'} ${item.name} — najdeš v inventáři, klikni pro craft.`);
+                    }
+                }
+                
+                // Plánek: poprvé tutorial modal
                 if (item.type === 'blueprint' && !state._firstTimeShown.blueprint && !silent) {
                     state._firstTimeShown.blueprint = true;
                     setTimeout(() => {
@@ -39314,6 +39323,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     const hasRunes = totalRunes > 0;
                                     return `<button onclick="showRuneBook()" class="btn" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: linear-gradient(135deg,#3a1a4a 0%,#1a0828 100%); border: 1px solid ${hasRunes ? '#9c27b0' : '#4a148c'}; color: #ce93d8; ${hasRunes ? 'box-shadow: 0 0 8px rgba(156,39,176,0.4);' : ''} position: relative; font-weight: bold;" title="Runová kniha (${totalRunes} run)">
                                         📖${hasRunes ? `<span style="position:absolute;top:-5px;right:-5px;background:linear-gradient(135deg,#d4935f,#8a5a30);color:#1a0d0a;font-size:0.6rem;font-weight:bold;border-radius:8px;min-width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;padding:0 0.25rem;box-shadow:0 1px 3px rgba(0,0,0,0.5);">${totalRunes}</span>` : ''}
+                                    </button>`;
+                                })()}
+                                ${(() => {
+                                    // 🆕 [v6.3.1] Quick-access tlačítko pro plánky
+                                    const blueprints = (state.inv || []).filter(i => i.type === 'blueprint');
+                                    const totalBlueprints = blueprints.reduce((s, i) => s + (i.count || 1), 0);
+                                    if (totalBlueprints === 0) return '';
+                                    return `<button onclick="showBlueprintsList()" class="btn" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: linear-gradient(135deg,#3a2a0a 0%,#1a1408 100%); border: 1px solid #ff9800; color: #ffd54f; box-shadow: 0 0 8px rgba(255,152,0,0.4); position: relative; font-weight: bold;" title="Pre-War Plánky (${totalBlueprints})">
+                                        📜<span style="position:absolute;top:-5px;right:-5px;background:linear-gradient(135deg,#ff9800,#e65100);color:#1a0d0a;font-size:0.6rem;font-weight:bold;border-radius:8px;min-width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;padding:0 0.25rem;box-shadow:0 1px 3px rgba(0,0,0,0.5);">${totalBlueprints}</span>
                                     </button>`;
                                 })()}
                                 ${typeof AI_ENGINE !== 'undefined' && AI_ENGINE.enabled ? '<button onclick="showBuildAdvisor()" class="btn" style="padding: 0.25rem 0.4rem; font-size: 0.7rem; background: #0a1a2a; border: 1px solid #2196f3; color: #2196f3;" title="AI analýza buildu">🧠</button>' : ''}
@@ -67851,6 +67869,67 @@ function openFullscreenMap() {
         }
         
         // === [v6.3] BLUEPRINT FUNCTIONS ===
+        // 🆕 [v6.3.1] Seznam všech plánků v inventáři - rychlý přístup
+        function showBlueprintsList() {
+            const blueprints = (state.inv || []).map((i, idx) => ({ item: i, idx }))
+                .filter(b => b.item.type === 'blueprint');
+            
+            if (blueprints.length === 0) {
+                showModal('📜 Plánky', `
+                    <div style="text-align: center; padding: 1rem;">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">📜</div>
+                        <p style="color: #888; font-size: 0.9rem;">Žádné Pre-War plánky nemáš.</p>
+                        <p style="color: #666; font-size: 0.75rem; margin-top: 0.5rem;">Plánky padají z elite zdrojů:</p>
+                        <ul style="color: #888; font-size: 0.75rem; text-align: left; display: inline-block; margin: 0.5rem 0;">
+                            <li>🏆 World Boss top 1 (4-8% dle bosse)</li>
+                            <li>🕳️ Propast - boss patro 30+</li>
+                            <li>⚔️ Klanový dungeon - patro 15+</li>
+                        </ul>
+                        <button class="btn" onclick="closeModal();" style="width: 100%; background: #444; margin-top: 0.5rem;">Zavřít</button>
+                    </div>
+                `);
+                return;
+            }
+            
+            const itemsHtml = blueprints.map(({ item, idx }) => {
+                const recipe = (typeof BLUEPRINT_RECIPES !== 'undefined') ? BLUEPRINT_RECIPES[item.weaponId] : null;
+                const targetWeaponId = recipe?.producesId || item.weaponId;
+                const targetWeapon = ITEMS.find(i => i.id === targetWeaponId);
+                
+                // Check if can craft
+                const cost = recipe?.cost || {};
+                const canCraft = Object.entries(cost).every(([key, need]) => {
+                    if (key === 'money') return (state.money || 0) >= need;
+                    return (state.resources?.[key] || 0) >= need;
+                });
+                
+                return `<div onclick="closeModal(); showBlueprintInfo(${idx});" style="cursor: pointer; background: #0a0a15; padding: 0.6rem; border-radius: 8px; border: 1px solid ${canCraft ? '#4caf50' : '#666'}; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.6rem; transition: all 0.2s;">
+                    <div style="font-size: 1.8rem;">${item.icon || '📜'}</div>
+                    <div style="flex: 1;">
+                        <div style="color: #ff9800; font-weight: bold; font-size: 0.85rem;">${item.name}</div>
+                        ${targetWeapon ? `<div style="color: #ccc; font-size: 0.75rem;">⚔️ Vyrobí: ${targetWeapon.icon || ''} ${targetWeapon.name}${targetWeapon.damage ? ` (DMG ${targetWeapon.damage})` : ''}</div>` : ''}
+                        <div style="font-size: 0.7rem; color: ${canCraft ? '#4caf50' : '#f44336'}; margin-top: 0.2rem;">
+                            ${canCraft ? '✓ Suroviny máš — můžeš vyrábět!' : '✗ Nedostatek surovin'}
+                        </div>
+                    </div>
+                    <div style="color: #888; font-size: 1.3rem;">▶</div>
+                </div>`;
+            }).join('');
+            
+            showModal('📜 Pre-War Plánky', `
+                <div style="text-align: center; margin-bottom: 0.5rem;">
+                    <div style="font-size: 2rem;">📜</div>
+                    <p style="color: #ffd54f; font-size: 0.8rem; margin: 0.3rem 0;">Máš ${blueprints.length} ${blueprints.length === 1 ? 'plánek' : (blueprints.length < 5 ? 'plánky' : 'plánků')}. Klikni pro craft:</p>
+                </div>
+                ${itemsHtml}
+                <div style="background: #2a1a0a; padding: 0.5rem; border-radius: 6px; border-left: 3px solid #ff9800; margin-top: 0.5rem;">
+                    <p style="color: #ffd54f; margin: 0; font-size: 0.7rem;">💡 Pre-War zbraně jsou +50-70% silnější než loot verze. Nelze prodat.</p>
+                </div>
+                <button class="btn" onclick="closeModal();" style="width: 100%; margin-top: 0.5rem; background: #444;">Zavřít</button>
+            `);
+        }
+        window.showBlueprintsList = showBlueprintsList;
+        
         function showBlueprintInfo(idx) {
             const item = state.inv[idx];
             if (!item || item.type !== 'blueprint') return;
