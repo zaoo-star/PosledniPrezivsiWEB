@@ -68290,8 +68290,17 @@ function openFullscreenMap() {
         
         function craftFromBlueprint(idx) {
             const item = state.inv[idx];
+            console.log('🔨 craftFromBlueprint called: idx=', idx, 'item=', item);
+            
             if (!item || item.type !== 'blueprint') {
                 notifyWarning('Chyba', 'Plánek není v inventáři.');
+                console.error('🔨 Blueprint not found at idx', idx, 'inv:', state.inv);
+                return;
+            }
+            
+            if (!item.weaponId) {
+                notifyWarning('Chyba', 'Plánek je poškozený (chybí weaponId).');
+                console.error('🔨 Blueprint missing weaponId:', item);
                 return;
             }
             
@@ -68299,8 +68308,16 @@ function openFullscreenMap() {
             // 🆕 [v6.3.1] Plánek vyrábí Pre-War variantu (prewar_X), ne běžnou loot zbraň
             const targetWeaponId = recipe?.producesId || item.weaponId;
             const targetWeapon = ITEMS.find(i => i.id === targetWeaponId);
-            if (!recipe || !targetWeapon) {
-                notifyWarning('Chyba', 'Plánek nelze použít.');
+            
+            if (!recipe) {
+                notifyWarning('Chyba', `Recept pro "${item.weaponId}" neexistuje.`);
+                console.error('🔨 Recipe not found for weaponId:', item.weaponId);
+                return;
+            }
+            
+            if (!targetWeapon) {
+                notifyWarning('Chyba', `Zbraň "${targetWeaponId}" neexistuje v ITEMS.`);
+                console.error('🔨 Target weapon not found:', targetWeaponId);
                 return;
             }
             
@@ -68342,16 +68359,20 @@ function openFullscreenMap() {
                 maxDurability: targetWeapon.maxDurability || targetWeapon.durability || 100
             };
             
-            // Přidej do inventáře
-            if (typeof canAddItem === 'function' && typeof addItemToInventory === 'function') {
-                if (canAddItem(newWeapon, 1)) {
-                    addItemToInventory(newWeapon, 1, true);
-                } else {
-                    // Fallback: do baseItems osady
-                    if (!state.baseItems) state.baseItems = [];
-                    state.baseItems.push(newWeapon);
-                    notifyWarning('📦 Inventář plný', 'Zbraň jde do skladu osady.');
-                }
+            // Přidej do inventáře (FORCE ADD — plánek je vzácný, nesmí se ztratit)
+            // 🆕 [v6.3.1] FreeRiderCz bug: zbraň se ztrácela
+            // FIX: Místo addItemToInventory (která může selhat z mnoha důvodů) — direct push
+            const isOverweight = (state.carryWeight || 0) + (newWeapon.weight || 0) > (state.maxCarryWeight || 50);
+            
+            state.inv.push(newWeapon);
+            if (typeof patchSingleItemIcon === 'function') patchSingleItemIcon(newWeapon);
+            if (typeof updateCarryWeight === 'function') updateCarryWeight();
+            try { SoundSystem.play('pickup'); } catch(e) {}
+            
+            console.log('🔨 Pre-War zbraň vyrobena:', newWeapon.name, 'ID:', newWeapon.id, '→ inv má teď', state.inv.length, 'itemů');
+            
+            if (isOverweight) {
+                notifyWarning('⚖️ Přetížen!', `${newWeapon.name} přidán do inventáře, ale jsi přetížen — vyhoď něco nebo si vybav!`);
             }
             
             closeModal();
@@ -97386,6 +97407,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Migrace starých uložených her na novou verzi
         function migrateState() {
+            // 🆕 [v6.3.1] FreeRiderCz bug fix: obnov ztracené Pre-War zbraně z baseItems
+            // Bug: když měl hráč přetížený inv při craftu, zbraň šla do baseItems (sklad osady)
+            try {
+                if (Array.isArray(state.baseItems) && state.baseItems.length > 0) {
+                    const recoveredWeapons = [];
+                    state.baseItems = state.baseItems.filter(item => {
+                        if (!item) return false;
+                        // Najdi Pre-War zbraně z plánku (id obsahuje '_bp_' nebo má fromBlueprint flag)
+                        const isPrewarFromBp = (item.id && (item.id.includes('_bp_') || item.id.startsWith('prewar_')))
+                            || item.fromBlueprint;
+                        if (isPrewarFromBp) {
+                            recoveredWeapons.push(item);
+                            return false; // Odstraň z baseItems
+                        }
+                        return true;
+                    });
+                    
+                    if (recoveredWeapons.length > 0) {
+                        if (!Array.isArray(state.inv)) state.inv = [];
+                        state.inv.push(...recoveredWeapons);
+                        console.log('🔧 [v6.3.1] Obnoveno', recoveredWeapons.length, 'Pre-War zbraní z baseItems do inv');
+                        // Notifikace později po loadu
+                        setTimeout(() => {
+                            if (typeof notifySuccess === 'function') {
+                                const names = recoveredWeapons.map(w => w.name).join(', ');
+                                notifySuccess('🔧 Zbraně obnoveny!', `${recoveredWeapons.length}× ztracená zbraň z plánku: ${names}`);
+                            }
+                        }, 2000);
+                    }
+                }
+            } catch(e) { console.warn('Pre-War weapons recovery error:', e); }
+            
             // CRITICAL: Zajisti confirmed = true pokud má hráč platnou postavu (ochrana proti bugnutým savům)
             if (state.char?.name && state.char?.level >= 1 && !state.confirmed) {
                 console.warn('⚠️ migrateState: Opravuji confirmed = false → true (postava existuje)');
