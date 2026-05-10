@@ -12515,6 +12515,53 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
         });
         
+        // 🆕 [v6.3.1] CENTRALIZED EXCLUSIVE ITEM BLACKLIST
+        // Jediný zdroj pravdy pro itemy které NESMÍ padnout v dungeonech, NPC shopech, ani questových odměnách
+        // Místo seznamu to vrací funkci která rozezná na základě flagů
+        window.EXCLUSIVE_ITEM_IDS = new Set([
+            // World boss exklusivy (vždy synchronizováno s WORLD_BOSSES.uniqueLoot)
+            'sandworm_fang', 'sandworm_hide',
+            'behemoth_hammer', 'behemoth_heart',
+            'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
+            'titan_cannon', 'titan_plating', 'titan_core',
+            'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
+            'hydra_fang_blade', 'hydra_scale_armor', 'hydra_blood', 'hydra_heart',
+            // Sub-boss exklusivy (deathclaw, mutant queen)
+            'queen_crown', 'deathclaw_hand', 'deathclaw_gauntlet',
+            // Abyss exklusivy
+            'abyss_crystal', 'abyss_rune', 'abyss_shard', 'abyss_elixir',
+            // Pre-War zbraně (jen z plánku)
+            'prewar_gauss_rifle', 'prewar_plasma_rifle', 'prewar_plasma_blade',
+            'prewar_laser_sniper', 'prewar_tesla_cannon', 'prewar_devastator',
+            'prewar_gatling_gun', 'prewar_soul_reaver', 'prewar_master_sword',
+            // Plánky (jen z elite zdrojů)
+            'blueprint_gauss_rifle', 'blueprint_plasma_rifle', 'blueprint_plasma_blade',
+            'blueprint_laser_sniper', 'blueprint_tesla_cannon', 'blueprint_devastator',
+            'blueprint_gatling_gun', 'blueprint_soul_reaver', 'blueprint_master_sword',
+            // Special / unique
+            'unique_artifact', 'rune_decoder',
+            'unique_companion_assassin', 'unique_companion_warlord', 'unique_settlement_war_room'
+        ]);
+        
+        // Helper - rozezná zda item je exklusivní (nesmí v lootu mimo svůj zdroj)
+        window.isExclusiveItem = function(itemOrId) {
+            if (!itemOrId) return false;
+            const id = (typeof itemOrId === 'string') ? itemOrId : itemOrId.id;
+            if (!id) return false;
+            // 1. Explicitní blacklist
+            if (window.EXCLUSIVE_ITEM_IDS.has(id)) return true;
+            // 2. Pre-War weapons (auto-detect)
+            if (id.startsWith('prewar_')) return true;
+            // 3. Blueprints (auto-detect)
+            if (id.startsWith('blueprint_')) return true;
+            // 4. Items with isWorldBoss flag (z WORLD_BOSSES registrace)
+            const item = (typeof itemOrId === 'object') ? itemOrId : ITEMS.find(i => i.id === id);
+            if (item?.isWorldBoss) return true;
+            // 5. Runy (mají vlastní cestu přes runeBook)
+            if (item?.type === 'rune') return true;
+            return false;
+        };
+        
         const CRAFTING = [
             // === ZBRANĚ - Základní (portable = lze vyrobit na cestě) ===
             { id: 'spear', name: 'Kopí', icon: '🔱', result: { type: 'weapon', damage: 10, rarity: 'common' }, requires: { wood: 3, metal: 2 }, category: 'weapon', portable: true },
@@ -21709,6 +21756,33 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showNotification(title, text, 'info', 'ℹ️');
             addLog(title, 'ℹ️');
         }
+        
+        // 🆕 [v6.3.1] FreeRiderCz request: vypnutelné combat notifikace
+        // Použij notifyCombat() místo notifyInfo() pro non-essential combat events
+        function notifyCombat(title, text = '', type = 'info') {
+            // Vždy log
+            const icon = type === 'success' ? '⚔️' : (type === 'warning' ? '⚠️' : 'ℹ️');
+            addLog(title, icon);
+            
+            // Bublina jen pokud setting NENÍ vypnutý
+            if (state.settings?.disableCombatNotifs) return;
+            
+            showNotification(title, text, type, icon);
+        }
+        
+        function toggleCombatNotifs() {
+            if (!state.settings) state.settings = {};
+            state.settings.disableCombatNotifs = !state.settings.disableCombatNotifs;
+            const isOff = state.settings.disableCombatNotifs;
+            saveGame();
+            // Tahle notifikace půjde vždy (info, ne combat)
+            notifyInfo(
+                isOff ? '🔇 Combat bubliny vypnuty' : '⚔️ Combat bubliny zapnuty',
+                isOff ? 'Zprávy v boji nebudou zobrazovat bubliny (jen log a finální výsledek)' : 'Zprávy v boji se budou zobrazovat normálně'
+            );
+            renderFull();
+        }
+        window.toggleCombatNotifs = toggleCombatNotifs;
         
         function notifyLoot(itemName, rarity = 'common', icon = '🎁') {
             const rarityTypes = {
@@ -39945,15 +40019,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div class="responsive-6col">
                             ${Object.entries(ATTRS).map(([key, attr]) => {
                                 const baseValue = state.char.attrs[key] || 5;
+                                // 🆕 [v6.3.1] FIX: getEffectiveAttr zahrnuje mutace + equip + buffs (OwerLord report)
+                                const totalValue = (typeof getEffectiveAttr === 'function') ? getEffectiveAttr(key) : (baseValue + getEquipmentAttrBonus(key));
+                                const totalBonus = totalValue - baseValue;
                                 const equipBonus = getEquipmentAttrBonus(key);
-                                const totalValue = baseValue + equipBonus;
+                                const mutBonus = totalBonus - equipBonus;
                                 const barPct = Math.min(100, (totalValue / 15) * 100);
                                 const barColors = { str: '#c62828', end: '#2e7d32', agi: '#1565c0', per: '#f9a825', int: '#6a1b9a', lck: '#00838f' };
                                 const barColor = barColors[key] || '#555';
                                 return `
                                     <div onclick="${state.char.levelUpPoints > 0 ? 'showAttrInfo(\'' + key + '\')' : 'showAttrInfo(\'' + key + '\')'}" style="cursor: pointer; background: #0d0d0d; padding: 0.25rem; text-align: center; border: 1px solid ${state.char.levelUpPoints > 0 ? '#3a4a3a' : '#333'};">
                                         <div style="font-size: 0.9rem; filter: saturate(0.6);">${attr.icon}</div>
-                                        <div style="font-size: 0.85rem; color: ${equipBonus > 0 ? '#4caf50' : '#8a9a8a'};">${totalValue}${equipBonus > 0 ? '<span style="font-size: 0.5rem; color: #4caf50;"> (+' + equipBonus + ')</span>' : ''}</div>
+                                        <div style="font-size: 0.85rem; color: ${totalBonus > 0 ? '#4caf50' : (totalBonus < 0 ? '#ff8a65' : '#8a9a8a')};">${totalValue}${totalBonus > 0 ? '<span style="font-size: 0.5rem; color: #4caf50;"> (+' + totalBonus + ')</span>' : (totalBonus < 0 ? '<span style="font-size: 0.5rem; color: #ff5722;"> (' + totalBonus + ')</span>' : '')}</div>
                                         <div style="height: 3px; background: #1a1a1a; border-radius: 2px; margin: 2px 0;"><div style="height: 100%; width: ${barPct}%; background: ${barColor}; border-radius: 2px; transition: width 0.3s;"></div></div>
                                         <div style="font-size: 0.45rem; color: #555;">${attr.name.substring(0,3).toUpperCase()}</div>
                                         ${state.char.levelUpPoints > 0 ? '<div style="margin-top: 2px; background: #2a4a2a; border: 1px solid #4caf5066; border-radius: 3px; padding: 0.1rem 0; font-size: 0.5rem; color: #8bc34a; font-weight: bold;">▲ +1</div>' : ''}
@@ -47433,7 +47510,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (Math.random() < dodgeChance) {
                 // Vyhnutí se pasti!
                 const bonusText = trapAvoidBonus > 0 ? ` + 🏃‍♀️ ${Math.round(trapAvoidBonus * 100)}% companion` : '';
-                notifySuccess('🎯 Pozor!', 'Všiml sis pasti a vyhnul se jí!');
+                notifyCombat('🎯 Pozor!', 'Všiml sis pasti a vyhnul se jí!', 'success');
                 showModal('🎯 Past odhalena!', 
                     '<div style="text-align: center;">' +
                     '<div style="font-size: 4rem;">🪤</div>' +
@@ -49878,7 +49955,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             ce.damage = Math.round(ce.damage * sc);
                             ce.isPreScaled = true;
                             ds.lootLog.push(`⚔️ ${tile.icon || '👾'} ${ce.name} na tebe vyběhl!`);
-                            notifyWarning('⚔️ Pozor!', `${ce.name} tě spatřil a zaútočil!`);
+                            notifyCombat('⚔️ Pozor!', `${ce.name} tě spatřil a zaútočil!`, 'warning');
                             setTimeout(() => startCombatWithGroup([ce], 'dungeon_explore'), 300);
                         }
                         return; // Max 1 aggro nepřítel najednou
@@ -59509,12 +59586,30 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 armors.unshift({ ...state.equipped.gloves, equipped: true });
             }
             
+            // 🆕 [v6.3.1] Přidej výbavu společníků (FreeRiderCz report)
+            if (Array.isArray(state.companions)) {
+                state.companions.forEach((comp, compIdx) => {
+                    if (!comp || !comp.equipped) return;
+                    const compName = comp.name || ('Společník ' + (compIdx + 1));
+                    ['weapon', 'armor', 'helmet', 'boots', 'gloves'].forEach(slot => {
+                        const eq = comp.equipped[slot];
+                        if (!eq || eq.aiUpgraded) return;
+                        if (slot === 'weapon' && eq.damage) {
+                            weapons.push({ ...eq, _companionIdx: compIdx, _companionSlot: slot, _companionName: compName });
+                        } else if (eq.defense !== undefined) {
+                            armors.push({ ...eq, _companionIdx: compIdx, _companionSlot: slot, _companionName: compName });
+                        }
+                    });
+                });
+            }
+            
             let weaponsHtml = weapons.length > 0 ? weapons.map((w, i) => `
                 <div onclick="upgradeItemWithAI('weapon', ${i})" style="cursor: pointer; background: #1a2a1a; padding: 0.6rem; margin: 0.3rem 0; border-radius: 6px; border: 1px solid #4caf50; display: flex; justify-content: space-between; align-items: center;">
                     <div>
                         <span style="font-size: 1.3rem;">${w.icon || '⚔️'}</span>
                         <span style="color: #fff;">${w.name}</span>
                         ${w.equipped ? '<span style="color: #ffd700; font-size: 0.7rem;"> (nasazeno)</span>' : ''}
+                        ${w._companionName ? `<span style="color: #4fc3f7; font-size: 0.7rem;"> (👥 ${w._companionName})</span>` : ''}
                     </div>
                     <div style="color: #ff6b6b;">
                         ${w.damage} → <span style="color: #4caf50; font-weight: bold;">${w.damage + 10}</span> DMG
@@ -59528,6 +59623,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <span style="font-size: 1.3rem;">${a.icon || '🛡️'}</span>
                         <span style="color: #fff;">${a.name}</span>
                         ${a.equipped ? '<span style="color: #ffd700; font-size: 0.7rem;"> (nasazeno)</span>' : ''}
+                        ${a._companionName ? `<span style="color: #4fc3f7; font-size: 0.7rem;"> (👥 ${a._companionName})</span>` : ''}
                     </div>
                     <div style="color: #64b5f6;">
                         ${a.defense} → <span style="color: #4caf50; font-weight: bold;">${a.defense + 10}</span> DEF
@@ -59575,7 +59671,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (type === 'weapon') {
                 item = window._aiUpgradeWeapons[index];
-                if (item.equipped) {
+                
+                // 🆕 [v6.3.1] Companion equipment upgrade
+                if (item._companionIdx !== undefined) {
+                    const compIdx = item._companionIdx;
+                    const slot = item._companionSlot;
+                    const comp = state.companions?.[compIdx];
+                    if (comp?.equipped?.[slot]) {
+                        comp.equipped[slot].damage += 10;
+                        comp.equipped[slot].aiUpgraded = true;
+                        item = comp.equipped[slot];
+                    }
+                } else if (item.equipped) {
                     isEquipped = true;
                     // Aktualizuj equipped referenci
                     state.equipped.weapon.damage += 10;
@@ -59601,7 +59708,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             } else {
                 item = window._aiUpgradeArmors[index];
-                if (item.equipped) {
+                
+                // 🆕 [v6.3.1] Companion armor upgrade
+                if (item._companionIdx !== undefined) {
+                    const compIdx = item._companionIdx;
+                    const slot = item._companionSlot;
+                    const comp = state.companions?.[compIdx];
+                    if (comp?.equipped?.[slot]) {
+                        comp.equipped[slot].defense += 10;
+                        comp.equipped[slot].aiUpgraded = true;
+                        item = comp.equipped[slot];
+                    }
+                } else if (item.equipped) {
                     isEquipped = true;
                     // Najdi ve kterém slotu je a aktualizuj OBĚ reference (equipped + inv)
                     const slots = ['armor', 'helmet', 'boots', 'gloves'];
@@ -63662,20 +63780,15 @@ function openFullscreenMap() {
                     else if (lootType === 'legendary' || lootType === 'legendary_weapon' || lootType === 'legendary_armor' || lootType === 'legendary_item') {
                         if (legendaryDropped) return;
                         
-                        // OPRAVA: World boss exclusive loot - nemůže padat z dungeonů
-                        const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
-                                                  'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
-                                                  'titan_cannon', 'titan_plating', 'titan_core',
-                                                  'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
-                                                  'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood',
-                                                  'abyss_crystal', 'abyss_rune', 'abyss_shard', 'abyss_elixir'];
+                        // 🆕 [v6.3.1] EXPANDED Blacklist - World boss + Pre-War + Blueprints + Sub-boss exclusivy
+                        // [v6.3.1] worldBossLootIds nahrazeno window.isExclusiveItem() — jediný blacklist
                         
                         const pool = lootType === 'legendary_weapon' 
-                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'weapon' || i.type === 'melee') && !worldBossLootIds.includes(i.id))
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'weapon' || i.type === 'melee') && !isExclusiveItem(i))
                             : lootType === 'legendary_armor'
-                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves') && !worldBossLootIds.includes(i.id))
-                            : ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id));
-                        const legendaries = pool.length > 0 ? pool : ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id));
+                            ? ITEMS.filter(i => i.rarity === 'legendary' && (i.type === 'armor' || i.type === 'helmet' || i.type === 'boots' || i.type === 'gloves') && !isExclusiveItem(i))
+                            : ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i));
+                        const legendaries = pool.length > 0 ? pool : ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i));
                         if (legendaries.length > 0) {
                             const item = legendaries[Math.floor(Math.random() * legendaries.length)];
                             if (canAddItem(item, 1)) {
@@ -63692,15 +63805,10 @@ function openFullscreenMap() {
                     else if (lootType === 'unique' || lootType === 'unique_artifact') {
                         if (legendaryDropped) return; // Max 1 legendary/unique za dungeon
                         
-                        // OPRAVA: World boss exclusive loot - nemůže padat z dungeonů
-                        const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
-                                                  'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
-                                                  'titan_cannon', 'titan_plating', 'titan_core',
-                                                  'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
-                                                  'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood',
-                                                  'abyss_crystal', 'abyss_rune', 'abyss_shard', 'abyss_elixir'];
+                        // 🆕 [v6.3.1] EXPANDED Blacklist - World boss + Pre-War + Blueprints + Sub-boss exclusivy
+                        // [v6.3.1] worldBossLootIds nahrazeno window.isExclusiveItem() — jediný blacklist
                         
-                        const uniques = ITEMS.filter(i => (i.rarity === 'legendary' || i.rarity === 'unique') && !worldBossLootIds.includes(i.id));
+                        const uniques = ITEMS.filter(i => (i.rarity === 'legendary' || i.rarity === 'unique') && !isExclusiveItem(i));
                         if (uniques.length > 0) {
                             const item = uniques[Math.floor(Math.random() * uniques.length)];
                             if (canAddItem(item, 1)) {
@@ -73865,8 +73973,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         'rare_item': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
                         'rare_weapon': ITEMS.filter(i => i.type === 'weapon' && (i.rarity === 'rare' || i.rarity === 'epic')),
                         'rare_armor': ITEMS.filter(i => i.type === 'armor' && (i.rarity === 'rare' || i.rarity === 'epic')),
-                        'legendary': ITEMS.filter(i => i.rarity === 'legendary' && !i.isWorldBoss),
-                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary' && !i.isWorldBoss),
+                        'legendary': ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i)),
+                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i)),
                         'weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity !== 'legendary'),
                         'armor': ITEMS.filter(i => i.type === 'armor' && i.rarity !== 'legendary'),
                         'medkit': ITEMS.filter(i => i.id === 'medkit' || i.id === 'first_aid'),
@@ -87247,10 +87355,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // 🆕 [v6.3] Magazine vs ammo info
                 const _hasMag = typeof weaponHasMagazine === 'function' && weaponHasMagazine(weapon);
                 const ammoSrc = _hasMag ? `${burstCount} ze zásobníku` : `${burstCount} munice`;
-                notifySuccess('🔥 Dávková střelba ZAP', `${weapon.icon || '🔫'} ${weapon.name}: ${burstCount} ran (${multiplier.toFixed(2)}× DMG), potřeba: ${ammoSrc}`);
+                notifyCombat('🔥 Dávková střelba ZAP', `${weapon.icon || '🔫'} ${weapon.name}: ${burstCount} ran (${multiplier.toFixed(2)}× DMG), potřeba: ${ammoSrc}`, 'success');
                 cs.log.push(`🔥 Dávková střelba ZAP: ${burstCount} ran (${multiplier.toFixed(2)}× DMG).`);
             } else {
-                notifySuccess('Dávková střelba VYP', `${weapon.icon || '🔫'} ${weapon.name}: jednotlivé výstřely`);
+                notifyCombat('Dávková střelba VYP', `${weapon.icon || '🔫'} ${weapon.name}: jednotlivé výstřely`, 'info');
                 cs.log.push(`Dávková střelba VYP.`);
             }
             
@@ -90257,6 +90365,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // 🍞 Zobrazí floating toast s novou combat zprávou
         function showCombatToast(msg, playerName, companionNames, enemyNames) {
+            // 🆕 [v6.3.1] FreeRiderCz request: vypnutelné combat toasty (popisné info "X udělal Y DMG")
+            if (state.settings?.disableCombatNotifs) return;
+            
             if (!msg || msg.startsWith('──')) return; // Přeskoč oddělovače
             if (msg.length < 3) return;
             
@@ -90643,12 +90754,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.activeWorldBoss = null;
                     endCombat();
                     closeModal();
-                    notifySuccess('🐉 Boss prchá!', 'Boss utrpěl těžké ztráty a stahuje se! Tvůj damage byl zaznamenán.');
+                    notifyCombat('🐉 Boss prchá!', 'Boss utrpěl těžké ztráty a stahuje se! Tvůj damage byl zaznamenán.', 'success');
                     renderFull();
                 } else {
                     endCombat();
                     closeModal();
-                    notifySuccess('🐉 Boss prchá!', 'Boss utrpěl těžké ztráty a stahuje se!');
+                    notifyCombat('🐉 Boss prchá!', 'Boss utrpěl těžké ztráty a stahuje se!', 'success');
                     renderFull();
                 }
             }, 300);
@@ -90753,7 +90864,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             try { saveGame(true); } catch(e) {}
             try { if (typeof renderFull === 'function') renderFull(); } catch(e) {}
             if (!silent) {
-                try { notifySuccess('🛡️ Combat resetnut', 'Boj byl vyřešen, můžeš pokračovat.'); } catch(e) {}
+                try { notifyCombat('🛡️ Combat resetnut', 'Boj byl vyřešen, můžeš pokračovat.', 'info'); } catch(e) {}
             }
         }
         window.forceEndCombat = forceEndCombat;
@@ -90976,7 +91087,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     state.char.hp = Math.max(1, Math.floor(state.char.maxHp * 0.3));
                     window.isAbyssCombat = false;
-                    notifyWarning('Propast', 'Propast tě vyplivla zpět.');
+                    notifyCombat('Propast', 'Propast tě vyplivla zpět.', 'warning');
                     closeModal();
                     renderFull();
                     saveGame(true);
@@ -91099,7 +91210,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // Notify hráče
                     if (typeof notifyWarning === 'function') {
-                        notifyWarning('⚠️ Boj odemčen', 'Detekce zaseknutí - boj pokračuje. Pokud problém trvá, ukonči boj.');
+                        notifyCombat('⚠️ Boj odemčen', 'Detekce zaseknutí - boj pokračuje. Pokud problém trvá, ukonči boj.', 'warning');
                     }
                     
                     // Pokus znovu spustit kolo
@@ -91120,7 +91231,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (state.isSleeping) {
                 state.isSleeping = false; // Probuď se při útoku!
                 state.sleepEndTime = null;
-                notifyWarning('💤 Probudil ses!', 'Někdo tě napadl během spánku!');
+                notifyCombat('💤 Probudil ses!', 'Někdo tě napadl během spánku!', 'warning');
             }
             
             // Blokace během odpočinku
@@ -91128,7 +91239,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.isResting = false; // Přeruš odpočinek při útoku!
                 state.restEndTime = null;
                 state.restStartTime = null;
-                notifyWarning('💤 Odpočinek přerušen!', 'Někdo tě napadl během odpočinku!');
+                notifyCombat('💤 Odpočinek přerušen!', 'Někdo tě napadl během odpočinku!', 'warning');
             }
             
             // Společníci spotřebovávají munici přímo z inventáře hráče při každém útoku
@@ -92694,7 +92805,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (state.char.hp < targetHp) {
                         state.char.hp = targetHp;
                         addLog(`💫 Zázrak! Společník tě zachránil z kritického stavu!`, '💫');
-                        notifySuccess('💫 Zázrak!', `Společník tě zachránil z kritického stavu! HP: ${targetHp}`);
+                        notifyCombat('💫 Zázrak!', `Společník tě zachránil z kritického stavu! HP: ${targetHp}`, 'success');
                     }
                 }
                 // healInjuries - Polní chirurgie: vyléčí zranění po boji
@@ -92741,7 +92852,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.activeWorldBoss = null;
                 endCombat();
                 closeModal();
-                notifySuccess('🐉 Boss zabit!', 'Zasadil jsi smrtelný úder! Tvůj damage byl zaznamenán.');
+                notifyCombat('🐉 Boss zabit!', 'Zasadil jsi smrtelný úder! Tvůj damage byl zaznamenán.', 'success');
                 renderFull();
                 return;
             }
@@ -93265,22 +93376,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // Pokud není přímý item, zkus kategorie
                 if (!lootItem) {
-                    // OPRAVA: World boss unique loot ID seznam - nemůže padat nikde jinde
-                    const worldBossLootIds = ['sandworm_fang', 'sandworm_hide', 'behemoth_hammer', 'behemoth_heart', 
-                                              'leviathan_blade', 'leviathan_scale', 'leviathan_eye',
-                                              'titan_cannon', 'titan_plating', 'titan_core',
-                                              'shadow_daggers', 'shadow_cloak', 'shadow_amulet',
-                                              'hydra_fang_blade', 'hydra_scale_armor', 'hydra_heart', 'hydra_blood'];
+                    // 🆕 [v6.3.1] EXPANDED Blacklist - World boss + sub-boss + Pre-War + Blueprints
+                    // [v6.3.1] worldBossLootIds → window.isExclusiveItem()
                     
                     const categoryItems = {
                         'weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity !== 'legendary'),
                         'rare_weapon': ITEMS.filter(i => i.type === 'weapon' && (i.rarity === 'rare' || i.rarity === 'epic')),
-                        'legendary_weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
+                        'legendary_weapon': ITEMS.filter(i => i.type === 'weapon' && i.rarity === 'legendary' && !isExclusiveItem(i)),
                         'armor': ITEMS.filter(i => i.type === 'armor' && i.rarity !== 'legendary'),
                         'rare_armor': ITEMS.filter(i => i.type === 'armor' && (i.rarity === 'rare' || i.rarity === 'epic')),
-                        'legendary_armor': ITEMS.filter(i => i.type === 'armor' && i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
-                        'legendary': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
-                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
+                        'legendary_armor': ITEMS.filter(i => i.type === 'armor' && i.rarity === 'legendary' && !isExclusiveItem(i)),
+                        'legendary': ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i)),
+                        'legendary_item': ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i)),
                         'rare': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
                         'rare_item': ITEMS.filter(i => i.rarity === 'rare' || i.rarity === 'epic'),
                         'ammo': ITEMS.filter(i => i.type === 'ammo'),
@@ -93289,7 +93396,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         'radaway': ITEMS.filter(i => i.id === 'radaway' || i.id === 'radaway_super'),
                         'radx': ITEMS.filter(i => i.id === 'radx'),
                         'tech': ITEMS.filter(i => i.type === 'tool'),
-                        'unique': ITEMS.filter(i => i.rarity === 'legendary' && !worldBossLootIds.includes(i.id)),
+                        'unique': ITEMS.filter(i => i.rarity === 'legendary' && !isExclusiveItem(i)),
                         'stimpak': ITEMS.filter(i => i.id === 'stimpack' || i.id === 'medkit'), // [FIX] bylo 'stimpak' — překlep v ID
                         'stimpack': ITEMS.filter(i => i.id === 'stimpack' || i.id === 'medkit'),
                         'poison': ITEMS.filter(i => i.id === 'chemicals'),
@@ -119284,6 +119391,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             <span style="font-size: 0.75rem; color: ${MobileNotifications.enabled && !state.pushNotificationsOff ? '#8bc34a' : '#668a66'};">NOTIFIKACE ${MobileNotifications.enabled && !state.pushNotificationsOff ? '[AKTIVNÍ]' : '[VYPNUTO]'}</span>
                         </button>
                         
+                        <!-- 🆕 [v6.3.1] Combat info bubliny toggle (FreeRiderCz request) -->
+                        <button class="btn" onclick="toggleCombatNotifs()" style="width: 100%; background: #0a0a0a; border: 1px solid ${state.settings?.disableCombatNotifs ? '#3a2a1a' : '#1a1a1a'}; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600;">
+                            <span>${state.settings?.disableCombatNotifs ? '🔇' : '⚔️'}</span>
+                            <span style="font-size: 0.75rem; color: ${state.settings?.disableCombatNotifs ? '#9a8a4a' : '#8aa68a'};">COMBAT BUBLINY ${state.settings?.disableCombatNotifs ? '[VYPNUTO]' : '[ZAPNUTO]'}</span>
+                        </button>
+                        
                         <button class="btn" onclick="showBugReportModal()" style="width: 100%; background: #0a0a0a; border: 1px solid #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600;">
                             <span>🐛</span>
                             <span style="font-size: 0.75rem; color: #6a6a4a;">BUG REPORT</span>
@@ -136074,6 +136187,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 'accessory': '💍 Příslušenství',
                 'tool': '🔧 Nástroje',
                 'ammo': '🔫 Munice',
+                'blueprint': '📜 Pre-War Plánky',
                 'material': '🧱 Materiály',
                 'component': '⚙️ Komponenty',
                 'throwable': '💣 Vrhací',
@@ -136482,6 +136596,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 'accessory': '💍 Příslušenství',
                 'tool': '🔧 Nástroje',
                 'ammo': '🔫 Munice',
+                'blueprint': '📜 Pre-War Plánky',
                 'component': '⚙️ Komponenty',
                 'throwable': '💣 Vrhací',
                 'trophy': '🏆 Trofeje',
@@ -136496,6 +136611,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const uniqueItems = ITEMS.filter(i => {
                 if (!i.id || !i.name || seenIds.has(i.id)) return false;
                 seenIds.add(i.id);
+                // 🆕 [v6.3.1] Vyfiltruj Pre-War zbraně — admin musí poslat plánek
+                if (i.id.startsWith('prewar_')) return false;
                 return true;
             });
             
