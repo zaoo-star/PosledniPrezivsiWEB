@@ -37917,7 +37917,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Pokud je hráč mrtvý (isDead=true nebo hp<=0), zobraz death screen (ale ne během PvP/WB raidu/Abyss)
             // 🆕 [v6.3.1] Propast: smrt v propasti != permadeath - hráč se vrátí s 30% HP
-            const inAbyss = window.isAbyssCombat === true || state.abyss?.inProgress === true;
+            // Persistent flag _abyssDefeatActive drží 5s i po reset isAbyssCombat/inProgress
+            const inAbyss = window.isAbyssCombat === true || state.abyss?.inProgress === true || window._abyssDefeatActive === true;
             if (state.confirmed && (currentHp <= 0 || state.isDead === true) && !inPvP && !inWorldBossRaid && !inAbyss) {
                 // Nastav správné hodnoty
                 state.char.hp = 0;
@@ -64381,8 +64382,12 @@ function openFullscreenMap() {
             // Floor 5,10 → Strážce; 15,20 → Titán; 25,30 → Lich; 35,40 → Golem...
             
             if (isBossFloor) {
-                // BOSS PATRO: 2-3 bossové, žádné mobi
-                const bossCount = floor < 50 ? 2 : 3;
+                // BOSS PATRO: více bossů, žádné mobi
+                // 🆕 [v6.3.1] Zvýšeno: 3-5 bossů místo 2-3
+                let bossCount;
+                if (floor < 25) bossCount = 3;
+                else if (floor < 50) bossCount = 4;
+                else bossCount = 5;
                 
                 for (let i = 0; i < bossCount; i++) {
                     // Vyber boss - 1. boss = pro tento floor, další = jeden níže (variace)
@@ -64417,25 +64422,39 @@ function openFullscreenMap() {
                     });
                 }
             } else {
-                // NORMÁLNÍ PATRO: 1 boss (z ABYSS_BOSSES, slabší) + 1-2 mobové
+                // NORMÁLNÍ PATRO: víc bossů + mobové
+                // 🆕 [v6.3.1] Zvýšeno: 2-3 bossové místo 1
+                let bossCountReg;
+                if (floor < 25) bossCountReg = 2;
+                else if (floor < 50) bossCountReg = 2;
+                else bossCountReg = 3;
                 
-                // Boss = pro tento tier, ale jen 50% statů (slabší než interim boss)
-                const bossIdx = Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10));
-                const boss = ABYSS_BOSSES[bossIdx];
-                
-                enemyGroup.push({
-                    ...boss,
-                    id: 'abyss_boss_' + floor,
-                    name: boss.name,
-                    hp: Math.floor(boss.hp * scaling * 0.5),
-                    maxHp: Math.floor(boss.hp * scaling * 0.5),
-                    damage: Math.floor(boss.damage * scaling * 0.6),
-                    defense: Math.floor(boss.defense * scaling * 0.7),
-                    xp: Math.floor((boss.xp || 500) * 0.7),
-                    isBoss: true,
-                    isElite: true,
-                    loot: ['money']
-                });
+                for (let bi = 0; bi < bossCountReg; bi++) {
+                    // Hlavní boss = pro tento tier, doprovodný = o úroveň níž
+                    let bossIdx;
+                    if (bi === 0) {
+                        bossIdx = Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10));
+                    } else {
+                        bossIdx = Math.max(0, Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10) - bi));
+                    }
+                    const boss = ABYSS_BOSSES[bossIdx];
+                    // Slabší stats: 50% pro hlavního, 35% pro doprovodné
+                    const dupeMultReg = bi === 0 ? 1.0 : 0.70;
+                    
+                    enemyGroup.push({
+                        ...boss,
+                        id: 'abyss_boss_' + floor + '_r' + bi,
+                        name: boss.name,
+                        hp: Math.floor(boss.hp * scaling * 0.5 * dupeMultReg),
+                        maxHp: Math.floor(boss.hp * scaling * 0.5 * dupeMultReg),
+                        damage: Math.floor(boss.damage * scaling * 0.6 * dupeMultReg),
+                        defense: Math.floor(boss.defense * scaling * 0.7 * dupeMultReg),
+                        xp: Math.floor((boss.xp || 500) * 0.7 * (bi === 0 ? 1.0 : 0.5)),
+                        isBoss: true,
+                        isElite: true,
+                        loot: ['money']
+                    });
+                }
                 
                 // 1-2 mobové (víc na vyšších patrech)
                 const addCount = floor < 25 ? 1 : 2;
@@ -64560,6 +64579,15 @@ function openFullscreenMap() {
         }
         
         function handleAbyssDefeat() {
+            // 🆕 [v6.3.1] Robustní guard proti přepsání death modalem
+            // 1. Force reset death flagů (i kdyby je něco mezitím nastavilo)
+            state.isDead = false;
+            state._deathCounted = false;
+            window._combatDefeatHandled = true; // Zablokuj duplikované volání
+            // 2. Persistent flag pro render loop - držím 5s aby render guard zachytil
+            window._abyssDefeatActive = true;
+            setTimeout(() => { window._abyssDefeatActive = false; }, 5000);
+            
             state.abyss.deaths = (state.abyss.deaths || 0) + 1;
             state.abyss.inProgress = false;
             
@@ -83902,11 +83930,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     u.immobilized--;
                 }
                 
-                // 🩸 Bleed rounds countdown (nový z granátu)
+                // 🩸 Bleed rounds countdown (nový z granátu/weapon bleed)
+                // 🆕 [v6.3.1] FIX: Pokud má cíl ZROUT runu (bleedingPct), NESMÍME předčasně ukončit
+                // bleeding jen kvůli skončení weapon bleedRounds. ZROUT trvá podle vlastních stack.
                 if (u.alive && u.bleedRounds > 0 && u.bleeding > 0) {
                     // bleeding damage je už zpracován výše, jen countdown
                     u.bleedRounds--;
-                    if (u.bleedRounds <= 0) u.bleeding = 0;
+                    if (u.bleedRounds <= 0 && !u.bleedingPct) {
+                        // Reset bleeding jen pokud NENÍ aktivní ZROUT (bleedingPct)
+                        u.bleeding = 0;
+                    }
                 }
                 
                 // === WORLD BOSS REGEN - VYPNUTO pro raid bossy ===
@@ -86874,9 +86907,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const rwbHit = getRunewordBonuses();
                 
                 // 🔥 Burn (OHEŇ)
+                // 🆕 [v6.3.1] FIX: Math.max místo overwrite - aby se nedowngradovalo z weapon burn (např. burnDamage=6)
                 if (rwbHit.burnChance > 0 && Math.random() < rwbHit.burnChance && target.hp > 0) {
-                    target.burnDamage = rwbHit.burnDamage || 5;
-                    target.burnRounds = rwbHit.burnRounds || 3;
+                    target.burnDamage = Math.max(target.burnDamage || 0, rwbHit.burnDamage || 5);
+                    target.burnRounds = Math.max(target.burnRounds || 0, rwbHit.burnRounds || 3);
                     if (rwbHit.burnDamagePct) target.burnDamagePct = Math.max(target.burnDamagePct || 0, rwbHit.burnDamagePct);
                     cs.log.push(`Runa OHEŇ: ${target.name} hoří! (${target.burnDamage} DMG/kolo${rwbHit.burnDamagePct ? ' + ' + Math.round(rwbHit.burnDamagePct*100) + '% HP' : ''})`);
                 }
@@ -102775,9 +102809,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // VŽDY kontroluj HP <= 0 a zobraz death screen
                 // [FIX v4.0.1] Vyjma WB raidu - tam se smrt řeší v handleCombatDefeat (ústup, ne smrt)
                 // [PvP PROTECTION] Hráč v PvP NIKDY neumře — HP se zachrání na 1
+                // 🆕 [v6.3.1] Abyss: smrt v propasti != permadeath (handleAbyssDefeat to obsluhuje)
+                const _inAbyssDeathCheck = window.isAbyssCombat === true || state.abyss?.inProgress === true || window._abyssDefeatActive === true;
                 if (isInPvPContext()) {
                     clampHpForPvP();
-                } else if (state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid) {
+                } else if (state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid && !_inAbyssDeathCheck) {
                     state.isDead = true;
                     state.char.hp = 0; // Zajisti že je přesně 0
                     state.stats.deaths = (state.stats.deaths || 0) + 1;
@@ -102929,7 +102965,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // === HARD DEATH CHECK (absolutní priorita) ===
             // Pokud HP <= 0, hráč MUSÍ zemřít - žádné výjimky
             // [FIX v4.0.1] JEDNA VÝJIMKA: World Boss raid - ten řeší smrt přes handleCombatDefeat (ústup)
-            if (state.confirmed && state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid) {
+            // 🆕 [v6.3.1] DRUHÁ VÝJIMKA: Abyss/Propast - hráč přežije s 30% HP přes handleAbyssDefeat
+            const _inAbyssHardCheck = window.isAbyssCombat === true || state.abyss?.inProgress === true || window._abyssDefeatActive === true;
+            if (state.confirmed && state.char.hp <= 0 && !state.isDead && !state.activeWorldBoss?.isRaid && !_inAbyssHardCheck) {
                 // Okamžitě zastav jakoukoli regeneraci
                 state.char.hp = 0;
                 state.isDead = true;
