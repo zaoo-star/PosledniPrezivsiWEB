@@ -60737,9 +60737,12 @@ function openFullscreenMap() {
                 upgrades.push(`<div style="display: flex; justify-content: space-between;"><span>🔨 Kovář Ivan (${item.ivanUpgrades}×)</span><span style="color: #8bc34a;">+${ivanBonus} ${statLabel}</span></div>`);
             }
             // Tech upgrady - NPC Klára (na místě ve světě)
+            // 🆕 [v6.3.1] FIX yellow bug: zobrazovalo "+10 DEF" i pro zbraň
+            // Klára: zbraň = +5 DMG, brnění = +10 DEF
             if (item.techUpgrades > 0) {
-                const techBonus = item.techUpgrades * 10;
-                upgrades.push(`<div style="display: flex; justify-content: space-between;"><span>⚙️ Klára Tech (${item.techUpgrades}×)</span><span style="color: #8bc34a;">+${techBonus} DEF</span></div>`);
+                const isWeapon = item.type === 'weapon';
+                const techBonus = item.techUpgrades * (isWeapon ? 5 : 10);
+                upgrades.push(`<div style="display: flex; justify-content: space-between;"><span>⚙️ Klára Tech (${item.techUpgrades}×)</span><span style="color: #8bc34a;">+${techBonus} ${statLabel}</span></div>`);
             }
             // Tech upgrady - Technik společník
             if (item.technicianUpgrades > 0) {
@@ -84011,7 +84014,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return false;
             }
             
-            const playerUnits = cs.units.filter(u => u.team === 'player' && u.alive);
+           
+             // 🆕 [v6.3.1] SAFETY NET: oprav jednotky s hp <= 0 ale alive=true
+             // Chrání proti rune efektům / DOT / cokoli kde zapomeneme nastavit alive=false
+             cs.units.forEach(u => {
+                 if (u.alive && u.hp <= 0) {
+                     console.warn('⚠️ checkCombatEnd safety: ' + u.name + ' má hp=' + u.hp + ' ale alive=true → opraveno');
+                     u.alive = false;
+                     u.hp = 0;
+                     cs.log.push('☠️ ' + u.name + ' je mrtvý.');
+                 }
+             });
+ const playerUnits = cs.units.filter(u => u.team === 'player' && u.alive);
             const enemyUnits = cs.units.filter(u => u.team === 'enemy' && u.alive);
             
             console.log(`🎮 checkCombatEnd: ${playerUnits.length} hráčů, ${enemyUnits.length} nepřátel živých`);
@@ -86482,11 +86496,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const execDmg = Math.max(1, Math.floor(target.maxHp * rwbEff.executePct));
                         target.hp = Math.max(0, target.hp - execDmg);
                         cs.log.push(`💥 Runa ANIHIL: -${execDmg} HP (${Math.round(rwbEff.executePct*100)}% z max HP)`);
+                        // 🆕 [v6.3.1] FIX: Pokud zabit, nastav alive=false (jinak boj nezakončí)
+                        if (target.hp <= 0 && target.alive) {
+                            target.alive = false;
+                            cs.log.push(`☠️ ${target.name} ANIHILOVÁN!`);
+                        }
                     }
                     if (rwbEff.hpStripChance > 0 && Math.random() < rwbEff.hpStripChance && target.maxHp) {
                         const stripDmg = Math.max(1, Math.floor(target.maxHp * (rwbEff.hpStripPct || 0.04)));
                         target.hp = Math.max(0, target.hp - stripDmg);
                         cs.log.push(`💥 Runa ANIHIL odtrhla -${stripDmg} HP!`);
+                        // 🆕 [v6.3.1] FIX: Pokud zabit, nastav alive=false
+                        if (target.hp <= 0 && target.alive) {
+                            target.alive = false;
+                            cs.log.push(`☠️ ${target.name} odtržen!`);
+                        }
                     }
                     
                     // ❄️ MRÁZ - Freeze 15% stun
@@ -106770,6 +106794,209 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Jinak použij jméno postavy ze hry
             return state.char.name || 'Neznámý';
         }
+        
+
+        // [v6.3.1] Změna nicku - 24h cooldown
+        const NICK_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+        
+        function showChangeNickModal() {
+            const currentNick = state.char?.name || 'Neznámý';
+            const lastChange = state.char?.lastNickChange || 0;
+            const now = Date.now();
+            const elapsedMs = now - lastChange;
+            const remainingMs = NICK_CHANGE_COOLDOWN_MS - elapsedMs;
+            
+            if (remainingMs > 0) {
+                const hours = Math.floor(remainingMs / 3600000);
+                const mins = Math.floor((remainingMs % 3600000) / 60000);
+                showModal('⏳ Cooldown na změnu nicku', 
+                    '<div style="text-align: center; padding: 1rem;">' +
+                    '<div style="font-size: 3rem;">⏳</div>' +
+                    '<h3 style="color: #ff9800;">Musíš počkat</h3>' +
+                    '<p style="color: #aaa; font-size: 0.9rem;">Můžeš změnit nick jen jednou za 24 hodin.</p>' +
+                    '<p style="color: #ffd54f; font-size: 1.1rem; font-weight: bold; margin: 0.8rem 0;">Zbývá: ' + hours + 'h ' + mins + 'm</p>' +
+                    '<p style="color: #666; font-size: 0.75rem;">Aktuální nick: <strong>' + escapeHtml(currentNick) + '</strong></p>' +
+                    '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.8rem; background: #444;">✓ OK</button>' +
+                    '</div>');
+                return;
+            }
+            
+            if (!currentUser || !firebaseDB) {
+                showModal('🔒 Vyžaduje účet', 
+                    '<div style="text-align: center; padding: 1rem;">' +
+                    '<div style="font-size: 3rem;">🔒</div>' +
+                    '<h3 style="color: #ff9800;">Nelze změnit nick</h3>' +
+                    '<p style="color: #aaa; font-size: 0.85rem;">Změna nicku vyžaduje přihlášení přes Firebase účet.</p>' +
+                    '<p style="color: #666; font-size: 0.75rem; margin-top: 0.5rem;">Pokud hraješ jako host (offline), nick je tvůj lokální. Přihlas se pro multiplayer.</p>' +
+                    '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.8rem; background: #444;">✓ OK</button>' +
+                    '</div>');
+                return;
+            }
+            
+            showModal('✏️ Změnit nick', 
+                '<div style="padding: 0.5rem;">' +
+                '<div style="text-align: center; margin-bottom: 0.8rem;">' +
+                '<div style="font-size: 2.5rem;">✏️</div>' +
+                '<p style="color: #aaa; font-size: 0.85rem; margin: 0.3rem 0;">Aktuální nick:</p>' +
+                '<p style="color: #fff; font-size: 1.2rem; font-weight: bold;">' + escapeHtml(currentNick) + '</p>' +
+                '</div>' +
+                '<div style="background: #2a1a0a; border-left: 3px solid #ff9800; padding: 0.6rem; border-radius: 6px; margin-bottom: 0.8rem;">' +
+                '<p style="color: #ffd54f; font-size: 0.8rem; margin: 0;">⚠️ <strong>POZOR:</strong></p>' +
+                '<ul style="color: #aaa; font-size: 0.75rem; margin: 0.3rem 0 0 1rem; padding: 0;">' +
+                '<li>Změna jen 1× za 24 hodin</li>' +
+                '<li>3-20 znaků (písmena, čísla, _, -)</li>' +
+                '<li>Nick nesmí být zabraný</li>' +
+                '<li>Tvůj postup zůstane</li>' +
+                '<li>Změna se promítne do chatu, klanu, tržiště</li>' +
+                '</ul></div>' +
+                '<label style="color: #aaa; font-size: 0.85rem;">Nový nick:</label>' +
+                '<input type="text" id="newNickInput" maxlength="20" placeholder="zadej nový nick..." oninput="validateNickInput()" style="width: 100%; padding: 0.6rem; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #fff; margin-top: 0.3rem; font-size: 0.95rem;">' +
+                '<div id="nickValidationMsg" style="font-size: 0.75rem; margin-top: 0.3rem; min-height: 1rem;"></div>' +
+                '<div style="display: grid; gap: 0.3rem; margin-top: 1rem;">' +
+                '<button id="confirmChangeNickBtn" class="btn" onclick="confirmChangeNick()" style="background: linear-gradient(135deg, #2e7d32, #1b5e20); font-weight: bold;" disabled>✓ Změnit nick</button>' +
+                '<button class="btn" onclick="closeModal()" style="background: #444;">✕ Zrušit</button>' +
+                '</div></div>');
+            
+            setTimeout(() => {
+                const input = document.getElementById('newNickInput');
+                if (input) input.focus();
+            }, 100);
+        }
+        window.showChangeNickModal = showChangeNickModal;
+        
+        function validateNickInput() {
+            const input = document.getElementById('newNickInput');
+            const msg = document.getElementById('nickValidationMsg');
+            const btn = document.getElementById('confirmChangeNickBtn');
+            if (!input || !msg || !btn) return;
+            
+            const nick = input.value.trim();
+            const currentNick = state.char?.name || '';
+            
+            if (!nick) { msg.textContent = ''; btn.disabled = true; return; }
+            if (nick === currentNick) { msg.innerHTML = '<span style="color:#888;">⚠️ To je tvůj současný nick</span>'; btn.disabled = true; return; }
+            if (nick.length < 3) { msg.innerHTML = '<span style="color:#f44336;">❌ Min. 3 znaky</span>'; btn.disabled = true; return; }
+            if (nick.length > 20) { msg.innerHTML = '<span style="color:#f44336;">❌ Max. 20 znaků</span>'; btn.disabled = true; return; }
+            if (!/^[a-zA-Z0-9_\-\u00C0-\u017F]+$/.test(nick)) { msg.innerHTML = '<span style="color:#f44336;">❌ Jen písmena, čísla, _ a -</span>'; btn.disabled = true; return; }
+            
+            msg.innerHTML = '<span style="color:#8bc34a;">✓ Format OK</span>';
+            btn.disabled = false;
+        }
+        window.validateNickInput = validateNickInput;
+        
+        async function confirmChangeNick() {
+            const input = document.getElementById('newNickInput');
+            const msg = document.getElementById('nickValidationMsg');
+            const btn = document.getElementById('confirmChangeNickBtn');
+            if (!input || !msg || !btn) return;
+            
+            const newNick = input.value.trim();
+            const oldNick = state.char?.name || '';
+            
+            if (newNick === oldNick) return;
+            if (!firebaseDB || !currentUser) { notifyWarning('Chyba', 'Nejsi přihlášen.'); return; }
+            
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Kontroluji...';
+            msg.innerHTML = '<span style="color:#ff9800;">⏳ Kontrola dostupnosti...</span>';
+            
+            try {
+                const newKey = newNick.toLowerCase();
+                const oldKey = oldNick.toLowerCase();
+                const nickCheck = await firebaseDB.ref('registeredNicks/' + newKey).once('value');
+                if (nickCheck.exists()) {
+                    const data = nickCheck.val();
+                    if (data?.uid !== currentUser.uid) {
+                        msg.innerHTML = '<span style="color:#f44336;">❌ Tento nick je už zabraný!</span>';
+                        btn.disabled = false;
+                        btn.innerHTML = '✓ Změnit nick';
+                        return;
+                    }
+                }
+                
+                btn.innerHTML = '⏳ Měním...';
+                msg.innerHTML = '<span style="color:#ff9800;">⏳ Migrace dat...</span>';
+                
+                const oldSafe = oldNick.replace(/[.#$\[\]\/]/g, '_');
+                const newSafe = newNick.replace(/[.#$\[\]\/]/g, '_');
+                
+                await currentUser.updateProfile({ displayName: newNick });
+                
+                await firebaseDB.ref('registeredNicks/' + newKey).set({
+                    uid: currentUser.uid,
+                    nick: newNick,
+                    email: currentUser.email,
+                    registeredAt: firebase.database.ServerValue.TIMESTAMP,
+                    previousNick: oldNick,
+                    changedAt: firebase.database.ServerValue.TIMESTAMP
+                });
+                if (oldKey !== newKey) await firebaseDB.ref('registeredNicks/' + oldKey).remove();
+                
+                try { await firebaseDB.ref('users/' + currentUser.uid + '/nick').set(newNick); } catch(e) { console.warn('users update failed:', e); }
+                
+                try {
+                    const lbSnap = await firebaseDB.ref('leaderboard/' + oldSafe).once('value');
+                    if (lbSnap.exists()) {
+                        const data = lbSnap.val();
+                        data.name = newNick;
+                        await firebaseDB.ref('leaderboard/' + newSafe).set(data);
+                        if (oldSafe !== newSafe) await firebaseDB.ref('leaderboard/' + oldSafe).remove();
+                    }
+                } catch(e) { console.warn('leaderboard migrate failed:', e); }
+                
+                try {
+                    const presSnap = await firebaseDB.ref('presence/' + oldSafe).once('value');
+                    if (presSnap.exists()) {
+                        const data = presSnap.val();
+                        data.name = newNick;
+                        await firebaseDB.ref('presence/' + newSafe).set(data);
+                        if (oldSafe !== newSafe) await firebaseDB.ref('presence/' + oldSafe).remove();
+                    }
+                } catch(e) { console.warn('presence migrate failed:', e); }
+                
+                try {
+                    if (state.clan?.id) {
+                        const clanRef = firebaseDB.ref('clans/' + state.clan.id);
+                        const clanSnap = await clanRef.once('value');
+                        const clan = clanSnap.val();
+                        if (clan) {
+                            if (clan.members && clan.members[oldSafe]) {
+                                const memberData = clan.members[oldSafe];
+                                memberData.name = newNick;
+                                await clanRef.child('members/' + newSafe).set(memberData);
+                                if (oldSafe !== newSafe) await clanRef.child('members/' + oldSafe).remove();
+                            }
+                            if (clan.leader === oldNick) await clanRef.child('leader').set(newNick);
+                        }
+                    }
+                } catch(e) { console.warn('clan migrate failed:', e); }
+                
+                state.char.name = newNick;
+                state.char.lastNickChange = Date.now();
+                saveGame(true);
+                
+                try {
+                    await firebaseDB.ref('chat/global').push({
+                        from: 'SYSTEM',
+                        text: '📝 Hráč **' + oldNick + '** si změnil nick na **' + newNick + '**',
+                        timestamp: Date.now(),
+                        isSystem: true,
+                        nickChange: { from: oldNick, to: newNick }
+                    });
+                } catch(e) { console.warn('chat broadcast failed:', e); }
+                
+                closeModal();
+                notifySuccess('✅ Nick změněn!', 'Nyní jsi: ' + newNick);
+                setTimeout(() => { if (typeof renderFull === 'function') renderFull(); }, 200);
+                
+            } catch (err) {
+                console.error('Change nick error:', err);
+                msg.innerHTML = '<span style="color:#f44336;">❌ Chyba: ' + (err.message || 'neznámá chyba') + '</span>';
+                btn.disabled = false;
+                btn.innerHTML = '✓ Změnit nick';
+            }
+        }
+        window.confirmChangeNick = confirmChangeNick;
         
         // setPlayerName a showSetNameModal odstraněny - jméno se nemění
         
