@@ -64341,14 +64341,21 @@ function openFullscreenMap() {
         window.abyssDocraft = abyssDocraft;
         
         function startAbyssCombat() {
-            const floor = state.abyss.currentFloor;
-            const isBossFloor = floor % 10 === 0;
-            const hasEliteOnly = state.abyss.activeModifiers.includes('elite_only');
+            // [v6.3.1] Robustní safety nety:
+            // - floor: zaručit číslo ≥ 1 (chrání proti NaN, undefined, string)
+            // - activeModifiers: může chybět ve starých savech
+            const rawFloor = state.abyss?.currentFloor;
+            const floor = (typeof rawFloor === 'number' && rawFloor >= 1 && Number.isFinite(rawFloor)) 
+                ? Math.floor(rawFloor) 
+                : 1;
+            const isBossFloor = floor % 5 === 0;  // [v6.3.1] Každé 5. patro = jen bossové
+            const activeModifiers = Array.isArray(state.abyss?.activeModifiers) ? state.abyss.activeModifiers : [];
+            const hasEliteOnly = activeModifiers.includes('elite_only');
             
             // Škálování
             const scaling = 1 + (floor * 0.1);
             
-            // Seznam nepřátel z různých tier podle patra
+            // Tier nepřátel podle patra
             const tierEnemies = {
                 1: ['rat', 'wild_dog', 'feral', 'mutant_rat', 'feral_cat'],
                 2: ['raider', 'wolf', 'zombie', 'cave_spider', 'ghost', 'mutant_dog'],
@@ -64361,44 +64368,90 @@ function openFullscreenMap() {
             const enemyPool = tierEnemies[tier] || tierEnemies[1];
             
             const enemyGroup = [];
-            const enemyCount = Math.min(6, 1 + Math.floor(floor / 5));
             
-            // Boss na boss floorech
+            // [v6.3.1] BOSS NA KAŽDÉM PATŘE + KAŽDÉ 5. = JEN BOSSOVÉ (Jano feedback)
+            // Bossové vybíráni z existujících ABYSS_BOSSES
+            // Floor 5,10 → Strážce; 15,20 → Titán; 25,30 → Lich; 35,40 → Golem...
+            
             if (isBossFloor) {
-                const boss = ABYSS_BOSSES.find(b => b.floor === floor) || ABYSS_BOSSES[ABYSS_BOSSES.length - 1];
+                // BOSS PATRO: 2-3 bossové, žádné mobi
+                const bossCount = floor < 50 ? 2 : 3;
+                
+                for (let i = 0; i < bossCount; i++) {
+                    // Vyber boss - 1. boss = pro tento floor, další = jeden níže (variace)
+                    let bossIdx;
+                    if (i === 0) {
+                        // Hlavní boss pro tento floor
+                        bossIdx = Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10));
+                    } else {
+                        // Doprovodný boss - o 1 nižší tier
+                        bossIdx = Math.max(0, Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10) - i));
+                    }
+                    const boss = ABYSS_BOSSES[bossIdx];
+                    
+                    // Interim boss (5, 15, 25...) = 75% statů, Major (10, 20, 30...) = 100%
+                    const isInterim = floor % 10 !== 0;
+                    const statMult = isInterim ? 0.75 : 1.0;
+                    // Druhotní bossi jsou slabší (60-70%)
+                    const dupeMult = i === 0 ? 1.0 : 0.65;
+                    
+                    enemyGroup.push({
+                        ...boss,
+                        id: 'abyss_boss_' + floor + '_' + i,
+                        hp: Math.floor(boss.hp * scaling * statMult * dupeMult),
+                        maxHp: Math.floor(boss.hp * scaling * statMult * dupeMult),
+                        damage: Math.floor(boss.damage * scaling * statMult * dupeMult),
+                        defense: Math.floor(boss.defense * scaling * statMult * dupeMult),
+                        xp: Math.floor((boss.xp || 500) * (isInterim ? 1.0 : 1.5) * (i === 0 ? 1.0 : 0.5)),
+                        isBoss: true,
+                        isElite: true,
+                        isMajorBoss: !isInterim && i === 0,
+                        loot: i === 0 ? (isInterim ? ['money'] : ['money', 'rare']) : ['money']
+                    });
+                }
+            } else {
+                // NORMÁLNÍ PATRO: 1 boss (z ABYSS_BOSSES, slabší) + 1-2 mobové
+                
+                // Boss = pro tento tier, ale jen 50% statů (slabší než interim boss)
+                const bossIdx = Math.min(ABYSS_BOSSES.length - 1, Math.floor((floor - 1) / 10));
+                const boss = ABYSS_BOSSES[bossIdx];
+                
                 enemyGroup.push({
                     ...boss,
                     id: 'abyss_boss_' + floor,
-                    hp: Math.floor(boss.hp * scaling),
-                    maxHp: Math.floor(boss.hp * scaling),
-                    damage: Math.floor(boss.damage * scaling),
-                    defense: Math.floor(boss.defense * scaling),
+                    name: boss.name,
+                    hp: Math.floor(boss.hp * scaling * 0.5),
+                    maxHp: Math.floor(boss.hp * scaling * 0.5),
+                    damage: Math.floor(boss.damage * scaling * 0.6),
+                    defense: Math.floor(boss.defense * scaling * 0.7),
+                    xp: Math.floor((boss.xp || 500) * 0.7),
                     isBoss: true,
-                    isElite: true
+                    isElite: true,
+                    loot: ['money']
                 });
-            }
-            
-            // Normální nepřátelé
-            const normalCount = isBossFloor ? enemyCount - 1 : enemyCount;
-            for (let i = 0; i < normalCount; i++) {
-                const enemyId = enemyPool[Math.floor(Math.random() * enemyPool.length)];
-                const enemyData = ENEMIES.find(e => e.id === enemyId) || 
-                    { id: enemyId, name: 'Nepřítel', icon: '👤', hp: 50, damage: 7, defense: 5, xp: 20, loot: ['money'] };
                 
-                const isElite = hasEliteOnly || Math.random() < 0.15;
-                
-                enemyGroup.push({
-                    ...enemyData,
-                    id: enemyId + '_' + i,
-                    hp: Math.floor(enemyData.hp * scaling * (isElite ? 2 : 1)),
-                    maxHp: Math.floor(enemyData.hp * scaling * (isElite ? 2 : 1)),
-                    damage: Math.floor(enemyData.damage * scaling * (isElite ? 1.5 : 1)),
-                    defense: Math.floor(enemyData.defense * scaling * (isElite ? 1.3 : 1)),
-                    xp: Math.floor(enemyData.xp * (1 + floor * 0.05) * (isElite ? 2.5 : 1)),
-                    name: (isElite ? '💀 ' : '') + enemyData.name,
-                    isElite: isElite,
-                    isPreScaled: true
-                });
+                // 1-2 mobové (víc na vyšších patrech)
+                const addCount = floor < 25 ? 1 : 2;
+                for (let i = 0; i < addCount; i++) {
+                    const enemyId = enemyPool[Math.floor(Math.random() * enemyPool.length)];
+                    const enemyData = ENEMIES.find(e => e.id === enemyId) || 
+                        { id: enemyId, name: 'Nepřítel', icon: '👤', hp: 50, damage: 7, defense: 5, xp: 20, loot: ['money'] };
+                    
+                    const isElite = hasEliteOnly || Math.random() < 0.15;
+                    
+                    enemyGroup.push({
+                        ...enemyData,
+                        id: enemyId + '_' + i,
+                        hp: Math.floor(enemyData.hp * scaling * (isElite ? 2 : 1)),
+                        maxHp: Math.floor(enemyData.hp * scaling * (isElite ? 2 : 1)),
+                        damage: Math.floor(enemyData.damage * scaling * (isElite ? 1.5 : 1)),
+                        defense: Math.floor(enemyData.defense * scaling * (isElite ? 1.3 : 1)),
+                        xp: Math.floor(enemyData.xp * (1 + floor * 0.05) * (isElite ? 2.5 : 1.5)),
+                        name: (isElite ? '☠️ ' : '') + enemyData.name,
+                        isElite: isElite,
+                        isPreScaled: true
+                    });
+                }
             }
             
             window.isAbyssCombat = true;
@@ -86664,6 +86717,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const empBonus = Math.floor(finalDamage * 0.50); // +50% proti robotům
                     target.hp = Math.max(0, target.hp - empBonus);
                     cs.log.push(`⚡ EMP vs robot: +${empBonus} DMG!`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} smažen EMP pulzem!`); }
                     // 50% šance i na stun robota
                     if (Math.random() < 0.50 && !target.stunned) {
                         target.stunned = true;
@@ -86677,6 +86731,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const armorPierce = Math.floor((target.defense || 0) * 0.30);
                     target.hp = Math.max(0, target.hp - armorPierce);
                     cs.log.push(`⚔️ Energie probíjí brnění: +${armorPierce} DMG`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} probit energií!`); }
                 }
                 
                 // 🥈 Silver bullets - +50% DMG na mutanty/nemrtvé (aplikuje se retroactively)
@@ -86684,6 +86739,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const silverBonus = Math.floor(finalDamage * 0.50);
                     target.hp = Math.max(0, target.hp - silverBonus);
                     cs.log.push(`🥈 Stříbrná kulka: +${silverBonus} DMG na nemrtvé!`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} sražen stříbrnou kulkou!`); }
                 }
                 
                 // [FIX v3.9.76] ✨ ENCHANTMENT efekty zbraně (fire, ice, poison, lifesteal)
@@ -86695,6 +86751,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             target.hp = Math.max(0, target.hp - ench.effect.bonusDamage);
                             const _emoji = ench.effect.element === 'fire' ? '🔥' : (ench.id === 'ice' ? '❄️' : '✨');
                             cs.log.push(`${_emoji} ${ench.name}: +${ench.effect.bonusDamage} elementální DMG`);
+                            if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} zničen ${ench.name}!`); }
                         }
                         // 🔥 Fire enchant - zážeh (DOT)
                         if (ench.effect.element === 'fire' && !target.burnDamage) {
@@ -86833,6 +86890,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const stripDmg = Math.max(1, Math.floor(target.maxHp * (rwbHit.hpStripPct || 0.04)));
                     target.hp = Math.max(0, target.hp - stripDmg);
                     cs.log.push(`💥 Runa ANIHIL odtrhla -${stripDmg} HP!`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} odtržen!`); }
                 }
                 // ❄️ Freeze (MRÁZ) - 1 kolo nemůže se pohnout ani útočit
                 if (rwbHit.freezeChance > 0 && Math.random() < rwbHit.freezeChance && target.hp > 0) {
@@ -86859,15 +86917,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (aliveEnemies.length > 0) {
                         const chainTarget = aliveEnemies[Math.floor(Math.random() * aliveEnemies.length)];
                         const lDmg = rwbHit.lightningDmg || 12;
-                        chainTarget.hp -= lDmg;
+                        chainTarget.hp = Math.max(0, chainTarget.hp - lDmg);
                         cs.log.push(`Runa BLESK: řetězový blesk zasáhl ${chainTarget.name} za ${lDmg} životů!`);
+                        if (chainTarget.hp <= 0 && chainTarget.alive) { chainTarget.alive = false; cs.log.push(`☠️ ${chainTarget.name} zabit bleskem!`); }
                     }
                 }
                 // 🌑 Shadow Strike (TEMNO) - dvojitý úder
                 if (rwbHit.shadowStrike > 0 && Math.random() < rwbHit.shadowStrike && target.hp > 0) {
                     const shadowDmg = Math.floor(finalDamage * 0.5);
-                    target.hp -= shadowDmg;
+                    target.hp = Math.max(0, target.hp - shadowDmg);
                     cs.log.push(`Runa TEMNO: stínový úder za ${shadowDmg} životů!`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} zabit stínem!`); }
                 }
             }
             
@@ -86890,8 +86950,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     cs.log.push(`${target.name}: Imunita proti jedu! Jedový útok zablokován.`);
                 } else {
                     const poisonDmg = attacker.poisonDamage;
-                    target.hp -= poisonDmg;
+                    target.hp = Math.max(0, target.hp - poisonDmg);
                     cs.log.push(`${attacker.name}: jedový útok za ${poisonDmg} životů.`);
+                    if (target.hp <= 0 && target.alive) { target.alive = false; cs.log.push(`☠️ ${target.name} podlehl jedu.`); }
                     // Aplikuj taky stav otravy
                     if (target.isPlayer || target.team === 'player') {
                         state.char.poisoned = Math.max(state.char.poisoned || 0, poisonDmg);
@@ -95473,8 +95534,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     aliveEnemies.forEach((enemy, idx) => {
                         if (idx > 0) { // Skip primary target
                             const aoeDmg = Math.floor(playerDmg * 0.5);
-                            enemy.hp -= aoeDmg;
+                            enemy.hp = Math.max(0, enemy.hp - aoeDmg);
                             log.innerHTML += `<div style="color: #ff9800;">💥 AoE: #${enemyGroup.indexOf(enemy)+1} -${aoeDmg} HP</div>`;
+                            if (enemy.hp <= 0 && enemy.alive) { enemy.alive = false; log.innerHTML += `<div style="color: #ffd700;">💀 ${enemy.name} zničen výbuchem!</div>`; }
                         }
                     });
                 }
@@ -96139,6 +96201,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // [FIX AUDIT] Pokud nepřítel zemřel na thorns, přeskoč jeho útok (forEach callback → return)
                 if (enemy.hp !== undefined && enemy.hp <= 0) {
+                    if (enemy.alive) enemy.alive = false; // 🆕 [v6.3.1] Bez tohoto se boj nezakončí
                     log.innerHTML += `<div style="color: #8bc34a;">💀 ${enemy.name || enemy.id} zemřel na thorns!</div>`;
                     return;
                 }
@@ -98617,27 +98680,28 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // === MIGRACE: Reset peněz a stavů pro nové postavy které zdědily data ===
-            // POUZE pro postavy které mají OČIVIDNĚ zdědená data (vysoké peníze/XP které by nová postava nemohla mít)
+            // 🆕 [v6.3.1] OPRAVA: Migrace byla moc agresivní - resetovala peníze legitimně získané hráči!
+            // Hráč hlásil: "měl 600 peněz, po aktualizaci jen 100"
+            // Level 1 hráč MŮŽE legitimně mít stovky peněz (questy, loot, prodej itemů)
+            // Migrace nyní:
+            //   - NERESETUJE peníze (je to legitimní stat)
+            //   - Resetuje JEN POKUD je explicitní marker zdědených dat (days=0, žádné lokace)
             if (!state._freshCharMigrationV1 && state.char?.level === 1 && state.char?.name) {
-                // Kontrola: postava level 1 s penězi > 500 = pravděpodobně zdědila data
-                // (normální nová postava může mít max ~300 po pár akcích)
-                if (state.money > 500) {
-                    console.log('🔧 Migrace: Detekována nová postava se starými penězi (' + state.money + '), resetuji...');
-                    state.money = 100; // Základní peníze pro novou postavu
-                    notifyInfo('🔧 Oprava účtu', 'Byly resetovány peníze na výchozí hodnotu.');
-                }
+                // Detekce skutečně "fresh char s zděděnými daty":
+                // - days === 0 (postava nikdy nehrála)
+                // - + má vysoké XP NEBO hodně lokací (jasný signál zděděných dat)
+                const isVeryFresh = (state.time?.days || 0) === 0;
+                const hasInherited = (state.char.xp > 500) || (state.char.totalXP > 1000) || ((state.visitedLocations?.length || 0) > 10);
                 
-                // Kontrola: level 1 s XP > 300 (to je nemožné pro level 1, protože by měl být level 2)
-                // Neresetovat nízké XP (6, 50, 100 atd.) - to je legitimní progress
-                if (state.char.xp > 300 || state.char.totalXP > 500) {
-                    console.log('🔧 Migrace: Detekováno podezřele vysoké XP pro level 1, resetuji...');
-                    state.char.xp = 0;
-                    state.char.totalXP = 0;
-                }
-                
-                // Kontrola: level 1 s více než 5 navštívenými lokacemi
-                if (state.visitedLocations && state.visitedLocations.length > 5) {
-                    state.visitedLocations = ['shelter'];
+                if (isVeryFresh && hasInherited) {
+                    console.log('🔧 Migrace: Detekována opravdu nová postava se zděděnými daty');
+                    // Resetuj jen XP a lokace - NE peníze (peníze nejsou bezpečný indikátor)
+                    if (state.char.xp > 500) state.char.xp = 0;
+                    if (state.char.totalXP > 1000) state.char.totalXP = 0;
+                    if (state.visitedLocations && state.visitedLocations.length > 10) {
+                        state.visitedLocations = ['shelter'];
+                    }
+                    notifyInfo('🔧 Oprava účtu', 'Reset progresu (zděděná data).');
                 }
                 
                 state._freshCharMigrationV1 = true;
