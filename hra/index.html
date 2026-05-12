@@ -22889,15 +22889,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const setData = CLASS_SETS[playerClass];
             const { count, pieces } = getEquippedSetPieces();
             
-            if (count === 0) return null;
+            // 🆕 [v6.3.1] COMBAT LOCK: pokud jsme v boji a hráč šel s 3/3 setem, udržet bonus 2/3
+            // I když přehodí zbraň a setový bonus se přepočítá na 2/3 nebo méně.
+            // Pieces bonusy (damage, statu z konkrétních dílů) se přepočítají normálně.
+            const isInCombat = window.combatState && !window.combatState._ended;
+            let effectiveCount = count;
+            if (isInCombat && window._combatSetBonusLocked && window._combatSetBonusLocked.count > count) {
+                effectiveCount = window._combatSetBonusLocked.count;
+            }
+            
+            if (effectiveCount === 0) return null;
             
             const bonuses = {
                 setName: setData.name,
                 setIcon: setData.icon,
-                piecesCount: count,
+                piecesCount: effectiveCount,
                 pieceBonuses: pieces.map(p => ({ ...p.bonus, desc: p.bonusDesc })),
-                setBonus2: count >= 2 ? setData.setBonus2 : null,
-                setBonus3: count >= 3 ? setData.setBonus3 : null
+                setBonus2: effectiveCount >= 2 ? setData.setBonus2 : null,
+                setBonus3: effectiveCount >= 3 ? setData.setBonus3 : null,
+                _lockedInCombat: effectiveCount > count
             };
             
             return bonuses;
@@ -82922,6 +82932,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // 🎯 [NEW] Aktivuj fullscreen combat modal (mobilní boj přes celou obrazovku)
                 document.body.classList.add('combat-fullscreen');
                 
+                // 🆕 [v6.3.1] LOCK SET BONUS na začátku boje
+                // Hráč šel do boje s 3/3 setem → udrží si bonus i po přehození zbraně.
+                // Bez tohoto by hráč ztratil 3/3 bonus okamžitě (frustrující při taktickém swappingu zbraní).
+                // Piece bonusy (damage zbraně, atd.) se přepočítají normálně — jen setBonus2/setBonus3 zůstanou locked.
+                try {
+                    const initialSet = typeof getSetBonuses === 'function' ? getSetBonuses() : null;
+                    if (initialSet && initialSet.piecesCount >= 2 && state.char?.classId && CLASS_SETS[state.char.classId]) {
+                        window._combatSetBonusLocked = {
+                            count: initialSet.piecesCount,
+                            setData: CLASS_SETS[state.char.classId]
+                        };
+                        console.log(`🛡️ Set bonus zamknut: ${initialSet.piecesCount}/3 ${initialSet.setName}`);
+                    } else {
+                        window._combatSetBonusLocked = null;
+                    }
+                } catch(e) { console.warn('Set bonus lock failed:', e); window._combatSetBonusLocked = null; }
+                
                 // UKLÁDÁNÍ BOJE - aby se zachoval při refreshi
                 state.activeCombat = window.combatState;
                 
@@ -91337,6 +91364,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // [FIX] Cleanup attackVisualDelay (zbylo by ze starého boje)
                 window._attackVisualDelay = 0;
+                
+                // 🆕 [v6.3.1] Reset set bonus lock (po boji se vrátí standardní dynamický přepočet)
+                window._combatSetBonusLocked = null;
             } catch(e) { console.warn('Combat cleanup error:', e); }
         }
         window._cleanupCombatState = _cleanupCombatState;
