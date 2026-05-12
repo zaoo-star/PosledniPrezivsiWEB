@@ -2061,6 +2061,21 @@
             #combatGridContainer > div { font-size: 0.75rem !important; min-height: 28px !important; }
         }
         
+        /* 🆕 [v6.3.1] Desktop combat scrolling fix - hráč hlásil že "v prohlížeči jde u boje špatně scrollovat"
+           Důvod: combatContainer mělo min-height: 100vh i na desktopu (kde modal je jen 90vh),
+           což způsobovalo dvojitý scroll context a stuck scrolling. */
+        @media (min-width: 900px) {
+            #combatContainer {
+                min-height: unset !important;
+                height: auto !important;
+                overflow: visible !important;
+            }
+            body.combat-fullscreen .modal-content {
+                overflow-y: auto !important;
+                touch-action: auto !important;
+            }
+        }
+        
         .combat-cell:hover {
             filter: brightness(1.3);
             z-index: 5;
@@ -82959,6 +82974,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         return;
                     }
                     
+                    // 🆕 [v6.3.1] BUGFIX: Watchdog NESMÍ aktivovat během HRÁČOVA tahu
+                    // Hráč otevře modal s výběrem itemu/zbraně a přemýšlí — to NENÍ freeze!
+                    // (Hlášeno: "Když si vybírám item nebo jinou zbraň, myslí si to že je boj zaseknutý")
+                    const _currentUnitGW = cs.turnOrder?.[cs.currentTurnIndex];
+                    if (_currentUnitGW && _currentUnitGW.team === 'player' && !_currentUnitGW.isCompanion) {
+                        // Hráčův tah — reset snapshot/progress aby watchdog nezačal odpočet
+                        window._combatWatchdogLastProgress = Date.now();
+                        window._combatWatchdogStuckAttempts = 0;
+                        return;
+                    }
+                    
                     // [CRITICAL FIX] Snapshot NESMÍ obsahovat _turnLocked / _actionInProgress!
                     // Tyto flagy se přepínají při každé watchdog intervenci (true→false→true)
                     // → snapshot se "změní" → counter se resetuje → watchdog NIKDY nedosáhne 3 stuck attempts
@@ -88215,6 +88241,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!cs.selectedAction) {
                 const targetUnit = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'enemy');
                 if (targetUnit) {
+                    // 🆕 [v6.3.1] AUTO-RELOAD: pokud má prázdný magazine ale munici v inventáři → přebij místo melee
+                    // (Hlášeno: "Když mi dojdou náboje, chci přebít i když kliknu na nepřítele")
+                    if (!unit.isCompanion) {
+                        const _weapon = state.equipped?.weapon;
+                        if (_weapon?.ammoType && weaponHasMagazine(_weapon)) {
+                            const _magEmpty = (unit.magazine || 0) <= 0;
+                            const _ammoCount = getAmmoCount(_weapon.ammoType);
+                            if (_magEmpty && _ammoCount > 0) {
+                                cs.log.push(`🔄 Zásobník prázdný — automaticky přebíjím!`);
+                                renderHeroesCombatUI();
+                                // Zavolej reload action (spotřebuje 1 akci, naplní zásobník)
+                                selectAction('reload');
+                                return;
+                            }
+                        }
+                    }
+                    
                     // Zapamatuj počet logů před calculateValidTargets
                     const logLenBefore = cs.log.length;
                     calculateValidTargets(unit);
