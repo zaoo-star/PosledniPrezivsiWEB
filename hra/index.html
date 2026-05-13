@@ -10817,26 +10817,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             if (!rel.firstVisit) rel.firstVisit = Date.now();
         }
         
-        function getNpcMemoryContext(npcId) {
-            const rel = state.npcRelations?.[npcId];
-            if (!rel) return 'Nikdy jste se nepotkali.';
-            const visits = rel.visitCount || 0;
-            const lastVisit = rel.lastVisit;
-            let ctx = '';
-            if (visits <= 1) ctx = 'Hráč tě navštívil poprvé.';
-            else if (visits <= 3) ctx = `Hráč tě navštívil ${visits}×. Začínáte se poznávat.`;
-            else if (visits <= 10) ctx = `Hráč tě navštívil ${visits}×. Jste známí.`;
-            else ctx = `Hráč tě navštívil ${visits}×. Jste staří známí.`;
-            if (lastVisit) {
-                const hoursSince = Math.floor((Date.now() - lastVisit) / 3600000);
-                if (hoursSince < 1) ctx += ' Byl tu před chvílí.';
-                else if (hoursSince < 6) ctx += ` Byl tu před ${hoursSince}h.`;
-                else if (hoursSince < 24) ctx += ' Byl tu dnes.';
-                else if (hoursSince < 72) ctx += ' Nebyl tu pár dní.';
-                else ctx += ' Nebyl tu dlouho.';
-            }
-            return ctx;
-        }
+        // 🆕 [v6.3.1] Stará getNpcMemoryContext odstraněna - byla dead code
+        // Novější rozšířená verze je v dolní části souboru (L170358)
+        // Konflikt: hoisting způsoboval že stará byla okamžitě přepsána novou
         
         // === NPC VZTAHY — trust ovlivňuje propojené NPC ===
         function applyNpcRelationshipEffects(npcId, trustGain) {
@@ -22028,13 +22011,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (typeof forceCloudSave === 'function') forceCloudSave('quest');
         }
         
-        function notifyCombat(message, isVictory = true) {
-            if (isVictory) {
-                showNotification(t('combat', 'victory'), message, 'success', '⚔️');
-            } else {
-                showNotification('Boj!', message, 'warning', '⚔️');
-            }
-        }
+        // 🆕 [v6.3.1] Stará notifyCombat(message, isVictory) odstraněna - byla duplicita
+        // Novější verze notifyCombat(title, text, type) s disable feature je výše (L21942)
+        // Konflikt: druhá hoisted definice přepisovala první → 'disableCombatNotifs' setting nefungoval
         
         function notifySettlement(message, icon = '🏘️') {
             showNotification('Osada', message, 'info', icon);
@@ -56939,18 +56918,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.toggleBulkItem = toggleBulkItem;
         
-        function bulkSelectAll(indices) {
-            if (!state._bulkSelected) state._bulkSelected = {};
-            indices.forEach(idx => { state._bulkSelected[idx] = true; });
-            showBulkActionsModal();
-        }
-        window.bulkSelectAll = bulkSelectAll;
-        
-        function bulkClearSelection() {
-            state._bulkSelected = {};
-            showBulkActionsModal();
-        }
-        window.bulkClearSelection = bulkClearSelection;
+        // 🆕 [v6.3.1] bulkSelectAll & bulkClearSelection — odstraněno (dead code)
+        // Sjednocený modal používá bulkDropSetAllFiltered / bulkDropClearAll místo toho
+        // Plus byly duplikáty s L118654 (jiná verze ve stash systému)
         
         function confirmBulkAction(action) {
             const selected = Object.keys(state._bulkSelected || {}).map(k => parseInt(k)).sort((a, b) => b - a); // descending (kvůli splice)
@@ -87995,7 +87965,70 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
+            // 🆕 [v6.3.1 BOJ AUDIT FIX] Class passive triggers - byly definované ale nevolané!
+            // Raider rage (+40% při <30% HP), Berserker frenzy buff, Assassin execute na crit,
+            // Tank fortress (25% block), Survivor last stand (20% přežít), Alchemist poison
+            
+            // onAttack - před aplikací damage na cíl (modifikuje útok hráče)
+            if (attacker.isPlayer && finalDamage > 0 && typeof triggerClassPassive === 'function') {
+                try {
+                    const result = triggerClassPassive('onAttack', finalDamage, isCrit);
+                    if (result) {
+                        if (typeof result.damage === 'number') finalDamage = result.damage;
+                        if (result.message) cs.log.push(result.message);
+                    }
+                } catch(e) { console.warn('triggerClassPassive onAttack error:', e); }
+            }
+            
+            // onDamage - když hráč dostává damage (Tank, Survivor)
+            if (target.isPlayer && finalDamage > 0 && typeof triggerClassPassive === 'function') {
+                try {
+                    const result = triggerClassPassive('onDamage', finalDamage);
+                    if (result) {
+                        if (typeof result.damage === 'number') finalDamage = Math.max(0, result.damage);
+                        if (result.message) cs.log.push(result.message);
+                    }
+                } catch(e) { console.warn('triggerClassPassive onDamage error:', e); }
+            }
+            
             target.hp = Math.max(0, target.hp - finalDamage);
+            
+            // 🆕 [v6.3.1 BOJ AUDIT] Centrální immunity checks pro hráče
+            // gas_filter = poison immunity, crit_immune = no crit damage, headshot_protect = -25% crit damage
+            if (target.isPlayer && typeof hasEquippedSpecial === 'function') {
+                try {
+                    // 🥽 gas_filter — imunita na otravu
+                    if ((target.poisoned > 0 || target.poisonedPct > 0) && hasEquippedSpecial('gas_filter')) {
+                        if (target.poisoned > 0) {
+                            target.poisoned = 0;
+                            cs.log.push('🥽 Plynová maska: Imunita proti otravě!');
+                        }
+                        if (target.poisonedPct > 0) target.poisonedPct = 0;
+                    }
+                    // 🪖 crit_immune — kompletní imunita na crit
+                    if (isCrit && hasEquippedSpecial('crit_immune') && finalDamage > 0) {
+                        // Cancel crit (estimated half damage was extra crit)
+                        const nonCritDmg = Math.floor(finalDamage * 0.5);
+                        const restoredHp = finalDamage - nonCritDmg;
+                        target.hp = Math.min(target.maxHp || target.hp + restoredHp, target.hp + restoredHp);
+                        if (target.isPlayer) state.char.hp = target.hp;
+                        cs.log.push(`🛡️ Balistická helma: Kritický zásah pohlcen! (+${restoredHp} HP)`);
+                    }
+                    // 🪖 headshot_protect — -25% crit damage (sníží crit bonus)
+                    if (isCrit && !hasEquippedSpecial('crit_immune') && hasEquippedSpecial('headshot_protect') && finalDamage > 0) {
+                        // Restore 25% of damage (anti-crit gear)
+                        const restored = Math.floor(finalDamage * 0.25);
+                        target.hp = Math.min((target.maxHp || target.hp + restored), target.hp + restored);
+                        if (target.isPlayer) state.char.hp = target.hp;
+                        cs.log.push(`🪖 Motorkářská helma: -25% crit damage (+${restored} HP)`);
+                    }
+                    // 🔥 fireproof — imunita na hoření
+                    if (target.burning > 0 && hasEquippedSpecial('fireproof')) {
+                        target.burning = 0;
+                        cs.log.push('🧯 Ohnivzdorné: Imunita proti hoření!');
+                    }
+                } catch(e) { console.warn('Immunity check error:', e); }
+            }
             
             // [FIX BUG #17] Sync HP do state.char když je target hráč — jinak raider rage,
             // berserker frenzy a další low-HP perky používají stale state.char.hp.
