@@ -19733,6 +19733,47 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!state.world.groundLoot) state.world.groundLoot = {};
             if (!state.world.groundLoot[location]) state.world.groundLoot[location] = [];
             
+            // 🆕 [v6.3.1] AUTO-PICKUP runy a příběhové předměty (jiné se neztrácí)
+            // Hlášeno OwerLord/FreeRiderCz: "Když vylezu z propasti, leží mi na zemi 600 věcí.
+            // Runy by to mělo brát automaticky."
+            // Auto-pickup pro: runy (rune_*), příběhové předměty (lore_*) — vždy si je vezmi pokud máš místo
+            const isAutoPickup = item.id && (item.id.startsWith('rune_') || item.id.startsWith('lore_'));
+            if (isAutoPickup) {
+                const pickupCount = item.count || 1;
+                if (typeof canAddItem === 'function' && canAddItem(item, pickupCount)) {
+                    const itemCopy = {...item, count: pickupCount};
+                    delete itemCopy.droppedAt;
+                    addItemToInventory(itemCopy, pickupCount, true);
+                    const locDefAP = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === location) : null;
+                    addLog(`📥 ${item.icon || '📦'} ${item.name} sebráno automaticky`, '📥');
+                    return; // Nepřidávat na zem
+                }
+                // Pokud není místo, propadne dolů a přidá se na zem (hráč si může vyzvednout)
+            }
+            
+            // 🆕 [v6.3.1] STACKOVÁNÍ na zemi — hlášeno OwerLord: "leží mi na zemi 600 věcí, nestackují se"
+            // Pokus najít stejný item co se dá stackovat (stejné id, durability, enchantment, count není unique)
+            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune'];
+            const isStackable = stackableTypes.includes(item.type) || item.stackable || 
+                                (item.id && (item.id.startsWith('rune_') || item.id.startsWith('lore_')));
+            
+            if (isStackable) {
+                const existing = state.world.groundLoot[location].find(i => 
+                    i.id === item.id && 
+                    (i.durability === item.durability || (i.durability === undefined && item.durability === undefined)) &&
+                    i.enchantment === item.enchantment &&
+                    !i.uniqueId
+                );
+                if (existing) {
+                    existing.count = (existing.count || 1) + (item.count || 1);
+                    existing.droppedAt = Date.now(); // Refresh timestamp
+                    const locDefSt = typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS.find(l => l.id === location) : null;
+                    const locNameSt = locDefSt?.name || location;
+                    addLog(`📦 ${item.icon || '📦'} ${item.name} ×${existing.count} (na zemi: ${locNameSt})`, '📦');
+                    return;
+                }
+            }
+            
             // Přidej timestamp pro případné expirování
             item.droppedAt = Date.now();
             state.world.groundLoot[location].push(item);
@@ -19945,7 +19986,31 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const _encUI = getEncumbrancePenalty();
             const weightColor = weightPercent > 90 ? '#f44336' : weightPercent > 70 ? '#ff9800' : '#4caf50';
             
-            let itemsHtml = groundItems.map((item, idx) => {
+            // 🆕 [v6.3.1] SORT podle rarity (legendary první) — OwerLord: "šlo by přidat aspoň třídění podle rarity?"
+            // Filter persisted v state pro UI buttons
+            const filterMode = state._groundLootFilter || 'all'; // 'all' | 'legendary' | 'epic+' | 'rare+'
+            const rarityOrder = { legendary: 0, epic: 1, rare: 2, uncommon: 3, common: 4 };
+            const rarityFilterPass = (item) => {
+                if (filterMode === 'all') return true;
+                const r = item.rarity || 'common';
+                if (filterMode === 'legendary') return r === 'legendary';
+                if (filterMode === 'epic+') return r === 'legendary' || r === 'epic';
+                if (filterMode === 'rare+') return ['legendary','epic','rare'].includes(r);
+                return true;
+            };
+            // Zachovat original index v groundItems aby pickup fungoval správně
+            const sortedWithIdx = groundItems
+                .map((item, originalIdx) => ({ item, originalIdx }))
+                .filter(x => rarityFilterPass(x.item))
+                .sort((a, b) => {
+                    const ra = rarityOrder[a.item.rarity] ?? 5;
+                    const rb = rarityOrder[b.item.rarity] ?? 5;
+                    if (ra !== rb) return ra - rb;
+                    return (a.item.name || '').localeCompare(b.item.name || '');
+                });
+            
+            let itemsHtml = sortedWithIdx.map(({ item, originalIdx }) => {
+                const idx = originalIdx;
                 const count = item.count || 1;
                 const countText = count > 1 ? ` x${count}` : '';
                 const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
@@ -19975,6 +20040,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 `;
             }).join('');
             
+            // 🆕 [v6.3.1] Filter tlačítka — OwerLord: "prohledat co tam leží je pain"
+            const filterBtnStyle = (mode) => `background: ${filterMode === mode ? '#ff9800' : '#0d0d0d'}; color: ${filterMode === mode ? '#000' : '#fff'}; padding: 0.25rem 0.5rem; font-size: 0.7rem;`;
+            const filterButtons = `
+                <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem;">
+                    <button class="btn" onclick="setGroundLootFilter('all')" style="${filterBtnStyle('all')}">📦 Vše (${groundItems.length})</button>
+                    <button class="btn" onclick="setGroundLootFilter('rare+')" style="${filterBtnStyle('rare+')}">🔵 Rare+</button>
+                    <button class="btn" onclick="setGroundLootFilter('epic+')" style="${filterBtnStyle('epic+')}">🟣 Epic+</button>
+                    <button class="btn" onclick="setGroundLootFilter('legendary')" style="${filterBtnStyle('legendary')}">🟡 Legendary</button>
+                </div>
+            `;
+            
             showModal('📦 Předměty na zemi', `
                 <div style="background: #1a1a2a; padding: 0.5rem 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid ${weightColor};">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
@@ -19985,14 +20061,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div style="height: 100%; width: ${weightPercent}%; background: ${weightColor}; transition: width 0.3s;"></div>
                     </div>
                     ${(typeof getEncumbrancePenalty === 'function' && getEncumbrancePenalty().active) ? (() => { const e = getEncumbrancePenalty(); return `<div style="color:${e.color}; font-size:0.72rem; margin-top:0.2rem; padding:0.2rem 0.4rem; background:${e.color}22; border-radius:3px;">${e.label} → ⚔️-${Math.round((1-e.damagePenalty)*100)}% 🛡️-${Math.round((1-e.defensePenalty)*100)}% 💨-${Math.round((1-e.dodgePenalty)*100)}% 🚶+${Math.round((e.travelPenalty-1)*100)}%</div>`; })() : ''}
-                    <div style="display:none">
-                    </div>
                     <div style="text-align: center; margin-top: 0.3rem; font-size: 0.8rem; color: ${freeSpace > 5 ? '#4caf50' : '#ff9800'};">
                         Volno: ${freeSpace.toFixed(1)} kg
                     </div>
                 </div>
+                ${filterButtons}
                 <div style="max-height: 250px; overflow-y: auto; margin-bottom: 1rem;">
-                    ${itemsHtml}
+                    ${sortedWithIdx.length === 0 ? '<p style="text-align:center; color:#888; padding:1rem;">V tomto filtru nic není</p>' : itemsHtml}
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="pickupAllGroundLoot()" style="background: #ff9800;">📥 Vzít vše</button>
@@ -20000,6 +20075,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
             `);
         }
+        
+        // 🆕 [v6.3.1] Set ground loot filter — uloží do state a překreslí
+        function setGroundLootFilter(mode) {
+            state._groundLootFilter = mode;
+            showGroundLoot();
+        }
+        window.setGroundLootFilter = setGroundLootFilter;
         
         // === HELPER FUNKCE PRO PŘIDÁNÍ SUROVIN S QUEST PROGRESS ===
         function addResource(resourceId, amount, silent = false) {
@@ -39540,6 +39622,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                             return labels[window._invSortMode || 'default'] || '📋';
                                         })()}
                                     </button>
+                                    <!-- 🆕 [v6.3.1] Hromadné akce — OwerLord/FreeRiderCz feedback -->
+                                    <button onclick="showBulkActionsModal()" style="padding: 0.15rem 0.4rem; font-size: 0.65rem; background: #2a1a3a; border: 1px solid #4a2a6a; border-radius: 4px; color: #ce93d8; cursor: pointer;" title="Hromadné akce: prodat / rozebrat několik předmětů najednou">
+                                        ✓✓
+                                    </button>
                                 </div>
                             </div>
                             <div style="background: #1a1a1a; height: 6px; border-radius: 3px; overflow: hidden;">
@@ -56336,6 +56422,334 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal('🔄 Třídění inventáře', html);
         }
         window.showInventorySortMenu = showInventorySortMenu;
+        
+        // 🆕 [v6.3.1] HROMADNÉ AKCE - OwerLord/FreeRiderCz feedback z chatu
+        // "Když mi padne 50 zbraní za dungeon je to poměrně náročné na klikání když to chci prodat rozebrat"
+        // Quick filters + bulk sell/recycle/drop
+        function showBulkActionsModal() {
+            if (!state.inv || state.inv.length === 0) {
+                notifyWarning('Prázdný inventář', 'Není co vybírat');
+                return;
+            }
+            
+            // Init state
+            if (!state._bulkSelected) state._bulkSelected = {};
+            
+            // Helpery
+            const isEquipped = (item) => state.equipped?.weapon === item || state.equipped?.armor === item || 
+                                          state.equipped?.helmet === item || state.equipped?.gloves === item || 
+                                          state.equipped?.boots === item || state.equipped?.powerArmor === item;
+            const isProtected = (item) => {
+                // Nikdy nedovolíme bulk akce pro:
+                if (isEquipped(item)) return true;
+                if (item.cantSell && item.cantBuy) return true; // questovky
+                if (item.id?.startsWith('lore_')) return true; // lore zachovat
+                if (item.id?.startsWith('rune_')) return true; // runy zachovat
+                if (item.type === 'quest' || item.type === 'quest_item') return true;
+                if (item.type === 'money') return true;
+                if (item.type === 'blueprint') return true;
+                if (item.id === 'reinforcement_kit') return true;
+                return false;
+            };
+            
+            // Build candidates (jen ty které lze hromadně zpracovat)
+            const candidates = state.inv.map((item, idx) => ({ item, idx }))
+                .filter(({ item }) => !isProtected(item));
+            
+            // Apply quick filter
+            const filter = state._bulkFilter || 'none';
+            const matchesFilter = (item) => {
+                const r = item.rarity || 'common';
+                if (filter === 'common') return r === 'common';
+                if (filter === 'common_uncommon') return r === 'common' || r === 'uncommon';
+                if (filter === 'broken') return item.durability !== undefined && item.durability <= 0;
+                if (filter === 'damaged') return item.durability !== undefined && item.durability < item.maxDurability;
+                if (filter === 'weapons') return item.type === 'weapon';
+                if (filter === 'armor') return ['armor', 'helmet', 'gloves', 'boots'].includes(item.type);
+                if (filter === 'consumables') return item.type === 'consumable' || item.type === 'food';
+                if (filter === 'all_unequipped') return true;
+                return false;
+            };
+            
+            // Calculate metrics
+            const selected = candidates.filter(({ idx }) => state._bulkSelected[idx]);
+            let totalSellValue = 0;
+            let totalScrapValue = 0;
+            let totalWeight = 0;
+            selected.forEach(({ item }) => {
+                const count = item.count || 1;
+                const itemData = ITEMS.find(i => i.id === item.id) || item;
+                if (item.price || itemData.price) {
+                    const npcPrice = (typeof calculateNpcSellPrice === 'function') 
+                        ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                    totalSellValue += npcPrice * count;
+                }
+                totalWeight += (item.weight || 0) * count;
+            });
+            
+            // Build items list
+            const filterCounts = {
+                common: candidates.filter(({ item }) => (item.rarity || 'common') === 'common').length,
+                common_uncommon: candidates.filter(({ item }) => ['common', 'uncommon'].includes(item.rarity || 'common')).length,
+                broken: candidates.filter(({ item }) => item.durability !== undefined && item.durability <= 0).length,
+                damaged: candidates.filter(({ item }) => item.durability !== undefined && item.durability < item.maxDurability).length,
+                weapons: candidates.filter(({ item }) => item.type === 'weapon').length,
+                armor: candidates.filter(({ item }) => ['armor', 'helmet', 'gloves', 'boots'].includes(item.type)).length,
+                consumables: candidates.filter(({ item }) => item.type === 'consumable' || item.type === 'food').length,
+                all: candidates.length
+            };
+            
+            const quickBtn = (id, label, count) => {
+                const isActive = filter === id;
+                return `<button class="btn" onclick="setBulkFilter('${id}')" style="padding: 0.3rem 0.5rem; font-size: 0.7rem; background: ${isActive ? '#ce93d8' : '#1a1a1a'}; color: ${isActive ? '#000' : '#fff'}; border: 1px solid ${isActive ? '#fff' : '#4a2a6a'};" ${count === 0 ? 'disabled' : ''}>${label} (${count})</button>`;
+            };
+            
+            // Items HTML - jen ty co matchují filter
+            const rarityColors = { common: '#888', uncommon: '#4caf50', rare: '#2196f3', epic: '#9c27b0', legendary: '#ffd700' };
+            const filteredItems = filter === 'none' ? candidates : candidates.filter(({ item }) => matchesFilter(item));
+            
+            const itemsHtml = filteredItems.map(({ item, idx }) => {
+                const checked = state._bulkSelected[idx];
+                const count = item.count || 1;
+                const color = rarityColors[item.rarity] || '#888';
+                const itemData = ITEMS.find(i => i.id === item.id) || item;
+                const npcPrice = (typeof calculateNpcSellPrice === 'function') 
+                    ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                const totalPrice = npcPrice * count;
+                const isBroken = item.durability !== undefined && item.durability <= 0;
+                
+                return `
+                    <label onclick="toggleBulkItem(${idx})" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; background: ${checked ? '#2a1a3a' : '#1a1a1a'}; border: 1px solid ${checked ? '#ce93d8' : '#333'}; border-radius: 6px; cursor: pointer; margin-bottom: 0.3rem;">
+                        <input type="checkbox" ${checked ? 'checked' : ''} onclick="event.stopPropagation(); toggleBulkItem(${idx})" style="cursor: pointer; transform: scale(1.2);">
+                        <span style="font-size: 1.3rem;">${item.icon || '📦'}</span>
+                        <div style="flex: 1;">
+                            <div style="color: ${color}; font-weight: bold; font-size: 0.85rem;">${item.name}${count > 1 ? ' x' + count : ''}${isBroken ? ' <span style="color:#f44336">💔</span>' : ''}</div>
+                            <div style="font-size: 0.7rem; color: #888;">
+                                ${item.damage ? `⚔️${item.damage} ` : ''}${item.defense ? `🛡️${item.defense} ` : ''}<span style="color:#ffd700;">💰${totalPrice}</span> <span style="color:#666;">⚖️${((item.weight || 0) * count).toFixed(1)}kg</span>
+                            </div>
+                        </div>
+                    </label>
+                `;
+            }).join('');
+            
+            showModal('✓✓ Hromadné akce', `
+                <div style="margin-bottom: 0.5rem; padding: 0.5rem; background: #1a0d1a; border-radius: 6px; border: 1px solid #4a2a4a;">
+                    <p style="color: #ce93d8; font-size: 0.75rem; margin: 0;">⚡ Rychlý výběr — klikni na filter a pak na akci dole:</p>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem;">
+                    ${quickBtn('common', '⚪ Common', filterCounts.common)}
+                    ${quickBtn('common_uncommon', '🟢 Junk', filterCounts.common_uncommon)}
+                    ${quickBtn('broken', '💔 Rozbité', filterCounts.broken)}
+                    ${quickBtn('damaged', '🔧 Opotřebené', filterCounts.damaged)}
+                    ${quickBtn('weapons', '⚔️ Zbraně', filterCounts.weapons)}
+                    ${quickBtn('armor', '🛡️ Zbroj', filterCounts.armor)}
+                    ${quickBtn('consumables', '🍖 Jídlo', filterCounts.consumables)}
+                    ${quickBtn('all_unequipped', '📦 Vše', filterCounts.all)}
+                </div>
+                <div style="display: flex; gap: 0.3rem; margin-bottom: 0.5rem;">
+                    <button class="btn" onclick="bulkSelectAll(${JSON.stringify(filteredItems.map(x => x.idx)).replace(/"/g, '&quot;')})" style="flex:1; padding: 0.3rem; font-size: 0.7rem; background: #2a4a2a;">✓ Vybrat vše (${filteredItems.length})</button>
+                    <button class="btn" onclick="bulkClearSelection()" style="flex:1; padding: 0.3rem; font-size: 0.7rem; background: #4a2a2a;">✗ Zrušit výběr</button>
+                </div>
+                <div style="max-height: 280px; overflow-y: auto; margin-bottom: 0.8rem; padding: 0.3rem; background: #08080a; border-radius: 4px;">
+                    ${filteredItems.length === 0 ? '<p style="text-align:center; color:#666; padding:1rem; font-size:0.85rem;">Nic neodpovídá filtru</p>' : itemsHtml}
+                </div>
+                <div style="padding: 0.6rem; background: #0d1a0d; border-radius: 8px; border: 1px solid ${selected.length > 0 ? '#4caf50' : '#333'}; margin-bottom: 0.8rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: #888; font-size: 0.8rem;">Vybráno: <strong style="color:${selected.length > 0 ? '#8bc34a' : '#666'};">${selected.length}</strong> ks</span>
+                        <span style="color: #ffd700; font-size: 0.85rem;">💰 ${totalSellValue}</span>
+                        <span style="color: #aaa; font-size: 0.75rem;">⚖️ ${totalWeight.toFixed(1)}kg</span>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.3rem;">
+                    <button class="btn" onclick="confirmBulkAction('sell')" style="background: ${selected.length > 0 ? '#d4722e' : '#333'}; padding: 0.5rem; font-size: 0.8rem;" ${selected.length === 0 ? 'disabled' : ''}>💰 Prodat</button>
+                    <button class="btn" onclick="confirmBulkAction('recycle')" style="background: ${selected.length > 0 ? '#795548' : '#333'}; padding: 0.5rem; font-size: 0.8rem;" ${selected.length === 0 ? 'disabled' : ''}>♻️ Rozebrat</button>
+                    <button class="btn" onclick="confirmBulkAction('drop')" style="background: ${selected.length > 0 ? '#c62828' : '#333'}; padding: 0.5rem; font-size: 0.8rem;" ${selected.length === 0 ? 'disabled' : ''}>🗑️ Zahodit</button>
+                </div>
+                <button class="btn" onclick="closeModal(); state._bulkSelected = {}; state._bulkFilter = 'none';" style="width: 100%; margin-top: 0.5rem; background: #555;">✗ Zavřít</button>
+            `);
+        }
+        window.showBulkActionsModal = showBulkActionsModal;
+        
+        function setBulkFilter(filter) {
+            state._bulkFilter = filter;
+            showBulkActionsModal();
+        }
+        window.setBulkFilter = setBulkFilter;
+        
+        function toggleBulkItem(idx) {
+            if (!state._bulkSelected) state._bulkSelected = {};
+            if (state._bulkSelected[idx]) {
+                delete state._bulkSelected[idx];
+            } else {
+                state._bulkSelected[idx] = true;
+            }
+            showBulkActionsModal();
+        }
+        window.toggleBulkItem = toggleBulkItem;
+        
+        function bulkSelectAll(indices) {
+            if (!state._bulkSelected) state._bulkSelected = {};
+            indices.forEach(idx => { state._bulkSelected[idx] = true; });
+            showBulkActionsModal();
+        }
+        window.bulkSelectAll = bulkSelectAll;
+        
+        function bulkClearSelection() {
+            state._bulkSelected = {};
+            showBulkActionsModal();
+        }
+        window.bulkClearSelection = bulkClearSelection;
+        
+        function confirmBulkAction(action) {
+            const selected = Object.keys(state._bulkSelected || {}).map(k => parseInt(k)).sort((a, b) => b - a); // descending (kvůli splice)
+            if (selected.length === 0) return;
+            
+            // Pre-conditions for sell
+            if (action === 'sell') {
+                if (typeof canSellHere === 'function' && !canSellHere()) {
+                    notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka aby mohl prodat.');
+                    return;
+                }
+                if (typeof areShopsClosed === 'function') {
+                    const quarantine = areShopsClosed();
+                    if (quarantine.closed) {
+                        notifyWarning('🦠 Karanténa!', 'Obchody jsou zavřené.');
+                        return;
+                    }
+                }
+            }
+            
+            const actionNames = { sell: '💰 PRODAT', recycle: '♻️ ROZEBRAT', drop: '🗑️ ZAHODIT' };
+            const actionColors = { sell: '#d4722e', recycle: '#795548', drop: '#c62828' };
+            
+            // Spočti total earn pro sell
+            let totalEarn = 0;
+            let preview = [];
+            selected.forEach(idx => {
+                const item = state.inv[idx];
+                if (!item) return;
+                const count = item.count || 1;
+                const itemData = ITEMS.find(i => i.id === item.id) || item;
+                if (action === 'sell' && (item.price || itemData.price)) {
+                    const npcPrice = (typeof calculateNpcSellPrice === 'function') 
+                        ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                    totalEarn += npcPrice * count;
+                }
+                preview.push(`${item.icon || '📦'} ${item.name}${count > 1 ? ' x' + count : ''}`);
+            });
+            
+            const previewText = preview.slice(0, 5).join('<br>') + (preview.length > 5 ? `<br><span style="color:#666">+ ${preview.length - 5} dalších</span>` : '');
+            
+            showModal(`${actionNames[action]} ${selected.length}×?`, `
+                <div style="text-align: center; padding: 0.5rem;">
+                    <p style="color: #aaa; font-size: 0.85rem; margin-bottom: 0.8rem;">${preview.length} ${preview.length === 1 ? 'předmět' : (preview.length < 5 ? 'předměty' : 'předmětů')}:</p>
+                    <div style="background: #1a1a1a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.8rem; max-height: 150px; overflow-y: auto; text-align: left; font-size: 0.8rem;">
+                        ${previewText}
+                    </div>
+                    ${action === 'sell' ? `<p style="color: #ffd700; font-size: 1.1rem;">Získáš: <strong>+${totalEarn} 💰</strong></p>` : ''}
+                    ${action === 'drop' ? '<p style="color: #f44336; font-size: 0.85rem;">⚠️ Zůstanou na zemi v této lokaci.</p>' : ''}
+                    ${action === 'recycle' ? '<p style="color: #ff9800; font-size: 0.85rem;">⚠️ Předměty zmizí, získáš materiály.</p>' : ''}
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <button class="btn" onclick="executeBulkAction('${action}')" style="background: ${actionColors[action]}; font-weight: bold;">✓ Potvrdit</button>
+                    <button class="btn" onclick="showBulkActionsModal()" style="background: #555;">✗ Zpět</button>
+                </div>
+            `);
+        }
+        window.confirmBulkAction = confirmBulkAction;
+        
+        function executeBulkAction(action) {
+            const selected = Object.keys(state._bulkSelected || {}).map(k => parseInt(k)).sort((a, b) => b - a); // descending for splice
+            if (selected.length === 0) return;
+            
+            let processed = 0;
+            let totalEarn = 0;
+            
+            selected.forEach(idx => {
+                const item = state.inv[idx];
+                if (!item) return;
+                const count = item.count || 1;
+                const itemData = ITEMS.find(i => i.id === item.id) || item;
+                
+                if (action === 'sell') {
+                    const npcPrice = (typeof calculateNpcSellPrice === 'function') 
+                        ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                    const earn = npcPrice * count;
+                    totalEarn += earn;
+                    state.money = (state.money || 0) + earn;
+                    state.inv.splice(idx, 1);
+                    processed++;
+                } else if (action === 'recycle') {
+                    // Použij existing recycleItem ale silent (bez modalu)
+                    if (typeof recycleItemSilent === 'function') {
+                        recycleItemSilent(idx);
+                    } else {
+                        // Fallback: jednoduchý scrap
+                        const scrapAmount = Math.max(1, Math.floor((itemData.price || 50) / 50));
+                        state.resources = state.resources || {};
+                        state.resources.scrap = (state.resources.scrap || 0) + scrapAmount * count;
+                        state.inv.splice(idx, 1);
+                    }
+                    processed++;
+                } else if (action === 'drop') {
+                    if (typeof addToGroundLoot === 'function') {
+                        addToGroundLoot(item);
+                    }
+                    state.inv.splice(idx, 1);
+                    processed++;
+                }
+            });
+            
+            // Reset
+            state._bulkSelected = {};
+            
+            // Notifikace
+            if (action === 'sell') {
+                notifySuccess('💰 Prodáno!', `${processed} předmětů za +${totalEarn} 💰`);
+                addLog(`💰 Hromadný prodej: ${processed} předmětů → +${totalEarn} 💰`, '💰');
+                SoundSystem.play('coin');
+            } else if (action === 'recycle') {
+                notifySuccess('♻️ Rozebráno!', `${processed} předmětů → materiály`);
+                addLog(`♻️ Hromadné rozebrání: ${processed} předmětů`, '♻️');
+                SoundSystem.play('pickup');
+            } else if (action === 'drop') {
+                notifyWarning('🗑️ Zahozeno', `${processed} předmětů na zemi`);
+                addLog(`🗑️ Hromadné zahození: ${processed} předmětů`, '🗑️');
+            }
+            
+            if (typeof updateCarryWeight === 'function') updateCarryWeight();
+            saveGame();
+            closeModal();
+            renderFull();
+        }
+        window.executeBulkAction = executeBulkAction;
+        
+        // Silent recycle - bez modalu, vrátí materiály do resources
+        function recycleItemSilent(idx) {
+            const item = state.inv[idx];
+            if (!item) return;
+            
+            const itemData = ITEMS.find(i => i.id === item.id) || item;
+            const count = item.count || 1;
+            
+            // Spočti recycle output (jednoduchý systém založený na ceně a typu)
+            const basePrice = itemData.price || item.price || 50;
+            const baseScrap = Math.max(1, Math.floor(basePrice / 50));
+            state.resources = state.resources || {};
+            
+            if (item.type === 'weapon' || item.type === 'armor' || item.type === 'helmet' || item.type === 'gloves' || item.type === 'boots') {
+                state.resources.metal = (state.resources.metal || 0) + baseScrap * count;
+                if (item.type !== 'weapon') {
+                    state.resources.cloth = (state.resources.cloth || 0) + Math.max(1, Math.floor(baseScrap / 2)) * count;
+                    state.resources.leather = (state.resources.leather || 0) + Math.max(1, Math.floor(baseScrap / 2)) * count;
+                }
+            } else {
+                state.resources.scrap = (state.resources.scrap || 0) + baseScrap * count;
+            }
+            
+            state.inv.splice(idx, 1);
+        }
+        window.recycleItemSilent = recycleItemSilent;
         
         // [NEW sp3rx] Search v inventáři - klient-side, žádný re-render
         window._invSearchQuery = '';
