@@ -59341,37 +59341,35 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // Trvalé zvýšení max HP - uloženo do persistentního counteru
                 const hpBoost = item.value || 5;
                 
-                // OP itemy (value >= 20) lze použít jen jednou
-                if (hpBoost >= 20) {
-                    if (!state.usedPermanentItems) state.usedPermanentItems = [];
-                    if (state.usedPermanentItems.includes(item.id)) {
-                        showModal('❌ Již použito', `
-                            <div style="text-align: center;">
-                                <div style="font-size: 3rem;">${item.icon}</div>
-                                <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
-                                <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
-                            </div>
-                            <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
-                        `);
-                        return;
-                    }
-                    state.usedPermanentItems.push(item.id);
-                } else {
-                    // Slabší itemy (sérum apod.) — max 3× použití
-                    if (!state.permanentItemUses) state.permanentItemUses = {};
-                    const uses = state.permanentItemUses[item.id] || 0;
-                    if (uses >= 3) {
-                        showModal('❌ Maximum dosaženo', `
-                            <div style="text-align: center;">
-                                <div style="font-size: 3rem;">${item.icon}</div>
-                                <p style="color: #ff9800;">Použil jsi ${item.name} už 3×.</p>
-                                <p style="color: #888;">Tvé tělo si vybudovalo toleranci. Víc nesnese.</p>
-                            </div>
-                            <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
-                        `);
-                        return;
-                    }
-                    state.permanentItemUses[item.id] = uses + 1;
+                // 🆕 [v6.3.1] OP itemy (value >= 20) - povoleno až 3× použití (jako slabší itemy)
+                // Bývalo: jen 1× → hráč co kupil 2× ztratil druhý. Stejný bug jako abyss_crystal.
+                // Itemy postižené: abyss_rune (+25 HP), behemoth_heart (+75 HP)
+                const MAX_USES = hpBoost >= 20 ? 3 : 3; // sjednocené max 3 použití
+                if (!state.permanentItemUses) state.permanentItemUses = {};
+                const uses = state.permanentItemUses[item.id] || 0;
+                if (uses >= MAX_USES) {
+                    showModal('❌ Maximum dosaženo', `
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem;">${item.icon}</div>
+                            <p style="color: #ff9800;">Použil jsi ${item.name} už ${MAX_USES}×.</p>
+                            <p style="color: #888;">Tvé tělo si vybudovalo toleranci. Krystal můžeš prodat na tržišti.</p>
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
+                    `);
+                    return;
+                }
+                
+                // ATOMIC: ověř že item v inventáři existuje PŘED úpravou state
+                if (state.inv.indexOf(item) === -1) {
+                    notifyWarning('❌ Chyba', 'Předmět nenalezen v inventáři');
+                    return;
+                }
+                
+                state.permanentItemUses[item.id] = uses + 1;
+                
+                // Back-compat: cleanup starý usedPermanentItems block (z předchozí verze)
+                if (state.usedPermanentItems && state.usedPermanentItems.includes(item.id)) {
+                    state.usedPermanentItems = state.usedPermanentItems.filter(id => id !== item.id);
                 }
                 
                 state.permanentHpBonus = (state.permanentHpBonus || 0) + hpBoost;
@@ -59383,58 +59381,97 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${item.icon} ${item.name}!<br>
                     <span style="color: #ffd700;">+${hpBoost} max HP trvale!</span><br>
                     <span style="color: #8bc34a;">Nové maximum: ${state.char.maxHp} HP</span>
-                    ${hpBoost < 20 && state.permanentItemUses?.[item.id] ? '<br><span style="color: #888; font-size: 0.8rem;">Použito: ' + state.permanentItemUses[item.id] + '/3</span>' : ''}
+                    <br><span style="color: #888; font-size: 0.8rem;">Použito: ${uses + 1}/${MAX_USES}</span>
                 `);
-                addLog(`🧬 Použil jsi ${item.name} - +${hpBoost} max HP trvale!`, '🧬');
+                addLog(`🧬 Použil jsi ${item.name} - +${hpBoost} max HP trvale! (${uses + 1}/${MAX_USES})`, '🧬');
                 renderFull();
             } else if (item.effect === 'permanent_defense') {
-                // Trvalé zvýšení obrany - Krystal Propasti
+                // 🆕 [v6.3.1] Krystal Propasti - REWORK
+                // Bývalo: jednorázové použití (usedPermanentItems block). Hráč co koupil 2 krystaly z tržiště ztratil druhý.
+                // Teď: povoleno až 5 použití kumulativně (+25 DEF max), tracking přes permanentItemUses.
+                // Pokud hráč dosáhne limitu, item zůstane v inventáři a může ho prodat na tržišti.
                 const defBoost = item.value || 5;
+                const MAX_CRYSTAL_USES = 5;
                 
-                if (!state.usedPermanentItems) state.usedPermanentItems = [];
-                if (state.usedPermanentItems.includes(item.id)) {
-                    showModal('❌ Již použito', `
+                if (!state.permanentItemUses) state.permanentItemUses = {};
+                const usedCount = state.permanentItemUses[item.id] || 0;
+                
+                if (usedCount >= MAX_CRYSTAL_USES) {
+                    showModal('🛡️ Maximum dosaženo', `
                         <div style="text-align: center;">
                             <div style="font-size: 3rem;">${item.icon}</div>
-                            <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
-                            <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
+                            <p style="color: #ff9800;">Tvé tělo víc obrany už nesnese!</p>
+                            <p style="color: #8bc34a;">Aktuální bonus: <strong>+${state.permanentDefenseBonus || 0} 🛡️</strong></p>
+                            <p style="color: #888; font-size: 0.85rem;">Limit ${MAX_CRYSTAL_USES}× použití dosažen. Krystal můžeš prodat na tržišti.</p>
                         </div>
                         <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
                     `);
                     return;
                 }
-                state.usedPermanentItems.push(item.id);
                 
+                // ATOMIC: nejdřív zkontroluj že item v inventáři skutečně existuje (před změnou state)
+                const currentIdx = state.inv.indexOf(item);
+                if (currentIdx === -1) {
+                    notifyWarning('❌ Chyba', 'Předmět nenalezen v inventáři');
+                    return;
+                }
+                
+                state.permanentItemUses[item.id] = usedCount + 1;
                 state.permanentDefenseBonus = (state.permanentDefenseBonus || 0) + defBoost;
                 removeItemFromInventory(item, 1);
+                
+                // 🆕 [v6.3.1] Back-compat: cleanup starý usedPermanentItems pro abyss_crystal
+                if (state.usedPermanentItems && state.usedPermanentItems.includes('abyss_crystal')) {
+                    state.usedPermanentItems = state.usedPermanentItems.filter(id => id !== 'abyss_crystal');
+                }
+                
                 SoundSystem.play('pickup');
+                const usesLeft = MAX_CRYSTAL_USES - (usedCount + 1);
                 showModal('🔮 Krystal absorbován!', `
                     <div style="text-align: center;">
                         <div style="font-size: 3rem;">🔮</div>
                         ${item.icon} <strong>${item.name}</strong><br><br>
                         <span style="color: #b388ff; font-size: 1.2rem; text-shadow: 0 0 10px rgba(179,136,255,0.5);">+${defBoost} obrana trvale!</span><br>
-                        <span style="color: #8bc34a;">Celkový bonus: +${state.permanentDefenseBonus} 🛡️</span>
+                        <span style="color: #8bc34a;">Celkový bonus: +${state.permanentDefenseBonus} 🛡️</span><br>
+                        <span style="color: #888; font-size: 0.8rem;">Použito ${usedCount + 1}/${MAX_CRYSTAL_USES}${usesLeft > 0 ? ' (zbývá ' + usesLeft + ' použití)' : ' (LIMIT)'}</span>
                     </div>
                 `);
-                addLog(`🔮 Použil jsi ${item.name} - +${defBoost} obrana trvale!`, '🔮');
+                addLog(`🔮 Použil jsi ${item.name} - +${defBoost} obrana trvale! (${usedCount + 1}/${MAX_CRYSTAL_USES})`, '🔮');
                 renderFull();
             } else if (item.effect === 'permanent_all') {
-                // Trvalé zvýšení VŠECH atributů - lze použít jen jednou per item
+                // Trvalé zvýšení VŠECH atributů
                 const boost = item.value || 1;
                 
-                if (!state.usedPermanentItems) state.usedPermanentItems = [];
-                if (state.usedPermanentItems.includes(item.id)) {
-                    showModal('❌ Již použito', `
+                // 🆕 [v6.3.1] Povoleno až 3× použití (stejně jako permanent_hp/defense)
+                // Postižené itemy: hydra_blood (+2 all), plague_spore (+2 all). Oba mají cantSell:true,
+                // ale pokud hráč chytí 2× drop ze World Boss, dříve ztratil druhý.
+                const MAX_USES = 3;
+                if (!state.permanentItemUses) state.permanentItemUses = {};
+                const uses = state.permanentItemUses[item.id] || 0;
+                if (uses >= MAX_USES) {
+                    showModal('❌ Maximum dosaženo', `
                         <div style="text-align: center;">
                             <div style="font-size: 3rem;">${item.icon}</div>
-                            <p style="color: #ff9800;">Tenhle efekt už jsi jednou použil.</p>
-                            <p style="color: #888;">Tvé tělo víc nesnese. Můžeš ho prodat.</p>
+                            <p style="color: #ff9800;">Použil jsi ${item.name} už ${MAX_USES}×.</p>
+                            <p style="color: #888;">Tvé tělo si vybudovalo toleranci. Můžeš si ho ponechat na památku.</p>
                         </div>
                         <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">OK</button>
                     `);
                     return;
                 }
-                state.usedPermanentItems.push(item.id);
+                
+                // ATOMIC check
+                if (state.inv.indexOf(item) === -1) {
+                    notifyWarning('❌ Chyba', 'Předmět nenalezen v inventáři');
+                    return;
+                }
+                
+                state.permanentItemUses[item.id] = uses + 1;
+                
+                // Back-compat cleanup
+                if (state.usedPermanentItems && state.usedPermanentItems.includes(item.id)) {
+                    state.usedPermanentItems = state.usedPermanentItems.filter(id => id !== item.id);
+                }
                 
                 const attrs = ['str', 'int', 'agi', 'per', 'end', 'lck'];
                 attrs.forEach(attr => {
