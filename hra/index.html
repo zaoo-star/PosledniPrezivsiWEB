@@ -56666,6 +56666,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal('✓✓ Hromadné akce', `
                 <div style="margin-bottom: 0.5rem; padding: 0.5rem; background: #1a0d1a; border-radius: 6px; border: 1px solid #4a2a4a;">
                     <p style="color: #ce93d8; font-size: 0.75rem; margin: 0;">⚡ Vyber množství u každého stacku, pak klikni na akci dole. ⚠️ = legendary/lore/runa</p>
+                    <p style="color: #888; font-size: 0.7rem; margin: 0.3rem 0 0 0;">💰 Prodej = u NPC obchodníka (musíš být u obchodu). ♻️ Rozebrání = kdekoli. 🗑️ Zahození = na zem v aktuální lokaci.</p>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem;">
                     ${quickBtn('all', '📦 Vše', filterCounts.all)}
@@ -56788,6 +56789,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             let processedTotal = 0;
             let totalEarn = 0;
+            let skippedItems = []; // 🆕 [v6.3.1] Items co se nepodařily prodat (NPC nekupuje)
             
             entries.forEach(({ idx, amount }) => {
                 const item = state.inv[idx];
@@ -56797,11 +56799,57 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const itemData = ITEMS.find(i => i.id === item.id) || item;
                 
                 if (action === 'sell') {
+                    // 🆕 [v6.3.1] Bezpečnostní check: NPC nekupují některé itemy
+                    // Blokuj: cantSell (questovky, runy), crafted (vlastní výroba), fromCaravan/fromShop (anti-exploit), _ownedByCompanion
+                    if (item.cantSell || item.type === 'quest' || item.type === 'quest_item' || item.type === 'rune' ||
+                        item.crafted || item.fromCaravan || item.fromShop || item._ownedByCompanion) {
+                        skippedItems.push(`${item.icon || '📦'} ${item.name}`);
+                        return; // skip
+                    }
+                    
                     const npcPrice = (typeof calculateNpcSellPrice === 'function') 
                         ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                    if (npcPrice <= 0) {
+                        skippedItems.push(`${item.icon || '📦'} ${item.name} (bez hodnoty)`);
+                        return;
+                    }
+                    
+                    // Kontrola peněz obchodu
+                    const shopMoney = (typeof getShopMoney === 'function') ? getShopMoney() : 999999;
                     const earn = npcPrice * processAmount;
+                    if (shopMoney < earn) {
+                        skippedItems.push(`${item.icon || '📦'} ${item.name} (obchodník nemá peníze)`);
+                        return;
+                    }
+                    if (typeof reduceShopMoney === 'function') reduceShopMoney(earn);
+                    
                     totalEarn += earn;
-                    state.money = (state.money || 0) + earn;
+                    // 🆕 [v6.3.1] Použij addMoney() - tracking stats, daily progress, achievements, cap MAX_MONEY
+                    if (typeof addMoney === 'function') {
+                        addMoney(earn);
+                    } else {
+                        state.money = (state.money || 0) + earn;
+                    }
+                    state.stats = state.stats || {};
+                    state.stats.itemsSold = (state.stats.itemsSold || 0) + processAmount;
+                    
+                    // Daily quest progress
+                    if (typeof addDailyProgress === 'function') addDailyProgress('sold', processAmount);
+                    
+                    // Veřejná kasa (multiplayer)
+                    if (earn > 0 && typeof multiplayerEnabled !== 'undefined' && multiplayerEnabled && typeof firebaseDB !== 'undefined' && firebaseDB && typeof removeFromPublicTreasury === 'function') {
+                        try {
+                            removeFromPublicTreasury(earn, 'shop_sale', `${processAmount}x ${item.name} (bulk) od ${typeof getPlayerName === 'function' ? getPlayerName() : 'unknown'}`);
+                        } catch(e) { console.warn('Treasury error:', e); }
+                    }
+                    
+                    // Sundej z equipped pokud nasazeno (bezpečnost)
+                    if (state.equipped) {
+                        ['weapon', 'armor', 'helmet', 'gloves', 'boots'].forEach(slot => {
+                            if (state.equipped[slot] === item) state.equipped[slot] = null;
+                        });
+                    }
+                    
                     if (processAmount >= stackCount) {
                         state.inv.splice(idx, 1);
                     } else {
@@ -56849,9 +56897,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Notifikace
             if (action === 'sell') {
-                notifySuccess('💰 Prodáno!', `${processedTotal} kusů za +${totalEarn} 💰`);
-                addLog(`💰 Hromadný prodej: ${processedTotal} kusů → +${totalEarn} 💰`, '💰');
-                SoundSystem.play('coin');
+                if (processedTotal > 0) {
+                    notifySuccess('💰 Prodáno!', `${processedTotal} kusů za +${totalEarn} 💰`);
+                    addLog(`💰 Hromadný prodej: ${processedTotal} kusů → +${totalEarn} 💰`, '💰');
+                    SoundSystem.play('coin');
+                }
+                if (skippedItems.length > 0) {
+                    // Items co nešly prodat NPC - upozornit hráče
+                    const preview = skippedItems.slice(0, 3).join(', ');
+                    const extra = skippedItems.length > 3 ? ` +${skippedItems.length - 3} dalších` : '';
+                    notifyWarning('⚠️ Některé itemy neprodány', `${preview}${extra}. NPC obchodníci tyto itemy nekupují - zkus online tržiště.`);
+                    addLog(`⚠️ ${skippedItems.length} itemů NPC neodkoupil (zkus online tržiště)`, '⚠️');
+                }
+                if (processedTotal === 0 && skippedItems.length === 0) {
+                    notifyWarning('Nic neprodáno', 'Žádný item nebylo možné prodat.');
+                }
             } else if (action === 'recycle') {
                 notifySuccess('♻️ Rozebráno!', `${processedTotal} kusů → materiály`);
                 addLog(`♻️ Hromadné rozebrání: ${processedTotal} kusů`, '♻️');
