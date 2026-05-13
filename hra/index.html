@@ -56745,9 +56745,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let totalCost = 0;
             let itemsToRepair = [];
             
+            // 🆕 [v6.3.1] Bug fix: Technik companion + Kovář osadník = opravy zdarma (jako u repairItemForMoney)
+            const _compRepairAll = (typeof getAllCompanionBonuses === 'function') ? getAllCompanionBonuses() : {};
+            const _bsmithRepairAll = (typeof getBlacksmithInfo === 'function') ? getBlacksmithInfo() : { has: false, freeRepair: false };
+            const _isFreeRepair = (_compRepairAll.freeRepair) || (_bsmithRepairAll.has && _bsmithRepairAll.freeRepair);
+            
             state.inv.forEach((item, idx) => {
                 if (item.durability !== undefined && item.durability < item.maxDurability) {
-                    const cost = Math.ceil((item.maxDurability - item.durability) * (item.price || 50) / 100);
+                    let cost = Math.ceil((item.maxDurability - item.durability) * (item.price || 50) / 100);
+                    // 🆕 [v6.3.1] BUGFIX: Příplatek za rozbité (+50%) — stejně jako repairItemForMoney
+                    if (item.durability <= 0) {
+                        cost = Math.ceil(cost * 1.5);
+                    }
                     totalCost += cost;
                     itemsToRepair.push({ item, idx, cost });
                 }
@@ -56774,6 +56783,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 });
             }
             
+            // 🆕 [v6.3.1] Free repair od Technik / Kovář — apply AT THE END (po set bonusech)
+            if (_isFreeRepair) {
+                totalCost = 0;
+                itemsToRepair.forEach(it => { it.cost = 0; });
+            }
+            
             if (itemsToRepair.length === 0) {
                 notifySuccess('Vše v pořádku', 'Žádný předmět nepotřebuje opravu');
                 return;
@@ -56781,6 +56796,20 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (state.money < totalCost) {
                 notifyWarning(t('notifications', 'notEnoughMoney'), `Potřebuješ ${totalCost} 💰 na opravu všeho`);
+                return;
+            }
+            
+            // 🆕 [v6.3.1] Free repair: skipni modal, prove okamžitě
+            if (_isFreeRepair) {
+                state.inv.forEach(item => {
+                    if (item.durability !== undefined && item.durability < item.maxDurability) {
+                        item.durability = item.maxDurability;
+                    }
+                });
+                const _bsName = _bsmithRepairAll.has && _bsmithRepairAll.freeRepair ? ` (⚒️ ${_bsmithRepairAll.name})` : (_compRepairAll.freeRepair ? ' (🔧 Technik)' : '');
+                notifySuccess('🔧 Vše opraveno ZDARMA!', `${itemsToRepair.length} předmětů${_bsName}`);
+                saveGame();
+                renderFull();
                 return;
             }
             
@@ -60022,11 +60051,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const damagedItem = window._damagedItems[damagedIndex];
             if (!damagedItem) return;
             
-            // Oprav
-            damagedItem.durability = Math.min(damagedItem.maxDurability, damagedItem.durability + kit.value);
+            // 🆕 [v6.3.1] BUGFIX: kit.value nebyl definován → durability = NaN!
+            // Reinforcement kit dle popisu má: "+100 max výdrž a plně opraví"
+            // 1) Zvýší maxDurability o 100
+            // 2) Plně opraví (durability = maxDurability)
+            if (kit.id === 'reinforcement_kit') {
+                damagedItem.maxDurability = (damagedItem.maxDurability || 0) + 100;
+                damagedItem.durability = damagedItem.maxDurability; // Plně opraveno
+            } else {
+                // Fallback pro custom kity s value (back-compat)
+                const dur = parseInt(kit.value) || 50;
+                damagedItem.durability = Math.min(damagedItem.maxDurability, damagedItem.durability + dur);
+            }
             
             // Spotřebuj kit
-            kit.count--;
+            kit.count = (kit.count || 1) - 1;
             if (kit.count <= 0) {
                 // [FIX BUG] Odstranit jen tento konkrétní stack (ne všechny kity stejného typu)
                 const idx = state.inv.indexOf(kit);
@@ -60035,7 +60074,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             SoundSystem.play('pickup');
             closeModal();
-            showModal('🔧 Opraveno!', `${damagedItem.icon} ${damagedItem.name}<br><span style="color: #8bc34a;">Durability: ${damagedItem.durability}/${damagedItem.maxDurability}</span>`);
+            const msg = kit.id === 'reinforcement_kit' 
+                ? `${damagedItem.icon} ${damagedItem.name}<br><span style="color: #8bc34a;">+100 max výdrž → ${damagedItem.durability}/${damagedItem.maxDurability}</span>`
+                : `${damagedItem.icon} ${damagedItem.name}<br><span style="color: #8bc34a;">Výdrž: ${damagedItem.durability}/${damagedItem.maxDurability}</span>`;
+            showModal('🔧 Opraveno!', msg);
             
             delete window._damagedItems;
             saveGame(true);
@@ -87072,21 +87114,32 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 // ⚡ Chain Lightning (Tesla zbraně - special 'chain_lightning')
-                if (playerWeapon?.special === 'chain_lightning' && Math.random() < 0.30) {
-                    // 🆕 [v6.3.1] Pre-War Tesla skáče na 4 cíle, normální Tesla na 2
-                    const maxJumps = playerWeapon.id === 'prewar_tesla_cannon' ? 4 : 
-                                     (playerWeapon.id === 'tesla_cannon' ? 3 : 2);
-                    const chainTargets = cs.units.filter(u => 
-                        u.team === 'enemy' && u.alive && u !== target
-                    ).slice(0, maxJumps);
-                    if (chainTargets.length > 0) {
-                        const chainDmg = Math.max(3, Math.floor(finalDamage * 0.35));
-                        cs.log.push(`⚡ ŘETĚZ BLESKU skáče na ${chainTargets.length} cílů!`);
-                        chainTargets.forEach(ct => {
-                            ct.hp = Math.max(0, ct.hp - chainDmg);
-                            cs.log.push(`⚡ Blesk → ${ct.icon || ''} ${ct.name}: -${chainDmg} HP`);
-                            if (ct.hp <= 0) { ct.alive = false; cs.log.push(`☠️ ${ct.name} zabit bleskem!`); }
-                        });
+                // 🆕 [v6.3.1] Šance dle tieru zbraně (hráč hlásil: "u Tesla dělo nefunguje řetěz blesku" — bylo jen 30%)
+                // Tesla pistol 30% (rare), Tesla puška 40% (epic), Tesla dělo 50% (legendary), Pre-War 60%
+                if (playerWeapon?.special === 'chain_lightning') {
+                    let chainChance = 0.30; // default (Tesla pistol)
+                    if (playerWeapon.id === 'tesla_rifle') chainChance = 0.40;
+                    else if (playerWeapon.id === 'tesla_cannon') chainChance = 0.50;
+                    else if (playerWeapon.id === 'prewar_tesla_cannon') chainChance = 0.60;
+                    
+                    if (Math.random() < chainChance) {
+                        const maxJumps = playerWeapon.id === 'prewar_tesla_cannon' ? 4 : 
+                                         (playerWeapon.id === 'tesla_cannon' ? 3 : 2);
+                        const chainTargets = cs.units.filter(u => 
+                            u.team === 'enemy' && u.alive && u !== target
+                        ).slice(0, maxJumps);
+                        if (chainTargets.length > 0) {
+                            const chainDmg = Math.max(3, Math.floor(finalDamage * 0.35));
+                            cs.log.push(`⚡ ŘETĚZ BLESKU skáče na ${chainTargets.length} ${chainTargets.length === 1 ? 'cíl' : 'cíle'}! (${Math.round(chainChance*100)}% šance)`);
+                            chainTargets.forEach(ct => {
+                                ct.hp = Math.max(0, ct.hp - chainDmg);
+                                cs.log.push(`⚡ Blesk → ${ct.icon || ''} ${ct.name}: -${chainDmg} HP`);
+                                if (ct.hp <= 0) { ct.alive = false; cs.log.push(`☠️ ${ct.name} zabit bleskem!`); }
+                            });
+                        } else {
+                            // Hráč vidí že chain TRY proběhl, ale není dostupný target — důležitý feedback
+                            cs.log.push(`⚡ Řetěz blesku: žádný další nepřítel v dosahu`);
+                        }
                     }
                 }
                 
@@ -124873,12 +124926,32 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 content += '<div style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 250px; overflow-y: auto;">';
                 damagedItems.forEach((di, i) => {
                     let repairCost = isOwner ? 0 : Math.ceil((di.item.maxDurability - di.item.durability) * 0.3);
+                    // 🆕 [v6.3.1] BUGFIX: Příplatek +50% za rozbité (durability=0) — stejně jako u jiných repair entry pointů
+                    if (!isOwner && repairCost > 0 && di.item.durability <= 0) {
+                        repairCost = Math.ceil(repairCost * 1.5);
+                    }
+                    // 🆕 [v6.3.1] BUGFIX: Player skill 'repair' (Opravář) -50%/level
+                    if (!isOwner && repairCost > 0) {
+                        const _rLvl = (typeof getSkillLevel === 'function') ? getSkillLevel('repair') : 0;
+                        if (_rLvl > 0) {
+                            const _rDisc = Math.min(0.90, 0.50 * _rLvl);
+                            repairCost = Math.ceil(repairCost * (1 - _rDisc));
+                        }
+                    }
                     // [FIX BUG #21] Engineer set repairBonus -50% cena oprav
                     if (!isOwner && repairCost > 0) {
                         const _setFxLandRepair = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
                         if (_setFxLandRepair.repairBonus > 0) {
                             const discount = Math.min(0.50, _setFxLandRepair.repairBonus);
                             repairCost = Math.ceil(repairCost * (1 - discount));
+                        }
+                    }
+                    // 🆕 [v6.3.1] BUGFIX: Free repair od Technik / Kovář (apply na konec)
+                    if (!isOwner && repairCost > 0) {
+                        const _compLR = (typeof getAllCompanionBonuses === 'function') ? getAllCompanionBonuses() : {};
+                        const _bsLR = (typeof getBlacksmithInfo === 'function') ? getBlacksmithInfo() : { has: false, freeRepair: false };
+                        if (_compLR.freeRepair || (_bsLR.has && _bsLR.freeRepair)) {
+                            repairCost = 0;
                         }
                     }
                     const canAfford = isOwner || (state.money || 0) >= repairCost;
