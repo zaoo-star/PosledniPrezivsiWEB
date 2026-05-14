@@ -99113,17 +99113,36 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     const possibleDup = state.inv.find(i => i.id === equippedItem.id && i.type === equippedItem.type);
                     if (possibleDup) {
-                        // Existuje item se stejným id — přenes upgrady z equipped do possibleDup PŘED relinkováním
-                        const equippedIsUpgraded2 = equippedItem.ivanUpgrades || equippedItem.aiUpgraded || equippedItem.techUpgrades || equippedItem.technicianUpgrades || equippedItem.labUpgraded || equippedItem._smithyUpgrades || equippedItem.abyssShardUpgrades || equippedItem.enchantment;
-                        if (equippedIsUpgraded2) {
-                            for (const prop of upgradeProps) {
-                                if (equippedItem[prop] !== undefined) {
-                                    possibleDup[prop] = equippedItem[prop];
+                        // 🆕 [v6.3.1 BFG bug fix] OCHRANA: Nepřepisuj possibleDup pokud má LEPŠÍ damage/defense
+                        // Bug scénář: hráč má equipped BFG 202, koupí BFG 242 → sync hledá invItem podle damage 202,
+                        // nenajde (242 v inv), pak najde possibleDup po id (242), pokusí se přepsat 242 → 202!
+                        // Hráč: "Koupil jsem BFG s 242dmg a přepsalo se mi to na mých 202"
+                        const possibleDupHasHigherStats = (possibleDup.damage || 0) > (equippedItem.damage || 0) ||
+                                                           (possibleDup.defense || 0) > (equippedItem.defense || 0);
+                        const possibleDupHasUpgrades = possibleDup.ivanUpgrades || possibleDup.aiUpgraded || 
+                                                        possibleDup.techUpgrades || possibleDup.technicianUpgrades || 
+                                                        possibleDup.labUpgraded || possibleDup._smithyUpgrades || 
+                                                        possibleDup.abyssShardUpgrades || possibleDup.enchantment;
+                        
+                        if (possibleDupHasHigherStats || possibleDupHasUpgrades) {
+                            // PossibleDup je JINÁ instance s lepšími statistikami — NEPŘEPISUJ!
+                            // Místo toho přidej equippedItem do inv jako separátní položku
+                            console.warn(`🔧 syncEquipped: ${slot} - possibleDup '${possibleDup.name}' má lepší stats (dmg=${possibleDup.damage}, def=${possibleDup.defense}) - zachovávám obě verze, přidávám equipped do inv`);
+                            state.inv.push(equippedItem);
+                            // equipped zůstává jak je (nesahej)
+                        } else {
+                            // Existuje item se stejným id BEZ vyšších stats — bezpečné přenést upgrady z equipped
+                            const equippedIsUpgraded2 = equippedItem.ivanUpgrades || equippedItem.aiUpgraded || equippedItem.techUpgrades || equippedItem.technicianUpgrades || equippedItem.labUpgraded || equippedItem._smithyUpgrades || equippedItem.abyssShardUpgrades || equippedItem.enchantment;
+                            if (equippedIsUpgraded2) {
+                                for (const prop of upgradeProps) {
+                                    if (equippedItem[prop] !== undefined) {
+                                        possibleDup[prop] = equippedItem[prop];
+                                    }
                                 }
+                                console.warn(`🔧 syncEquipped: ${slot} '${equippedItem.name}' - přeneseny upgrady do possibleDup`);
                             }
-                            console.warn(`🔧 syncEquipped: ${slot} '${equippedItem.name}' - přeneseny upgrady do possibleDup`);
+                            state.equipped[slot] = possibleDup;
                         }
-                        state.equipped[slot] = possibleDup;
                     } else {
                         console.warn(`🔧 syncEquipped: ${slot} item '${equippedItem.name}' chyběl v inv - přidávám`);
                         state.inv.push(equippedItem);
@@ -117707,12 +117726,56 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 // OPRAVA: Použij actualBuyCount jako druhý parametr pro správný počet
                 // Pokud addItemToInventory selže (plný inventář), item spadne na zem
+                
+                // 🆕 [v6.3.1] BFG bug fix: zachovej originální upgrade hodnoty + ověř po přidání
+                // Hráč ze screenshotu: "Koupil jsem BFG s 242dmg a přepsalo se mi to na mých 202"
+                const _origDamage = newItem.damage;
+                const _origDefense = newItem.defense;
+                const _origUpgrades = {
+                    aiUpgraded: newItem.aiUpgraded,
+                    techUpgrades: newItem.techUpgrades,
+                    technicianUpgrades: newItem.technicianUpgrades,
+                    ivanUpgrades: newItem.ivanUpgrades,
+                    labUpgraded: newItem.labUpgraded,
+                    _smithyUpgrades: newItem._smithyUpgrades,
+                    abyssShardUpgrades: newItem.abyssShardUpgrades,
+                    enchantment: newItem.enchantment,
+                    special: newItem.special,
+                    name: newItem.name
+                };
+                
                 const addResult = addItemToInventory(newItem, actualBuyCount, true);
                 if (!addResult) {
-                    // Plný inventář - item spadne na zem
+                    // Plný inventář - item spadne na zem (zachovat upgrade)
                     const groundItem = { ...newItem, count: actualBuyCount };
                     addToGroundLoot(groundItem);
                     notifyWarning('📦 Plný inventář!', `${offer.item.icon || '📦'} ${offer.item.name} spadl na zem! Seber ho na aktuální lokaci.`);
+                } else {
+                    // 🆕 [v6.3.1] Ověření že upgrade hodnoty se zachovaly (POSLEDNÍ item v inv = ten co byl právě přidán)
+                    // Důvod: někdy se kvůli race condition/sync zmizí upgrade. Najdi po _uniqueId nebo poslední.
+                    try {
+                        const _addedItem = state.inv[state.inv.length - 1];
+                        if (_addedItem && _addedItem.id === newItem.id) {
+                            let _restored = 0;
+                            if (typeof _origDamage === 'number' && _origDamage > 0 && _addedItem.damage !== _origDamage) {
+                                _addedItem.damage = _origDamage;
+                                _restored++;
+                            }
+                            if (typeof _origDefense === 'number' && _origDefense > 0 && _addedItem.defense !== _origDefense) {
+                                _addedItem.defense = _origDefense;
+                                _restored++;
+                            }
+                            for (const [key, val] of Object.entries(_origUpgrades)) {
+                                if (val !== undefined && val !== null && _addedItem[key] !== val) {
+                                    _addedItem[key] = val;
+                                    _restored++;
+                                }
+                            }
+                            if (_restored > 0) {
+                                console.warn(`🔧 Marketplace buy: obnoveno ${_restored} upgrade vlastností (${_addedItem.name})`);
+                            }
+                        }
+                    } catch(e) { console.warn('Marketplace upgrade restore error:', e); }
                 }
                 
                 // [FIX v4.0.1] Track daily quest progress "Nákupčí" (Kup 2 věci)
