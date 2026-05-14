@@ -18992,13 +18992,54 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const validType = loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement';
             if (!validType) return false;
             
-            // Doma a ve městě = vždy otevřeno
-            if (loc.type === 'home' || loc.type === 'city') return true;
+            // 🆕 [v6.3.1] Pro vlastní úkryt (shelter) — potřebuješ market/tržiště/karavan_hub v osadě
+            // Bez nich prodat nelze (žádný obchodník)
+            if (loc.id === 'shelter' || loc.type === 'home') {
+                const settBuildings = state.settlement?.buildings || [];
+                const baseBuildings = state.base || [];
+                const hasMarket = settBuildings.includes('market') || baseBuildings.includes('market') ||
+                                  settBuildings.includes('trade_caravan_hub') || baseBuildings.includes('trade_caravan_hub') ||
+                                  settBuildings.includes('shop') || baseBuildings.includes('shop');
+                if (!hasMarket) return false;
+                return true;
+            }
+            
+            // Město = vždy otevřeno (Bučovice atd.)
+            if (loc.type === 'city') return true;
             
             // Pro shop a settlement lokace zkontroluj otevírací dobu
             const shopType = loc.shopType || 'settlement';
             return isShopOpen(shopType);
         }
+        
+        // 🆕 [v6.3.1] Vrátí detailní info proč nelze prodat (pro lepší error messages)
+        function getCannotSellReason() {
+            const loc = getCurrentLocation();
+            if (!loc) return 'Neznámá lokace';
+            
+            const validType = loc.type === 'home' || loc.type === 'shop' || loc.type === 'city' || loc.type === 'settlement';
+            if (!validType) return `V "${loc.name}" není žádný obchodník. Jdi do osady, města nebo obchodu.`;
+            
+            // Úkryt - chybí market
+            if (loc.id === 'shelter' || loc.type === 'home') {
+                const settBuildings = state.settlement?.buildings || [];
+                const baseBuildings = state.base || [];
+                const hasMarket = settBuildings.includes('market') || baseBuildings.includes('market') ||
+                                  settBuildings.includes('trade_caravan_hub') || baseBuildings.includes('trade_caravan_hub') ||
+                                  settBuildings.includes('shop') || baseBuildings.includes('shop');
+                if (!hasMarket) return 'V tvém úkrytu nemáš obchodníka. Postav 🏪 Tržiště nebo 🐪 Karavanní centrum v osadě, nebo jdi do města.';
+            }
+            
+            if (loc.type === 'city') return null; // OK
+            
+            const shopType = loc.shopType || 'settlement';
+            if (!isShopOpen(shopType)) {
+                return `Obchod v "${loc.name}" má zavřeno. Vrať se v otevírací době.`;
+            }
+            
+            return null; // Vše OK
+        }
+        window.getCannotSellReason = getCannotSellReason;
         
         // Synchronizace starého map.inBase s novým systémem
         function syncMapState() {
@@ -43308,6 +43349,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // AKCE - přímo v info boxu
             if (!state.world.traveling) {
                 html += '<div style="border-top: 1px solid #333; padding-top: 0.8rem; margin-top: 0.5rem;">';
+                // 🆕 [v6.3.1] Label aby noví hráči pochopili že jsou to akční tlačítka
+                html += '<div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; padding: 0.3rem 0.5rem; background: rgba(76, 175, 80, 0.08); border-left: 3px solid #4CAF50; border-radius: 4px;">';
+                html += '<span style="font-size: 0.9rem;">⚡</span>';
+                html += '<span style="color: #8bc34a; font-size: 0.75rem; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em;">Co tu můžeš dělat</span>';
+                html += '<span style="color: #666; font-size: 0.65rem; margin-left: auto;">↓ klikni na akci ↓</span>';
+                html += '</div>';
                 // [v3.9.96] Grid 3 sloupce pro konzistentní rozložení tlačítek napříč různými délkami textu
                 html += '<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem;">';
                 html += getLocationActionButtons(currentLoc);
@@ -56702,7 +56749,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Pre-conditions pro sell
             if (action === 'sell') {
                 if (typeof canSellHere === 'function' && !canSellHere()) {
-                    notifyWarning('🏪 Žádný obchod!', 'Musíš být u obchodníka aby mohl prodat.');
+                    // 🆕 [v6.3.1] Specifický error message s důvodem (úkryt bez tržiště/lokace/zavřeno)
+                    const reason = typeof getCannotSellReason === 'function' ? getCannotSellReason() : 'Není tu obchodník.';
+                    notifyWarning('🏪 Nelze tady prodat!', reason);
                     return;
                 }
                 if (typeof areShopsClosed === 'function') {
@@ -56726,15 +56775,51 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let preview = [];
             let totalCount = 0;
             let totalEarn = 0;
+            let sellableCount = 0; // 🆕 [v6.3.1] kolik se reálně prodá při shop money limit
+            let sellableEarn = 0;
+            let blockedByShopMoney = 0;
+            
+            // 🆕 [v6.3.1] Pro sell vypočti reálné množství s respektováním shop money limitu
+            let shopMoneyAvailable = action === 'sell' && typeof getShopMoney === 'function' ? getShopMoney() : Infinity;
+            const shopMoneyInitial = shopMoneyAvailable;
+            
             entries.forEach(([idxStr, amount]) => {
                 const idx = parseInt(idxStr);
                 const item = state.inv[idx];
                 if (!item) return;
                 const itemData = ITEMS.find(i => i.id === item.id) || item;
-                if (action === 'sell' && (item.price || itemData.price)) {
-                    const npcPrice = (typeof calculateNpcSellPrice === 'function') 
-                        ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
-                    totalEarn += npcPrice * amount;
+                
+                if (action === 'sell') {
+                    // Skip items NPC nekupuje (consistency s execute)
+                    const isUnsellable = item.cantSell || item.type === 'quest' || item.type === 'quest_item' || 
+                                          item.type === 'rune' || item.crafted || item.fromCaravan || 
+                                          item.fromShop || item._ownedByCompanion;
+                    if (isUnsellable) return;
+                    
+                    if (item.price || itemData.price) {
+                        const npcPrice = (typeof calculateNpcSellPrice === 'function') 
+                            ? calculateNpcSellPrice(itemData.price || item.price || 0) : Math.floor((itemData.price || item.price || 0) * 0.3);
+                        const itemEarn = npcPrice * amount;
+                        totalEarn += itemEarn;
+                        
+                        // Zjisti kolik se reálně prodá při shop money limit
+                        if (shopMoneyAvailable >= itemEarn) {
+                            sellableEarn += itemEarn;
+                            sellableCount += amount;
+                            shopMoneyAvailable -= itemEarn;
+                        } else {
+                            // Částečné prodej - kolik kusů se vejde do zbývajících peněz
+                            const affordable = Math.floor(shopMoneyAvailable / npcPrice);
+                            if (affordable > 0) {
+                                sellableEarn += affordable * npcPrice;
+                                sellableCount += affordable;
+                                shopMoneyAvailable -= affordable * npcPrice;
+                                blockedByShopMoney += (amount - affordable);
+                            } else {
+                                blockedByShopMoney += amount;
+                            }
+                        }
+                    }
                 }
                 preview.push(`${item.icon || '📦'} ${item.name} × ${amount}`);
                 totalCount += amount;
@@ -56743,13 +56828,56 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const previewText = preview.slice(0, 6).join('<br>') + 
                 (preview.length > 6 ? `<br><span style="color:#666">+ ${preview.length - 6} dalších</span>` : '');
             
+            // 🆕 [v6.3.1] Shop money UI pro sell - ukáže limit a varování pokud blockováno
+            let shopMoneyHtml = '';
+            if (action === 'sell') {
+                const shopMoneyAfter = Math.max(0, shopMoneyInitial - sellableEarn);
+                const limitPct = shopMoneyInitial > 0 ? Math.floor((shopMoneyInitial / (state.shopMoney?.[state.world?.currentLocation || 'shelter']?.limit || shopMoneyInitial)) * 100) : 0;
+                const resetHrs = typeof getShopResetTime === 'function' ? Math.ceil(getShopResetTime() / (60*60*1000)) : 0;
+                
+                // Lokace info
+                const _currentLoc = typeof getCurrentLocation === 'function' ? getCurrentLocation() : null;
+                const _locName = _currentLoc ? (typeof getLocName === 'function' ? getLocName(_currentLoc.id) : _currentLoc.name) : 'Neznámá lokace';
+                const _locIcon = _currentLoc?.icon || '📍';
+                const _locTypeLabel = _currentLoc?.type === 'home' ? 'Úkryt' :
+                                     _currentLoc?.type === 'city' ? 'Město' :
+                                     _currentLoc?.type === 'shop' ? 'Obchod' :
+                                     _currentLoc?.type === 'settlement' ? 'Osada' : 'Lokace';
+                
+                shopMoneyHtml = `
+                    <div style="background: #0d1a1a; padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; border: 1px solid #2a4a4a; font-size: 0.8rem;">
+                        <div style="color: #4dd0e1; font-size: 0.75rem; margin-bottom: 0.3rem;">🏪 Prodáváš obchodníkovi v:</div>
+                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                            <span style="font-size: 1.2rem;">${_locIcon}</span>
+                            <div>
+                                <div style="color: #fff; font-weight: bold; font-size: 0.85rem;">${_locName}</div>
+                                <div style="color: #888; font-size: 0.65rem;">${_locTypeLabel}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="background: #1a1a0d; padding: 0.5rem; border-radius: 6px; margin: 0.5rem 0; border: 1px solid #5a5a2a; font-size: 0.8rem;">
+                        <div style="display: flex; justify-content: space-between; color: #ffd700;">
+                            <span>💰 Obchodník má: <strong>${shopMoneyInitial.toLocaleString()}</strong></span>
+                            <span style="color: #888;">(${limitPct}%, reset za ~${resetHrs}h)</span>
+                        </div>
+                        ${blockedByShopMoney > 0 ? `
+                            <div style="color: #ff9800; margin-top: 0.3rem;">⚠️ <strong>${blockedByShopMoney} ks nezakoupí</strong> (obchodník nemá dost peněz)</div>
+                            <div style="color: #aaa; margin-top: 0.2rem; font-size: 0.75rem;">Prodá se: ${sellableCount}/${totalCount} ks za <strong style="color:#ffd700">+${sellableEarn.toLocaleString()} 💰</strong></div>
+                        ` : `
+                            <div style="color: #8bc34a; margin-top: 0.2rem; font-size: 0.75rem;">✅ Vše se prodá (obchodník má dost peněz)</div>
+                        `}
+                    </div>
+                `;
+            }
+            
             showModal(`${config.title} ${totalCount}×?`, `
                 <div style="text-align: center; padding: 0.5rem;">
                     <p style="color: #aaa; font-size: 0.85rem; margin-bottom: 0.8rem;">${entries.length} ${entries.length === 1 ? 'stack' : (entries.length < 5 ? 'stacky' : 'stacků')}, celkem ${totalCount} kusů:</p>
                     <div style="background: #1a1a1a; padding: 0.5rem; border-radius: 6px; margin-bottom: 0.8rem; max-height: 200px; overflow-y: auto; text-align: left; font-size: 0.8rem;">
                         ${previewText}
                     </div>
-                    ${action === 'sell' ? `<p style="color: #ffd700; font-size: 1.2rem;">Získáš: <strong>+${totalEarn} 💰</strong></p>` : ''}
+                    ${shopMoneyHtml}
+                    ${action === 'sell' ? `<p style="color: #ffd700; font-size: 1.2rem;">Získáš: <strong>+${(blockedByShopMoney > 0 ? sellableEarn : totalEarn).toLocaleString()} 💰</strong></p>` : ''}
                     <p style="color: #f44336; font-size: 0.85rem;">${config.warning}</p>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
