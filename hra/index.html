@@ -53734,12 +53734,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return Math.floor(BASE_XP * Math.pow(1.5, level - 1));
         }
         
-        function addXP(amount) {
+        function addXP(amount, options = {}) {
             // === XP SYSTÉM ZALOŽENÝ NA TOTALXP ===
             // totalXP = celkové získané XP (nikdy neklesá)
             // level = vypočítáno z totalXP
             // xp = progress k dalšímu levelu
             // xpNeed = kolik potřebuješ pro další level
+            
+            // 🆕 [v6.3.1] options.raw = true → bez bonusů (přesný amount)
+            // Pro admin reward a tombolu, kde admin chce dát PŘESNĚ X XP
+            const isRaw = options === true || options?.raw === true;
             
             // Validace pomocí safe utility
             amount = safeInteger(amount, 0, 0);
@@ -53749,6 +53753,35 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             let finalAmount = amount;
+            
+            // 🆕 Pokud raw=true, přeskoč všechny bonusy a aplikuj přesný amount
+            if (isRaw) {
+                console.log(`📊 addXP RAW (no bonuses): ${amount} XP`);
+                // Skip přímo na totalXP update
+                const oldLevel = state.char.level || 1;
+                state.char.totalXP = (state.char.totalXP || 0) + finalAmount;
+                
+                // Recalc level z totalXP
+                if (typeof recalcLevelFromTotalXP === 'function') {
+                    recalcLevelFromTotalXP();
+                } else {
+                    // Fallback inline calc
+                    let newLevel = 1, xpRequired = 100, xpLeft = state.char.totalXP;
+                    while (xpLeft >= xpRequired) {
+                        xpLeft -= xpRequired;
+                        newLevel++;
+                        xpRequired = Math.floor(100 * Math.pow(1.5, newLevel - 1));
+                    }
+                    state.char.level = newLevel;
+                    state.char.xp = xpLeft;
+                    state.char.xpNeed = xpRequired;
+                }
+                
+                if ((state.char.level || 1) > oldLevel && typeof onLevelUp === 'function') {
+                    onLevelUp(oldLevel, state.char.level);
+                }
+                return;
+            }
             
             // 📈 Level scaling bonus: +5% XP za každý level nad 5
             // [BUG 7 FIX] Capped na +100% (level 25+) — předtím nekončeno (level 100 = +475%)
@@ -53798,20 +53831,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
-            // [FIX v3.9.94] 📚 Skill: Učenec (xp_bonus) - +25% XP per level (max 3 = +75%)
-            if (typeof getSkillTreeBonus === 'function') {
-                const xpSkillBonus = getSkillTreeBonus('xpBonus');
-                if (xpSkillBonus > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + xpSkillBonus));
-                }
-            }
-            // Backwards compat: starý 'efficient' skill (= xp_bonus po migraci)
-            if (typeof getSkillLevel === 'function' && !state._skillsMigrated) {
-                const efficientLevel = getSkillLevel('efficient');
-                if (efficientLevel > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + 0.25 * efficientLevel));
-                }
-            }
+            // 🆕 [v6.3.1 BUG FIX] DUPLIKACE odstraněna - xpBonus skill se aplikoval 2× (zde + výše L53766)
+            // Backwards compat: starý 'efficient' skill (= xp_bonus po migraci) — pouze pokud ne-migrovaný
+            // (Když je migrovaný, už se aplikoval výše, NEDUPLIKUJ)
+            // PŮVODNÍ KÓD (odstraněn):
+            //   if (typeof getSkillTreeBonus === 'function') {
+            //       const xpSkillBonus = getSkillTreeBonus('xpBonus'); ← duplikace L53766!
+            //       if (xpSkillBonus > 0) finalAmount = Math.floor(finalAmount * (1 + xpSkillBonus));
+            //   }
+            //   if (typeof getSkillLevel === 'function' && !state._skillsMigrated) {
+            //       const efficientLevel = getSkillLevel('efficient'); ← duplikace L53773!
+            //       if (efficientLevel > 0) finalAmount = Math.floor(finalAmount * (1 + 0.25 * efficientLevel));
+            //   }
             
             // 🎓 NPC XP bonus (Učitelka Věra + Knihovník Emil)
             if (typeof getNPCBonuses === 'function') {
@@ -151196,6 +151227,29 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 return;
             }
             
+            // 🆕 [v6.3.1 EXPLOIT FIX] Mutex - zabraň paralelnímu raidu (exploit přes spam-click)
+            // Bug: hráč mohl spam-kliknout než stihl cooldown check zaregistrovat
+            if (window._wbRaidInProgress) {
+                console.warn('🐉 Raid již běží, ignoruji další pokus');
+                notifyWarning('⏳ Raid běží', 'Počkej až dokončíš aktuální boj.');
+                return;
+            }
+            window._wbRaidInProgress = true;
+            
+            try {
+                await _joinWorldBossRaidInternal();
+            } finally {
+                window._wbRaidInProgress = false;
+            }
+        }
+        
+        async function _joinWorldBossRaidInternal() {
+            const raidData = worldBossRaidData || window.worldBossRaidData;
+            if (!raidData || !raidData.active) {
+                notifyWarning('Žádný raid', 'Momentálně neprobíhá žádný World Boss raid.');
+                return;
+            }
+            
             if (raidData.defeated) {
                 notifyInfo('Boss poražen!', 'World Boss už byl poražen!');
                 return;
@@ -151236,10 +151290,19 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // Cooldown mezi útoky (3 hodiny) - admin má bypass
             const myName = getPlayerName().replace(/[\\/\.#$\[\]]/g, '_');
+            
+            // 🆕 [v6.3.1 EXPLOIT FIX] FRESH fetch z Firebase před cooldown checkem
+            // Bug: cache může být stale → multi-window exploit obejít cooldown
+            let _freshLastAttack = 0;
+            try {
+                const _freshSnap = await firebaseDB.ref(`worldBossRaid/participants/${myName}/lastAttack`).once('value');
+                _freshLastAttack = _freshSnap.val() || 0;
+            } catch(e) { console.warn('Fresh cooldown fetch error:', e); }
+            
             // Použij lokální cache jako primární zdroj - je vždy aktuální i když Firebase listener ještě neodpověděl
             const _localLastAttack = window._wbLastAttack?.[myName] || 0;
             const _fbLastAttack = raidData.participants?.[myName]?.lastAttack || 0;
-            const lastAttack = Math.max(_localLastAttack, _fbLastAttack);
+            const lastAttack = Math.max(_localLastAttack, _fbLastAttack, _freshLastAttack);
             const cooldownMs = 3 * 60 * 60 * 1000; // 3 hodiny
             // [v4.0.1] Admin bypass - admin nemá cooldown na WB útoky (pro testování + správu)
             if (!isAdmin() && lastAttack > 0 && Date.now() - lastAttack < cooldownMs) {
@@ -151399,6 +151462,24 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         return data;
                     }
                     
+                    // 🆕 [v6.3.1 EXPLOIT FIX] Server-side cooldown enforcement v transakci
+                    // Bug: hráč mohl otevřít více oken/karet a obejít 3h cooldown
+                    // Důsledek: 1 hráč zničil 94% HP bosse za pár minut (Filla14cz report)
+                    // Bez této ochrany: client-side check má race window mezi check a setting lastAttack
+                    const _txIsAdmin = (data.participants?.[myName]?._isAdmin === true) || (window._wbAdminBypass === true);
+                    const _txCooldownMs = 3 * 60 * 60 * 1000; // 3 hodiny
+                    const _txAdminCooldownMs = 3000; // 3s pro admina (Firebase sync)
+                    const _txExistingLastAttack = data.participants?.[myName]?.lastAttack || 0;
+                    
+                    if (_txExistingLastAttack > 0) {
+                        const _txTimeSince = now - _txExistingLastAttack;
+                        const _txRequiredCd = _txIsAdmin ? _txAdminCooldownMs : _txCooldownMs;
+                        if (_txTimeSince < _txRequiredCd) {
+                            console.warn(`🐉 TX REJECTED: cooldown active - ${myName} last attack ${Math.floor(_txTimeSince/1000)}s ago, required ${Math.floor(_txRequiredCd/1000)}s`);
+                            return; // abort transaction (undefined return)
+                        }
+                    }
+                    
                     // Odečti damage
                     data.currentHp = Math.max(0, (data.currentHp || 0) - damageDealt);
                     
@@ -151427,6 +151508,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const txActuallyApplied = txResult.committed && raidDataAfter?.active && raidDataAfter?.participants?.[myName];
                 
                 console.log(`🐉 Raid damage synced: ${damageDealt} DMG by ${myName}, committed: ${txResult.committed}, applied: ${txActuallyApplied}, newHp: ${raidDataAfter?.currentHp}`);
+                
+                // 🆕 [v6.3.1 EXPLOIT FIX] Pokud transakce byla odmítnuta serverem (cooldown), informuj hráče
+                if (!txResult.committed) {
+                    notifyWarning('🐉 Útok odmítnut', 'Server odmítl útok - pravděpodobně ještě běží cooldown nebo boss byl poražen.');
+                    return; // skip chat message
+                }
                 
                 // Chat zpráva o útoku - JEN pokud transakce prošla (boss nebyl mrtvý/neaktivní)
                 if (txActuallyApplied) {
@@ -157638,8 +157725,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Přidej XP
             const xp = Math.min(parseInt(reward.xp) || 0, 999999);
             if (xp > 0) {
-                addXP(xp);
-                console.log('🎁 Přidáno XP:', xp);
+                // 🆕 [v6.3.1] Admin reward XP = PŘESNÝ amount (bez bonusů)
+                // Když admin pošle 1000 XP, hráč dostane přesně 1000 XP (ne 1000+bonusy)
+                addXP(xp, { raw: true });
+                console.log('🎁 Přidáno XP (raw):', xp);
             }
             
             // Přidej náboje
@@ -157804,8 +157893,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 }
             } else if (prize.type === 'xp') {
                 if (amount > 0) {
-                    addXP(amount);
-                    console.log('🎉 Přidáno XP:', amount);
+                    // 🆕 [v6.3.1] Tombola XP = PŘESNÝ amount (bez bonusů)
+                    // Admin chce dát přesně X XP, ne X×všechny multiplikátory
+                    addXP(amount, { raw: true });
+                    console.log('🎉 Přidáno XP (raw):', amount);
                     notifySuccess('🎉 VÝHRA V TOMBOLE!', `+${amount} ⭐ XP`);
                 }
             } else if (prize.type === 'item') {
