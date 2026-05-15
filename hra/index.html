@@ -8835,6 +8835,21 @@
             { id: 'psychic_set_weapon', name: 'Mentální žezlo', icon: '🔮', type: 'weapon', damage: 30, weight: 1, price: 1300, rarity: 'legendary', classRequired: 'psychic', setId: 'psychic', bonus: { critChance: 0.15, int: 2 }, desc: 'Set Psychika (3/3): +15% krit, +2 Inteligence' }
         ];
         
+        // 🆕 [v6.3.1 PERF] O(1) cache pro ITEMS lookup po ID — hot path pro inv render + type repair
+        // Před: 30 items × 718 ITEMS = ~21,500 iterací per render
+        // Po: 30 items × O(1) = 30 lookups per render
+        const ITEMS_BY_ID = new Map();
+        ITEMS.forEach(item => {
+            if (item && item.id) ITEMS_BY_ID.set(item.id, item);
+        });
+        window.ITEMS_BY_ID = ITEMS_BY_ID;
+        
+        // Helper - používej místo ITEMS.find(i => i.id === id) pro lepší výkon
+        function getItemDef(id) {
+            return ITEMS_BY_ID.get(id);
+        }
+        window.getItemDef = getItemDef;
+        
         // === SNÍŽENÍ ŠANCE NA NALEZENÍ VZÁCNÝCH VĚCÍ ===
         // Aplikuje se na VŠECHNY itemy s rarity rare, epic, legendary
         ITEMS.forEach(item => {
@@ -26082,8 +26097,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             weapon.name = weapon.name + ' ⚡';
             
             // BUG FIX: Sync do inv kopie (lab upgrade neměl žádný sync!)
+            // 🆕 [v6.3.1 BFG bug fix] PŘESNÝ match podle _uniqueId
             if (state.equipped?.weapon === weapon) {
-                const invWeapon = state.inv.find(i => i.id === weapon.id && i.type === 'weapon');
+                let invWeapon = null;
+                if (weapon._uniqueId) {
+                    invWeapon = state.inv.find(i => i._uniqueId === weapon._uniqueId);
+                }
+                if (!invWeapon) invWeapon = weapon;
                 if (invWeapon && invWeapon !== weapon) {
                     invWeapon.damage = weapon.damage;
                     invWeapon.labUpgraded = true;
@@ -30752,6 +30772,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = state.inv[playerInvIdx];
             if (!item) return;
             
+            // 🆕 [v6.3.1 BUG FIX - Sharw report] Zákaz transferu equipped items
+            // Bug: hráč dal equipped item společníkovi → splice z inv ALE state.equipped držel referenci
+            // → sync funkce ho znovu přidala do inv → DUPLIKACE (item v inv + u společníka)
+            if (typeof isItemEquipped === 'function' && isItemEquipped(item)) {
+                notifyWarning('⚠️ Nasazená položka', 'Nejdřív sundej tuto věc, pak ji dej společníkovi (jinak by se zduplikovala).');
+                return;
+            }
+            
             const singleWeight = item.weight || 0;
             const maxCarry = getCompanionMaxCarry(comp);
             const currentWeight = getCompanionCurrentWeight(comp);
@@ -30767,12 +30795,31 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
+            // 🆕 [v6.3.1 BUG FIX - Sharw report 2] Stack jen s NEvylepšeným itemem stejného ID
+            // Bug: vylepšené itemy se stackly s čistým → "propisování upgradů" když se vrátí ze společníka
+            const itemIsModified = item.aiUpgraded || item.techUpgrades || item.ivanUpgrades || 
+                                    item.upgraded || item.technicianUpgrades || item.labUpgraded || 
+                                    item._smithyUpgrades || item.abyssShardUpgrades;
+            
             // Přidej do společníkova inventáře
-            const existing = comp.inventory.find(i => i.id === item.id && !i._ownedByCompanion);
+            // Stackování jen pokud OBA itemy jsou čisté (žádné upgrady)
+            const existing = !itemIsModified ? comp.inventory.find(i => 
+                i.id === item.id && 
+                !i._ownedByCompanion === false && // ano, jen ty co companion vlastní
+                !i.aiUpgraded && !i.techUpgrades && !i.ivanUpgrades && 
+                !i.upgraded && !i.technicianUpgrades && !i.labUpgraded && 
+                !i._smithyUpgrades && !i.abyssShardUpgrades
+            ) : null;
+            
             if (existing) {
                 existing.count = (existing.count || 1) + actualCount;
             } else {
-                comp.inventory.push({...item, count: actualCount, _ownedByCompanion: comp.uniqueId || comp.id});
+                // Zachovej _uniqueId pokud existuje (aby tracking fungoval)
+                const newItem = {...item, count: actualCount, _ownedByCompanion: comp.uniqueId || comp.id};
+                if (!newItem._uniqueId && itemIsModified) {
+                    newItem._uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                }
+                comp.inventory.push(newItem);
             }
             
             // Odeber z hráčova inventáře
@@ -31160,8 +31207,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            // Najdi předmět v inventáři
-            const itemIndex = state.inv.findIndex(i => i.id === itemId);
+            // 🆕 [v6.3.1 BUG FIX - Sharw report] PŘESNÝ MATCH předmětu pro společníka
+            // Bug: findIndex(i => i.id === itemId) vzal PRVNÍ se stejným ID — i kdyby to byla equipped vylepšená!
+            // Tj. hráč myslel že dává čistou brokovnici, ale dostal vylepšenou = duplikace upgradů
+            // Priorita: 1) non-equipped + non-modified, 2) non-equipped, 3) cokoliv
+            let itemIndex = -1;
+            // Priorita 1: non-equipped + non-modified
+            itemIndex = state.inv.findIndex(i => i.id === itemId && 
+                !isItemEquipped(i) && 
+                !i.aiUpgraded && !i.techUpgrades && !i.ivanUpgrades && 
+                !i.upgraded && !i.technicianUpgrades && !i.labUpgraded && 
+                !i._smithyUpgrades && !i.abyssShardUpgrades);
+            // Priorita 2: jen non-equipped
+            if (itemIndex === -1) {
+                itemIndex = state.inv.findIndex(i => i.id === itemId && !isItemEquipped(i));
+            }
+            // Priorita 3: cokoliv (fallback - ale zablokujeme v dalším kroku pokud equipped)
+            if (itemIndex === -1) {
+                itemIndex = state.inv.findIndex(i => i.id === itemId);
+            }
+            
             if (itemIndex === -1) {
                 notifyError('Chyba', ('Předmět nenalezen v inventáři'));
                 return;
@@ -31474,9 +31539,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (!state.equipped.weapon.name.includes('⚡')) {
                     state.equipped.weapon.name = state.equipped.weapon.name + ' ⚡';
                 }
-                // BUG FIX: Sync do inv kopie
-                // OPRAVA: Po syncEquippedReferences je equipped STEJNÝ objekt jako inv, podmínka i !== vyloučí správný item
-                const invW = state.inv.find(i => i.id === state.equipped.weapon.id && i.type === 'weapon');
+                // 🆕 [v6.3.1 BFG bug fix] PŘESNÝ match podle _uniqueId — jinak může přepsat damage jiné instance
+                // Hráči hlásili: stejně upgradované zbraně různý damage, koupený BFG 242 se přepsal na 205
+                let invW = null;
+                if (state.equipped.weapon._uniqueId) {
+                    invW = state.inv.find(i => i._uniqueId === state.equipped.weapon._uniqueId);
+                }
+                if (!invW) invW = state.equipped.weapon; // Fallback: equipped JE inv item (po sync)
                 if (invW && invW !== state.equipped.weapon) { invW.damage = state.equipped.weapon.damage; invW.name = state.equipped.weapon.name; invW.technicianUpgrades = upgCount; }
                 const _wLim = (typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {}).canUpgrade ? 5 : 3;
                 notifySuccess('⚡ Vylepšeno!', `${state.equipped.weapon.name}: +${totalBonus} DMG (${upgCount}/${_wLim})`);
@@ -38842,6 +38911,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 consolidateInventory();
                 // [FIX] Po konsolidaci re-linkuj equipped reference (consolidation vytváří nové objekty)
                 if (typeof syncEquippedReferences === 'function') syncEquippedReferences();
+                // 🆕 [v6.3.1] Migrace zbraní - přiřadí _uniqueId a najde podezřelé duplikáty
+                if (typeof migrateAndAuditWeapons === 'function') {
+                    try {
+                        const result = migrateAndAuditWeapons();
+                        if (result.migrated > 0) {
+                            console.log(`🔧 BFG bug migrace: přiřazeno _uniqueId k ${result.migrated} zbraním/zbrojím`);
+                        }
+                        if (result.suspicious.length > 0) {
+                            console.warn(`⚠️ Podezřelé duplikáty (stejné upgrady, různý damage):`, result.suspicious);
+                        }
+                    } catch(e) { console.warn('Weapon migration error:', e); }
+                }
+                
+                // 🆕 [v6.3.1] AUTO-RECALC damage z upgrade flagů — opraví zbraně s přepsaným damage
+                // Hráč chtěl "aby to správně počítalo" — toto opraví všechny postižené zbraně
+                // Konzervativní: opraví JEN damage co je výrazně NIŽŠÍ než expected (-50 a níže)
+                // Pokud je damage VYŠŠÍ než expected (bug overflow), jen notifikuje
+                if (typeof recalculateAllWeaponDamage === 'function') {
+                    try {
+                        const result = recalculateAllWeaponDamage({ tolDown: 30, tolUp: 30, fixDown: false });
+                        if (result.fixed > 0) {
+                            console.log(`🔧 Auto-recalc damage: opraveno ${result.fixed} hodnot na základě vylepšení`);
+                            // Notifikace jednou
+                            if (!state._damageRecalcShown) {
+                                state._damageRecalcShown = true;
+                                setTimeout(() => {
+                                    if (typeof notifyInfo === 'function') {
+                                        notifyInfo('🔧 Damage opraven', `${result.fixed} zbraní mělo přepsaný damage — opraveno podle skutečných vylepšení.`);
+                                    }
+                                }, 2500);
+                            }
+                        }
+                        if (result.suspicious.length > 0) {
+                            console.warn(`⚠️ Zbraně s VYŠŠÍM než expected damage:`, result.suspicious);
+                            // Notifikace jen jednou
+                            if (!state._damageHighSuspicionShown) {
+                                state._damageHighSuspicionShown = true;
+                                setTimeout(() => {
+                                    const first = result.suspicious[0];
+                                    if (typeof notifyWarning === 'function') {
+                                        notifyWarning('⚠️ Zvláštní damage', `${first.name}: ${first.current} dmg (očekáváno ~${first.expected}). Pokud chceš opravit, řekni adminovi.`);
+                                    }
+                                }, 3500);
+                            }
+                        }
+                    } catch(e) { console.warn('Damage recalc error:', e); }
+                }
             }
             
             // Migration: Přesun Rad-X, Radaway, Stimpack z resources do inventáře (bugfix)
@@ -39988,9 +40104,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     }
                                     
                                     // Fallback: doplň chybějící/špatný type/effect z ITEMS definice (fix pro staré/poškozené save)
-                                    const _iDef = ITEMS.find(it => it.id === i.id);
-                                    if (_iDef?.type === 'consumable') { i.type = 'consumable'; if (_iDef.effect) i.effect = _iDef.effect; }
-                                    else if (!i.type && _iDef?.type) i.type = _iDef.type;
+                                    // 🆕 [v6.3.1 BUG FIX - Sharw report] Oprav i ŠPATNÝ type (např. weapon co se stal quest)
+                                    // 🆕 [v6.3.1 PERF] Použij ITEMS_BY_ID Map (O(1)) místo ITEMS.find (O(n))
+                                    const _iDef = ITEMS_BY_ID ? ITEMS_BY_ID.get(i.id) : ITEMS.find(it => it.id === i.id);
+                                    if (_iDef?.type) {
+                                        // Pokud se item.type liší od definovaného type, opraví ho
+                                        if (i.type !== _iDef.type) {
+                                            console.warn(`🔧 Inv type oprava: ${i.name} (${i.id}) měl type='${i.type}', opraveno na '${_iDef.type}'`);
+                                            i.type = _iDef.type;
+                                        }
+                                        if (_iDef.type === 'consumable' && _iDef.effect) i.effect = _iDef.effect;
+                                    }
                                     if (!i.effect && _iDef?.effect) i.effect = _iDef.effect;
                                     
                                     // Clickable types - use index for unique identification
@@ -72783,9 +72907,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             state.equipped.weapon.ivanUpgrades = currentUpgrades + 1;
             state.equipped.weapon.name = state.equipped.weapon.name.replace(/ \+*$/, '') + ' +'.repeat(currentUpgrades + 1);
             
-            // BUG FIX: Sync do inv kopie (po save/load jsou různé objekty)
-            // OPRAVA: Po syncEquippedReferences je equipped STEJNÝ objekt jako inv — podmínka i !== by přeskočila sync
-            const invWeapon = state.inv.find(i => i.id === state.equipped.weapon.id && i.type === 'weapon');
+            // 🆕 [v6.3.1 BFG bug fix] PŘESNÝ match podle _uniqueId — jinak přepíše damage jiného BFG v inv
+            let invWeapon = null;
+            if (state.equipped.weapon._uniqueId) {
+                invWeapon = state.inv.find(i => i._uniqueId === state.equipped.weapon._uniqueId);
+            }
+            if (!invWeapon) invWeapon = state.equipped.weapon; // Fallback: equipped JE inv item
             if (invWeapon && invWeapon !== state.equipped.weapon) {
                 invWeapon.damage = state.equipped.weapon.damage;
                 invWeapon.ivanUpgrades = state.equipped.weapon.ivanUpgrades;
@@ -73500,7 +73627,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!state.equipped.weapon.name.includes('[TECH]')) {
                     state.equipped.weapon.name = state.equipped.weapon.name + ' [TECH]';
                 }
-                const invWeapon = state.inv.find(i => i.id === state.equipped.weapon.id && i.type === 'weapon');
+                // 🆕 [v6.3.1 BFG bug fix] PŘESNÝ match podle _uniqueId
+                let invWeapon = null;
+                if (state.equipped.weapon._uniqueId) {
+                    invWeapon = state.inv.find(i => i._uniqueId === state.equipped.weapon._uniqueId);
+                }
+                if (!invWeapon) invWeapon = state.equipped.weapon;
                 if (invWeapon && invWeapon !== state.equipped.weapon) {
                     invWeapon.damage = state.equipped.weapon.damage;
                     invWeapon.techUpgrades = state.equipped.weapon.techUpgrades;
@@ -99025,6 +99157,277 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // Po save/load jsou equipped a inv RŮZNÉ objekty. Tato funkce:
         // 1. Zajistí že equipped itemy mají odpovídající kopii v inv
         // 2. Propojí reference aby úpravy fungovaly správně
+        // 🆕 [v6.3.1] BFG bug post-mortem: Migrace + analýza zbraní s podivnými damage
+        // Hráči (OwerLord, Filla14cz, barlog, Artrixx) hlásili že stejně upgradované zbraně mají různý damage
+        // Tato funkce přiřadí _uniqueId všem zbraním/zbrojím + nalezne podezřelé duplikáty
+        
+        // 🆕 [v6.3.1] DETERMINISTICKÝ výpočet damage zbraně z upgrade flagů
+        // Pro damage repair: rekonstruuje správný damage podle vylepšení
+        function calculateExpectedWeaponDamage(item) {
+            if (!item || !item.id) return null;
+            // 🆕 [v6.3.1 PERF] O(1) lookup
+            const def = (typeof ITEMS_BY_ID !== 'undefined') ? ITEMS_BY_ID.get(item.id) : 
+                        ((typeof ITEMS !== 'undefined') ? ITEMS.find(i => i.id === item.id) : null);
+            if (!def || typeof def.damage !== 'number') return null;
+            
+            let damage = def.damage; // base
+            
+            // Kovář Ivan - 3× max, +5 each (deterministicky, ignorujeme blacksmith bonus pro determinismus)
+            if (item.ivanUpgrades > 0) damage += item.ivanUpgrades * 5;
+            
+            // Klára Tech (NPC ve světě) - 3× max, +5 each pro zbraně
+            if (item.techUpgrades > 0) damage += item.techUpgrades * 5;
+            
+            // Technik (Ralph nebo companion) - 3-5× max, +5 each (deterministicky)
+            if (item.technicianUpgrades > 0) damage += item.technicianUpgrades * 5;
+            
+            // AI Chip - 1× max, +10
+            if (item.aiUpgraded) damage += 10;
+            
+            // Klanová kovárna - 3× max, +3 each (deterministicky střed 2-3 random)
+            if (item._smithyUpgrades > 0) damage += item._smithyUpgrades * 3;
+            
+            // Střep Temnoty (Abyss Shard) - 5× max, +5 each
+            if (item.abyssShardUpgrades > 0) damage += item.abyssShardUpgrades * 5;
+            
+            // Enchantment bonusDamage (Fire: +5, Ice: +2)
+            if (item.enchantment && typeof ENCHANTMENTS !== 'undefined') {
+                const ench = ENCHANTMENTS.find(e => e.id === item.enchantment);
+                if (ench?.effect?.bonusDamage) damage += ench.effect.bonusDamage;
+            }
+            
+            // Laboratoř - 1×, ×1.1 (aplikuje se na finální)
+            if (item.labUpgraded) damage = Math.ceil(damage * 1.1);
+            
+            return damage;
+        }
+        window.calculateExpectedWeaponDamage = calculateExpectedWeaponDamage;
+        
+        // 🆕 [v6.3.1] Stejné pro defense
+        function calculateExpectedDefense(item) {
+            if (!item || !item.id) return null;
+            // 🆕 [v6.3.1 PERF] O(1) lookup
+            const def = (typeof ITEMS_BY_ID !== 'undefined') ? ITEMS_BY_ID.get(item.id) : 
+                        ((typeof ITEMS !== 'undefined') ? ITEMS.find(i => i.id === item.id) : null);
+            if (!def || typeof def.defense !== 'number') return null;
+            
+            let defense = def.defense;
+            
+            // Ivan - +5 each (3× max)
+            if (item.ivanUpgrades > 0) defense += item.ivanUpgrades * 5;
+            // Klára Tech - +10 each pro brnění (3× max)
+            if (item.techUpgrades > 0) defense += item.techUpgrades * 10;
+            // Technik - +5 each
+            if (item.technicianUpgrades > 0) defense += item.technicianUpgrades * 5;
+            // Klanová kovárna - +3 each
+            if (item._smithyUpgrades > 0) defense += item._smithyUpgrades * 3;
+            // Fortify enchant
+            if (item.enchantment && typeof ENCHANTMENTS !== 'undefined') {
+                const ench = ENCHANTMENTS.find(e => e.id === item.enchantment);
+                if (ench?.effect?.bonusDefense) defense += ench.effect.bonusDefense;
+            }
+            // Lab ×1.1
+            if (item.labUpgraded) defense = Math.ceil(defense * 1.1);
+            
+            return defense;
+        }
+        window.calculateExpectedDefense = calculateExpectedDefense;
+        
+        // 🆕 [v6.3.1] Auto-recalc - synchronizuje uložený damage s vypočítaným
+        // Konzervativní: opraví jen pokud damage je výrazně mimo (>tolerance) — typicky kvůli bug overwrite
+        // Tolerance je vyšší kvůli blacksmith bonusům (5+) a smithy random
+        function recalculateAllWeaponDamage(options = {}) {
+            // tolerance: damage se může legitimně lišit kvůli blacksmith bonusům a smithy random
+            // Pro ivan/technician s lvl5 kovář: +5 each * 8 upgrades = +40 max
+            // + smithy random: +6 (3×2-3) navíc
+            // → tolerance 50 dolů, 30 nahoru (vyšší damage = stále podezřelé)
+            const tolDown = options.tolDown ?? 50; // damage je NIŽŠÍ než expected o víc než toto → oprav nahoru
+            const tolUp = options.tolUp ?? 30;     // damage je VYŠŠÍ než expected o víc než toto → podezřelé
+            const fixDown = options.fixDown ?? false; // explicitně zapnutý fix dolů? default ne
+            
+            if (!Array.isArray(state.inv)) return { fixed: 0, ok: 0, suspicious: [] };
+            
+            let fixed = 0, ok = 0;
+            let suspicious = [];
+            const durableTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
+            
+            const items = [...state.inv];
+            // Include equipped slots if separate
+            if (state.equipped) {
+                for (const slot of ['weapon', 'armor', 'helmet', 'gloves', 'boots']) {
+                    const eq = state.equipped[slot];
+                    if (eq && !items.includes(eq)) items.push(eq);
+                }
+            }
+            
+            for (const item of items) {
+                if (!item || !durableTypes.includes(item.type)) continue;
+                
+                // Damage
+                const expectedDmg = calculateExpectedWeaponDamage(item);
+                if (expectedDmg !== null && item.damage !== undefined) {
+                    const diff = item.damage - expectedDmg;
+                    if (diff < -tolDown) {
+                        // Damage je MNOHEM nižší než expected → pravděpodobně overwrite bug → oprav nahoru
+                        console.warn(`🔧 Damage opravený NAHORU: ${item.name} ${item.damage} → ${expectedDmg} (chyběl ${-diff})`);
+                        item.damage = expectedDmg;
+                        fixed++;
+                    } else if (diff > tolUp) {
+                        // Damage je víc než expected — podezřelé ale neopravujeme (možná blacksmith bonus byl vyšší)
+                        suspicious.push({ name: item.name, current: item.damage, expected: expectedDmg, diff });
+                        if (fixDown) {
+                            console.warn(`🔧 Damage opravený DOLŮ (fixDown=true): ${item.name} ${item.damage} → ${expectedDmg}`);
+                            item.damage = expectedDmg;
+                            fixed++;
+                        }
+                    } else {
+                        ok++;
+                    }
+                }
+                
+                // Defense (stejná logika)
+                const expectedDef = calculateExpectedDefense(item);
+                if (expectedDef !== null && item.defense !== undefined) {
+                    const diff = item.defense - expectedDef;
+                    if (diff < -tolDown) {
+                        console.warn(`🔧 Defense opravený NAHORU: ${item.name} ${item.defense} → ${expectedDef}`);
+                        item.defense = expectedDef;
+                        fixed++;
+                    } else if (diff > tolUp) {
+                        suspicious.push({ name: item.name, current: item.defense, expected: expectedDef, diff, stat: 'def' });
+                        if (fixDown) {
+                            item.defense = expectedDef;
+                            fixed++;
+                        }
+                    } else {
+                        ok++;
+                    }
+                }
+            }
+            
+            return { fixed, ok, suspicious };
+        }
+        window.recalculateAllWeaponDamage = recalculateAllWeaponDamage;
+        
+        // 🆕 [v6.3.1] Admin tool - rychlé volání pro fix DOLŮ (přepsat damage na expected)
+        window.fixAllWeaponDamageDown = () => recalculateAllWeaponDamage({ fixDown: true, tolUp: 10 });
+        
+        function migrateAndAuditWeapons() {
+            if (!Array.isArray(state.inv)) return { migrated: 0, suspicious: [] };
+            
+            const durableTypes = ['weapon', 'armor', 'helmet', 'gloves', 'boots'];
+            let migrated = 0;
+            let suspicious = [];
+            
+            // 🆕 [v6.3.1 BUG FIX - Sharw report] Oprava ŠPATNÉHO type
+            // Bug: items se omylem mohly stát 'quest' type (skrz některý transfer/sync)
+            // → AI obchodník je odmítal prodat ("quest items")
+            let typeFixed = 0;
+            const allItemsToCheck = [...state.inv];
+            if (state.equipped) {
+                for (const slot of ['weapon', 'armor', 'helmet', 'gloves', 'boots']) {
+                    if (state.equipped[slot]) allItemsToCheck.push(state.equipped[slot]);
+                }
+            }
+            // Plus companion inventories
+            if (Array.isArray(state.companions)) {
+                for (const comp of state.companions) {
+                    if (Array.isArray(comp?.inventory)) allItemsToCheck.push(...comp.inventory);
+                    if (comp?.equipped) {
+                        for (const slot of ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory']) {
+                            if (comp.equipped[slot]) allItemsToCheck.push(comp.equipped[slot]);
+                        }
+                    }
+                }
+            }
+            for (const item of allItemsToCheck) {
+                if (!item || !item.id) continue;
+                // 🆕 [v6.3.1 PERF] O(1) lookup
+                const def = ITEMS_BY_ID ? ITEMS_BY_ID.get(item.id) : ITEMS.find(i => i.id === item.id);
+                if (def && def.type && item.type !== def.type) {
+                    // Skip pokud je item legitimní 'quest_item' verze (různý id)
+                    // Pouze oprav pokud původní def říká jiný type
+                    console.warn(`🔧 Type oprava: ${item.name || item.id} '${item.type}' → '${def.type}'`);
+                    item.type = def.type;
+                    typeFixed++;
+                }
+            }
+            if (typeFixed > 0) {
+                console.log(`🔧 Type oprav: ${typeFixed} itemů s nesprávným type (Sharw bug fix)`);
+            }
+            
+            // 1. Přiřaď _uniqueId všem zbraním/zbrojím které ho nemají
+            for (const item of state.inv) {
+                if (!item || !durableTypes.includes(item.type)) continue;
+                if (!item._uniqueId) {
+                    item._uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    migrated++;
+                }
+            }
+            
+            // Sync equipped slots taky
+            if (state.equipped) {
+                for (const slot of ['weapon', 'armor', 'helmet', 'gloves', 'boots']) {
+                    const eq = state.equipped[slot];
+                    if (eq && !eq._uniqueId) {
+                        eq._uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                        migrated++;
+                    }
+                }
+            }
+            
+            // 2. Detekce podezřelých duplikátů: stejné ID + stejné upgrade flagy + různé damage
+            const groups = {};
+            for (const item of state.inv) {
+                if (!item || !durableTypes.includes(item.type)) continue;
+                const key = `${item.id}_${item._smithyUpgrades || 0}_${item.techUpgrades || 0}_${item.labUpgraded ? 1 : 0}_${item.aiUpgraded ? 1 : 0}_${item.ivanUpgrades || 0}_${item.abyssShardUpgrades || 0}_${item.technicianUpgrades || 0}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(item);
+            }
+            
+            for (const [key, items] of Object.entries(groups)) {
+                if (items.length < 2) continue;
+                const damages = items.map(i => i.damage || 0);
+                const minDmg = Math.min(...damages);
+                const maxDmg = Math.max(...damages);
+                if (maxDmg - minDmg > 5) {
+                    // Stejné upgrady ale různý damage = podezřelé
+                    suspicious.push({ name: items[0].name, count: items.length, minDmg, maxDmg });
+                }
+            }
+            
+            return { migrated, suspicious };
+        }
+        window.migrateAndAuditWeapons = migrateAndAuditWeapons;
+        
+        // 🆕 [v6.3.1] Admin příkaz pro manuální opravu damage (musí být admin)
+        // Použití v console: fixWeaponDamage('bfg', 242)  → nastaví damage všech BFG na max(current, 242)
+        function fixWeaponDamage(weaponId, correctDamage) {
+            if (typeof isAdmin === 'function' && !isAdmin()) {
+                notifyWarning('Admin only', 'Jen admin může opravit damage.');
+                return;
+            }
+            let fixed = 0;
+            for (const item of state.inv) {
+                if (item.id === weaponId && item.damage < correctDamage) {
+                    item.damage = correctDamage;
+                    fixed++;
+                }
+            }
+            if (state.equipped?.weapon?.id === weaponId && state.equipped.weapon.damage < correctDamage) {
+                state.equipped.weapon.damage = correctDamage;
+                fixed++;
+            }
+            if (fixed > 0) {
+                saveGame();
+                renderFull();
+                notifySuccess('🔧 Opraveno', `${fixed} zbraní opraveno na damage ${correctDamage}`);
+            } else {
+                notifyWarning('Nic nezměněno', `Žádná zbraň ${weaponId} neměla nižší damage než ${correctDamage}`);
+            }
+        }
+        window.fixWeaponDamage = fixWeaponDamage;
+        
         function syncEquippedReferences() {
             if (!state.equipped || !Array.isArray(state.inv)) return;
             
@@ -117729,6 +118132,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 // 🆕 [v6.3.1] BFG bug fix: zachovej originální upgrade hodnoty + ověř po přidání
                 // Hráč ze screenshotu: "Koupil jsem BFG s 242dmg a přepsalo se mi to na mých 202"
+                // Generuj nový _uniqueId aby nová zbraň byla rozlišitelná od jiné stejné v inv
+                if (!newItem._uniqueId && (newItem.type === 'weapon' || newItem.type === 'armor' || newItem.type === 'helmet' || newItem.type === 'gloves' || newItem.type === 'boots')) {
+                    newItem._uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                }
+                
                 const _origDamage = newItem.damage;
                 const _origDefense = newItem.defense;
                 const _origUpgrades = {
@@ -169232,8 +169640,13 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             state._smithyCooldown = Date.now();
             
             // BUG FIX: Sync do inv kopie pokud jde o nasazenou zbraň
+            // 🆕 [v6.3.1 BFG bug fix] PŘESNÝ match podle _uniqueId
             if (source === 'equipped' && state.equipped?.weapon) {
-                const invWeapon = state.inv.find(i => i.id === weapon.id && i.type === 'weapon');
+                let invWeapon = null;
+                if (weapon._uniqueId) {
+                    invWeapon = state.inv.find(i => i._uniqueId === weapon._uniqueId);
+                }
+                if (!invWeapon) invWeapon = weapon;
                 if (invWeapon && invWeapon !== weapon) {
                     invWeapon.damage = weapon.damage;
                     invWeapon._smithyUpgrades = weapon._smithyUpgrades;
