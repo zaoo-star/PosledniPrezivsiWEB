@@ -42498,9 +42498,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     // 3) Startovní příspěvek 100 💰 z veřejné kasy
                     try {
-                        // [FIX] Atomická transaction místo read+write race condition
+                        // 🆕 [v6.3.1] Pre-read pro Firebase cache + handle null current
+                        let _newPlayerPreRead = 0;
+                        try {
+                            const _s = await firebaseDB.ref('politics/publicMoney').once('value');
+                            _newPlayerPreRead = Number(_s.val()) || 0;
+                        } catch (e) {}
                         const treasuryResult = await firebaseDB.ref('politics/publicMoney').transaction(current => {
-                            const val = current || 0;
+                            if (current === null || current === undefined) {
+                                if (_newPlayerPreRead < 100) return;
+                                return _newPlayerPreRead - 100;
+                            }
+                            const val = Number(current) || 0;
                             if (val < 100) return; // Abort — nedostatek
                             return val - 100;
                         });
@@ -81562,15 +81571,36 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!multiplayerEnabled || !firebaseDB || amount <= 0) return false;
             
             try {
+                // 🆕 [v6.3.1 BUG FIX] Načti data PŘED transakcí aby Firebase měl real data v cache
+                // Bez tohoto: transaction callback dostal current=null (optimistický first call),
+                // val < amount byl true → return undefined → ABORT (žádný retry).
+                // Důsledek: Šéf nemohl spouštět eventy i když měl v kase peníze.
+                let preReadValue = 0;
+                try {
+                    const _snap = await firebaseDB.ref('politics/publicMoney').once('value');
+                    preReadValue = Number(_snap.val()) || 0;
+                    console.log(`💰 [TREASURY -${amount}] pre-read: kasa = ${preReadValue}`);
+                } catch (e) {
+                    console.warn('💰 [TREASURY] pre-read failed:', e.message);
+                }
+                
                 // [FIX] Atomická transaction místo read+write race condition
                 const treasuryRef = firebaseDB.ref('politics/publicMoney');
                 const result = await treasuryRef.transaction(current => {
-                    const val = current || 0;
+                    // 🆕 [v6.3.1] Pokud current === null (optimistický first call),
+                    // vrátíme preReadValue aby Firebase pokusil commit. Pokud server hodnota
+                    // se mezitím změnila, Firebase automaticky retry s real data.
+                    if (current === null || current === undefined) {
+                        if (preReadValue < amount) return; // Skutečně nedostatek
+                        return preReadValue - amount;
+                    }
+                    const val = Number(current) || 0;
                     if (val < amount) return; // Abort — nedostatek prostředků (vrátí undefined)
                     return val - amount;
                 });
                 
                 if (!result.committed) {
+                    console.warn(`💰 [TREASURY] Transaction NOT committed - amount=${amount}, preRead=${preReadValue}`);
                     return false; // Transaction aborted — nedostatek prostředků
                 }
                 
