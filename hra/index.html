@@ -851,10 +851,16 @@
             border-radius: 0 !important;
             border: none !important;
             padding: 0.5rem !important;
+            /* 🆕 [v6.3.1] Safe area padding pro Android system bar (gesture navigation) */
+            padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 1.5rem)) !important;
             margin: 0 !important;
         }
         body.combat-fullscreen .modal-backdrop {
             padding: 0 !important;
+        }
+        /* 🆕 [v6.3.1] Extra spodní mezera pro tlačítka v combat menu (zabraňuje překliku Android back gestou) */
+        body.combat-fullscreen .modal-content > div:last-child {
+            margin-bottom: max(0px, env(safe-area-inset-bottom, 1rem));
         }
         /* Na větších obrazovkách zachovej modálový styl */
         @media (min-width: 900px) {
@@ -51157,6 +51163,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.checkCompanionQuestItemPickup = checkCompanionQuestItemPickup;
 
         function exploreLocation(skipLimitCheck = false) {
+            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state pokud existuje
+            // Bug HLB: Po boss dropu se modal zavřel ale combatState zůstal
+            if (typeof checkAndClearStuckCombat === 'function') {
+                checkAndClearStuckCombat();
+            }
+            
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
             if (!loc) {
                 console.log('exploreLocation: No location found');
@@ -60445,6 +60457,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             if (item.effect === 'health') {
+                // 🆕 [v6.3.1 BUG FIX] V boji přesměruj na useItemInCombat (správné odečtení tahu)
+                // Předtím: useItem se v boji volal přes inventory modal → léčilo ale neodečetlo tah ani item
+                // Hráč pak měl "2 tahy" a léčení zdarma (EXPLOIT)
+                if (window.combatState && window.combatState.units) {
+                    if (typeof useItemInCombat === 'function') {
+                        useItemInCombat(item.id);
+                    } else {
+                        notifyWarning('⚔️ V boji', 'Pro léčení použij menu "Item" v boji.');
+                    }
+                    return;
+                }
+                
                 let healAmount = item.value;
                 
                 // 💉 Medik třída: +50% efektivita léčiv (Fix: chybělo)
@@ -64692,6 +64716,13 @@ function openFullscreenMap() {
             console.log('🏰 Current location:', state.world?.currentLocation);
             console.log('🏰 DUNGEON_FLOORS has this dungeon:', !!DUNGEON_FLOORS[dungeonId]);
             
+            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state pokud existuje
+            // Bug HLB: Po boss dropu se modal zavřel ale combatState zůstal
+            // → klik na Dungeon vyhodil "jsi v boji" ale nešlo se vrátit
+            if (typeof checkAndClearStuckCombat === 'function') {
+                checkAndClearStuckCombat();
+            }
+            
             // DEBUG - zobraz info
             // alert('enterDungeon: ' + dungeonId + ', currentLocation: ' + state.world?.currentLocation);
             
@@ -65082,15 +65113,38 @@ function openFullscreenMap() {
                             ⬆️ Vrátit se nahoru
                         </button>
                     ` : ''}
-                    <button class="btn" onclick="exitDungeon()" style="background: #333;">
+                    <!-- 🆕 [v6.3.1] Separator + safe-area padding pro Android system bar -->
+                    <div style="border-top: 1px solid #444; margin-top: 0.8rem; padding-top: 0.6rem;"></div>
+                    <button class="btn" onclick="confirmExitDungeon()" style="background: #333;">
                         🚪 Opustit dungeon
                     </button>
                     <button class="btn" onclick="openStashMenu()" style="background: #455A64; font-size: 0.85rem;">
                         📦 Uložit do skrýše
                     </button>
+                    <!-- Safe area pro Android navigation bar -->
+                    <div style="height: 1.5rem;"></div>
                 </div>
             `);
         }
+        
+        // 🆕 [v6.3.1] Confirm dialog pro exitDungeon — bug HLB: tlačítko bylo příliš blízko šipkám pohybu, časté překliky
+        function confirmExitDungeon() {
+            if (typeof showModal === 'function') {
+                showModal('🚪 Opustit dungeon?', `
+                    <div style="text-align: center; padding: 1rem;">
+                        <p style="margin-bottom: 1rem;">Opravdu chceš opustit dungeon?</p>
+                        <p style="color: #ffa726; font-size: 0.85rem; margin-bottom: 1.5rem;">⚠️ Nedokončené patro bude ztraceno. Nasbíraný loot zůstává.</p>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button class="btn" onclick="closeModal();" style="flex: 1; background: #333;">↩️ Zpět</button>
+                            <button class="btn" onclick="closeModal(); exitDungeon();" style="flex: 1; background: #c62828;">🚪 Opustit</button>
+                        </div>
+                    </div>
+                `);
+            } else {
+                exitDungeon();
+            }
+        }
+        window.confirmExitDungeon = confirmExitDungeon;
         
         function exploreDungeonFloor() {
             closeModal();
@@ -85071,10 +85125,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
                 
-                // Nastav 2 akce každé jednotce
+                // 🆕 [v6.3.1] Nepřátelé v Propasti/dungeonech/World Bossi mají 3 tahy místo 2 (zvýšená obtížnost)
+                const _isAbyssOrDungeon = state.abyss?.inProgress || state.dungeon?.active;
+                const _isWorldBossRaid = state.activeWorldBoss?.isRaid === true;
                 units.forEach(u => {
-                    u.actionsLeft = 2;
-                    u.maxActions = 2;
+                    // Enemies v Propasti/dungeonu: 3 tahy. World Boss sám: 3 tahy. Jinak 2.
+                    let enemyBonusActions = 2;
+                    if (u.team === 'enemy') {
+                        if (_isAbyssOrDungeon) enemyBonusActions = 3;
+                        else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaid) enemyBonusActions = 3;
+                    }
+                    u.actionsLeft = enemyBonusActions;
+                    u.maxActions = enemyBonusActions;
                     u.defending = false;
                 });
                 
@@ -85463,6 +85525,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     console.log(`🔧 Companion ${unit.name}: equipped restored z state.companions (luk: ${equippedWeapon.name})`);
                 }
             }
+            
+            // 🆕 [v6.3.1 BUG FIX] Animal companions (dog/cat/crow) NIKDY nejsou ranged
+            // Bug HLB: "základní kočka útočí přes celé pole"
+            if (unit.companionId) {
+                const _compForType = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                const isAnimal = _compForType?.type === 'animal' || 
+                                 ['dog', 'cat', 'crow'].includes(_compForType?.id);
+                if (isAnimal && equippedWeapon) {
+                    console.warn(`🐾 ${unit.name} je zvíře — odebrání stale weapon ref pro melee útok`);
+                    equippedWeapon = null;
+                }
+            }
+            
             let hasRangedWeapon = false;
             if (equippedWeapon && equippedWeapon.id) {
                 // 🆕 [v6.3.1] Použij findItemDef aby Pre-War weapons z plánku správně vrátily def
@@ -85844,8 +85919,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Reset akcí a obrany pro všechny + uvolni turn lock
             cs._turnLocked = false; // OPRAVA: vždy uvolni lock na začátku nového kola
+            // 🆕 [v6.3.1] Nepřátelé v Propasti/dungeonech/World Bossi mají 3 tahy místo 2 každé kolo
+            const _isAbyssOrDungeonRound = state.abyss?.inProgress || state.dungeon?.active;
+            const _isWorldBossRaidRound = state.activeWorldBoss?.isRaid === true;
             cs.units.forEach(u => {
-                u.actionsLeft = u.maxActions || 2;
+                // Default 2 tahy. Enemies v Propasti/dungeonu nebo World Boss: 3 tahy.
+                let defaultActions = 2;
+                if (u.team === 'enemy') {
+                    if (_isAbyssOrDungeonRound) defaultActions = 3;
+                    else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaidRound) defaultActions = 3;
+                }
+                u.actionsLeft = u.maxActions || defaultActions;
                 u.defending = false;
                 u._defendLogShown = false;
                 
@@ -90005,9 +90089,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         console.log(`🔧 calculateValidTargets: companion ${unit.name} weapon obnovena (${weapon.name})`);
                     }
                 }
+                
+                // 🆕 [v6.3.1 BUG FIX] Animal companions (dog/cat/crow) NIKDY nejsou ranged
+                // Bug HLB: "základní kočka útočí přes celé pole"
+                // Důvod: animals nemají equipped slot ale stale data ze save mohou mít weapon ref
+                if (unit.companionId) {
+                    const _compForType = (state.companions || []).find(c => c.uniqueId === unit.companionId || c.id === unit.companionId);
+                    const _compTemplate = _compForType ? COMPANIONS_LIST?.find(t => t.id === _compForType.id) : null;
+                    const isAnimal = _compForType?.type === 'animal' || _compTemplate?.type === 'animal' || 
+                                     ['dog', 'cat', 'crow'].includes(_compForType?.id);
+                    if (isAnimal) {
+                        // Animals nemohou používat zbraně — vynuluj weapon ref
+                        if (weapon) {
+                            console.warn(`🐾 ${unit.name} je zvíře — odebrání stale weapon ref`);
+                            weapon = null;
+                        }
+                    }
+                }
+                
                 // Pro společníky: ověř ammoType přes ITEMS definici (oprava stale dat)
                 if (weapon && weapon.id) {
-                    const weaponDef = ITEMS.find(i => i.id === weapon.id);
+                    const weaponDef = typeof findItemDef === 'function' ? findItemDef(weapon) : ITEMS.find(i => i.id === weapon.id);
                     if (weaponDef && !weaponDef.ammoType && weapon.ammoType) {
                         console.warn(`⚠️ calculateValidTargets: Companion ${unit.name} má stale ammoType na melee zbrani - opravuji`);
                         delete weapon.ammoType;
@@ -93269,6 +93371,35 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         window.returnMagazineAmmo = returnMagazineAmmo;
+        
+        // 🆕 [v6.3.1 BUG FIX] Detekce a cleanup "zaseknutého" combat state
+        // Bug: Po boss drop modalu se zavřel combat modal ale window.combatState zůstal
+        // → hráč na mapě, ale klik na Dungeon/Prohledat hlásí "jsi v boji"
+        // Fix: Pokud combat state existuje ALE žádné modal/UI prvky nejsou viditelné,
+        // znamená to "ghost state" → automatický cleanup
+        function checkAndClearStuckCombat() {
+            if (!window.combatState && !state.activeCombat) return false; // OK, žádný combat
+            
+            // Zkontroluj zda existují fyzické DOM elementy combat UI
+            const hasModal = document.querySelector('.modal-overlay');
+            const hasCombatUI = document.getElementById('combatLog') || 
+                                document.getElementById('hexGrid') ||
+                                document.getElementById('combatEndBanner');
+            const hasFloatBtn = document.getElementById('combatFloatingBtn');
+            const inFullscreen = document.body.classList.contains('combat-fullscreen');
+            
+            // Pokud žádné UI prvky combat nejsou viditelné → ghost state
+            if (!hasModal && !hasCombatUI && !hasFloatBtn && !inFullscreen) {
+                console.warn('⚠️ [GHOST COMBAT] Combat state existuje ale UI neexistuje — auto cleanup');
+                _cleanupCombatState();
+                if (typeof notifyInfo === 'function') {
+                    notifyInfo('🔧 Oprava', 'Zaseknutý stav boje byl uvolněn');
+                }
+                return true; // Cleanup proběhl
+            }
+            return false; // Combat je legitimní
+        }
+        window.checkAndClearStuckCombat = checkAndClearStuckCombat;
         
         // [HELPER v4.0.1] Komplexní cleanup combat state - SINGLE SOURCE OF TRUTH
         // Všechny způsoby jak boj končí (vítězství, smrt, útěk, dýmovnice, abyss exit) použijí tohle.
