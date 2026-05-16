@@ -8850,6 +8850,34 @@
         }
         window.getItemDef = getItemDef;
         
+        // 🆕 [v6.3.1 BUG FIX] Helper - najde ITEMS definici i pro Pre-War zbraně z plánku
+        // Pre-War zbraně mají unique ID: 'prewar_gauss_rifle_bp_<timestamp>' (kvůli market identity)
+        // ITEMS.find by vrátila undefined → různé funkce smazaly ammoType nebo nedoplnily metadata
+        // Tato funkce zkusí postupně:
+        //   1) Přesný match podle item.id
+        //   2) Match podle item.fromBlueprint (pro Pre-War weapons)
+        //   3) Strip '_bp_<ts>' suffix a hledat základní ID
+        function findItemDef(item) {
+            if (!item || !item.id) return null;
+            // 1) Přesný match
+            let def = ITEMS_BY_ID.get(item.id);
+            if (def) return def;
+            // 2) fromBlueprint reference (Pre-War weapons z craftFromBlueprint)
+            if (item.fromBlueprint) {
+                def = ITEMS_BY_ID.get(item.fromBlueprint);
+                if (def) return def;
+            }
+            // 3) Strip '_bp_<timestamp>' suffix
+            const bpIdx = item.id.indexOf('_bp_');
+            if (bpIdx > 0) {
+                const baseId = item.id.substring(0, bpIdx);
+                def = ITEMS_BY_ID.get(baseId);
+                if (def) return def;
+            }
+            return null;
+        }
+        window.findItemDef = findItemDef;
+        
         // === SNÍŽENÍ ŠANCE NA NALEZENÍ VZÁCNÝCH VĚCÍ ===
         // Aplikuje se na VŠECHNY itemy s rarity rare, epic, legendary
         ITEMS.forEach(item => {
@@ -81494,9 +81522,18 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!multiplayerEnabled || !firebaseDB || amount <= 0) return;
             
             try {
-                // [FIX] Skutečně atomická operace — ServerValue.increment místo read+write race condition
+                // 🆕 [v6.3.1 BUG FIX] Použít transaction místo set(ServerValue.increment) pro spolehlivost
+                // ServerValue.increment v Realtime DB může selhat tiše pokud parent ref nebo rules nejsou OK
+                // → publicMoney zůstane na 0 i když hráč zaplatil → šéf nemůže spustit eventy
                 const treasuryRef = firebaseDB.ref('politics/publicMoney');
-                await treasuryRef.set(firebase.database.ServerValue.increment(amount));
+                const result = await treasuryRef.transaction(current => {
+                    const currentVal = Number(current) || 0;
+                    return currentVal + amount;
+                });
+                
+                if (!result.committed) {
+                    console.error('Treasury add transaction NOT committed:', result);
+                }
                 
                 // Zaloguj transakci
                 await firebaseDB.ref('politics/treasuryLog').push({
@@ -81508,10 +81545,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 
-                // [FIX] Atomický increment denních statistik
+                // 🆕 [v6.3.1] Atomický increment denních statistik přes transaction (consistency s treasury)
                 const today = new Date().toISOString().split('T')[0];
                 const statRef = firebaseDB.ref(`politics/treasuryStats/${today}/${source}`);
-                await statRef.set(firebase.database.ServerValue.increment(amount));
+                await statRef.transaction(current => (Number(current) || 0) + amount);
                 
                 console.log(`🏦 Treasury +${amount} from ${source}: ${details}`);
                 
@@ -85398,22 +85435,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             let hasRangedWeapon = false;
             if (equippedWeapon && equippedWeapon.id) {
-                const weaponDef = ITEMS.find(i => i.id === equippedWeapon.id);
+                // 🆕 [v6.3.1] Použij findItemDef aby Pre-War weapons z plánku správně vrátily def
+                const weaponDef = typeof findItemDef === 'function' ? findItemDef(equippedWeapon) : ITEMS.find(i => i.id === equippedWeapon.id);
                 if (weaponDef?.ammoType) {
                     hasRangedWeapon = weaponDef.ammoType;
                     if (!equippedWeapon.ammoType) equippedWeapon.ammoType = weaponDef.ammoType;
                 }
-                // 🆕 [v6.3.1 BUG FIX] Smaž ammoType JEN pokud weaponDef EXISTUJE ale nemá ammoType
-                // Předtím: if (!weaponDef?.ammoType) byl true i když weaponDef je undefined → smazal ammoType u Pre-War zbraní
-                // Důsledek: Companion s Pre-War Gaussovkou neumel střílet (jen melee mod)
+                // Smaž ammoType JEN pokud weaponDef EXISTUJE ale nemá ammoType
                 if (weaponDef && !weaponDef.ammoType && equippedWeapon.ammoType) {
                     console.warn(`⚠️ Companion ${unit.name} má stale ammoType na melee zbrani ${equippedWeapon.id} - opravuji`);
                     delete equippedWeapon.ammoType;
                 }
-                // 🆕 Pokud weaponDef NENALEZEN ale weapon má ammoType, ZACHOVAT — věřit equipped weapon datům
+                // Pokud weaponDef NENALEZEN ale weapon má ammoType, ZACHOVAT — věřit equipped weapon datům
                 if (!weaponDef && equippedWeapon.ammoType) {
                     hasRangedWeapon = equippedWeapon.ammoType;
-                    console.warn(`⚠️ Companion ${unit.name}: weaponDef pro '${equippedWeapon.id}' nenalezen v ITEMS — důvěřuji ammoType='${equippedWeapon.ammoType}' z equipped weapon`);
+                    console.warn(`⚠️ Companion ${unit.name}: weaponDef pro '${equippedWeapon.id}' nenalezen — důvěřuji ammoType='${equippedWeapon.ammoType}'`);
                 }
             }
             const compIsRanged = !!hasRangedWeapon;
@@ -89516,7 +89552,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const pw = state.equipped?.weapon;
                 // [FIX BUG] Obousměrná validace — jak doplňování tak mazání stale ammoType
                 if (pw && pw.id) {
-                    const def = ITEMS.find(i => i.id === pw.id);
+                    // 🆕 [v6.3.1] Použij findItemDef aby fungovaly i Pre-War zbraně z plánku
+                    const def = typeof findItemDef === 'function' ? findItemDef(pw) : ITEMS.find(i => i.id === pw.id);
                     if (def) {
                         // Definice říká ranged, weapon nemá ammoType → doplň
                         if (def.ammoType && !pw.ammoType) {
@@ -89545,7 +89582,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const cw = comp.equipped?.weapon;
                         // [FIX BUG] Obousměrná validace pro společníky
                         if (cw && cw.id) {
-                            const def = ITEMS.find(i => i.id === cw.id);
+                            // 🆕 [v6.3.1] Použij findItemDef aby fungovaly i Pre-War zbraně z plánku
+                            const def = typeof findItemDef === 'function' ? findItemDef(cw) : ITEMS.find(i => i.id === cw.id);
                             if (def) {
                                 if (def.ammoType && !cw.ammoType) {
                                     cw.ammoType = def.ammoType;
@@ -89574,7 +89612,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         const w = u.equipped.weapon;
                         // [FIX BUG] Obousměrná validace pro combat unity společníků
                         if (w.id) {
-                            const def = ITEMS.find(i => i.id === w.id);
+                            // 🆕 [v6.3.1] Použij findItemDef aby fungovaly i Pre-War zbraně z plánku
+                            const def = typeof findItemDef === 'function' ? findItemDef(w) : ITEMS.find(i => i.id === w.id);
                             if (def) {
                                 if (def.ammoType && !w.ammoType) {
                                     w.ammoType = def.ammoType;
@@ -101986,6 +102025,24 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                     }
                     
+                    // 🆕 [v6.3.1 BUG FIX] Doplnit chybějící metadata na Pre-War zbraních u companion
+                    // Bug: Pre-War zbraň z plánku má unique ID 'prewar_X_bp_<ts>' → ITEMS.find vrátí undefined
+                    // → ammoType, special, critBonus se mohly ztratit. Použij findItemDef pro fallback.
+                    if (comp.equipped?.weapon && typeof findItemDef === 'function') {
+                        const w = comp.equipped.weapon;
+                        const def = findItemDef(w);
+                        if (def) {
+                            // Doplň chybějící klíčové properties z definice (NE prepisuje existující)
+                            const propsToSync = ['ammoType', 'special', 'critBonus', 'accuracy', 'burstFire', 'burstCount', 'burstDamageDecay'];
+                            propsToSync.forEach(prop => {
+                                if (def[prop] !== undefined && w[prop] === undefined) {
+                                    w[prop] = def[prop];
+                                    console.log(`🔧 Migrace [Pre-War]: ${comp.name}'s ${w.name} doplněno ${prop}=${JSON.stringify(def[prop])}`);
+                                }
+                            });
+                        }
+                    }
+                    
                     // MIGRACE: Vrať náboje od společníků zpět hráči (společníci berou přímo z inventáře)
                     if (comp.ammo && comp.ammo > 0 && comp.equipped?.weapon?.ammoType) {
                         const ammoType = comp.equipped.weapon.ammoType;
@@ -102113,6 +102170,45 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 };
                 
                 state.inv.forEach(item => { if (migrateItem(item)) fixedItems++; });
+                
+                // 🆕 [v6.3.1 BUG FIX] Pre-War weapons fix v inv + equipped
+                // Bug: Pre-War zbraně z plánku mají unique ID → migrateItem return false (def neexistuje)
+                // → chybějící metadata (ammoType, special, atd.) zůstanou chybějící
+                // Fix: použij findItemDef který zná Pre-War weapons přes fromBlueprint
+                const prewarMigrate = (item, sourceLabel) => {
+                    if (!item || !item.id || typeof findItemDef !== 'function') return false;
+                    // Jen pokud regular findItemDef nenajde, ale findItemDef ANO (= je to Pre-War nebo bp variant)
+                    if (ITEMS_BY_ID && ITEMS_BY_ID.has(item.id)) return false;
+                    const def = findItemDef(item);
+                    if (!def) return false;
+                    let changed = false;
+                    const propsToSync = ['ammoType', 'special', 'critBonus', 'accuracy', 'burstFire', 'burstCount', 'burstDamageDecay', 'desc'];
+                    propsToSync.forEach(prop => {
+                        if (def[prop] !== undefined && item[prop] === undefined) {
+                            item[prop] = def[prop];
+                            console.log(`🔧 Pre-War migrace [${sourceLabel}]: ${item.name || item.id} doplněno ${prop}=${JSON.stringify(def[prop])}`);
+                            changed = true;
+                        }
+                    });
+                    return changed;
+                };
+                state.inv.forEach(item => { if (prewarMigrate(item, 'inv')) fixedItems++; });
+                if (state.equipped) {
+                    Object.keys(state.equipped).forEach(slot => {
+                        const item = state.equipped[slot];
+                        if (item && prewarMigrate(item, `player.${slot}`)) fixedItems++;
+                    });
+                }
+                if (state.companions) {
+                    state.companions.forEach(comp => {
+                        if (comp.equipped) {
+                            Object.keys(comp.equipped).forEach(slot => {
+                                const item = comp.equipped[slot];
+                                if (item && prewarMigrate(item, `${comp.name}.${slot}`)) fixedItems++;
+                            });
+                        }
+                    });
+                }
                 
                 // Také oprav equipped items
                 if (state.equipped) {
@@ -149249,9 +149345,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 if (!isStaff()) {
                     try {
                         // Krok 1: Firebase zápis do kasy PRVNÍ
-                        // [FIX] Použít přímý Firebase call místo addToPublicTreasury — ta polyká chyby
-                        // (má vlastní vnitřní try/catch) takže bychom se nedozvěděli o selhání
-                        await firebaseDB.ref('politics/publicMoney').set(firebase.database.ServerValue.increment(cfg.messageCost));
+                        // 🆕 [v6.3.1 BUG FIX] Použít transaction místo set(ServerValue.increment)
+                        // ServerValue.increment v Realtime DB může selhat tiše → publicMoney se neuvyzvedne
+                        const _campaignResult = await firebaseDB.ref('politics/publicMoney').transaction(current => {
+                            return (Number(current) || 0) + cfg.messageCost;
+                        });
+                        if (!_campaignResult.committed) {
+                            throw new Error('Treasury transaction not committed');
+                        }
                         
                         // Zaloguj transakci (best-effort, neblokuje při chybě)
                         try {
@@ -149754,13 +149855,37 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             try {
                 let publicMoney = 0;
+                let firebaseReadOk = false;
+                let _rawFbValue = null;
                 try {
                     const snap = await firebaseDB.ref('politics/publicMoney').once('value');
-                    publicMoney = snap.val() || 0;
-                } catch (e) { console.error("Silent error:", e); }
+                    const val = snap.val();
+                    _rawFbValue = val; // Pro debug log
+                    if (val !== null && val !== undefined) {
+                        publicMoney = Number(val) || 0;
+                        firebaseReadOk = true;
+                    }
+                } catch (e) { 
+                    console.error("[EVENT] publicMoney read error:", e); 
+                }
+                
+                // 🆕 [v6.3.1 BUG FIX] Fallback na cached hodnotu pokud Firebase read selhal nebo vrátil null
+                // Hráči hlásili: "šéf vidí v kase 5000, ale klik na event hlásí 'nejsou peníze'"
+                // Důvod: Firebase read mohl mezitím vrátit stale/null kvůli network glitch
+                if (!firebaseReadOk && typeof _cachedPublicMoney === 'number' && _cachedPublicMoney > 0) {
+                    publicMoney = _cachedPublicMoney;
+                    console.log(`💰 [EVENT] Firebase read failed/null — used cached value: ${publicMoney}`);
+                }
+                
+                // 🆕 [v6.3.1 BUG FIX] Detailní diagnostika pro hráče když publicMoney je 0
+                console.log(`💰 [EVENT] Check: power.id=${power.id}, power.cost=${power.cost}, publicMoney=${publicMoney}, cached=${_cachedPublicMoney}, rawFB=${_rawFbValue}, firebaseReadOk=${firebaseReadOk}`);
                 
                 if (power.cost > publicMoney) {
-                    notifyWarning('Nedostatek peněz', `Potřebuješ ${power.cost} 💰 ve veřejné kase (máš ${publicMoney})`);
+                    // 🆕 Detailní info pro debugging - hráč hlásí proč
+                    const adminBypass = isAdmin() ? '\n\n👑 ADMIN: Můžeš pokračovat přes admin override v konzoli.' : '';
+                    const debugInfo = `Potřebuješ ${power.cost} 💰 ve veřejné kase\nMáš: ${publicMoney}\nFB raw: ${_rawFbValue === null ? 'null' : _rawFbValue === undefined ? 'undef' : _rawFbValue}\nCache: ${_cachedPublicMoney}${adminBypass}`;
+                    notifyWarning('Nedostatek peněz', debugInfo);
+                    console.warn(`⚠️ [EVENT REJECT] power=${power.id} cost=${power.cost} > publicMoney=${publicMoney} (FB raw='${_rawFbValue}', cache=${_cachedPublicMoney}, FB read OK=${firebaseReadOk})`);
                     return;
                 }
                 
