@@ -85403,9 +85403,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     hasRangedWeapon = weaponDef.ammoType;
                     if (!equippedWeapon.ammoType) equippedWeapon.ammoType = weaponDef.ammoType;
                 }
-                if (!weaponDef?.ammoType && equippedWeapon.ammoType) {
+                // 🆕 [v6.3.1 BUG FIX] Smaž ammoType JEN pokud weaponDef EXISTUJE ale nemá ammoType
+                // Předtím: if (!weaponDef?.ammoType) byl true i když weaponDef je undefined → smazal ammoType u Pre-War zbraní
+                // Důsledek: Companion s Pre-War Gaussovkou neumel střílet (jen melee mod)
+                if (weaponDef && !weaponDef.ammoType && equippedWeapon.ammoType) {
                     console.warn(`⚠️ Companion ${unit.name} má stale ammoType na melee zbrani ${equippedWeapon.id} - opravuji`);
                     delete equippedWeapon.ammoType;
+                }
+                // 🆕 Pokud weaponDef NENALEZEN ale weapon má ammoType, ZACHOVAT — věřit equipped weapon datům
+                if (!weaponDef && equippedWeapon.ammoType) {
+                    hasRangedWeapon = equippedWeapon.ammoType;
+                    console.warn(`⚠️ Companion ${unit.name}: weaponDef pro '${equippedWeapon.id}' nenalezen v ITEMS — důvěřuji ammoType='${equippedWeapon.ammoType}' z equipped weapon`);
                 }
             }
             const compIsRanged = !!hasRangedWeapon;
@@ -155565,6 +155573,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         function initTombolaListener() {
             if (!multiplayerEnabled || !firebaseDB) return;
             
+            // 🆕 [v6.3.1 BUG FIX] Guard proti dvojí registraci listeneru
+            // Bez tohoto: každé volání initTombolaListener() přidalo NOVÝ listener
+            // Důsledek: chat broadcast tomboly se triggeroval N× (kde N = počet registrací)
+            // → hráči viděli stejnou zprávu "VÝHERCE VYLOSOVÁN" 3× v chatu
+            if (window._tombolaActiveListenerRegistered) {
+                console.log('🎰 initTombolaListener: již registrován, skipping duplicate');
+                return;
+            }
+            window._tombolaActiveListenerRegistered = true;
+            
             firebaseDB.ref('tombola/active').on('value', (snap) => {
                 const newTombola = snap.val();
                 if (newTombola && (!currentTombola || newTombola.id !== currentTombola.id)) {
@@ -157557,14 +157575,28 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 
-                // Chat oznámení
-                const prizeDesc = typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???';
-                await firebaseDB.ref('chat/messages').push({
-                    author: '🎉 TOMBOLA',
-                    text: `🏆 TOMBOLA "${tombola.name}" — AUTOMATICKY VYLOSOVÁNO!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${prizeDesc}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participants.length} účastníků\n\n🎊 Gratulujeme!`,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    system: true
+                // 🆕 [v6.3.1 BUG FIX] Idempotenční broadcast guard
+                // I kdyby autoDrawTombola proběhl víckrát (race / retry / duplicate listener),
+                // chat broadcast se pošle JEN JEDNOU per tombola ID
+                const tombolaIdForBroadcast = tombola.id || tombola.name || 'unknown';
+                const broadcastKey = `tombola_${tombolaIdForBroadcast}_broadcasted`;
+                const broadcastClaim = await firebaseDB.ref(`tombola/broadcasts/${broadcastKey}`).transaction(current => {
+                    if (current) return; // Už broadcastnuto — abort
+                    return Date.now();
                 });
+                
+                if (!broadcastClaim.committed || !broadcastClaim.snapshot.val()) {
+                    console.log('🎰 Auto-draw broadcast SKIPPED — already broadcasted for this tombola');
+                } else {
+                    // Chat oznámení (jediné kdo to broadcastne pro tuto tombolu)
+                    const prizeDesc = typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???';
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🎉 TOMBOLA',
+                        text: `🏆 TOMBOLA "${tombola.name}" — AUTOMATICKY VYLOSOVÁNO!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${prizeDesc}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participants.length} účastníků\n\n🎊 Gratulujeme!`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    });
+                }
                 
                 // Pokud jsem výherce, ukáž modal
                 if (winner === getPlayerName()) {
@@ -157583,7 +157615,26 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         async function drawTombolaWinner() {
             if (!hasPermission('tombola')) return;
             
+            // 🆕 [v6.3.1 BUG FIX] Anti-double-click ochrana
+            // Admin click 3× rychle → 3× broadcast (vidíme v chatu 3× stejnou výhru)
+            if (window._tombolaDrawInProgress) {
+                console.warn('⚠️ drawTombolaWinner: already in progress, ignoring duplicate call');
+                return;
+            }
+            window._tombolaDrawInProgress = true;
+            
             try {
+                // Také server-side claim aby paralelní admini neudělali duplicate
+                const claimResult = await firebaseDB.ref('tombola/active/manualDrawClaimed').transaction(current => {
+                    if (current && (Date.now() - current) < 30000) return; // 30s stale recovery
+                    return Date.now();
+                });
+                if (!claimResult.committed || !claimResult.snapshot.val()) {
+                    console.warn('⚠️ drawTombolaWinner: server-side claim failed (jiný admin?)');
+                    window._tombolaDrawInProgress = false;
+                    return;
+                }
+                
                 const snap = await firebaseDB.ref('tombola/active').once('value');
                 const tombola = snap.val();
                 
@@ -157684,14 +157735,27 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     timestamp: firebase.database.ServerValue.TIMESTAMP
                 });
                 
-                // Oznámení v chatu
-                const participantsCount = participants.length;
-                await firebaseDB.ref('chat/messages').push({
-                    author: '🎉 TOMBOLA',
-                    text: `🏆 TOMBOLA "${tombola.name}" — VÝHERCE VYLOSOVÁN!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${getPrizeDescription(tombola.prize)}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participantsCount} účastníků\n\n🎊 Gratulujeme!`,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    system: true
+                // 🆕 [v6.3.1 BUG FIX] Idempotenční broadcast guard
+                // Stejný guard jako v autoDrawTombola - max 1 broadcast per tombola ID
+                const _tombIdManual = tombola.id || tombola.name || 'unknown';
+                const _broadKeyManual = `tombola_${_tombIdManual}_broadcasted`;
+                const _broadClaimManual = await firebaseDB.ref(`tombola/broadcasts/${_broadKeyManual}`).transaction(current => {
+                    if (current) return; // Už broadcastnuto — abort
+                    return Date.now();
                 });
+                
+                if (!_broadClaimManual.committed || !_broadClaimManual.snapshot.val()) {
+                    console.log('🎰 Manual draw broadcast SKIPPED — already broadcasted');
+                } else {
+                    // Oznámení v chatu (jednou)
+                    const participantsCount = participants.length;
+                    await firebaseDB.ref('chat/messages').push({
+                        author: '🎉 TOMBOLA',
+                        text: `🏆 TOMBOLA "${tombola.name}" — VÝHERCE VYLOSOVÁN!\n\n👑 Vítěz: ${winner}\n🎁 Výhra: ${getPrizeDescription(tombola.prize)}\n🎟️ ${winnerTickets} lístků z ${totalTickets} celkem (${winChance}% šance)\n👥 Celkem ${participantsCount} účastníků\n\n🎊 Gratulujeme!`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    });
+                }
                 
                 // Zobraz výsledek
                 showModal('🎉 VÝHERCE VYLOSOVÁN!', `
@@ -157714,6 +157778,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             } catch (e) {
                 console.error('Draw winner error:', e);
                 notifyWarning('Chyba', 'Nepodařilo se losovat: ' + e.message);
+                // 🆕 [v6.3.1] Při chybě uvolni server-side claim
+                try { await firebaseDB.ref('tombola/active/manualDrawClaimed').remove(); } catch(_) {}
+            } finally {
+                // 🆕 [v6.3.1] Vždy reset mutex
+                window._tombolaDrawInProgress = false;
             }
         }
         
