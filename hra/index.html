@@ -51163,12 +51163,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.checkCompanionQuestItemPickup = checkCompanionQuestItemPickup;
 
         function exploreLocation(skipLimitCheck = false) {
-            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state pokud existuje
-            // Bug HLB: Po boss dropu se modal zavřel ale combatState zůstal
-            if (typeof checkAndClearStuckCombat === 'function') {
-                checkAndClearStuckCombat();
-            }
-            
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
             if (!loc) {
                 console.log('exploreLocation: No location found');
@@ -64716,13 +64710,6 @@ function openFullscreenMap() {
             console.log('🏰 Current location:', state.world?.currentLocation);
             console.log('🏰 DUNGEON_FLOORS has this dungeon:', !!DUNGEON_FLOORS[dungeonId]);
             
-            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state pokud existuje
-            // Bug HLB: Po boss dropu se modal zavřel ale combatState zůstal
-            // → klik na Dungeon vyhodil "jsi v boji" ale nešlo se vrátit
-            if (typeof checkAndClearStuckCombat === 'function') {
-                checkAndClearStuckCombat();
-            }
-            
             // DEBUG - zobraz info
             // alert('enterDungeon: ' + dungeonId + ', currentLocation: ' + state.world?.currentLocation);
             
@@ -65598,6 +65585,14 @@ function openFullscreenMap() {
             addLog(`Vyčistil jsi patro ${state.dungeon.floor} v ${dungeonData.name}!`, '🏰');
             
             window.isDungeonCombat = false;
+            
+            // 🆕 [v6.3.1 BUG FIX] CRITICAL — cleanup combat state po dokončení patra
+            // Bug HLB: "vyhazuje z dungeonu a píše že jsem stále v boji"
+            // Důvod: dungeon floor complete volal jen closeModal() ale NE _cleanupCombatState()
+            // → window.combatState zůstal → další akce blokované jako "v boji"
+            if (typeof _cleanupCombatState === 'function') {
+                _cleanupCombatState();
+            }
             
             // Ulož hru po vyčištění patra (tiše)
             saveGame(true);
@@ -66651,6 +66646,12 @@ function openFullscreenMap() {
             // Pokračuj na další patro
             state.abyss.currentFloor++;
             window.isAbyssCombat = false;
+            
+            // 🆕 [v6.3.1 BUG FIX] CRITICAL — cleanup combat state po dokončení Propast patra
+            // Stejný bug jako u dungeonu — combat state zůstává stuck po výhře
+            if (typeof _cleanupCombatState === 'function') {
+                _cleanupCombatState();
+            }
             
             setTimeout(() => showAbyssFloor(), 500);
         }
@@ -83880,6 +83881,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function startCombatWithGroup(enemyGroup, combatType = 'normal', skipPreCombat = false) {
             console.log('⚔️ startCombatWithGroup called with', enemyGroup?.length || 0, 'enemies, type:', combatType);
+            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state PŘED každým startem nového boje
+            // Hráč hlásí stuck v dungeonu, nepustí na bosse
+            if (typeof checkAndClearStuckCombat === 'function') {
+                checkAndClearStuckCombat();
+            }
             window._combatScrolledToTop = false;
             // [FIX v3.9.82] Reset ambush/firstStrike flags na začátku každého boje
             // (dřívější kód resetoval až na konci - pokud hráč opustil boj jinak, zůstaly true)
@@ -84797,6 +84803,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     validMoves: [],
                     validTargets: [],
                     combatType: combatType,
+                    _startedAt: Date.now(), // 🆕 [v6.3.1] Timestamp pro checkAndClearStuckCombat - chrání proti false positive
                     isVillageRaid: combatType === 'settlement_raid',
                     isDungeon: combatType === 'dungeon',
                     formation: selectedFormation,
@@ -93377,20 +93384,41 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // → hráč na mapě, ale klik na Dungeon/Prohledat hlásí "jsi v boji"
         // Fix: Pokud combat state existuje ALE žádné modal/UI prvky nejsou viditelné,
         // znamená to "ghost state" → automatický cleanup
+        // 
+        // 🆕 [v6.3.1 UPDATE] BEZPEČNOST: vyžaduje aby combat byl "stuck" alespoň 3 sekundy
+        // (jinak by mohlo dojít k cleanupu legitimního combat během modal přechodů)
         function checkAndClearStuckCombat() {
-            if (!window.combatState && !state.activeCombat) return false; // OK, žádný combat
+            const cs = window.combatState;
+            if (!cs && !state.activeCombat) return false; // OK, žádný combat
+            
+            // 🆕 Pokud combat byl založen v posledních 3 sekundách, NIKDY ne cleanup
+            // (mohl by být v procesu inicializace nebo mezi modal přechody)
+            const combatStartedAt = cs?._startedAt || cs?._createdAt || 0;
+            if (combatStartedAt > 0 && (Date.now() - combatStartedAt) < 3000) {
+                return false; // Combat je čerstvý, nech ho být
+            }
             
             // Zkontroluj zda existují fyzické DOM elementy combat UI
-            const hasModal = document.querySelector('.modal-overlay');
-            const hasCombatUI = document.getElementById('combatLog') || 
-                                document.getElementById('hexGrid') ||
-                                document.getElementById('combatEndBanner');
+            const modalEl = document.getElementById('modal');
+            const modalVisible = modalEl && modalEl.classList.contains('show');
+            const hasCombatLog = document.getElementById('combatLog');
+            const hasHexGrid = document.getElementById('hexGrid');
+            const hasCombatBanner = document.getElementById('combatEndBanner');
             const hasFloatBtn = document.getElementById('combatFloatingBtn');
             const inFullscreen = document.body.classList.contains('combat-fullscreen');
             
+            // Combat má UI pokud má JAKÉKOLI z combat elementů ALEBO modal je visible
+            let hasActiveCombatUI = !!(hasCombatLog || hasHexGrid || hasCombatBanner || hasFloatBtn || inFullscreen || modalVisible);
+            
             // Pokud žádné UI prvky combat nejsou viditelné → ghost state
-            if (!hasModal && !hasCombatUI && !hasFloatBtn && !inFullscreen) {
-                console.warn('⚠️ [GHOST COMBAT] Combat state existuje ale UI neexistuje — auto cleanup');
+            if (!hasActiveCombatUI) {
+                console.warn('⚠️ [GHOST COMBAT] Combat state existuje ale UI neexistuje — auto cleanup', {
+                    hasCombatState: !!window.combatState,
+                    hasActiveCombat: !!state.activeCombat,
+                    modalVisible,
+                    inFullscreen,
+                    combatStartedAt
+                });
                 _cleanupCombatState();
                 if (typeof notifyInfo === 'function') {
                     notifyInfo('🔧 Oprava', 'Zaseknutý stav boje byl uvolněn');
@@ -93400,6 +93428,34 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             return false; // Combat je legitimní
         }
         window.checkAndClearStuckCombat = checkAndClearStuckCombat;
+        
+        // 🆕 [v6.3.1] Force reset combat - pro extrémní případy přes F12 console: forceResetCombat()
+        window.forceResetCombat = function() {
+            console.warn('💥 forceResetCombat: vynucený cleanup');
+            window.combatState = null;
+            delete state.activeCombat;
+            delete state.savedCombatState;
+            window._combatVictoryHandled = false;
+            window._combatDefeatHandled = false;
+            window._warCryBuff = null;
+            window.ambushUsed = false;
+            window._firstStrikeUsed = false;
+            if (window._combatHeartbeatInterval) {
+                clearInterval(window._combatHeartbeatInterval);
+                window._combatHeartbeatInterval = null;
+            }
+            if (window._combatWatchdogInterval) {
+                clearInterval(window._combatWatchdogInterval);
+                window._combatWatchdogInterval = null;
+            }
+            document.body.classList.remove('combat-fullscreen');
+            const fb = document.getElementById('combatFloatingBtn'); if (fb) fb.remove();
+            const banner = document.getElementById('combatEndBanner'); if (banner) banner.remove();
+            if (typeof closeModal === 'function') closeModal();
+            if (typeof renderFull === 'function') renderFull();
+            if (typeof notifyInfo === 'function') notifyInfo('🔧 Reset', 'Combat state vynuceně vyčištěn');
+            return 'Combat state reset complete';
+        };
         
         // [HELPER v4.0.1] Komplexní cleanup combat state - SINGLE SOURCE OF TRUTH
         // Všechny způsoby jak boj končí (vítězství, smrt, útěk, dýmovnice, abyss exit) použijí tohle.
@@ -93805,6 +93861,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // === STARÝ startCombat upravený pro nový systém ===
         
         function startCombat(enemy, isAmbush = false, isVillageRaid = false, forceEnemyCount = null) {
+            // 🆕 [v6.3.1 BUG FIX] Cleanup ghost combat state PŘED každým startem nového boje
+            // Hráč hlásí "Hlubiny pustiny - boj konec vyhodilo, prohledat nic, souboj nic"
+            // = ghost combat state z předchozího boje. Tento check zaručí čistý start.
+            if (typeof checkAndClearStuckCombat === 'function') {
+                checkAndClearStuckCombat();
+            }
+            
             window._combatScrolledToTop = false;
             // [FIX BUG #4] Reset victory/defeat guards při startu nového boje
             window._combatVictoryHandled = false;
