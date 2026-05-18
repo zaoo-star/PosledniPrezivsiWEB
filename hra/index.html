@@ -85267,12 +85267,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // 🆕 [v6.3.1] Nepřátelé v Propasti/dungeonech/World Bossi mají 3 tahy místo 2 (zvýšená obtížnost)
                 const _isAbyssOrDungeon = state.abyss?.inProgress || state.dungeon?.active;
                 const _isWorldBossRaid = state.activeWorldBoss?.isRaid === true;
+                // 🐛 [v6.3.1 DEBUG] Log pro diagnostiku 3-actions
+                console.log(`🎮 [SETUP] _isAbyssOrDungeon=${_isAbyssOrDungeon}, abyss.inProgress=${state.abyss?.inProgress}, dungeon.active=${state.dungeon?.active}, worldBossRaid=${_isWorldBossRaid}`);
                 units.forEach(u => {
                     // Enemies v Propasti/dungeonu: 3 tahy. World Boss sám: 3 tahy. Jinak 2.
                     let enemyBonusActions = 2;
                     if (u.team === 'enemy') {
                         if (_isAbyssOrDungeon) enemyBonusActions = 3;
                         else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaid) enemyBonusActions = 3;
+                        console.log(`🎮 [SETUP] Enemy ${u.name}: bonusActions=${enemyBonusActions}`);
                     }
                     u.actionsLeft = enemyBonusActions;
                     u.maxActions = enemyBonusActions;
@@ -86059,6 +86062,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // 🆕 [v6.3.1] Nepřátelé v Propasti/dungeonech/World Bossi mají 3 tahy místo 2 každé kolo
             const _isAbyssOrDungeonRound = state.abyss?.inProgress || state.dungeon?.active;
             const _isWorldBossRaidRound = state.activeWorldBoss?.isRaid === true;
+            // 🐛 [v6.3.1 DEBUG] Log pro diagnostiku 3-actions
+            console.log(`🎮 [ROUND ${cs.round}] _isAbyssOrDungeonRound=${_isAbyssOrDungeonRound}, abyss.inProgress=${state.abyss?.inProgress}, dungeon.active=${state.dungeon?.active}, worldBossRaid=${_isWorldBossRaidRound}`);
             cs.units.forEach(u => {
                 // 🆕 [v6.3.1] FORCE override - nepřátelé v Propasti/dungeonu/WorldBoss VŽDY 3 tahy
                 // (Bug: hráč hlásí "porad jen 2 tahy" - příčina: cs.units mají stale maxActions:2 ze save)
@@ -86068,6 +86073,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaidRound) defaultActions = 3;
                     // Force přepsat stale maxActions ze save game
                     u.maxActions = defaultActions;
+                    console.log(`🎮 [ROUND ${cs.round}] Enemy ${u.name}: maxActions=${u.maxActions}, actionsLeft=${defaultActions}`);
                 }
                 u.actionsLeft = u.maxActions || defaultActions;
                 u.defending = false;
@@ -88184,6 +88190,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (cs.combatModifier.effect === 'miss') dodgeChance = Math.min(0.9, dodgeChance + cs.combatModifier.value);
             }
             
+            // 🆕 [v6.3.1 BUG FIX] Weapon accuracy - zbraně s accuracy < 1 mají chance miss
+            // Pre-War zbraně mají accuracy 0.85-0.95 = 5-15% miss
+            const _atkWeaponForAcc = attacker.isPlayer ? state.equipped?.weapon :
+                                     (attacker.isCompanion ? attacker.equipped?.weapon : null);
+            if (_atkWeaponForAcc?.accuracy && _atkWeaponForAcc.accuracy < 1) {
+                const missChance = 1 - _atkWeaponForAcc.accuracy;
+                dodgeChance = Math.min(0.95, dodgeChance + missChance);
+            }
+            
             // 🍺 Opilost - snížení přesnosti hráče (nepřítel se snáze vyhne)
             if ((attacker.team === 'player' || attacker.isPlayer) && state.buffs?.drunk && state.buffs.drunk.until > Date.now()) {
                 const drunkMiss = state.buffs.drunk.level === 1 ? 0.05 : state.buffs.drunk.level === 2 ? 0.10 : 0.20;
@@ -88437,6 +88452,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Companion bonus
                 const compBonCrit = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
                 if (compBonCrit.critChance) critChanceMod += compBonCrit.critChance;
+                
+                // 🆕 [v6.3.1 BUG FIX] Weapon crit bonus (Gauss Rifle/Pre-War zbraně, Vampyric blade atd.)
+                // Bez tohoto Pre-War zbraně s critBonus 15-30 neměly v hex combat žádný efekt
+                const _hexCombatWeapon = attacker.isPlayer ? state.equipped?.weapon : 
+                                          (attacker.isCompanion ? attacker.equipped?.weapon : null);
+                if (_hexCombatWeapon) {
+                    if (_hexCombatWeapon.critChance) critChanceMod += _hexCombatWeapon.critChance;
+                    if (_hexCombatWeapon.critBonus) critChanceMod += _hexCombatWeapon.critBonus / 100;
+                }
                 
                 // [FIX v3.9.82] 🎯 STALKER AMBUSH - první útok v boji má +100% crit
                 if (setFx.ambush && attacker.isPlayer && cs.round === 1 && !window.ambushUsed) {
@@ -98189,6 +98213,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Weapon crit bonus (Gauss Rifle +20%)
             if (weapon?.critChance) {
                 critChance += weapon.critChance;
+            }
+            // 🆕 [v6.3.1 BUG FIX] Pre-War zbraně mají critBonus (15-30) - aplikuj /100
+            // Bez tohoto Pre-War zbraně neměly žádný crit bonus přestože UI to ukazovalo
+            if (weapon?.critBonus) {
+                critChance += weapon.critBonus / 100;
             }
             
             // 🏹 animalDamage ze setu (+50% damage na zvířata) v classic combat (Fix: chybělo)
