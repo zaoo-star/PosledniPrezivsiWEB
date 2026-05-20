@@ -63233,6 +63233,11 @@ function openFullscreenMap() {
                 // ⚙️ Engineer set armor - craftBonus (+35% stats)
                 const _setFxCraft = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
                 const _setCraftBonus = _setFxCraft.craftBonus || 0;
+                // 🆕 [v6.3.1 BUG FIX] Track původní base damage/defense aby validátor nesnížil DMG
+                // Bug HLB/OwerLord: rukavice s tech bonusem (70 DMG) → upgrade → validátor sníží na 38
+                const _baseDmgCraft = craftedItem.damage || 0;
+                const _baseDefCraft = craftedItem.defense || 0;
+                
                 if (_setCraftBonus > 0) {
                     if (craftedItem.damage) craftedItem.damage = Math.ceil(craftedItem.damage * (1 + _setCraftBonus));
                     if (craftedItem.defense) craftedItem.defense = Math.ceil(craftedItem.defense * (1 + _setCraftBonus));
@@ -63265,6 +63270,14 @@ function openFullscreenMap() {
                         craftedItem.defense += bonus;
                         if (!craftedItem.name.includes('💡')) craftedItem.name += ' 💡';
                     }
+                }
+                
+                // 🆕 [v6.3.1] Ulož craft bonus aby ho validátor mohl zahrnout do expected range
+                if (_baseDmgCraft > 0 && craftedItem.damage > _baseDmgCraft) {
+                    craftedItem._craftBonusDmg = craftedItem.damage - _baseDmgCraft;
+                }
+                if (_baseDefCraft > 0 && craftedItem.defense > _baseDefCraft) {
+                    craftedItem._craftBonusDef = craftedItem.defense - _baseDefCraft;
                 }
                 
                 // Add durability to weapons, armor, gloves, boots
@@ -81745,7 +81758,116 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
         }
         
-        // Odebrat peníze z veřejné kasy
+        // 🆕 [v6.3.1] Přispívání do veřejné kasy
+        async function donateToPublicTreasury(amount) {
+            amount = Math.floor(amount);
+            if (!amount || amount <= 0) {
+                notifyWarning('Chyba', 'Zadej platnou částku!');
+                return;
+            }
+            if ((state.char?.money || 0) < amount) {
+                notifyWarning('Nedostatek 💰', `Máš jen ${state.char?.money || 0}💰, potřebuješ ${amount}💰`);
+                return;
+            }
+            if (!multiplayerEnabled || !firebaseDB) {
+                notifyWarning('Chyba', 'Nejsi připojen k serveru!');
+                return;
+            }
+            
+            try {
+                // Odečti hráči peníze
+                state.char.money -= amount;
+                saveGame(true);
+                
+                // Přidej do kasy (atomic)
+                await addToPublicTreasury(amount, 'donation', `Dar od ${getPlayerName()}`);
+                
+                // Zapiš do donator logu v Firebase
+                const safeName = (getPlayerName() || 'Anonym').replace(/[.#$/[\]]/g, '_');
+                const donorRef = firebaseDB.ref(`politics/donors/${safeName}`);
+                await donorRef.transaction(current => {
+                    const prev = current || { name: getPlayerName(), total: 0, lastDonation: 0, count: 0 };
+                    return {
+                        name: getPlayerName(),
+                        total: (prev.total || 0) + amount,
+                        lastDonation: amount,
+                        count: (prev.count || 0) + 1,
+                        lastTime: Date.now()
+                    };
+                });
+                
+                notifySuccess('💰 Přispěno!', `Přidal jsi ${amount.toLocaleString()}💰 do veřejné kasy! Díky!`);
+                addLog(`🤝 Přispěl jsi ${amount.toLocaleString()}💰 do veřejné kasy`, '💰');
+                
+                // Refresh donors list
+                loadDonorsList();
+                
+            } catch(e) {
+                // Vrátit peníze pokud selhalo
+                state.char.money += amount;
+                console.error('Donation error:', e);
+                notifyError('Chyba', 'Přispění selhalo, peníze vráceny.');
+            }
+        }
+        window.donateToPublicTreasury = donateToPublicTreasury;
+        
+        // 🆕 [v6.3.1] Načíst seznam donátorů z Firebase
+        async function loadDonorsList() {
+            const container = document.getElementById('donorsContent');
+            if (!container || !firebaseDB) return;
+            
+            try {
+                const snap = await firebaseDB.ref('politics/donors').once('value');
+                const donors = snap.val();
+                
+                if (!donors || Object.keys(donors).length === 0) {
+                    container.innerHTML = '<span style="color:#444;">Zatím nikdo nepřispěl. Buď první!</span>';
+                    return;
+                }
+                
+                // Seřadit podle celkové částky
+                const sortedDonors = Object.values(donors)
+                    .sort((a, b) => (b.total || 0) - (a.total || 0));
+                
+                const myName = getPlayerName();
+                const medals = ['🥇', '🥈', '🥉'];
+                
+                container.innerHTML = sortedDonors.slice(0, 10).map((d, i) => {
+                    const isMe = d.name === myName;
+                    const medal = medals[i] || `${i + 1}.`;
+                    const timeStr = d.lastTime ? 
+                        new Date(d.lastTime).toLocaleDateString('cs', { day: 'numeric', month: 'short' }) : '';
+                    return `<div style="display:flex;justify-content:space-between;align-items:center;
+                                padding:0.2rem 0;border-bottom:1px solid #111;
+                                ${isMe ? 'background:#0d2a0d;margin:0 -0.5rem;padding:0.2rem 0.5rem;' : ''}">
+                        <span style="color:${isMe ? '#8bc34a' : '#888'};font-size:0.7rem;">
+                            ${medal} ${d.name}${isMe ? ' (ty)' : ''}
+                        </span>
+                        <span style="color:#ffd700;font-size:0.7rem;font-weight:bold;">
+                            ${(d.total || 0).toLocaleString()}💰
+                            <span style="color:#444;font-size:0.6rem;">${d.count}×</span>
+                        </span>
+                    </div>`;
+                }).join('');
+                
+                // Zobraz vlastní rank pokud není v top 10
+                const myRank = sortedDonors.findIndex(d => d.name === myName);
+                if (myRank >= 10) {
+                    const myData = sortedDonors[myRank];
+                    container.innerHTML += `
+                        <div style="border-top:1px solid #222;padding-top:0.3rem;margin-top:0.2rem;">
+                            <div style="color:#8bc34a;font-size:0.65rem;">
+                                Tvoje pozice: #${myRank + 1} | ${(myData.total || 0).toLocaleString()}💰 celkem
+                            </div>
+                        </div>`;
+                }
+                
+            } catch(e) {
+                container.innerHTML = '<span style="color:#444;">Chyba načítání donátorů</span>';
+                console.warn('loadDonorsList error:', e);
+            }
+        }
+        window.loadDonorsList = loadDonorsList;
         async function removeFromPublicTreasury(amount, reason, details = '') {
             if (!multiplayerEnabled || !firebaseDB || amount <= 0) return false;
             
@@ -91791,31 +91913,56 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 cs.log.push(`Nepřítel je omráčen.`);
             }
             // ⚡ Chain Lightning (legacy combat)
-            if (!isCompanion && weapon?.special === 'chain_lightning' && Math.random() < 0.30) {
-                const chainTargets = (cs.enemyGroup || cs.units || []).filter(u => 
-                    u.alive && u !== target && u.team !== 'player'
-                ).slice(0, 2);
-                if (chainTargets.length > 0) {
-                    const chainDmg = Math.max(3, Math.floor((finalDamage || damage || 5) * 0.35));
-                    chainTargets.forEach(ct => {
-                        ct.hp = Math.max(0, ct.hp - chainDmg);
-                        cs.log.push(`⚡ Řetěz blesku → ${ct.name}: -${chainDmg} HP`);
-                        if (ct.hp <= 0) { ct.alive = false; cs.log.push(`☠️ ${ct.name} zabit bleskem!`); }
-                    });
+            // ⚡ Chain lightning (Tesla zbraně)
+            // 🆕 [v6.3.1 BUG FIX] Pre-War Tesla Dělo mělo vždy jen 30%/2 skoky místo 60%/4
+            if (!isCompanion && weapon?.special === 'chain_lightning') {
+                const wId = weapon.id || '';
+                const chainChance = wId.includes('prewar_tesla') ? 0.60 :
+                                    wId === 'tesla_cannon' ? 0.50 :
+                                    wId === 'tesla_rifle' ? 0.40 : 0.30;
+                const maxJumps = wId.includes('prewar_tesla') ? 4 :
+                                  wId === 'tesla_cannon' ? 3 : 2;
+                if (Math.random() < chainChance) {
+                    // 🆕 Použij cs.units (hex combat) nebo cs.enemyGroup (legacy)
+                    const allEnemies = (cs.units || cs.enemyGroup || []).filter(u => 
+                        u.alive && u !== target && u.team !== 'player'
+                    );
+                    const chainTargets = allEnemies.slice(0, maxJumps);
+                    if (chainTargets.length > 0) {
+                        const chainDmg = Math.max(3, Math.floor((cappedDamage || finalDamage || damage || 5) * 0.35));
+                        cs.log.push(`⚡ ŘETĚZ BLESKU skáče na ${chainTargets.length} ${chainTargets.length === 1 ? 'cíl' : 'cíle'}!`);
+                        chainTargets.forEach(ct => {
+                            ct.hp = Math.max(0, ct.hp - chainDmg);
+                            cs.log.push(`⚡ Blesk → ${ct.icon || ''} ${ct.name}: -${chainDmg} HP`);
+                            if (ct.hp <= 0) { ct.alive = false; cs.log.push(`☠️ ${ct.name} zabit bleskem!`); }
+                        });
+                    } else {
+                        cs.log.push(`⚡ Řetěz blesku: žádný další nepřítel v dosahu`);
+                    }
                 }
             }
-            // 💥 Splash AOE (legacy combat)
-            if (!isCompanion && weapon?.special === 'splash' && (finalDamage || damage) > 0) {
-                const splashTargets = (cs.enemyGroup || cs.units || []).filter(u => 
+            // 💥 Splash AOE (raketomety, granátomety)
+            // 🆕 [v6.3.1 BUG FIX] Pre-War Devastátor měl vždy 45% místo 60%
+            if (!isCompanion && weapon?.special === 'splash' && (cappedDamage || finalDamage || damage) > 0) {
+                const wId = weapon.id || '';
+                const splashPct = weapon.splashPct || 
+                    (wId.includes('prewar_devastator') || wId === 'devastator' ? 0.60 : 0.45);
+                // 🆕 Použij cs.units (hex combat) nebo cs.enemyGroup (legacy)
+                const splashTargets = (cs.units || cs.enemyGroup || []).filter(u => 
                     u.alive && u !== target && u.team !== 'player'
                 );
                 if (splashTargets.length > 0) {
-                    const splashDmg = Math.max(2, Math.floor((finalDamage || damage || 5) * 0.45));
+                    const splashBase = cappedDamage || finalDamage || damage || 5;
+                    const splashDmg = Math.max(2, Math.floor(splashBase * splashPct));
+                    cs.log.push(`💥 PLOŠNÝ VÝBUCH (${Math.round(splashPct*100)}%) zasahuje ${splashTargets.length} dalších cílů!`);
                     splashTargets.forEach(st => {
-                        st.hp = Math.max(0, st.hp - splashDmg);
-                        cs.log.push(`💥 Splash → ${st.name}: -${splashDmg} HP`);
+                        const stFinalSplash = Math.max(1, splashDmg - Math.floor((st.defense || 0) * 0.3));
+                        st.hp = Math.max(0, st.hp - stFinalSplash);
+                        cs.log.push(`💥 Splash → ${st.icon || ''} ${st.name}: -${stFinalSplash} HP`);
                         if (st.hp <= 0) { st.alive = false; cs.log.push(`☠️ ${st.name} rozmetán výbuchem!`); }
                     });
+                } else {
+                    cs.log.push(`💥 Plošný výbuch (žádný další cíl v dosahu)`);
                 }
             }
             // 🧛 Lifesteal (legacy combat)
@@ -99862,9 +100009,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const abyssCount = item.abyssShardUpgrades || 0;
             const hasAi = !!item.aiUpgraded;
             const hasLab = !!item.labUpgraded;
+            // 🆕 [v6.3.1 BUG FIX] Zahrnout craft bonus (Technik companion, Engineer set, Scientists frakce)
+            // Bez tohoto validátor srážel craftnuté zbraně se 70 DMG zpět na base 38 DMG
+            const craftBonusDmg = item._craftBonusDmg || 0;
             
             // Min damage: bez blacksmith bonus, smithy random = 2
-            let dmgMin = baseDmg;
+            let dmgMin = baseDmg + craftBonusDmg;
             dmgMin += ivanCount * 5;          // Ivan: 5 (no blacksmith)
             dmgMin += techCount * 5;          // Klára Tech: 5
             dmgMin += technicianCount * 5;    // Technik: 5 (no blacksmith)
@@ -99873,7 +100023,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (hasAi) dmgMin += 10;
             
             // Max damage: s L5 Legendary kovář (+5), smithy random = 3
-            let dmgMax = baseDmg;
+            let dmgMax = baseDmg + craftBonusDmg;
             dmgMax += ivanCount * (5 + 5);    // Ivan + L5 blacksmith
             dmgMax += techCount * 5;          // Klára: 5 (no blacksmith)
             dmgMax += technicianCount * (5 + 5); // Technik + L5 blacksmith
@@ -99930,6 +100080,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!def || typeof def.defense !== 'number') return null;
             
             let defense = def.defense;
+            // 🆕 [v6.3.1 BUG FIX] Zahrnout craft bonus pro armory (Technik/Engineer set/Scientists)
+            if (item._craftBonusDef) defense += item._craftBonusDef;
             
             // Ivan - +5 each (3× max)
             if (item.ivanUpgrades > 0) defense += item.ivanUpgrades * 5;
@@ -102531,7 +102683,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     //   Enchant: NEMĚNÍ base staty (runtime efekt)
                     
                     // Damage (zbraně)
-                    if (def.damage !== undefined && (def.type === 'weapon' || item.type === 'weapon')) {
+                    if (def.damage !== undefined && (def.type === 'weapon' || item.type === 'weapon' || item.type === 'gloves')) {
                         let minExpected = def.damage;
                         // Ivan upgrady: minimálně +5 za každý (bez blacksmith bonusu)
                         if (item.ivanUpgrades > 0) minExpected += item.ivanUpgrades * 5;
@@ -102545,6 +102697,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         if (item._smithyUpgrades > 0) minExpected += item._smithyUpgrades * 2;
                         // Lab upgrade: ×1.1 (aplikuje se na celkový součet)
                         if (item.labUpgraded) minExpected = Math.ceil(minExpected * 1.1);
+                        
+                        // 🆕 [v6.3.1] Auto-detect craft bonus pokud chybí ale damage je vyšší
+                        // Bug fix: Drtič hlav crafted s tech bonusem 38→70, validátor srazil zpět
+                        if (item.damage && item.damage > minExpected && !item._craftBonusDmg) {
+                            // Pokud rukavice/zbraň má víc DMG než upgrade-based minimum, je to z craftu
+                            const craftBonus = item.damage - minExpected;
+                            // Sanity check: craft bonus by neměl být > 100% base
+                            if (craftBonus > 0 && craftBonus <= def.damage * 1.5) {
+                                item._craftBonusDmg = craftBonus;
+                                console.log(`🔧 Detekován craft bonus: ${item.name || item.id} +${craftBonus} DMG (uloženo do _craftBonusDmg)`);
+                                changed = true;
+                            }
+                        }
                         
                         if (!item.damage || item.damage < minExpected) {
                             console.log(`🔧 Oprava DMG: ${item.name || item.id} ${item.damage || 0} → ${minExpected}`);
@@ -119442,8 +119607,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Aplikuj filtr typu
             if (filterType === 'armor') {
                 otherOffers = otherOffers.filter(o => ['armor', 'helmet', 'gloves', 'boots'].includes(o.item.type));
+            } else if (filterType === 'rune') {
+                // 🆕 [v6.3.1] Filtr pro runy
+                otherOffers = otherOffers.filter(o => o.item.type === 'rune' || o.item.id?.startsWith('rune_'));
             } else if (filterType === 'other') {
-                otherOffers = otherOffers.filter(o => !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable'].includes(o.item.type));
+                otherOffers = otherOffers.filter(o => 
+                    !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'rune'].includes(o.item.type) &&
+                    !o.item.id?.startsWith('rune_')
+                );
             } else if (filterType !== 'all') {
                 otherOffers = otherOffers.filter(o => o.item.type === filterType);
             }
@@ -119463,7 +119634,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const weaponCount = activeOffers.filter(o => o.seller !== myName && o.item.type === 'weapon').length;
             const armorCount = activeOffers.filter(o => o.seller !== myName && ['armor', 'helmet', 'gloves', 'boots'].includes(o.item.type)).length;
             const consumableCount = activeOffers.filter(o => o.seller !== myName && o.item.type === 'consumable').length;
-            const otherCount = activeOffers.filter(o => o.seller !== myName && !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable'].includes(o.item.type)).length;
+            const runeCount = activeOffers.filter(o => o.seller !== myName && (o.item.type === 'rune' || o.item.id?.startsWith('rune_'))).length;
+            const otherCount = activeOffers.filter(o => o.seller !== myName && !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'rune'].includes(o.item.type) && !o.item.id?.startsWith('rune_')).length;
             
             let html = `
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
@@ -119518,6 +119690,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         { f: 'weapon', icon: '⚔️', label: `Zbraně (${weaponCount})` },
                         { f: 'armor', icon: '🛡️', label: `Zbroj (${armorCount})` },
                         { f: 'consumable', icon: '💊', label: `Jídlo (${consumableCount})` },
+                        { f: 'rune', icon: '🔮', label: `Runy (${runeCount})` },
                         { f: 'other', icon: '📦', label: `Ostatní (${otherCount})` }
                     ])}
                     <input type="text" id="marketSearchInput" value="${escapeHtml(searchText)}" placeholder="🔍 Hledat název, prodejce..." 
@@ -128743,10 +128916,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 filteredItems = allItems.filter(i => ['armor', 'helmet', 'gloves', 'boots'].includes(i.type));
             } else if (filterType === 'consumable') {
                 filteredItems = allItems.filter(i => i.type === 'consumable');
+            } else if (filterType === 'rune') {
+                // 🆕 [v6.3.1] Filtr pro runy
+                filteredItems = allItems.filter(i => i.type === 'rune' || i.id?.startsWith('rune_'));
             } else if (filterType === 'resource') {
                 filteredItems = allItems.filter(i => i.type === 'resource' || i.type === 'material');
             } else if (filterType === 'other') {
-                filteredItems = allItems.filter(i => !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'resource', 'material'].includes(i.type));
+                filteredItems = allItems.filter(i => !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'rune', 'resource', 'material'].includes(i.type) && !i.id?.startsWith('rune_'));
             }
             
             // Textový filtr
@@ -144191,6 +144367,34 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     ${publicMoney < 10000 ? '<div style="color:#f44336;font-size:0.7rem;text-align:right;">⚠️ Málo peněz<br>chybí ' + (10000 - publicMoney).toLocaleString() + '💰</div>' : '<div style="color:#4caf50;font-size:0.7rem;text-align:right;">✓ Stačí na ' + Math.floor(publicMoney / 10000) + ' invest.</div>'}
                 </div>
                 
+                <!-- 🆕 [v6.3.1] PŘISPĚT DO KASY + DONÁTOŘI -->
+                <div style="background:#0d1a0d;border:1px solid #2a4a2a;border-radius:6px;padding:0.6rem;margin-bottom:0.5rem;">
+                    <div style="color:#8bc34a;font-size:0.8rem;font-weight:bold;margin-bottom:0.5rem;">🤝 Přispět do veřejné kasy</div>
+                    <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+                        ${[100, 500, 1000, 5000, 10000].map(amt => 
+                            `<button class="btn" onclick="donateToPublicTreasury(${amt})" 
+                                style="padding:0.3rem 0.5rem;font-size:0.75rem;background:#1b5e20;flex:1;min-width:50px;">
+                                +${amt.toLocaleString()}💰
+                            </button>`
+                        ).join('')}
+                    </div>
+                    <div style="display:flex;gap:0.4rem;margin-top:0.4rem;">
+                        <input type="number" id="donationCustom" placeholder="Vlastní částka" min="1" max="999999"
+                            style="flex:1;padding:0.4rem;background:#0a0a0a;color:#fff;border:1px solid #333;border-radius:4px;font-size:0.8rem;">
+                        <button class="btn" onclick="donateToPublicTreasury(parseInt(document.getElementById('donationCustom')?.value)||0)"
+                            style="background:#388e3c;padding:0.4rem 0.7rem;font-size:0.8rem;white-space:nowrap;">
+                            💸 Přispět
+                        </button>
+                    </div>
+                    <div style="color:#666;font-size:0.65rem;margin-top:0.3rem;">Tvé 💰: ${(state.char?.money || 0).toLocaleString()} | Peníze se přičtou přímo do kasy</div>
+                </div>
+                
+                <!-- Donátoři sekce (načtena async) -->
+                <div id="donorsList" style="background:#0a0a0a;border:1px solid #1a2a1a;border-radius:6px;padding:0.5rem;margin-bottom:0.5rem;">
+                    <div style="color:#666;font-size:0.7rem;font-weight:bold;margin-bottom:0.3rem;">🏆 TOP PŘISPĚVATELÉ (celkem)</div>
+                    <div id="donorsContent" style="color:#555;font-size:0.7rem;">Načítám...</div>
+                </div>
+                
                 <div style="max-height:50vh;overflow-y:auto;">
                     ${projectCards}
                 </div>
@@ -144232,6 +144436,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#555;">← Zpět</button>
             `);
+            // 🆕 Načti donátory po otevření modalu
+            setTimeout(() => { if (typeof loadDonorsList === 'function') loadDonorsList(); }, 300);
         }
         window.showMayorInvestmentsDialog = showMayorInvestmentsDialog;
         window.startMayorInvestment = startMayorInvestment;
@@ -160460,6 +160666,26 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                 newItem.count = item.count;
                                 addItemToInventory(newItem, item.count);
                                 receivedText.push(`${item.count}x ${itemDef.icon || item.icon} ${itemDef.name}`);
+                            } else if (fixedId.startsWith('blueprint_') || fixedId.startsWith('rune_')) {
+                                // 🆕 [v6.3.1 BUG FIX] Blueprinty a runy z pokladu musí jít do inventáře
+                                // Předtím: pokud ITEMS.find selhal, šly do state.resources (nezobrazily se)
+                                // Důvod selhání: ITEMS mohl být neincludovaný v kontextu → fallback
+                                const fallbackItem = {
+                                    id: fixedId,
+                                    name: item.name || fixedId.replace(/_/g, ' '),
+                                    icon: item.icon || '📜',
+                                    type: fixedId.startsWith('blueprint_') ? 'blueprint' : 'rune',
+                                    count: item.count,
+                                    rarity: 'legendary',
+                                    cantSell: fixedId.startsWith('blueprint_'),
+                                    cantBuy: true,
+                                    // Pokud blueprint, pokus se najít weaponId ze suffixu
+                                    weaponId: fixedId.startsWith('blueprint_') ? 
+                                        fixedId.replace('blueprint_', '').replace(/_/g, '_') : undefined
+                                };
+                                addItemToInventory(fallbackItem, item.count);
+                                receivedText.push(`${item.count}x ${item.icon} ${fallbackItem.name}`);
+                                console.log(`📜 Treasure blueprint fallback: ${fixedId} přidán do inventáře`);
                             } else {
                                 // Fallback - přidej jako resource přímo
                                 state.resources[fixedId] = (state.resources[fixedId] || 0) + item.count;
