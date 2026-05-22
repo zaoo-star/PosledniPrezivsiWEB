@@ -15003,7 +15003,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'dogtags', name: 'Identifikační známky', icon: '🪪', type: 'quest', weight: 0.1, desc: 'Vojenské identifikační známky padlých vojáků.' },
             { id: 'medical_records', name: 'Lékařské záznamy', icon: '📋', type: 'quest', weight: 0.2, desc: 'Staré nemocniční záznamy z doby před válkou.' },
             { id: 'lab_samples', name: 'Laboratorní vzorky', icon: '🧪', type: 'quest', weight: 0.5, desc: 'Vzorky z výzkumné laboratoře v ochranných nádobách.' },
-            { id: 'secret_documents', name: 'Tajné dokumenty', icon: '📁', type: 'quest', weight: 0.3, desc: 'Utajované vojenské dokumenty označené jako "TOP SECRET". Quest item pro společníka Válečníka - mluv s ním pro dokončení questu.' },
+            { id: 'secret_documents', name: 'Tajné dokumenty', icon: '📁', type: 'quest', weight: 0, desc: 'Utajované vojenské dokumenty označené jako "TOP SECRET". Quest item pro společníka Válečníka - mluv s ním pro dokončení questu.' },
             { id: 'family_photo', name: 'Rodinná fotka', icon: '🖼️', type: 'quest', weight: 0.1, desc: 'Vybledlá fotografie šťastné rodiny z dob před válkou.' },
             { id: 'old_toy', name: 'Starý plyšák', icon: '🧸', type: 'quest', weight: 0.2, desc: 'Otrhaný plyšový medvídek, stopy po slzách.' },
             { id: 'ancient_relic', name: 'Prastarý artefakt', icon: '🏺', type: 'quest', weight: 1, desc: 'Záhadný předmět neznámého původu.' }
@@ -59602,10 +59602,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = state.inv[idx];
             if (!item) return;
             
-            // Quest itemy nelze zahodit (typ 'quest' - základní quest itemy)
-            if (item.cantDrop || item.type === 'quest') {
-                notifyWarning('Nelze zahodit', 'Tento předmět je potřebný pro quest a nelze ho zahodit!');
+            // Quest itemy s cantDrop=true vůbec nelze zahodit (Plutoniové jádro atd.)
+            if (item.cantDrop) {
+                notifyWarning('Nelze zahodit', 'Tento předmět je klíčový pro hlavní příběh a nelze ho zahodit!');
                 return;
+            }
+            
+            // 🆕 [v6.3.1] Quest itemy bez cantDrop — povolit zahození duplikátů, chraň poslední kus
+            // (Hráč hlásil: "12 tajných dokumentů zabírá místo, nejdou vyhodit")
+            if (item.type === 'quest') {
+                const totalSame = state.inv.filter(i => i.id === item.id).reduce((s, i) => s + (i.count || 1), 0);
+                if (totalSame <= 1) {
+                    notifyWarning('Nelze zahodit', 'Tohle je tvůj jediný kus - může být potřeba pro quest!');
+                    return;
+                }
+                // Má víc kopií - povol zahození jedné
             }
             
             // Quest_item typ - povol zahození duplikátů, chraň poslední kus
@@ -59936,9 +59947,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = state.inv[itemIndex];
             
             // Quest itemy nelze zahodit
-            if (item.cantDrop || item.type === 'quest') {
-                notifyWarning('Nelze zahodit', 'Tento předmět je potřebný pro quest a nelze ho zahodit!');
+            if (item.cantDrop) {
+                notifyWarning('Nelze zahodit', 'Tento předmět je klíčový pro hlavní příběh a nelze ho zahodit!');
                 return;
+            }
+            // 🆕 [v6.3.1] Quest itemy bez cantDrop — povolit zahození duplikátů
+            if (item.type === 'quest') {
+                const totalSame = state.inv.filter(i => i.id === itemId).reduce((s, i) => s + (i.count || 1), 0);
+                if (totalSame <= 1) {
+                    notifyWarning('Nelze zahodit', 'Tohle je tvůj jediný kus - může být potřeba pro quest!');
+                    return;
+                }
             }
             
             // Pokud je nasazeno, sundej
@@ -102856,6 +102875,31 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return changed;
                 };
                 state.inv.forEach(item => { if (prewarMigrate(item, 'inv')) fixedItems++; });
+                
+                // 🆕 [v6.3.1] Migrace: konsoliduj duplicitní quest itemy do 1 stacku
+                // (Hráč hlásil: "12 tajných dokumentů zabírá místo, nejdou vyhodit")
+                const questItemCounts = {};
+                state.inv.forEach((item, idx) => {
+                    if (item.type === 'quest' && item.id && !item.cantDrop) {
+                        if (!questItemCounts[item.id]) questItemCounts[item.id] = [];
+                        questItemCounts[item.id].push(idx);
+                    }
+                });
+                // Pro každý quest item s duplikáty - smazat všechny kromě prvního
+                Object.entries(questItemCounts).forEach(([qid, indices]) => {
+                    if (indices.length > 1) {
+                        // Setřídit indexy sestupně aby splice nezničil ostatní
+                        indices.sort((a, b) => b - a);
+                        for (let i = 0; i < indices.length - 1; i++) {
+                            state.inv.splice(indices[i], 1);
+                        }
+                        // Set count of remaining to 1
+                        const lastIdx = state.inv.findIndex(item => item.id === qid && item.type === 'quest');
+                        if (lastIdx !== -1) state.inv[lastIdx].count = 1;
+                        console.log(`🧹 Migrace: ${qid} duplikáty (${indices.length}) → 1 kus`);
+                        fixedItems++;
+                    }
+                });
                 if (state.equipped) {
                     Object.keys(state.equipped).forEach(slot => {
                         const item = state.equipped[slot];
