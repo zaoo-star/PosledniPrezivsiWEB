@@ -44189,6 +44189,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     // Raid poprvé - bez cooldownu
                     html += renderActionButton('⚔️', 'Raid', 'raidLocation()', '#8B0000');
                 }
+                // 🆕 [v6.4.0] 3D Průzkum — POUZE pro admina (testovací feature)
+                if (typeof isAdmin === 'function' && isAdmin()) {
+                    html += renderActionButton('🎮', '3D ruiny', `show3DExploration('${location.id}')`, '#8b6f47');
+                }
             }
             
             // === ZDROJE ===
@@ -44300,6 +44304,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", '#e91e63');
                 } else {
                     html += renderActionButton('🔍', 'Prohledat', "showActionModal('explore')", 'var(--rust)');
+                }
+                // 🆕 [v6.4.0] 3D Průzkum (Wolfenstein-style) — POUZE pro admina (testovací feature)
+                if (location.enemies?.length > 0 && typeof isAdmin === 'function' && isAdmin()) {
+                    html += renderActionButton('🎮', '3D ruiny', `show3DExploration('${location.id}')`, '#8b6f47');
                 }
             }
             
@@ -51240,6 +51248,903 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.checkCompanionQuestItemPickup = checkCompanionQuestItemPickup;
 
+        // ============================================================
+        // 🆕 [v6.4.0] 3D PRŮZKUM — Wolfenstein-style postapo raycasting
+        // Hráč ovládá postavu v 1st-person 3D pohledu, sbírá loot
+        // ============================================================
+        
+        // 🎨 Témata podle terénu/typu lokace
+        const EXPLORE3D_THEMES = {
+            wasteland: { // Pustina, opuštěné domy
+                name: 'Opuštěné trosky',
+                ceiling: { top: '#1a1208', bottom: '#0a0805' },
+                floor:   { top: '#2a1f15', bottom: '#4a3520' },
+                wall:    { r: 110, g: 85, b: 60 },
+                fogColor: '#1a1208'
+            },
+            city: { // Městské ruiny, kanceláře
+                name: 'Městské ruiny',
+                ceiling: { top: '#181818', bottom: '#080808' },
+                floor:   { top: '#1a1a1a', bottom: '#333333' },
+                wall:    { r: 130, g: 130, b: 135 },
+                fogColor: '#0a0a0a'
+            },
+            industrial: { // Továrny, sklady
+                name: 'Průmyslové ruiny',
+                ceiling: { top: '#1a1410', bottom: '#0a0805' },
+                floor:   { top: '#2a2520', bottom: '#3a3530' },
+                wall:    { r: 95, g: 90, b: 85 },
+                fogColor: '#150d08'
+            },
+            cave: { // Jeskyně, podzemí
+                name: 'Temné jeskyně',
+                ceiling: { top: '#0a0a0f', bottom: '#000005' },
+                floor:   { top: '#1a1a25', bottom: '#2a2a35' },
+                wall:    { r: 70, g: 75, b: 90 },
+                fogColor: '#050510'
+            },
+            toxic: { // Radioaktivní zóny
+                name: 'Toxické trosky',
+                ceiling: { top: '#1a2010', bottom: '#0a1005' },
+                floor:   { top: '#2a3520', bottom: '#3a4525' },
+                wall:    { r: 95, g: 110, b: 60 },
+                fogColor: '#152010'
+            },
+            snow: { // Sníh, led
+                name: 'Zamrzlé trosky',
+                ceiling: { top: '#1a2030', bottom: '#0a101a' },
+                floor:   { top: '#2a3045', bottom: '#404a60' },
+                wall:    { r: 130, g: 145, b: 165 },
+                fogColor: '#0a1525'
+            },
+            forest: { // Lesy, opuštěné chatky
+                name: 'Lesní úkryt',
+                ceiling: { top: '#0f1810', bottom: '#050805' },
+                floor:   { top: '#1a2515', bottom: '#2a3a20' },
+                wall:    { r: 85, g: 70, b: 50 }, // dřevo
+                fogColor: '#0a1208'
+            },
+            bunker: { // Vojenské bunkry
+                name: 'Vojenský bunkr',
+                ceiling: { top: '#15151a', bottom: '#080810' },
+                floor:   { top: '#1f1f25', bottom: '#2f2f35' },
+                wall:    { r: 75, g: 85, b: 95 }, // ocel
+                fogColor: '#080810'
+            },
+            slum: { // Slamy, rader kemp
+                name: 'Slamy & tábory',
+                ceiling: { top: '#1a1208', bottom: '#0a0605' },
+                floor:   { top: '#251a10', bottom: '#3a2515' },
+                wall:    { r: 120, g: 75, b: 50 }, // rez/dřevo
+                fogColor: '#150805'
+            }
+        };
+        
+        // Detekce tématu z lokace
+        function getExplore3DTheme(loc) {
+            if (!loc) return EXPLORE3D_THEMES.wasteland;
+            const id = (loc.id || '').toLowerCase();
+            const name = (loc.name || '').toLowerCase();
+            const terrain = loc.terrain;
+            
+            // Specific ID-based mappings (highest priority)
+            if (id.includes('cave') || id.includes('jeskyn') || id.includes('underground') || id.includes('cellar') || id.includes('mine') || id.includes('crypt')) return EXPLORE3D_THEMES.cave;
+            if (id.includes('bunker') || id.includes('military') || id.includes('vojen')) return EXPLORE3D_THEMES.bunker;
+            if (id.includes('factory') || id.includes('industr') || id.includes('warehouse') || id.includes('továr') || id.includes('sklad')) return EXPLORE3D_THEMES.industrial;
+            if (id.includes('slave') || id.includes('raider') || id.includes('camp') || id.includes('tábor')) return EXPLORE3D_THEMES.slum;
+            if (id.includes('forest') || id.includes('woods') || id.includes('les')) return EXPLORE3D_THEMES.forest;
+            if (id.includes('frozen') || id.includes('snow') || id.includes('ice') || id.includes('mraz')) return EXPLORE3D_THEMES.snow;
+            if (id.includes('toxic') || id.includes('radio') || id.includes('swamp')) return EXPLORE3D_THEMES.toxic;
+            if (id.includes('city') || id.includes('mall') || id.includes('office') || id.includes('hospital') || id.includes('school') || id.includes('město')) return EXPLORE3D_THEMES.city;
+            
+            // Terrain-based fallback
+            if (terrain === 5) return EXPLORE3D_THEMES.snow;     // Sníh
+            if (terrain === 4) return EXPLORE3D_THEMES.toxic;    // Toxic swamp
+            if (terrain === 3) return EXPLORE3D_THEMES.cave;     // Cave/dungeon
+            if (terrain === 2) return EXPLORE3D_THEMES.forest;   // Forest
+            
+            return EXPLORE3D_THEMES.wasteland; // default
+        }
+        
+        function show3DExploration(locationId) {
+            const loc = WORLD_LOCATIONS.find(l => l.id === (locationId || state.world.currentLocation));
+            if (!loc) {
+                notifyWarning('Chyba', 'Žádná lokace nenalezena');
+                return;
+            }
+            
+            // Akce limit (1x denně pro 3D - dražší aktivita)
+            if (typeof useActionLimit === 'function' && !useActionLimit('explore3d', loc.id)) {
+                return;
+            }
+            
+            closeModal();
+            
+            // 🆕 [v6.4.0] Setup combat hook (jednou per session)
+            setupExplore3DCombatHook();
+            
+            // ====== STAV HRY 3D ======
+            const E = window._explore3D = {
+                map: null,           // 2D grid: 0=podlaha, 1=zeď, 2=loot, 3=exit
+                player: { x: 1.5, y: 1.5, angle: 0 },
+                size: 12,            // 12x12 mapa
+                loot: [],            // sebraný loot
+                lootRemaining: 0,
+                exitReached: false,
+                running: true,
+                canvas: null,
+                ctx: null,
+                keys: {},
+                touchControls: { fwd: false, back: false, left: false, right: false },
+                wallTextures: {},
+                lastTick: Date.now(),
+                tickInterval: null,
+                locationId: loc.id,
+                theme: getExplore3DTheme(loc),  // 🆕 Téma podle terénu
+                enemies: [],                     // 🆕 Sprite enemies na mapě
+                inCombat: false,                 // 🆕 Když boj, pause raycaster
+                killedEnemies: []                // 🆕 Pro reward
+            };
+            
+            // ====== GENEROVÁNÍ MAPY ======
+            E.map = generateExploreMap(E.size, loc.dangerLevel || 1);
+            E.lootRemaining = E.map.flat().filter(c => c === 2).length;
+            
+            // 🆕 [v6.4.0] Spawn enemies na základě location enemies
+            E.enemies = generateExploreEnemies(loc, E.map, E.size);
+            
+            // ====== UI MODAL ======
+            const html = `
+                <div id="explore3DWrapper" style="background: #0a0a0a; padding: 0.5rem; border-radius: 8px;">
+                    <div style="text-align:center;margin-bottom:0.3rem;">
+                        <div style="color:#ff8f00;font-weight:bold;font-size:0.85rem;">🏚️ ${loc.name} — ${E.theme.name}</div>
+                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.length} nepřátel | 🚪 najdi východ</div>
+                    </div>
+                    
+                    <!-- 3D CANVAS -->
+                    <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
+                        <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
+                        <!-- Mini mapa overlay -->
+                        <canvas id="exploreMiniMap" width="80" height="80" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.7);border:1px solid #555;"></canvas>
+                    </div>
+                    
+                    <!-- LOG -->
+                    <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
+                        ▸ Vstoupil jsi do trosek...
+                    </div>
+                    
+                    <!-- TOUCH OVLÁDÁNÍ -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.5rem;">
+                        <div></div>
+                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬆️</button>
+                        <div></div>
+                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬅️</button>
+                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬇️</button>
+                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">➡️</button>
+                    </div>
+                    
+                    <div style="display:flex;gap:0.3rem;margin-top:0.3rem;">
+                        <button onclick="exit3DExploration(false)" class="btn" style="flex:1;background:#5a1a1a;border:1px solid #7a2020;padding:0.5rem;font-size:0.75rem;">❌ Opustit (bez odměny)</button>
+                    </div>
+                    
+                    <div style="color:#666;font-size:0.65rem;text-align:center;margin-top:0.3rem;">
+                        💡 Najdi všechen 📦 loot a 🚪 východ pro odměnu. WASD/šipky na PC.
+                    </div>
+                </div>
+            `;
+            
+            showModal('🎮 Průzkum trosek', html);
+            
+            // Inicializace canvas a controls
+            setTimeout(() => {
+                E.canvas = document.getElementById('explore3DCanvas');
+                E.miniMap = document.getElementById('exploreMiniMap');
+                if (!E.canvas) return;
+                E.ctx = E.canvas.getContext('2d');
+                E.miniMapCtx = E.miniMap.getContext('2d');
+                
+                // Najdi vstupní bod (1,1)
+                E.player.x = 1.5; E.player.y = 1.5; E.player.angle = 0;
+                
+                // Keyboard listeners
+                E._keyDown = (e) => { E.keys[e.key.toLowerCase()] = true; };
+                E._keyUp = (e) => { E.keys[e.key.toLowerCase()] = false; };
+                window.addEventListener('keydown', E._keyDown);
+                window.addEventListener('keyup', E._keyUp);
+                
+                // Touch listeners (down/up)
+                ['Fwd', 'Back', 'Left', 'Right'].forEach(dir => {
+                    const btn = document.getElementById('ctrl' + dir);
+                    if (!btn) return;
+                    const key = dir.toLowerCase();
+                    const startHandler = (e) => { e.preventDefault(); E.touchControls[key] = true; };
+                    const endHandler = (e) => { e.preventDefault(); E.touchControls[key] = false; };
+                    btn.addEventListener('touchstart', startHandler, {passive: false});
+                    btn.addEventListener('touchend', endHandler, {passive: false});
+                    btn.addEventListener('mousedown', startHandler);
+                    btn.addEventListener('mouseup', endHandler);
+                    btn.addEventListener('mouseleave', endHandler);
+                });
+                
+                // Game tick (30 FPS)
+                E.tickInterval = setInterval(() => {
+                    if (!E.running) return;
+                    update3DExploration();
+                    render3DExploration();
+                }, 33);
+                
+                add3DLog('Najdi všechen loot a východ ven.');
+            }, 100);
+        }
+        window.show3DExploration = show3DExploration;
+        
+        // Procedurální generování postapo mapy
+        function generateExploreMap(size, dangerLevel) {
+            // Vytvoř mapu se zdmi po obvodu
+            const map = [];
+            for (let y = 0; y < size; y++) {
+                const row = [];
+                for (let x = 0; x < size; x++) {
+                    if (x === 0 || x === size-1 || y === 0 || y === size-1) row.push(1);
+                    else row.push(0);
+                }
+                map.push(row);
+            }
+            
+            // Přidej náhodné zdi (asi 25%)
+            const wallChance = 0.2 + dangerLevel * 0.02;
+            for (let y = 2; y < size-2; y++) {
+                for (let x = 2; x < size-2; x++) {
+                    // Vstup (1,1) volný + okolí
+                    if (x <= 2 && y <= 2) continue;
+                    if (Math.random() < wallChance) map[y][x] = 1;
+                }
+            }
+            
+            // Zajistí průchodnost - flood fill ze startu
+            const reachable = floodFill(map, 1, 1, size);
+            
+            // Loot na 4-6 náhodných místech (jen v reachable buňkách)
+            const lootCount = 4 + Math.floor(Math.random() * 3);
+            const reachableCells = [];
+            reachable.forEach((row, y) => row.forEach((v, x) => {
+                if (v && (x !== 1 || y !== 1)) reachableCells.push({x, y});
+            }));
+            
+            // Shuffle
+            reachableCells.sort(() => Math.random() - 0.5);
+            
+            for (let i = 0; i < Math.min(lootCount, reachableCells.length - 1); i++) {
+                const cell = reachableCells[i];
+                map[cell.y][cell.x] = 2; // loot
+            }
+            
+            // Exit na nejvzdálenější reachable bod
+            let exitCell = reachableCells[reachableCells.length - 1] || {x: size-2, y: size-2};
+            map[exitCell.y][exitCell.x] = 3;
+            
+            return map;
+        }
+        
+        // Flood fill - zjisti dostupné buňky
+        function floodFill(map, startX, startY, size) {
+            const reachable = Array.from({length: size}, () => Array(size).fill(false));
+            const stack = [[startX, startY]];
+            while (stack.length > 0) {
+                const [x, y] = stack.pop();
+                if (x < 0 || y < 0 || x >= size || y >= size) continue;
+                if (reachable[y][x]) continue;
+                if (map[y][x] === 1) continue;
+                reachable[y][x] = true;
+                stack.push([x+1, y], [x-1, y], [x, y+1], [x, y-1]);
+            }
+            return reachable;
+        }
+        
+        // 🆕 [v6.4.0] Generuj enemy sprites na mapě
+        function generateExploreEnemies(loc, map, size) {
+            const enemies = [];
+            if (!loc.enemies || loc.enemies.length === 0) return enemies;
+            
+            // Počet enemies: 2-4 podle danger levelu
+            const enemyCount = Math.min(4, 2 + Math.floor((loc.dangerLevel || 1) / 2));
+            
+            // Najdi prázdné cell mimo start zónu (1,1) a 2x2 kolem
+            const emptyCells = [];
+            for (let y = 3; y < size - 1; y++) {
+                for (let x = 3; x < size - 1; x++) {
+                    if (map[y][x] === 0) emptyCells.push({x, y});
+                }
+            }
+            // Také cells v okrajové oblasti
+            for (let y = 1; y < size - 1; y++) {
+                for (let x = 1; x < size - 1; x++) {
+                    if (map[y][x] === 0 && !(x <= 2 && y <= 2)) {
+                        if (!emptyCells.some(c => c.x === x && c.y === y)) emptyCells.push({x, y});
+                    }
+                }
+            }
+            emptyCells.sort(() => Math.random() - 0.5);
+            
+            for (let i = 0; i < Math.min(enemyCount, emptyCells.length); i++) {
+                const cell = emptyCells[i];
+                const enemyId = loc.enemies[Math.floor(Math.random() * loc.enemies.length)];
+                const enemyDef = typeof ENEMIES !== 'undefined' ? ENEMIES.find(e => e.id === enemyId) : null;
+                if (!enemyDef) continue;
+                enemies.push({
+                    x: cell.x + 0.5,
+                    y: cell.y + 0.5,
+                    enemyId: enemyId,
+                    name: enemyDef.name,
+                    icon: enemyDef.icon || '👹',
+                    alive: true,
+                    spotted: false
+                });
+            }
+            return enemies;
+        }
+        
+        // Update herní logiky
+        function update3DExploration() {
+            const E = window._explore3D;
+            if (!E || !E.running) return;
+            
+            const now = Date.now();
+            const dt = Math.min((now - E.lastTick) / 1000, 0.1);
+            E.lastTick = now;
+            
+            // Movement controls (keyboard + touch)
+            const fwd = E.keys['w'] || E.keys['arrowup'] || E.touchControls.fwd;
+            const back = E.keys['s'] || E.keys['arrowdown'] || E.touchControls.back;
+            const turnLeft = E.keys['a'] || E.keys['arrowleft'] || E.touchControls.left;
+            const turnRight = E.keys['d'] || E.keys['arrowright'] || E.touchControls.right;
+            
+            const moveSpeed = 2.5; // tile/sec
+            const turnSpeed = 2.8; // rad/sec
+            
+            if (turnLeft) E.player.angle -= turnSpeed * dt;
+            if (turnRight) E.player.angle += turnSpeed * dt;
+            
+            let dx = 0, dy = 0;
+            if (fwd) { dx += Math.cos(E.player.angle) * moveSpeed * dt; dy += Math.sin(E.player.angle) * moveSpeed * dt; }
+            if (back) { dx -= Math.cos(E.player.angle) * moveSpeed * dt; dy -= Math.sin(E.player.angle) * moveSpeed * dt; }
+            
+            // Collision detection (s buffer 0.25 aby player nezasahoval do zdi)
+            const buffer = 0.25;
+            const newX = E.player.x + dx;
+            const newY = E.player.y + dy;
+            
+            // Test X
+            const txN = Math.floor(newX + (dx > 0 ? buffer : -buffer));
+            const tyP = Math.floor(E.player.y);
+            if (E.map[tyP] && E.map[tyP][txN] !== 1) E.player.x = newX;
+            
+            // Test Y
+            const txP = Math.floor(E.player.x);
+            const tyN = Math.floor(newY + (dy > 0 ? buffer : -buffer));
+            if (E.map[tyN] && E.map[tyN][txP] !== 1) E.player.y = newY;
+            
+            // Kontrola loot/exit na aktuální buňce
+            const tx = Math.floor(E.player.x);
+            const ty = Math.floor(E.player.y);
+            if (E.map[ty] && E.map[ty][tx] === 2) {
+                // Loot pickup
+                E.map[ty][tx] = 0;
+                E.lootRemaining--;
+                E.loot.push({});
+                add3DLog(`📦 Našel jsi opuštěnou bednu! (zbývá ${E.lootRemaining})`);
+                updateExploreStatus();
+            } else if (E.map[ty] && E.map[ty][tx] === 3) {
+                // Exit
+                E.exitReached = true;
+                E.running = false;
+                add3DLog(`🚪 Našel jsi východ! Konec průzkumu...`);
+                setTimeout(() => exit3DExploration(true), 800);
+            }
+            
+            // 🆕 [v6.4.0] Kontrola kolize s enemy - spustí boj
+            for (const enemy of E.enemies) {
+                if (!enemy.alive) continue;
+                const dx = enemy.x - E.player.x;
+                const dy = enemy.y - E.player.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                // Detekce pohledem (víc než 5 buněk od hráče + spotted log)
+                if (!enemy.spotted && dist < 5) {
+                    enemy.spotted = true;
+                    add3DLog(`⚠️ Vidíš ${enemy.icon} ${enemy.name}!`);
+                }
+                
+                // Collision → boj
+                if (dist < 0.6) {
+                    E.inCombat = true;
+                    E.running = false;
+                    add3DLog(`⚔️ ${enemy.icon} ${enemy.name} po tobě skočil!`);
+                    setTimeout(() => start3DCombat(enemy), 500);
+                    return;
+                }
+            }
+        }
+        
+        // Raycasting render
+        function render3DExploration() {
+            const E = window._explore3D;
+            if (!E || !E.ctx) return;
+            
+            const ctx = E.ctx;
+            const W = E.canvas.width;
+            const H = E.canvas.height;
+            const theme = E.theme || EXPLORE3D_THEMES.wasteland;
+            
+            // Strop podle tématu
+            const ceilingGrad = ctx.createLinearGradient(0, 0, 0, H/2);
+            ceilingGrad.addColorStop(0, theme.ceiling.top);
+            ceilingGrad.addColorStop(1, theme.ceiling.bottom);
+            ctx.fillStyle = ceilingGrad;
+            ctx.fillRect(0, 0, W, H/2);
+            
+            // Podlaha podle tématu
+            const floorGrad = ctx.createLinearGradient(0, H/2, 0, H);
+            floorGrad.addColorStop(0, theme.floor.top);
+            floorGrad.addColorStop(1, theme.floor.bottom);
+            ctx.fillStyle = floorGrad;
+            ctx.fillRect(0, H/2, W, H/2);
+            
+            // Raycasting + uložit dist do z-bufferu
+            const fov = Math.PI / 3; // 60°
+            const numRays = W; // 1 ray per pixel
+            const maxDist = 20;
+            const zBuffer = new Array(W);
+            
+            const px = E.player.x;
+            const py = E.player.y;
+            const pa = E.player.angle;
+            
+            // Pro každý sloupec
+            for (let i = 0; i < numRays; i += 1) {
+                const rayAngle = pa - fov/2 + (i / numRays) * fov;
+                const cos = Math.cos(rayAngle);
+                const sin = Math.sin(rayAngle);
+                
+                // DDA raycast
+                let dist = 0;
+                let hitWall = false;
+                let hitType = 1;
+                let stepSize = 0.05;
+                
+                while (!hitWall && dist < maxDist) {
+                    dist += stepSize;
+                    const rx = Math.floor(px + cos * dist);
+                    const ry = Math.floor(py + sin * dist);
+                    
+                    if (rx < 0 || ry < 0 || rx >= E.size || ry >= E.size) {
+                        hitWall = true;
+                        dist = maxDist;
+                    } else {
+                        const cell = E.map[ry][rx];
+                        if (cell === 1 || cell === 2 || cell === 3) {
+                            hitWall = true;
+                            hitType = cell;
+                        }
+                    }
+                }
+                
+                // Fish-eye korekce
+                dist *= Math.cos(rayAngle - pa);
+                zBuffer[i] = dist;
+                
+                // Výška zdi
+                const wallHeight = Math.min(H, (H / dist) * 0.8);
+                const wallTop = (H - wallHeight) / 2;
+                
+                // Barva podle vzdálenosti (mlha) + typ
+                const fogFactor = Math.max(0.15, 1 - dist / maxDist);
+                let r, g, b;
+                if (hitType === 2) {
+                    // Loot - žlutooranžová bedna
+                    r = 255 * fogFactor; g = 140 * fogFactor; b = 30 * fogFactor;
+                } else if (hitType === 3) {
+                    // Exit - zelený východ
+                    r = 80 * fogFactor; g = 220 * fogFactor; b = 100 * fogFactor;
+                } else {
+                    // Zeď podle tématu lokace
+                    const grunge = (Math.sin(i * 0.3) * 0.15 + 0.85);
+                    r = theme.wall.r * fogFactor * grunge;
+                    g = theme.wall.g * fogFactor * grunge;
+                    b = theme.wall.b * fogFactor * grunge;
+                }
+                
+                ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                ctx.fillRect(i, wallTop, 1, wallHeight);
+                
+                // Tmavá linka nahoře/dole pro detail
+                if (i % 4 === 0) {
+                    ctx.fillStyle = `rgba(0,0,0,0.3)`;
+                    ctx.fillRect(i, wallTop, 1, 2);
+                    ctx.fillRect(i, wallTop + wallHeight - 2, 1, 2);
+                }
+            }
+            
+            // 🆕 [v6.4.0] Render enemy sprites (sorted by distance, z-buffer)
+            if (E.enemies && E.enemies.length > 0) {
+                // Sort enemies podle vzdálenosti (od daleka po blízko)
+                const sortedEnemies = E.enemies.filter(e => e.alive).map(e => {
+                    const dx = e.x - px;
+                    const dy = e.y - py;
+                    return { enemy: e, dist: Math.sqrt(dx*dx + dy*dy), dx, dy };
+                }).sort((a, b) => b.dist - a.dist);
+                
+                for (const { enemy, dist, dx, dy } of sortedEnemies) {
+                    if (dist > 12) continue; // Příliš daleko
+                    
+                    // Úhel k enemy
+                    const enemyAngle = Math.atan2(dy, dx);
+                    let relAngle = enemyAngle - pa;
+                    while (relAngle > Math.PI) relAngle -= 2 * Math.PI;
+                    while (relAngle < -Math.PI) relAngle += 2 * Math.PI;
+                    
+                    // Pokud je mimo FOV, přeskoč
+                    if (Math.abs(relAngle) > fov / 2 + 0.2) continue;
+                    
+                    // Pozice na obrazovce (X)
+                    const screenX = (relAngle / fov + 0.5) * W;
+                    const fogFactor = Math.max(0.2, 1 - dist / 15);
+                    
+                    // Velikost sprite (jako zeď)
+                    const spriteSize = Math.min(H, (H / dist) * 0.9);
+                    const spriteTop = (H - spriteSize) / 2;
+                    const spriteLeft = screenX - spriteSize / 2;
+                    
+                    // Z-buffer test (sprite za zdí = neviditelný)
+                    let visible = false;
+                    for (let i = Math.max(0, Math.floor(spriteLeft)); i < Math.min(W, spriteLeft + spriteSize); i += 2) {
+                        if (zBuffer[i] && zBuffer[i] > dist - 0.1) { visible = true; break; }
+                    }
+                    if (!visible) continue;
+                    
+                    // Vykreslit emoji sprite na canvas
+                    ctx.save();
+                    ctx.globalAlpha = fogFactor;
+                    ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    
+                    // Z-buffer mask - vykreslit jen tam kde nepřesahuje zeď
+                    ctx.beginPath();
+                    let inPath = false;
+                    for (let i = Math.max(0, Math.floor(spriteLeft)); i < Math.min(W, spriteLeft + spriteSize); i++) {
+                        if (zBuffer[i] && zBuffer[i] > dist - 0.1) {
+                            if (!inPath) { ctx.moveTo(i, spriteTop); inPath = true; }
+                            ctx.lineTo(i, spriteTop);
+                            ctx.lineTo(i, spriteTop + spriteSize);
+                        } else if (inPath) {
+                            inPath = false;
+                        }
+                    }
+                    ctx.rect(Math.max(0, spriteLeft), spriteTop, Math.min(W, spriteSize), spriteSize);
+                    
+                    ctx.fillText(enemy.icon, screenX, spriteTop + spriteSize / 2);
+                    
+                    ctx.restore();
+                }
+            }
+            
+            // HUD/Crosshair
+            ctx.strokeStyle = 'rgba(255,200,100,0.5)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(W/2 - 5, H/2);
+            ctx.lineTo(W/2 + 5, H/2);
+            ctx.moveTo(W/2, H/2 - 5);
+            ctx.lineTo(W/2, H/2 + 5);
+            ctx.stroke();
+            
+            // Mini-map render
+            renderMiniMap();
+        }
+        
+        function renderMiniMap() {
+            const E = window._explore3D;
+            if (!E || !E.miniMapCtx) return;
+            const ctx = E.miniMapCtx;
+            const cellSize = E.miniMap.width / E.size;
+            
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, E.miniMap.width, E.miniMap.height);
+            
+            for (let y = 0; y < E.size; y++) {
+                for (let x = 0; x < E.size; x++) {
+                    const cell = E.map[y][x];
+                    if (cell === 1) ctx.fillStyle = '#5a4030';
+                    else if (cell === 2) ctx.fillStyle = '#ff8f00';
+                    else if (cell === 3) ctx.fillStyle = '#4caf50';
+                    else continue;
+                    ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                }
+            }
+            
+            // 🆕 Enemies na minimapě (jen ti živí)
+            if (E.enemies) {
+                E.enemies.filter(e => e.alive).forEach(e => {
+                    ctx.fillStyle = e.spotted ? '#ff0000' : '#aa3030';
+                    ctx.beginPath();
+                    ctx.arc(e.x * cellSize, e.y * cellSize, cellSize/2.5, 0, Math.PI*2);
+                    ctx.fill();
+                });
+            }
+            
+            // Player marker
+            ctx.fillStyle = '#ff5252';
+            ctx.beginPath();
+            ctx.arc(E.player.x * cellSize, E.player.y * cellSize, cellSize/2, 0, Math.PI*2);
+            ctx.fill();
+            
+            // Direction line
+            ctx.strokeStyle = '#ff5252';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(E.player.x * cellSize, E.player.y * cellSize);
+            ctx.lineTo((E.player.x + Math.cos(E.player.angle)*1.5) * cellSize, (E.player.y + Math.sin(E.player.angle)*1.5) * cellSize);
+            ctx.stroke();
+        }
+        
+        function add3DLog(text) {
+            const log = document.getElementById('exploreLog');
+            if (!log) return;
+            log.innerHTML += `<div>▸ ${text}</div>`;
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        function updateExploreStatus() {
+            const E = window._explore3D;
+            const status = document.getElementById('exploreStatus');
+            if (status && E) {
+                status.innerHTML = `📦 ${E.lootRemaining} loot zbývá | 🚪 najdi východ | ✅ sebráno: ${E.loot.length}`;
+            }
+        }
+        
+        // 🆕 [v6.4.0] Spustí boj během 3D explore, po výhře vrátí do 3D
+        function start3DCombat(enemy) {
+            const E = window._explore3D;
+            if (!E) return;
+            
+            // Zavři 3D modal dočasně
+            closeModal();
+            
+            // Označ enemy jako pending (po výhře označíme jako zabitého)
+            E._pendingEnemy = enemy;
+            
+            // Nastavíme callback že po boji se má vrátit zpět do 3D
+            window._explore3D_returnAfterCombat = true;
+            
+            // Spusť standardní combat se single enemy
+            const enemyDef = ENEMIES.find(e => e.id === enemy.enemyId);
+            if (!enemyDef) {
+                // Fallback - zavři 3D
+                exit3DExploration(true);
+                return;
+            }
+            
+            // Vytvoř kopii enemy pro boj
+            const enemyGroup = [{...enemyDef, hp: enemyDef.hp || 30}];
+            
+            // Spusť combat
+            if (typeof startCombatWithGroup === 'function') {
+                startCombatWithGroup(enemyGroup, 'explore3d', false);
+            } else {
+                notifyWarning('Chyba', 'Combat systém nedostupný');
+                exit3DExploration(false);
+            }
+        }
+        
+        // Hook po skončení boje - vrátit do 3D
+        // Tento listener čeká na uzavření combat UI
+        function setupExplore3DCombatHook() {
+            if (window._explore3DHookInstalled) return;
+            window._explore3DHookInstalled = true;
+            
+            // Hook do endCombat - pokud byl spuštěn z 3D explore
+            const originalEndCombat = window.endCombat;
+            if (typeof originalEndCombat === 'function') {
+                window.endCombat = function(...args) {
+                    const result = originalEndCombat.apply(this, args);
+                    
+                    // Pokud byl combat z 3D explore - vrátit zpět
+                    if (window._explore3D_returnAfterCombat) {
+                        window._explore3D_returnAfterCombat = false;
+                        const E = window._explore3D;
+                        if (E && E._pendingEnemy) {
+                            // Označ enemy jako zabitého
+                            E._pendingEnemy.alive = false;
+                            E.killedEnemies.push(E._pendingEnemy.enemyId);
+                            E._pendingEnemy = null;
+                            E.inCombat = false;
+                            E.running = true;
+                            
+                            // Pokud hráč přežil, znovu otevřít 3D
+                            if (state.char.hp > 0) {
+                                setTimeout(() => reopen3DExploration(), 500);
+                            } else {
+                                // Hráč zemřel - nic
+                                window._explore3D = null;
+                            }
+                        }
+                    }
+                    return result;
+                };
+            }
+        }
+        
+        // Znovu otevřít 3D modal po boji
+        function reopen3DExploration() {
+            const E = window._explore3D;
+            if (!E) return;
+            
+            const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId);
+            if (!loc) return;
+            
+            // Re-render modal (stejný HTML jako show3DExploration, ale s existujícím stavem E)
+            const html = `
+                <div id="explore3DWrapper" style="background: #0a0a0a; padding: 0.5rem; border-radius: 8px;">
+                    <div style="text-align:center;margin-bottom:0.3rem;">
+                        <div style="color:#ff8f00;font-weight:bold;font-size:0.85rem;">🏚️ ${loc.name} — ${E.theme.name}</div>
+                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.filter(e => e.alive).length}/${E.enemies.length} nepřátel | 🚪 najdi východ</div>
+                    </div>
+                    <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
+                        <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
+                        <canvas id="exploreMiniMap" width="80" height="80" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.7);border:1px solid #555;"></canvas>
+                    </div>
+                    <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
+                        ▸ Vrátil ses do trosek po boji...
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.5rem;">
+                        <div></div>
+                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬆️</button>
+                        <div></div>
+                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬅️</button>
+                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬇️</button>
+                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">➡️</button>
+                    </div>
+                    <div style="display:flex;gap:0.3rem;margin-top:0.3rem;">
+                        <button onclick="exit3DExploration(true)" class="btn" style="flex:1;background:#1b5e20;border:1px solid #2e7d32;padding:0.5rem;font-size:0.75rem;">✅ Odejít s odměnou</button>
+                        <button onclick="exit3DExploration(false)" class="btn" style="flex:1;background:#5a1a1a;border:1px solid #7a2020;padding:0.5rem;font-size:0.75rem;">❌ Bez odměny</button>
+                    </div>
+                </div>
+            `;
+            showModal('🎮 Průzkum trosek', html);
+            
+            setTimeout(() => {
+                E.canvas = document.getElementById('explore3DCanvas');
+                E.miniMap = document.getElementById('exploreMiniMap');
+                if (!E.canvas) return;
+                E.ctx = E.canvas.getContext('2d');
+                E.miniMapCtx = E.miniMap.getContext('2d');
+                E.lastTick = Date.now();
+                
+                // Re-attach controls
+                E._keyDown = (e) => { E.keys[e.key.toLowerCase()] = true; };
+                E._keyUp = (e) => { E.keys[e.key.toLowerCase()] = false; };
+                window.addEventListener('keydown', E._keyDown);
+                window.addEventListener('keyup', E._keyUp);
+                
+                ['Fwd', 'Back', 'Left', 'Right'].forEach(dir => {
+                    const btn = document.getElementById('ctrl' + dir);
+                    if (!btn) return;
+                    const key = dir.toLowerCase();
+                    const startHandler = (e) => { e.preventDefault(); E.touchControls[key] = true; };
+                    const endHandler = (e) => { e.preventDefault(); E.touchControls[key] = false; };
+                    btn.addEventListener('touchstart', startHandler, {passive: false});
+                    btn.addEventListener('touchend', endHandler, {passive: false});
+                    btn.addEventListener('mousedown', startHandler);
+                    btn.addEventListener('mouseup', endHandler);
+                    btn.addEventListener('mouseleave', endHandler);
+                });
+                
+                E.tickInterval = setInterval(() => {
+                    if (!E.running) return;
+                    update3DExploration();
+                    render3DExploration();
+                }, 33);
+            }, 100);
+        }
+        window.reopen3DExploration = reopen3DExploration;
+        
+        function exit3DExploration(withReward) {
+            const E = window._explore3D;
+            if (!E) return;
+            
+            // Cleanup
+            E.running = false;
+            if (E.tickInterval) clearInterval(E.tickInterval);
+            if (E._keyDown) window.removeEventListener('keydown', E._keyDown);
+            if (E._keyUp) window.removeEventListener('keyup', E._keyUp);
+            
+            closeModal();
+            
+            if (withReward && (E.loot.length > 0 || E.killedEnemies.length > 0)) {
+                // 🆕 [v6.4.0] Reward: stejný loot pool jako klasický průzkum (loc.loot)
+                // + bonus za východ a zabité enemies
+                const lootMultiplier = E.exitReached ? 1.5 : 1.0;
+                const enemyBonus = Math.floor(E.killedEnemies.length * 1.5);
+                const totalRolls = Math.ceil(E.loot.length * lootMultiplier) + enemyBonus;
+                
+                addLog(`🎮 3D průzkum dokončen! Loot: ${E.loot.length} beden + ${E.killedEnemies.length} zabitých nepřátel${E.exitReached ? ' (+50% bonus za východ)' : ''}.`, '🏚️');
+                
+                const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId);
+                const rolledItems = generate3DLootBatch(loc, totalRolls);
+                
+                // Aplikuj všechny loot
+                let summary = [];
+                rolledItems.forEach(item => {
+                    if (item.isAmmo) {
+                        if (typeof addAmmo === 'function') addAmmo(item.ammoType, item.count);
+                        summary.push(`${item.icon || '🔫'} ${item.count}× ${item.name}`);
+                    } else if (item.id) {
+                        addItemToInventory(item, item.count || 1);
+                        summary.push(`${item.icon || '📦'} ${item.count > 1 ? item.count + '× ' : ''}${item.name}`);
+                    }
+                });
+                
+                // Zobraz souhrn modálu
+                setTimeout(() => {
+                    showModal('🎮 Průzkum trosek dokončen', `
+                        <div style="text-align:center;margin-bottom:0.8rem;">
+                            <div style="font-size:2.5rem;">${E.exitReached ? '🚪' : '🏃'}</div>
+                            <div style="color:#8bc34a;font-weight:bold;margin-top:0.3rem;">${E.exitReached ? 'Našel jsi východ!' : 'Dokončil jsi průzkum'}</div>
+                        </div>
+                        <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.6rem;margin-bottom:0.5rem;font-size:0.75rem;">
+                            <div style="color:#ffd700;margin-bottom:0.3rem;">📊 Statistika:</div>
+                            <div style="color:#aaa;line-height:1.5;">
+                                📦 Sebráno beden: <b>${E.loot.length}</b><br>
+                                💀 Zabito nepřátel: <b>${E.killedEnemies.length}</b><br>
+                                ${E.exitReached ? '🎯 Bonus za východ: <b style="color:#4caf50;">+50%</b><br>' : ''}
+                                📜 Celkem loot rolů: <b>${totalRolls}</b>
+                            </div>
+                        </div>
+                        <div style="background:#0a0a0a;border:1px solid #333;border-radius:6px;padding:0.6rem;max-height:200px;overflow-y:auto;">
+                            <div style="color:#8bc34a;margin-bottom:0.3rem;font-weight:bold;">🎁 Získal jsi:</div>
+                            <div style="color:#ccc;font-size:0.75rem;line-height:1.7;">${summary.join('<br>')}</div>
+                        </div>
+                        <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.8rem;background:#1b5e20;">✅ Pokračovat</button>
+                    `);
+                }, 200);
+            } else if (E.loot.length > 0 || E.killedEnemies.length > 0) {
+                addLog(`🏃 Opustil jsi trosky předčasně...`, '🏚️');
+                notifyWarning('Bez odměny', 'Opustil jsi bez odměny');
+            }
+            
+            window._explore3D = null;
+            renderFull();
+        }
+        window.exit3DExploration = exit3DExploration;
+        
+        // Vygeneruj loot batch pro 3D explore
+        function generate3DLootBatch(loc, count) {
+            const results = [];
+            for (let i = 0; i < count; i++) {
+                // 50% loot, 30% ammo, 20% resource
+                const roll = Math.random();
+                if (roll < 0.5 && loc.loot && loc.loot.length > 0) {
+                    const lootId = loc.loot[Math.floor(Math.random() * loc.loot.length)];
+                    const itemDef = ITEMS.find(it => it.id === lootId);
+                    if (itemDef) results.push({...itemDef, count: 1});
+                } else if (roll < 0.8) {
+                    // Resource - šrot/látka/kov
+                    const resTypes = ['scrap', 'cloth', 'leather', 'electronics', 'chemicals'];
+                    const resId = resTypes[Math.floor(Math.random() * resTypes.length)];
+                    const itemDef = ITEMS.find(it => it.id === resId);
+                    if (itemDef) results.push({...itemDef, count: 1 + Math.floor(Math.random() * 3)});
+                } else {
+                    // Ammo
+                    const ammoTypes = ['ammo_9mm', 'ammo_shell', 'ammo_arrow'];
+                    const ammoId = ammoTypes[Math.floor(Math.random() * ammoTypes.length)];
+                    const ammoDef = ITEMS.find(it => it.id === ammoId);
+                    if (ammoDef) results.push({isAmmo: true, ammoType: ammoDef.ammoType, count: 5 + Math.floor(Math.random() * 10)});
+                }
+            }
+            return results;
+        }
+        
         function exploreLocation(skipLimitCheck = false) {
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
             if (!loc) {
