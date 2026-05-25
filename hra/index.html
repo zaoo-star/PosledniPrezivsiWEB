@@ -51374,18 +51374,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // ====== STAV HRY 3D ======
             const E = window._explore3D = {
-                map: null,           // 2D grid: 0=podlaha, 1=zeď, 2=loot, 3=exit
+                map: null,           // 2D grid: 0=podlaha, 1=zeď, 3=exit (loot je teď v lootItems)
                 player: { x: 1.5, y: 1.5, angle: 0 },
                 size: 15,            // 15x15 mapa (lichá pro maze algoritmus)
-                visited: null,       // 🆕 Fog of war - které tiles hráč viděl
-                loot: [],
+                visited: null,       // Fog of war
+                loot: [],            // Sebraný loot (počet)
+                lootItems: [],       // 🆕 Loot sprites na mapě (s pozicemi)
                 lootRemaining: 0,
                 exitReached: false,
                 running: true,
                 canvas: null,
                 ctx: null,
                 keys: {},
-                touchControls: { fwd: false, back: false, left: false, right: false },
+                touchControls: { fwd: false, back: false, left: false, right: false, strafeL: false, strafeR: false },
                 wallTextures: {},
                 lastTick: Date.now(),
                 tickInterval: null,
@@ -51405,7 +51406,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // ====== GENEROVÁNÍ MAPY ======
             E.map = generateExploreMap(E.size, loc.dangerLevel || 1);
-            E.lootRemaining = E.map.flat().filter(c => c === 2).length;
+            
+            // 🆕 [v6.4.0] Přesuň loot z map[y][x]=2 do lootItems array (jako sprites)
+            // Map cell se vrátí na 0 (průchozí) - loot je vykreslen jako sprite
+            E.lootItems = [];
+            for (let y = 0; y < E.size; y++) {
+                for (let x = 0; x < E.size; x++) {
+                    if (E.map[y][x] === 2) {
+                        E.map[y][x] = 0; // průchozí podlaha
+                        // 4 typy beden + 1 truhly pro variabilitu
+                        const variants = ['📦', '🗃️', '🪣', '🧰', '💼'];
+                        E.lootItems.push({
+                            x: x + 0.5,
+                            y: y + 0.5,
+                            icon: variants[Math.floor(Math.random() * variants.length)],
+                            collected: false
+                        });
+                    }
+                }
+            }
+            E.lootRemaining = E.lootItems.length;
             
             // 🆕 [v6.4.0] Spawn enemies na základě location enemies
             E.enemies = generateExploreEnemies(loc, E.map, E.size);
@@ -51418,11 +51438,28 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.length} nepřátel | 🚪 najdi východ</div>
                     </div>
                     
+                    <!-- 🆕 [v6.4.0] HP/Stats indicator -->
+                    <div id="explore3DStats" style="display:flex;gap:0.3rem;margin-bottom:0.4rem;font-size:0.7rem;">
+                        <div style="flex:1;background:#1a0a0a;border:1px solid #5a1a1a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#f44336;">❤️</span> 
+                            <span id="hp3DVal" style="color:#fff;font-weight:bold;">${state.char?.hp || 0}</span>
+                            <span style="color:#666;">/${state.char?.maxHp || 100}</span>
+                        </div>
+                        <div style="flex:1;background:#1a1408;border:1px solid #5a4015;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#ffa726;">🍞</span> 
+                            <span id="hunger3DVal" style="color:#fff;font-weight:bold;">${state.char?.hunger || 0}</span>
+                        </div>
+                        <div style="flex:1;background:#08141a;border:1px solid #15405a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#42a5f5;">💧</span> 
+                            <span id="thirst3DVal" style="color:#fff;font-weight:bold;">${state.char?.thirst || 0}</span>
+                        </div>
+                    </div>
+                    
                     <!-- 3D CANVAS -->
                     <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
-                        <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
+                        <canvas id="explore3DCanvas" width="500" height="300" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
                         <!-- Mini mapa overlay -->
-                        <canvas id="exploreMiniMap" width="105" height="105" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
+                        <canvas id="exploreMiniMap" width="75" height="75" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
                     </div>
                     
                     <!-- LOG -->
@@ -51431,13 +51468,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                     
                     <!-- TOUCH OVLÁDÁNÍ -->
-                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.5rem;">
+                    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0.25rem;margin-top:0.5rem;">
+                        <button id="ctrlStrafeL" class="btn" style="background:#2a2a3a;border:1px solid #444;padding:0.6rem 0.3rem;font-size:1rem;" title="Strafe vlevo (Q)">↩️</button>
+                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Otočit vlevo (A)">⬅️</button>
+                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1.2rem;" title="Vpřed (W)">⬆️</button>
+                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Otočit vpravo (D)">➡️</button>
+                        <button id="ctrlStrafeR" class="btn" style="background:#2a2a3a;border:1px solid #444;padding:0.6rem 0.3rem;font-size:1rem;" title="Strafe vpravo (E)">↪️</button>
                         <div></div>
-                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬆️</button>
                         <div></div>
-                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬅️</button>
-                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬇️</button>
-                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">➡️</button>
+                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Vzad (S)">⬇️</button>
+                        <div></div>
+                        <div></div>
                     </div>
                     
                     <div style="display:flex;gap:0.3rem;margin-top:0.3rem;">
@@ -51470,10 +51511,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 window.addEventListener('keyup', E._keyUp);
                 
                 // Touch listeners (down/up)
-                ['Fwd', 'Back', 'Left', 'Right'].forEach(dir => {
+                ['Fwd', 'Back', 'Left', 'Right', 'StrafeL', 'StrafeR'].forEach(dir => {
                     const btn = document.getElementById('ctrl' + dir);
                     if (!btn) return;
-                    const key = dir.toLowerCase();
+                    const key = dir === 'StrafeL' ? 'strafeL' : dir === 'StrafeR' ? 'strafeR' : dir.toLowerCase();
                     const startHandler = (e) => { e.preventDefault(); E.touchControls[key] = true; };
                     const endHandler = (e) => { e.preventDefault(); E.touchControls[key] = false; };
                     btn.addEventListener('touchstart', startHandler, {passive: false});
@@ -51488,7 +51529,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!E.running) return;
                     update3DExploration();
                     render3DExploration();
+                    if (++E._statTickCounter > 60) { E._statTickCounter = 0; updateExploreStatus(); }
                 }, 33);
+                E._statTickCounter = 0;
                 
                 add3DLog('Najdi všechen loot a východ ven.');
             }, 100);
@@ -51634,6 +51677,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return reachable;
         }
         
+        // 🆕 [v6.4.0] Line-of-sight check pro enemy spotting (raycasting paprsek)
+        function hasLineOfSight(fromX, fromY, toX, toY, map) {
+            const dx = toX - fromX;
+            const dy = toY - fromY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < 0.1) return true;
+            const steps = Math.ceil(dist * 12); // 12 stepů per tile (vysoká přesnost)
+            for (let i = 1; i < steps; i++) {
+                const t = i / steps;
+                const x = Math.floor(fromX + dx * t);
+                const y = Math.floor(fromY + dy * t);
+                if (map[y] && map[y][x] === 1) return false; // zeď blokuje
+            }
+            return true;
+        }
+        
         // 🆕 [v6.4.0] Generuj enemy sprites na mapě
         function generateExploreEnemies(loc, map, size) {
             const enemies = [];
@@ -51671,7 +51730,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     name: enemyDef.name,
                     icon: enemyDef.icon || '👹',
                     alive: true,
-                    spotted: false
+                    spotted: false,
+                    // 🆕 [v6.4.0] Patrol state
+                    targetX: null,
+                    targetY: null,
+                    lastMoveTime: Date.now() + Math.random() * 3000, // staggered start
+                    chasing: false
                 });
             }
             return enemies;
@@ -51691,9 +51755,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const back = E.keys['s'] || E.keys['arrowdown'] || E.touchControls.back;
             const turnLeft = E.keys['a'] || E.keys['arrowleft'] || E.touchControls.left;
             const turnRight = E.keys['d'] || E.keys['arrowright'] || E.touchControls.right;
+            // 🆕 [v6.4.0] Strafe - krok do strany (Q/E)
+            const strafeLeft = E.keys['q'] || E.touchControls.strafeL;
+            const strafeRight = E.keys['e'] || E.touchControls.strafeR;
             
-            const moveSpeed = 2.5; // tile/sec
-            const turnSpeed = 2.8; // rad/sec
+            const moveSpeed = 2.5;
+            const turnSpeed = 2.8;
             
             if (turnLeft) E.player.angle -= turnSpeed * dt;
             if (turnRight) E.player.angle += turnSpeed * dt;
@@ -51701,6 +51768,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let dx = 0, dy = 0;
             if (fwd) { dx += Math.cos(E.player.angle) * moveSpeed * dt; dy += Math.sin(E.player.angle) * moveSpeed * dt; }
             if (back) { dx -= Math.cos(E.player.angle) * moveSpeed * dt; dy -= Math.sin(E.player.angle) * moveSpeed * dt; }
+            // 🆕 Strafe - kolmo na úhel pohledu
+            if (strafeLeft) { dx += Math.cos(E.player.angle - Math.PI/2) * moveSpeed * dt; dy += Math.sin(E.player.angle - Math.PI/2) * moveSpeed * dt; }
+            if (strafeRight) { dx += Math.cos(E.player.angle + Math.PI/2) * moveSpeed * dt; dy += Math.sin(E.player.angle + Math.PI/2) * moveSpeed * dt; }
             
             // Collision detection (s buffer 0.25 aby player nezasahoval do zdi)
             const buffer = 0.25;
@@ -51733,14 +51803,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 });
             }
             
-            if (E.map[ty] && E.map[ty][tx] === 2) {
-                // Loot pickup
-                E.map[ty][tx] = 0;
-                E.lootRemaining--;
-                E.loot.push({});
-                add3DLog(`📦 Našel jsi opuštěnou bednu! (zbývá ${E.lootRemaining})`);
-                updateExploreStatus();
-            } else if (E.map[ty] && E.map[ty][tx] === 3) {
+            // 🆕 [v6.4.0] Pickup loot - kontrola sprite kolize (ne map cell)
+            if (E.lootItems) {
+                for (const li of E.lootItems) {
+                    if (li.collected) continue;
+                    const ldx = li.x - E.player.x;
+                    const ldy = li.y - E.player.y;
+                    if (Math.sqrt(ldx*ldx + ldy*ldy) < 0.55) {
+                        li.collected = true;
+                        E.lootRemaining--;
+                        E.loot.push({});
+                        add3DLog(`${li.icon} Sebral jsi ${li.icon === '📦' ? 'bednu' : li.icon === '🗃️' ? 'truhlu' : li.icon === '🪣' ? 'kbelík' : li.icon === '🧰' ? 'nářadí' : 'kufřík'}! (zbývá ${E.lootRemaining})`);
+                        updateExploreStatus();
+                    }
+                }
+            }
+            
+            if (E.map[ty] && E.map[ty][tx] === 3) {
                 // Exit
                 E.exitReached = true;
                 E.running = false;
@@ -51748,7 +51827,53 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 setTimeout(() => exit3DExploration(true), 800);
             }
             
-            // 🆕 [v6.4.0] Kontrola kolize s enemy - spustí boj
+            // 🆕 [v6.4.0] Patrol AI pro enemies (random walk + chase pokud spotted)
+            for (const enemy of E.enemies) {
+                if (!enemy.alive) continue;
+                
+                const dxP = E.player.x - enemy.x;
+                const dyP = E.player.y - enemy.y;
+                const distToPlayer = Math.sqrt(dxP*dxP + dyP*dyP);
+                
+                // CHASE mode - pokud spotted a stále vidí hráče
+                if (enemy.spotted && distToPlayer < 8 && hasLineOfSight(enemy.x, enemy.y, E.player.x, E.player.y, E.map)) {
+                    enemy.chasing = true;
+                } else if (distToPlayer > 10) {
+                    enemy.chasing = false;
+                }
+                
+                const moveDelay = enemy.chasing ? 600 : 2500; // chase = rychlejší
+                if (Date.now() - enemy.lastMoveTime < moveDelay) continue;
+                
+                const speed = enemy.chasing ? 0.6 : 0.4;
+                let mx = 0, my = 0;
+                
+                if (enemy.chasing) {
+                    // Chase player - jdi směrem k hráči
+                    const len = Math.sqrt(dxP*dxP + dyP*dyP) || 1;
+                    mx = (dxP / len) * speed;
+                    my = (dyP / len) * speed;
+                } else {
+                    // Random patrol - vyber random sousední tile (4 směry)
+                    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+                    const dir = dirs[Math.floor(Math.random() * 4)];
+                    mx = dir[0] * speed;
+                    my = dir[1] * speed;
+                }
+                
+                // Test pohyb (collision s zdí)
+                const tx2 = Math.floor(enemy.x + mx);
+                const ty2 = Math.floor(enemy.y + my);
+                if (E.map[ty2] && E.map[ty2][tx2] !== 1) {
+                    enemy.x += mx;
+                    enemy.y += my;
+                    enemy.lastMoveTime = Date.now();
+                } else {
+                    enemy.lastMoveTime = Date.now() + (enemy.chasing ? 200 : 800); // zaseknul se, krátký delay
+                }
+            }
+            
+            // Kontrola kolize s enemy - spustí boj
             for (const enemy of E.enemies) {
                 if (!enemy.alive) continue;
                 const dx = enemy.x - E.player.x;
@@ -51756,8 +51881,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const dist = Math.sqrt(dx*dx + dy*dy);
                 
                 // Detekce pohledem (víc než 5 buněk od hráče + spotted log)
-                if (!enemy.spotted && dist < 5) {
+                // 🆕 [v6.4.0] Line-of-sight check - hráč nesmí "vidět" enemy přes zeď
+                if (!enemy.spotted && dist < 5 && hasLineOfSight(E.player.x, E.player.y, enemy.x, enemy.y, E.map)) {
                     enemy.spotted = true;
+                    // 🆕 [v6.4.0] Red flash alert
+                    E._alertFlashUntil = Date.now() + 600;
                     add3DLog(`⚠️ Vidíš ${enemy.icon} ${enemy.name}!`);
                 }
                 
@@ -51797,8 +51925,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             ctx.fillRect(0, H/2, W, H/2);
             
             // Raycasting + uložit dist do z-bufferu
-            const fov = Math.PI / 3; // 60°
-            const numRays = W; // 1 ray per pixel
+            // 🆕 [v6.4.0] Optimalizace: 1 ray per 2 pixels (2× rychlejší, ~stejné vizuálně)
+            const fov = Math.PI / 3;
+            const rayStep = 2; // 1 paprsek na 2 pixely
+            const numRays = Math.ceil(W / rayStep);
             const maxDist = 20;
             const zBuffer = new Array(W);
             
@@ -51806,13 +51936,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const py = E.player.y;
             const pa = E.player.angle;
             
-            // Pro každý sloupec
-            for (let i = 0; i < numRays; i += 1) {
+            for (let i = 0; i < numRays; i++) {
+                const screenX = i * rayStep;
                 const rayAngle = pa - fov/2 + (i / numRays) * fov;
                 const cos = Math.cos(rayAngle);
                 const sin = Math.sin(rayAngle);
                 
-                // DDA raycast
                 let dist = 0;
                 let hitWall = false;
                 let hitType = 1;
@@ -51828,51 +51957,120 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         dist = maxDist;
                     } else {
                         const cell = E.map[ry][rx];
-                        if (cell === 1 || cell === 2 || cell === 3) {
+                        if (cell === 1 || cell === 3) {
                             hitWall = true;
                             hitType = cell;
                         }
                     }
                 }
                 
-                // Fish-eye korekce
                 dist *= Math.cos(rayAngle - pa);
-                zBuffer[i] = dist;
+                // Zapsat do z-bufferu pro všechny pixely v tomto sloupci
+                for (let xp = screenX; xp < screenX + rayStep && xp < W; xp++) {
+                    zBuffer[xp] = dist;
+                }
                 
-                // Výška zdi
                 const wallHeight = Math.min(H, (H / dist) * 0.8);
                 const wallTop = (H - wallHeight) / 2;
                 
-                // Barva podle vzdálenosti (mlha) + typ
                 const fogFactor = Math.max(0.15, 1 - dist / maxDist);
                 let r, g, b;
-                if (hitType === 2) {
-                    // Loot - žlutooranžová bedna
-                    r = 255 * fogFactor; g = 140 * fogFactor; b = 30 * fogFactor;
-                } else if (hitType === 3) {
-                    // Exit - zelený východ
-                    r = 80 * fogFactor; g = 220 * fogFactor; b = 100 * fogFactor;
+                if (hitType === 3) {
+                    // Exit - pulzující portál
+                    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+                    r = 60 * fogFactor * pulse;
+                    g = 240 * fogFactor * pulse;
+                    b = 100 * fogFactor * pulse;
                 } else {
                     // Zeď podle tématu lokace
-                    const grunge = (Math.sin(i * 0.3) * 0.15 + 0.85);
+                    const grunge = (Math.sin(screenX * 0.3) * 0.15 + 0.85);
                     r = theme.wall.r * fogFactor * grunge;
                     g = theme.wall.g * fogFactor * grunge;
                     b = theme.wall.b * fogFactor * grunge;
                 }
                 
                 ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-                ctx.fillRect(i, wallTop, 1, wallHeight);
+                ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
                 
-                // Tmavá linka nahoře/dole pro detail
-                if (i % 4 === 0) {
+                if (i % 2 === 0) {
                     ctx.fillStyle = `rgba(0,0,0,0.3)`;
-                    ctx.fillRect(i, wallTop, 1, 2);
-                    ctx.fillRect(i, wallTop + wallHeight - 2, 1, 2);
+                    ctx.fillRect(screenX, wallTop, rayStep, 2);
+                    ctx.fillRect(screenX, wallTop + wallHeight - 2, rayStep, 2);
                 }
             }
             
-            // 🆕 [v6.4.0] Render enemy sprites (sorted by distance, z-buffer)
-            if (E.enemies && E.enemies.length > 0) {
+            // 🆕 [v6.4.0] Render loot sprites + enemy sprites (sorted by distance)
+            const allSprites = [];
+            // Sebraný loot - sprites
+            if (E.lootItems) {
+                E.lootItems.filter(l => !l.collected).forEach(l => {
+                    const dx = l.x - px;
+                    const dy = l.y - py;
+                    allSprites.push({ type: 'loot', sprite: l, dist: Math.sqrt(dx*dx + dy*dy), dx, dy, icon: l.icon });
+                });
+            }
+            // Enemies - sprites
+            if (E.enemies) {
+                E.enemies.filter(e => e.alive).forEach(e => {
+                    const dx = e.x - px;
+                    const dy = e.y - py;
+                    allSprites.push({ type: 'enemy', sprite: e, dist: Math.sqrt(dx*dx + dy*dy), dx, dy, icon: e.icon });
+                });
+            }
+            // Sort od daleka po blízko (correct depth)
+            allSprites.sort((a, b) => b.dist - a.dist);
+            
+            for (const sp of allSprites) {
+                const { dist, dx, dy, icon } = sp;
+                if (dist > 12) continue;
+                
+                const enemyAngle = Math.atan2(dy, dx);
+                let relAngle = enemyAngle - pa;
+                while (relAngle > Math.PI) relAngle -= 2 * Math.PI;
+                while (relAngle < -Math.PI) relAngle += 2 * Math.PI;
+                
+                if (Math.abs(relAngle) > fov / 2 + 0.2) continue;
+                
+                const screenX = (relAngle / fov + 0.5) * W;
+                const fogFactor = Math.max(0.2, 1 - dist / 15);
+                
+                // 🆕 [v6.4.0] Bobbing animace - sprites se jemně houpou
+                const bobOffset = sp.type === 'loot' 
+                    ? Math.sin(Date.now() / 400 + sp.sprite.x * 7) * 3   // loot pomaleji
+                    : Math.sin(Date.now() / 250 + sp.sprite.x * 5) * 5;  // enemy rychleji
+                
+                const sizeMultiplier = sp.type === 'loot' ? 0.65 : 0.9;
+                const spriteSize = Math.min(H, (H / dist) * sizeMultiplier);
+                const spriteTop = (H - spriteSize) / 2 + bobOffset;
+                const spriteLeft = screenX - spriteSize / 2;
+                
+                // Z-buffer test
+                let visible = false;
+                for (let i = Math.max(0, Math.floor(spriteLeft)); i < Math.min(W, spriteLeft + spriteSize); i += 2) {
+                    if (zBuffer[i] && zBuffer[i] > dist - 0.1) { visible = true; break; }
+                }
+                if (!visible) continue;
+                
+                ctx.save();
+                ctx.globalAlpha = fogFactor;
+                ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                // Stín pod sprite (loot/enemy stojí na zemi)
+                if (sp.type === 'loot') {
+                    ctx.fillStyle = `rgba(0,0,0,${0.4 * fogFactor})`;
+                    ctx.beginPath();
+                    ctx.ellipse(screenX, spriteTop + spriteSize * 0.92, spriteSize * 0.35, spriteSize * 0.08, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                
+                ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                ctx.restore();
+            }
+            
+            // OLD enemy sprite render — REMOVED (now in allSprites)
+            if (false && E.enemies && E.enemies.length > 0) {
                 // Sort enemies podle vzdálenosti (od daleka po blízko)
                 const sortedEnemies = E.enemies.filter(e => e.alive).map(e => {
                     const dx = e.x - px;
@@ -51935,6 +52133,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
+            // 🆕 [v6.4.0] Red flash overlay při spatření enemy
+            if (E._alertFlashUntil && Date.now() < E._alertFlashUntil) {
+                const remaining = (E._alertFlashUntil - Date.now()) / 600;
+                const alpha = remaining * 0.4;
+                ctx.fillStyle = `rgba(255,30,30,${alpha})`;
+                ctx.fillRect(0, 0, W, H);
+                // Border pulse
+                ctx.strokeStyle = `rgba(255,80,80,${remaining * 0.8})`;
+                ctx.lineWidth = 4;
+                ctx.strokeRect(0, 0, W, H);
+            }
+            
             // HUD/Crosshair
             ctx.strokeStyle = 'rgba(255,200,100,0.5)';
             ctx.lineWidth = 1;
@@ -51966,11 +52176,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     const cell = E.map[y][x];
                     if (cell === 1) ctx.fillStyle = '#5a4030';     // zeď
-                    else if (cell === 2) ctx.fillStyle = '#ff8f00'; // loot
                     else if (cell === 3) ctx.fillStyle = '#4caf50'; // exit
-                    else ctx.fillStyle = '#1a1a1a';                  // podlaha (vidíš ji)
+                    else ctx.fillStyle = '#1a1a1a';                  // podlaha
                     ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
                 }
+            }
+            
+            // 🆕 [v6.4.0] Loot sprites na minimapě (žluté kostky)
+            if (E.lootItems) {
+                E.lootItems.filter(l => !l.collected).forEach(l => {
+                    const lx = Math.floor(l.x), ly = Math.floor(l.y);
+                    // Zobraz jen pokud je tile navštívený
+                    if (E.visited && E.visited[ly] && E.visited[ly][lx]) {
+                        ctx.fillStyle = '#ffd700';
+                        ctx.fillRect(l.x * cellSize - cellSize/3, l.y * cellSize - cellSize/3, cellSize*0.66, cellSize*0.66);
+                    }
+                });
             }
             
             // 🆕 Enemies na minimapě (jen ti živí a v visited tiles)
@@ -52023,6 +52244,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (status && E) {
                 status.innerHTML = `📦 ${E.lootRemaining} loot zbývá | 🚪 najdi východ | ✅ sebráno: ${E.loot.length}`;
             }
+            // 🆕 [v6.4.0] Aktualizuj HP/hunger/thirst
+            const hpEl = document.getElementById('hp3DVal');
+            const hungerEl = document.getElementById('hunger3DVal');
+            const thirstEl = document.getElementById('thirst3DVal');
+            if (hpEl) {
+                const hp = state.char?.hp || 0;
+                hpEl.textContent = hp;
+                hpEl.style.color = hp < 30 ? '#f44336' : hp < 60 ? '#ffa726' : '#fff';
+            }
+            if (hungerEl) hungerEl.textContent = state.char?.hunger || 0;
+            if (thirstEl) thirstEl.textContent = state.char?.thirst || 0;
         }
         
         // 🆕 [v6.4.0] Spustí boj během 3D explore, po výhře vrátí do 3D
@@ -52109,19 +52341,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.filter(e => e.alive).length}/${E.enemies.length} nepřátel | 🚪 najdi východ</div>
                     </div>
                     <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
-                        <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
-                        <canvas id="exploreMiniMap" width="105" height="105" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
+                        <canvas id="explore3DCanvas" width="500" height="300" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
+                        <canvas id="exploreMiniMap" width="75" height="75" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
                     </div>
                     <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
                         ▸ Vrátil ses do trosek po boji...
                     </div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-top:0.5rem;">
+                    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0.25rem;margin-top:0.5rem;">
+                        <button id="ctrlStrafeL" class="btn" style="background:#2a2a3a;border:1px solid #444;padding:0.6rem 0.3rem;font-size:1rem;" title="Strafe vlevo (Q)">↩️</button>
+                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Otočit vlevo (A)">⬅️</button>
+                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1.2rem;" title="Vpřed (W)">⬆️</button>
+                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Otočit vpravo (D)">➡️</button>
+                        <button id="ctrlStrafeR" class="btn" style="background:#2a2a3a;border:1px solid #444;padding:0.6rem 0.3rem;font-size:1rem;" title="Strafe vpravo (E)">↪️</button>
                         <div></div>
-                        <button id="ctrlFwd" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬆️</button>
                         <div></div>
-                        <button id="ctrlLeft" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬅️</button>
-                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">⬇️</button>
-                        <button id="ctrlRight" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.7rem;font-size:1.3rem;">➡️</button>
+                        <button id="ctrlBack" class="btn" style="background:#3a3020;border:1px solid #5a4030;padding:0.6rem 0.3rem;font-size:1rem;" title="Vzad (S)">⬇️</button>
+                        <div></div>
+                        <div></div>
                     </div>
                     <div style="display:flex;gap:0.3rem;margin-top:0.3rem;">
                         <button onclick="exit3DExploration(true)" class="btn" style="flex:1;background:#1b5e20;border:1px solid #2e7d32;padding:0.5rem;font-size:0.75rem;">✅ Odejít s odměnou</button>
@@ -52145,10 +52381,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 window.addEventListener('keydown', E._keyDown);
                 window.addEventListener('keyup', E._keyUp);
                 
-                ['Fwd', 'Back', 'Left', 'Right'].forEach(dir => {
+                ['Fwd', 'Back', 'Left', 'Right', 'StrafeL', 'StrafeR'].forEach(dir => {
                     const btn = document.getElementById('ctrl' + dir);
                     if (!btn) return;
-                    const key = dir.toLowerCase();
+                    const key = dir === 'StrafeL' ? 'strafeL' : dir === 'StrafeR' ? 'strafeR' : dir.toLowerCase();
                     const startHandler = (e) => { e.preventDefault(); E.touchControls[key] = true; };
                     const endHandler = (e) => { e.preventDefault(); E.touchControls[key] = false; };
                     btn.addEventListener('touchstart', startHandler, {passive: false});
@@ -52162,7 +52398,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!E.running) return;
                     update3DExploration();
                     render3DExploration();
+                    if (++E._statTickCounter > 60) { E._statTickCounter = 0; updateExploreStatus(); }
                 }, 33);
+                E._statTickCounter = 0;
             }, 100);
         }
         window.reopen3DExploration = reopen3DExploration;
@@ -52176,6 +52414,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (E.tickInterval) clearInterval(E.tickInterval);
             if (E._keyDown) window.removeEventListener('keydown', E._keyDown);
             if (E._keyUp) window.removeEventListener('keyup', E._keyUp);
+            // 🆕 [v6.4.0] Cleanup combat hook poller (memory leak fix)
+            if (window._explore3DCombatPoller) {
+                clearInterval(window._explore3DCombatPoller);
+                window._explore3DCombatPoller = null;
+                window._explore3DHookInstalled = false;
+            }
             
             closeModal();
             
