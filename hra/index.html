@@ -51345,6 +51345,59 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return EXPLORE3D_THEMES.wasteland; // default
         }
         
+        // 🆕 [v6.4.0] Confirm dialog handler pro východ
+        function confirm3DExit(leave) {
+            const E = window._explore3D;
+            if (!E) return;
+            E._exitConfirmPending = false;
+            
+            if (leave) {
+                E.exitReached = true;
+                add3DLog(`🚪 Opouštíš trosky s bonusem...`);
+                setTimeout(() => exit3DExploration(true), 300);
+            } else {
+                // Zůstává - resume hry + postrč hráče zpět z exit tile (aby nepokrokoval znovu na něj)
+                E.running = true;
+                // Posunout hráče 1 tile zpět ve směru kterým přišel
+                const backX = E.player.x - Math.cos(E.player.angle) * 0.7;
+                const backY = E.player.y - Math.sin(E.player.angle) * 0.7;
+                const btx = Math.floor(backX), bty = Math.floor(backY);
+                if (E.map[bty] && E.map[bty][btx] !== 1) {
+                    E.player.x = backX;
+                    E.player.y = backY;
+                }
+                add3DLog(`⏪ Zůstáváš v troskách...`);
+            }
+        }
+        window.confirm3DExit = confirm3DExit;
+        
+        // 🆕 [v6.4.0] Preload sprite obrázků (loot box + enemy ikony + wall textury)
+        const explore3DImages = {};
+        const WALL_TEXTURE_KEYS = ['wall_concrete', 'exit_door'];
+        function preloadExplore3DImages() {
+            const list = {
+                lootBox: 'img/loot_box.png',
+            };
+            // Enemy custom ikon
+            if (typeof ENEMY_CUSTOM_ICONS !== 'undefined') {
+                for (const [enemyId, path] of Object.entries(ENEMY_CUSTOM_ICONS)) {
+                    list['enemy_' + enemyId] = path;
+                }
+            }
+            // 🆕 Wall textury
+            for (const wt of WALL_TEXTURE_KEYS) {
+                list[wt] = 'img/' + wt + '.png';
+            }
+            for (const [key, path] of Object.entries(list)) {
+                if (explore3DImages[key]) continue;
+                const img = new Image();
+                img.src = path;
+                img.onload = () => { explore3DImages[key + 'Loaded'] = true; };
+                img.onerror = () => { /* fallback na barvy */ };
+                explore3DImages[key] = img;
+            }
+        }
+        
         function show3DExploration(locationId) {
             const loc = WORLD_LOCATIONS.find(l => l.id === (locationId || state.world.currentLocation));
             if (!loc) {
@@ -51368,6 +51421,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             closeModal();
+            
+            // 🆕 [v6.4.0] Preload sprite obrázků
+            preloadExplore3DImages();
             
             // 🆕 [v6.4.0] Setup combat hook (jednou per session)
             setupExplore3DCombatHook();
@@ -51435,7 +51491,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div id="explore3DWrapper" style="background: #0a0a0a; padding: 0.5rem; border-radius: 8px;">
                     <div style="text-align:center;margin-bottom:0.3rem;">
                         <div style="color:#ff8f00;font-weight:bold;font-size:0.85rem;">🏚️ ${loc.name} — ${E.theme.name}</div>
-                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.length} nepřátel | 🚪 najdi východ</div>
+                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">🏚️ Prozkoumej trosky | 🚪 najdi východ</div>
                     </div>
                     
                     <!-- 🆕 [v6.4.0] HP/Stats indicator -->
@@ -51813,18 +51869,44 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         li.collected = true;
                         E.lootRemaining--;
                         E.loot.push({});
-                        add3DLog(`${li.icon} Sebral jsi ${li.icon === '📦' ? 'bednu' : li.icon === '🗃️' ? 'truhlu' : li.icon === '🪣' ? 'kbelík' : li.icon === '🧰' ? 'nářadí' : 'kufřík'}! (zbývá ${E.lootRemaining})`);
+                        // 🆕 Bez počtu zbývajících - hráč ne má vědět
+                        add3DLog(`${li.icon} Sebral jsi ${li.icon === '📦' ? 'bednu' : li.icon === '🗃️' ? 'truhlu' : li.icon === '🪣' ? 'kbelík' : li.icon === '🧰' ? 'nářadí' : 'kufřík'}!`);
                         updateExploreStatus();
                     }
                 }
             }
             
             if (E.map[ty] && E.map[ty][tx] === 3) {
-                // Exit
-                E.exitReached = true;
-                E.running = false;
-                add3DLog(`🚪 Našel jsi východ! Konec průzkumu...`);
-                setTimeout(() => exit3DExploration(true), 800);
+                // 🆕 [v6.4.0] Confirm dialog před opuštěním
+                if (E._exitConfirmPending) return; // už ptáme
+                E._exitConfirmPending = true;
+                E.running = false; // pauza
+                
+                const stats = `📦 Sebráno beden: ${E.loot.length} | 💀 Zabito: ${E.killedEnemies.length}`;
+                showModal('🚪 Východ z trosek', `
+                    <div style="text-align:center;margin-bottom:0.8rem;">
+                        <div style="font-size:3.5rem;">🚪</div>
+                        <div style="color:#4caf50;font-weight:bold;font-size:1rem;margin-top:0.3rem;">Našel jsi východ!</div>
+                    </div>
+                    <div style="background:#0a1a0a;border:1px solid #2a4a2a;border-radius:6px;padding:0.6rem;margin-bottom:0.5rem;font-size:0.75rem;">
+                        <div style="color:#aaa;line-height:1.5;">
+                            ${stats}<br>
+                            <span style="color:#4caf50;">🎯 +50% bonus loot za východ</span>
+                        </div>
+                    </div>
+                    <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.5rem;margin-bottom:0.5rem;font-size:0.7rem;color:#ffa726;">
+                        💡 Můžeš se ještě vrátit a najít zbylý loot. Východ zůstane otevřený.
+                    </div>
+                    <div style="display:flex;gap:0.4rem;">
+                        <button class="btn" onclick="closeModal(); confirm3DExit(true);" style="flex:1;background:#1b5e20;border:1px solid #2e7d32;padding:0.6rem;font-size:0.8rem;">
+                            ✅ Odejít s bonusem
+                        </button>
+                        <button class="btn" onclick="closeModal(); confirm3DExit(false);" style="flex:1;background:#5a3a15;border:1px solid #7a5a25;padding:0.6rem;font-size:0.8rem;">
+                            ⏪ Zůstat
+                        </button>
+                    </div>
+                `);
+                return;
             }
             
             // 🆕 [v6.4.0] Patrol AI pro enemies (random walk + chase pokud spotted)
@@ -51925,9 +52007,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             ctx.fillRect(0, H/2, W, H/2);
             
             // Raycasting + uložit dist do z-bufferu
-            // 🆕 [v6.4.0] Optimalizace: 1 ray per 2 pixels (2× rychlejší, ~stejné vizuálně)
+            // 🆕 [v6.4.0] Optimalizace: 1 ray per 2 pixels + texturovaná zeď s side detection
             const fov = Math.PI / 3;
-            const rayStep = 2; // 1 paprsek na 2 pixely
+            const rayStep = 2;
             const numRays = Math.ceil(W / rayStep);
             const maxDist = 20;
             const zBuffer = new Array(W);
@@ -51935,6 +52017,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const px = E.player.x;
             const py = E.player.y;
             const pa = E.player.angle;
+            
+            // Cache loaded wall + exit textures
+            const wallTex = explore3DImages.wall_concreteLoaded ? explore3DImages.wall_concrete : null;
+            const exitTex = explore3DImages.exit_doorLoaded ? explore3DImages.exit_door : null;
             
             for (let i = 0; i < numRays; i++) {
                 const screenX = i * rayStep;
@@ -51945,7 +52031,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 let dist = 0;
                 let hitWall = false;
                 let hitType = 1;
-                let stepSize = 0.05;
+                let hitSide = 0; // 0 = vertical wall (E/W), 1 = horizontal wall (N/S)
+                let lastTileX = Math.floor(px), lastTileY = Math.floor(py);
+                let stepSize = 0.04;
                 
                 while (!hitWall && dist < maxDist) {
                     dist += stepSize;
@@ -51960,42 +52048,100 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (cell === 1 || cell === 3) {
                             hitWall = true;
                             hitType = cell;
+                            hitSide = (rx !== lastTileX) ? 0 : 1;
+                        } else {
+                            lastTileX = rx;
+                            lastTileY = ry;
                         }
                     }
                 }
                 
                 dist *= Math.cos(rayAngle - pa);
-                // Zapsat do z-bufferu pro všechny pixely v tomto sloupci
                 for (let xp = screenX; xp < screenX + rayStep && xp < W; xp++) {
                     zBuffer[xp] = dist;
                 }
                 
                 const wallHeight = Math.min(H, (H / dist) * 0.8);
                 const wallTop = (H - wallHeight) / 2;
-                
                 const fogFactor = Math.max(0.15, 1 - dist / maxDist);
-                let r, g, b;
+                
                 if (hitType === 3) {
-                    // Exit - pulzující portál
-                    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
-                    r = 60 * fogFactor * pulse;
-                    g = 240 * fogFactor * pulse;
-                    b = 100 * fogFactor * pulse;
+                    // 🆕 [v6.4.0] Exit jako textura zrezivělých dveří
+                    if (exitTex) {
+                        let u;
+                        if (hitSide === 0) {
+                            u = (py + sin * dist) - Math.floor(py + sin * dist);
+                        } else {
+                            u = (px + cos * dist) - Math.floor(px + cos * dist);
+                        }
+                        const srcX = Math.floor(u * exitTex.width);
+                        try {
+                            ctx.drawImage(exitTex, srcX, 0, 1, exitTex.height, screenX, wallTop, rayStep, wallHeight);
+                        } catch(e) {
+                            const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+                            ctx.fillStyle = `rgb(${60*fogFactor*pulse|0},${240*fogFactor*pulse|0},${100*fogFactor*pulse|0})`;
+                            ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                        }
+                        // Mlha overlay
+                        const darkness = (1 - fogFactor);
+                        if (darkness > 0.05) {
+                            ctx.fillStyle = `rgba(0,0,0,${Math.min(0.85, darkness)})`;
+                            ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                        }
+                        // Mírný zelený glow pulse aby bylo poznat že je to exit
+                        const pulseGlow = 0.15 + 0.10 * Math.sin(Date.now() / 300);
+                        ctx.fillStyle = `rgba(80, 220, 100, ${pulseGlow * fogFactor})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    } else {
+                        // Fallback - pulzující zelená
+                        const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+                        const r = 60 * fogFactor * pulse;
+                        const g = 240 * fogFactor * pulse;
+                        const b = 100 * fogFactor * pulse;
+                        ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    }
+                } else if (wallTex) {
+                    // 🆕 Texturovaná zeď
+                    // U-coordinate: kde podél zdi paprsek zasáhl
+                    let u;
+                    if (hitSide === 0) {
+                        u = (py + sin * dist) - Math.floor(py + sin * dist);
+                    } else {
+                        u = (px + cos * dist) - Math.floor(px + cos * dist);
+                    }
+                    const srcX = Math.floor(u * wallTex.width);
+                    
+                    try {
+                        ctx.drawImage(wallTex, srcX, 0, 1, wallTex.height, screenX, wallTop, rayStep, wallHeight);
+                    } catch(e) {
+                        const r = theme.wall.r * fogFactor;
+                        const g = theme.wall.g * fogFactor;
+                        const b = theme.wall.b * fogFactor;
+                        ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    }
+                    
+                    // Mlha + side darkening (depth cue)
+                    const darkness = (1 - fogFactor) + (hitSide === 1 ? 0.15 : 0);
+                    if (darkness > 0.05) {
+                        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.85, darkness)})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    }
                 } else {
-                    // Zeď podle tématu lokace
+                    // Fallback: solidní barva podle tématu
                     const grunge = (Math.sin(screenX * 0.3) * 0.15 + 0.85);
-                    r = theme.wall.r * fogFactor * grunge;
-                    g = theme.wall.g * fogFactor * grunge;
-                    b = theme.wall.b * fogFactor * grunge;
-                }
-                
-                ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-                ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
-                
-                if (i % 2 === 0) {
-                    ctx.fillStyle = `rgba(0,0,0,0.3)`;
-                    ctx.fillRect(screenX, wallTop, rayStep, 2);
-                    ctx.fillRect(screenX, wallTop + wallHeight - 2, rayStep, 2);
+                    const r = theme.wall.r * fogFactor * grunge;
+                    const g = theme.wall.g * fogFactor * grunge;
+                    const b = theme.wall.b * fogFactor * grunge;
+                    ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                    ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    
+                    if (i % 2 === 0) {
+                        ctx.fillStyle = `rgba(0,0,0,0.3)`;
+                        ctx.fillRect(screenX, wallTop, rayStep, 2);
+                        ctx.fillRect(screenX, wallTop + wallHeight - 2, rayStep, 2);
+                    }
                 }
             }
             
@@ -52014,7 +52160,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 E.enemies.filter(e => e.alive).forEach(e => {
                     const dx = e.x - px;
                     const dy = e.y - py;
-                    allSprites.push({ type: 'enemy', sprite: e, dist: Math.sqrt(dx*dx + dy*dy), dx, dy, icon: e.icon });
+                    allSprites.push({ type: 'enemy', sprite: e, dist: Math.sqrt(dx*dx + dy*dy), dx, dy, icon: e.icon, enemyId: e.enemyId });
                 });
             }
             // Sort od daleka po blízko (correct depth)
@@ -52053,9 +52199,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 ctx.save();
                 ctx.globalAlpha = fogFactor;
-                ctx.font = `${spriteSize * 0.85}px sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
                 
                 // Stín pod sprite (loot/enemy stojí na zemi)
                 if (sp.type === 'loot') {
@@ -52065,7 +52208,48 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ctx.fill();
                 }
                 
-                ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                // 🆕 [v6.4.0] Render bedny pomocí PNG obrázku (s emoji fallback)
+                const useLootImage = sp.type === 'loot' && explore3DImages.lootBoxLoaded && explore3DImages.lootBox;
+                // 🆕 Custom enemy ikony pokud existují
+                const enemyImgKey = sp.type === 'enemy' && sp.enemyId ? ('enemy_' + sp.enemyId) : null;
+                const useEnemyImage = enemyImgKey && explore3DImages[enemyImgKey + 'Loaded'] && explore3DImages[enemyImgKey];
+                
+                if (useLootImage) {
+                    const img = explore3DImages.lootBox;
+                    const aspectRatio = img.width / img.height;
+                    const drawWidth = spriteSize;
+                    const drawHeight = spriteSize / aspectRatio;
+                    const drawY = spriteTop + spriteSize - drawHeight;
+                    try {
+                        ctx.drawImage(img, screenX - drawWidth/2, drawY, drawWidth, drawHeight);
+                    } catch(e) {
+                        ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                    }
+                } else if (useEnemyImage) {
+                    // Custom enemy obrázek
+                    const img = explore3DImages[enemyImgKey];
+                    const aspectRatio = img.width / img.height;
+                    const drawHeight = spriteSize;
+                    const drawWidth = spriteSize * aspectRatio;
+                    try {
+                        ctx.drawImage(img, screenX - drawWidth/2, spriteTop, drawWidth, drawHeight);
+                    } catch(e) {
+                        ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                    }
+                } else {
+                    // Emoji fallback
+                    ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                }
+                
                 ctx.restore();
             }
             
@@ -52242,7 +52426,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const E = window._explore3D;
             const status = document.getElementById('exploreStatus');
             if (status && E) {
-                status.innerHTML = `📦 ${E.lootRemaining} loot zbývá | 🚪 najdi východ | ✅ sebráno: ${E.loot.length}`;
+                // 🆕 [v6.4.0] Žádná konkrétní čísla - hráč nemá vědět kolik zbývá
+                status.innerHTML = `🏚️ Prozkoumej trosky | 🚪 najdi východ`;
             }
             // 🆕 [v6.4.0] Aktualizuj HP/hunger/thirst
             const hpEl = document.getElementById('hp3DVal');
@@ -52338,7 +52523,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div id="explore3DWrapper" style="background: #0a0a0a; padding: 0.5rem; border-radius: 8px;">
                     <div style="text-align:center;margin-bottom:0.3rem;">
                         <div style="color:#ff8f00;font-weight:bold;font-size:0.85rem;">🏚️ ${loc.name} — ${E.theme.name}</div>
-                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">📦 ${E.lootRemaining} loot | 💀 ${E.enemies.filter(e => e.alive).length}/${E.enemies.length} nepřátel | 🚪 najdi východ</div>
+                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">🏚️ Prozkoumej trosky | 🚪 najdi východ</div>
                     </div>
                     <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
                         <canvas id="explore3DCanvas" width="500" height="300" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
