@@ -44452,9 +44452,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
             }
             
-            // 🆕 [v6.4.0] 3D Průzkum — POUZE pro admina, kdekoli kde má lokace enemies
-            // (testovací feature - bude rozšířena pro všechny po dokončení)
-            if (location.enemies && location.enemies.length > 0 && typeof isAdmin === 'function' && isAdmin()) {
+            // 🆕 [v6.4.0] 3D Průzkum — admin + moderátoři (testovací feature)
+            if (location.enemies && location.enemies.length > 0 && 
+                ((typeof isAdmin === 'function' && isAdmin()) || 
+                 (typeof isStaff === 'function' && isStaff()))) {
                 html += renderActionButton('🎮', '3D ruiny', `show3DExploration('${location.id}')`, '#8b6f47');
             }
             
@@ -51375,8 +51376,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const E = window._explore3D = {
                 map: null,           // 2D grid: 0=podlaha, 1=zeď, 2=loot, 3=exit
                 player: { x: 1.5, y: 1.5, angle: 0 },
-                size: 12,            // 12x12 mapa
-                loot: [],            // sebraný loot
+                size: 15,            // 15x15 mapa (lichá pro maze algoritmus)
+                visited: null,       // 🆕 Fog of war - které tiles hráč viděl
+                loot: [],
                 lootRemaining: 0,
                 exitReached: false,
                 running: true,
@@ -51388,11 +51390,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 lastTick: Date.now(),
                 tickInterval: null,
                 locationId: loc.id,
-                theme: getExplore3DTheme(loc),  // 🆕 Téma podle terénu
-                enemies: [],                     // 🆕 Sprite enemies na mapě
-                inCombat: false,                 // 🆕 Když boj, pause raycaster
-                killedEnemies: []                // 🆕 Pro reward
+                theme: getExplore3DTheme(loc),
+                enemies: [],
+                inCombat: false,
+                killedEnemies: []
             };
+            
+            // Inicializuj visited fog of war
+            E.visited = Array.from({length: E.size}, () => Array(E.size).fill(false));
+            // Start tile + bezprostřední okolí
+            E.visited[1][1] = true;
+            if (E.visited[1][2] !== undefined) E.visited[1][2] = true;
+            if (E.visited[2] && E.visited[2][1] !== undefined) E.visited[2][1] = true;
             
             // ====== GENEROVÁNÍ MAPY ======
             E.map = generateExploreMap(E.size, loc.dangerLevel || 1);
@@ -51413,7 +51422,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
                         <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
                         <!-- Mini mapa overlay -->
-                        <canvas id="exploreMiniMap" width="80" height="80" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.7);border:1px solid #555;"></canvas>
+                        <canvas id="exploreMiniMap" width="105" height="105" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
                     </div>
                     
                     <!-- LOG -->
@@ -51486,50 +51495,126 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.show3DExploration = show3DExploration;
         
-        // Procedurální generování postapo mapy
+        // 🆕 [v6.4.0] Procedurálně vygeneruj bludiště pomocí recursive backtracking
+        // Mapa: 15x15 (lichá), pravé bludiště s chodbami a křižovatkami
         function generateExploreMap(size, dangerLevel) {
-            // Vytvoř mapu se zdmi po obvodu
+            // Vynutit lichou velikost (potřebné pro maze algoritmus)
+            if (size % 2 === 0) size = size + 1;
+            
+            // Začni s plně zazděnou mapou
             const map = [];
             for (let y = 0; y < size; y++) {
                 const row = [];
-                for (let x = 0; x < size; x++) {
-                    if (x === 0 || x === size-1 || y === 0 || y === size-1) row.push(1);
-                    else row.push(0);
-                }
+                for (let x = 0; x < size; x++) row.push(1);
                 map.push(row);
             }
             
-            // Přidej náhodné zdi (asi 25%)
-            const wallChance = 0.2 + dangerLevel * 0.02;
-            for (let y = 2; y < size-2; y++) {
-                for (let x = 2; x < size-2; x++) {
-                    // Vstup (1,1) volný + okolí
-                    if (x <= 2 && y <= 2) continue;
-                    if (Math.random() < wallChance) map[y][x] = 1;
+            // Recursive backtracking - vyrub bludiště
+            const visited = Array.from({length: size}, () => Array(size).fill(false));
+            const carve = (cx, cy) => {
+                map[cy][cx] = 0;
+                visited[cy][cx] = true;
+                
+                // Náhodné pořadí směrů (N, S, E, W)
+                const dirs = [[0,-2],[0,2],[2,0],[-2,0]];
+                for (let i = dirs.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
+                }
+                
+                for (const [dx, dy] of dirs) {
+                    const nx = cx + dx;
+                    const ny = cy + dy;
+                    if (nx > 0 && nx < size - 1 && ny > 0 && ny < size - 1 && !visited[ny][nx]) {
+                        // Vyrub stěnu mezi current a next
+                        map[cy + dy/2][cx + dx/2] = 0;
+                        carve(nx, ny);
+                    }
+                }
+            };
+            
+            carve(1, 1);
+            
+            // 🆕 Přidej extra spojení (loopy = víc cest, ne jen 1)
+            // Bez tohoto je bludiště "perfect maze" = jen jedna cesta mezi 2 body
+            // S loopy: víc křižovatek, hráč musí volit směr
+            const extraConnections = Math.floor(size * 0.4); // ~6 extra spojení pro 15x15
+            for (let i = 0; i < extraConnections; i++) {
+                const x = 2 + Math.floor(Math.random() * (size - 4));
+                const y = 2 + Math.floor(Math.random() * (size - 4));
+                // Pokud je zeď a sousedy jsou podlaha, rozbij
+                if (map[y][x] === 1) {
+                    const neighbors = [[0,-1],[0,1],[1,0],[-1,0]];
+                    let floorCount = 0;
+                    for (const [dx, dy] of neighbors) {
+                        if (map[y+dy] && map[y+dy][x+dx] === 0) floorCount++;
+                    }
+                    if (floorCount >= 2) map[y][x] = 0;
                 }
             }
             
-            // Zajistí průchodnost - flood fill ze startu
-            const reachable = floodFill(map, 1, 1, size);
-            
-            // Loot na 4-6 náhodných místech (jen v reachable buňkách)
-            const lootCount = 4 + Math.floor(Math.random() * 3);
-            const reachableCells = [];
-            reachable.forEach((row, y) => row.forEach((v, x) => {
-                if (v && (x !== 1 || y !== 1)) reachableCells.push({x, y});
-            }));
-            
-            // Shuffle
-            reachableCells.sort(() => Math.random() - 0.5);
-            
-            for (let i = 0; i < Math.min(lootCount, reachableCells.length - 1); i++) {
-                const cell = reachableCells[i];
-                map[cell.y][cell.x] = 2; // loot
+            // Sesbírej všechny podlahové buňky (kromě startu 1,1)
+            const floorCells = [];
+            for (let y = 1; y < size - 1; y++) {
+                for (let x = 1; x < size - 1; x++) {
+                    if (map[y][x] === 0 && !(x === 1 && y === 1)) {
+                        floorCells.push({x, y});
+                    }
+                }
             }
             
-            // Exit na nejvzdálenější reachable bod
-            let exitCell = reachableCells[reachableCells.length - 1] || {x: size-2, y: size-2};
-            map[exitCell.y][exitCell.x] = 3;
+            // Loot na 4-6 nejvíce vzdálených dead-end pozicích
+            const lootCount = 4 + Math.floor(Math.random() * 3);
+            // Najdi dead-ends (jen 1 sousední podlaha) - tam je nejlepší loot
+            const deadEnds = floorCells.filter(cell => {
+                let count = 0;
+                if (map[cell.y-1] && map[cell.y-1][cell.x] === 0) count++;
+                if (map[cell.y+1] && map[cell.y+1][cell.x] === 0) count++;
+                if (map[cell.y][cell.x-1] === 0) count++;
+                if (map[cell.y][cell.x+1] === 0) count++;
+                return count === 1;
+            });
+            // Sort by distance from start (further = better)
+            deadEnds.sort((a, b) => {
+                const da = Math.abs(a.x - 1) + Math.abs(a.y - 1);
+                const db = Math.abs(b.x - 1) + Math.abs(b.y - 1);
+                return db - da;
+            });
+            // Loot do dead-ends (preferred), zbytek random
+            const usedCells = new Set();
+            const placeLoot = (cells, n) => {
+                for (let i = 0; i < Math.min(n, cells.length); i++) {
+                    const cell = cells[i];
+                    const key = `${cell.x},${cell.y}`;
+                    if (usedCells.has(key)) continue;
+                    map[cell.y][cell.x] = 2;
+                    usedCells.add(key);
+                }
+            };
+            placeLoot(deadEnds, lootCount);
+            
+            // Pokud nestačí dead-ends, doplň random floor cells
+            if (deadEnds.length < lootCount) {
+                const remainingCells = floorCells.filter(c => !usedCells.has(`${c.x},${c.y}`));
+                remainingCells.sort(() => Math.random() - 0.5);
+                placeLoot(remainingCells, lootCount - deadEnds.length);
+            }
+            
+            // Exit na nejvzdálenější dead-end (preferované) nebo nejvzdálenější floor
+            let exitCell = null;
+            const availableDeadEnds = deadEnds.filter(c => !usedCells.has(`${c.x},${c.y}`));
+            if (availableDeadEnds.length > 0) {
+                exitCell = availableDeadEnds[0]; // už seřazeno podle vzdálenosti
+            } else {
+                // Najdi nejvzdálenější floor cell
+                floorCells.sort((a, b) => {
+                    const da = Math.abs(a.x - 1) + Math.abs(a.y - 1);
+                    const db = Math.abs(b.x - 1) + Math.abs(b.y - 1);
+                    return db - da;
+                });
+                exitCell = floorCells.find(c => !usedCells.has(`${c.x},${c.y}`)) || floorCells[0];
+            }
+            if (exitCell) map[exitCell.y][exitCell.x] = 3;
             
             return map;
         }
@@ -51635,6 +51720,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Kontrola loot/exit na aktuální buňce
             const tx = Math.floor(E.player.x);
             const ty = Math.floor(E.player.y);
+            
+            // 🆕 [v6.4.0] Fog of war - označ navštívené tiles + viditelné okolí
+            if (E.visited && E.visited[ty]) {
+                E.visited[ty][tx] = true;
+                // Také sousedi (vidíš zeď když jsi vedle)
+                [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
+                    const nx = tx + dx, ny = ty + dy;
+                    if (E.visited[ny] && E.visited[ny][nx] !== undefined) {
+                        E.visited[ny][nx] = true;
+                    }
+                });
+            }
+            
             if (E.map[ty] && E.map[ty][tx] === 2) {
                 // Loot pickup
                 E.map[ty][tx] = 0;
@@ -51857,31 +51955,42 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const ctx = E.miniMapCtx;
             const cellSize = E.miniMap.width / E.size;
             
-            ctx.fillStyle = '#000';
+            // 🆕 [v6.4.0] Pozadí - tmavě šedá (neprozkoumané)
+            ctx.fillStyle = '#0a0a0a';
             ctx.fillRect(0, 0, E.miniMap.width, E.miniMap.height);
             
             for (let y = 0; y < E.size; y++) {
                 for (let x = 0; x < E.size; x++) {
+                    // 🆕 Skryj cell pokud není navštíven
+                    if (!E.visited || !E.visited[y] || !E.visited[y][x]) continue;
+                    
                     const cell = E.map[y][x];
-                    if (cell === 1) ctx.fillStyle = '#5a4030';
-                    else if (cell === 2) ctx.fillStyle = '#ff8f00';
-                    else if (cell === 3) ctx.fillStyle = '#4caf50';
-                    else continue;
+                    if (cell === 1) ctx.fillStyle = '#5a4030';     // zeď
+                    else if (cell === 2) ctx.fillStyle = '#ff8f00'; // loot
+                    else if (cell === 3) ctx.fillStyle = '#4caf50'; // exit
+                    else ctx.fillStyle = '#1a1a1a';                  // podlaha (vidíš ji)
                     ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
                 }
             }
             
-            // 🆕 Enemies na minimapě (jen ti živí)
+            // 🆕 Enemies na minimapě (jen ti živí a v visited tiles)
             if (E.enemies) {
                 E.enemies.filter(e => e.alive).forEach(e => {
-                    ctx.fillStyle = e.spotted ? '#ff0000' : '#aa3030';
-                    ctx.beginPath();
-                    ctx.arc(e.x * cellSize, e.y * cellSize, cellSize/2.5, 0, Math.PI*2);
-                    ctx.fill();
+                    const ex = Math.floor(e.x), ey = Math.floor(e.y);
+                    // Zobraz jen pokud je tile navštívený NEBO enemy v krátké vzdálenosti
+                    const dx = e.x - E.player.x, dy = e.y - E.player.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    const visible = (E.visited && E.visited[ey] && E.visited[ey][ex]) || dist < 3;
+                    if (visible) {
+                        ctx.fillStyle = e.spotted ? '#ff0000' : '#aa3030';
+                        ctx.beginPath();
+                        ctx.arc(e.x * cellSize, e.y * cellSize, cellSize/2.5, 0, Math.PI*2);
+                        ctx.fill();
+                    }
                 });
             }
             
-            // Player marker
+            // Player marker (vždy zobrazen)
             ctx.fillStyle = '#ff5252';
             ctx.beginPath();
             ctx.arc(E.player.x * cellSize, E.player.y * cellSize, cellSize/2, 0, Math.PI*2);
@@ -51894,6 +52003,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             ctx.moveTo(E.player.x * cellSize, E.player.y * cellSize);
             ctx.lineTo((E.player.x + Math.cos(E.player.angle)*1.5) * cellSize, (E.player.y + Math.sin(E.player.angle)*1.5) * cellSize);
             ctx.stroke();
+            
+            // 🆕 Border (orámování minimapy)
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(0, 0, E.miniMap.width - 1, E.miniMap.height - 1);
         }
         
         function add3DLog(text) {
@@ -51996,7 +52110,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                     <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
                         <canvas id="explore3DCanvas" width="400" height="250" style="display:block;width:100%;height:auto;image-rendering:pixelated;"></canvas>
-                        <canvas id="exploreMiniMap" width="80" height="80" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.7);border:1px solid #555;"></canvas>
+                        <canvas id="exploreMiniMap" width="105" height="105" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
                     </div>
                     <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
                         ▸ Vrátil ses do trosek po boji...
