@@ -51451,12 +51451,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // 🆕 [v6.4.0] Preload sprite obrázků (loot box + enemy ikony + wall textury)
         const explore3DImages = {};
-        const WALL_TEXTURE_KEYS = ['wall_concrete', 'wall_arrow', 'wall_metal', 'exit_door', 'floor_rubble'];
+        const WALL_TEXTURE_KEYS = ['wall_concrete', 'wall_arrow', 'wall_metal', 'exit_door', 'floor_rubble', 'sky_postapo'];
         // Pouze zdi (bez floor, exit) - pro random mix v raycasteru
         const WALL_VARIANTS = ['wall_concrete', 'wall_arrow', 'wall_metal'];
         function preloadExplore3DImages() {
             const list = {
                 lootBox: 'img/loot_box.png',
+                sky_postapo: 'img/sky_postapo.jpg',  // 🆕 JPG kvůli menší velikosti
             };
             // Enemy custom ikon
             if (typeof ENEMY_CUSTOM_ICONS !== 'undefined') {
@@ -51466,6 +51467,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             // 🆕 Wall textury
             for (const wt of WALL_TEXTURE_KEYS) {
+                if (wt === 'sky_postapo') continue; // 🆕 sky je JPG, už načteno výš
+                if (list[wt]) continue; // už načteno
                 list[wt] = 'img/' + wt + '.png';
             }
             for (const [key, path] of Object.entries(list)) {
@@ -52061,11 +52064,46 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const theme = E.theme || EXPLORE3D_THEMES.wasteland;
             
             // Strop podle tématu
-            const ceilingGrad = ctx.createLinearGradient(0, 0, 0, H/2);
-            ceilingGrad.addColorStop(0, theme.ceiling.top);
-            ceilingGrad.addColorStop(1, theme.ceiling.bottom);
-            ctx.fillStyle = ceilingGrad;
-            ctx.fillRect(0, 0, W, H/2);
+            // 🆕 [v6.4.0] Sky texture (panorama, animuje se s úhlem hráče)
+            const skyTex = explore3DImages.sky_postapoLoaded ? explore3DImages.sky_postapo : null;
+            if (skyTex) {
+                // Sky offset podle úhlu hráče - 360° rotace = celá šířka textury
+                const angleNormalized = ((E.player.angle % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2);
+                const fov = Math.PI / 3;
+                // FOV "vidí" 60° z 360° panoramy = 1/6 šířky textury
+                const skyViewWidth = skyTex.width / 6;
+                let skyX = (angleNormalized / (Math.PI * 2)) * skyTex.width - skyViewWidth / 2;
+                // Wrap around
+                while (skyX < 0) skyX += skyTex.width;
+                
+                try {
+                    // Vykreslit s wrap aby nebyla díra na okraji
+                    if (skyX + skyViewWidth > skyTex.width) {
+                        // Rozdělit na 2 části (přes okraj)
+                        const part1Width = skyTex.width - skyX;
+                        const part2Width = skyViewWidth - part1Width;
+                        const part1ScreenW = W * (part1Width / skyViewWidth);
+                        const part2ScreenW = W - part1ScreenW;
+                        ctx.drawImage(skyTex, skyX, 0, part1Width, skyTex.height, 0, 0, part1ScreenW, H/2);
+                        ctx.drawImage(skyTex, 0, 0, part2Width, skyTex.height, part1ScreenW, 0, part2ScreenW, H/2);
+                    } else {
+                        ctx.drawImage(skyTex, skyX, 0, skyViewWidth, skyTex.height, 0, 0, W, H/2);
+                    }
+                } catch(e) {
+                    // Fallback gradient
+                    const ceilingGrad = ctx.createLinearGradient(0, 0, 0, H/2);
+                    ceilingGrad.addColorStop(0, theme.ceiling.top);
+                    ceilingGrad.addColorStop(1, theme.ceiling.bottom);
+                    ctx.fillStyle = ceilingGrad;
+                    ctx.fillRect(0, 0, W, H/2);
+                }
+            } else {
+                const ceilingGrad = ctx.createLinearGradient(0, 0, 0, H/2);
+                ceilingGrad.addColorStop(0, theme.ceiling.top);
+                ceilingGrad.addColorStop(1, theme.ceiling.bottom);
+                ctx.fillStyle = ceilingGrad;
+                ctx.fillRect(0, 0, W, H/2);
+            }
             
             // 🆕 [v6.4.0] Texturovaná podlaha - floor casting
             // Pokud máme floor texturu, použij raycast per-pixel sampling
@@ -52874,17 +52912,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId);
                 const rolledItems = generate3DLootBatch(loc, totalRolls);
                 
-                // Aplikuj všechny loot
-                let summary = [];
+                // 🆕 [v6.4.0] Aplikuj loot + agreguj stejné itemy do summary
+                const summaryAgg = {}; // klíč → { icon, name, count }
                 rolledItems.forEach(item => {
                     if (item.isAmmo) {
                         if (typeof addAmmo === 'function') addAmmo(item.ammoType, item.count);
-                        summary.push(`${item.icon || '🔫'} ${item.count}× ${item.name}`);
+                        const key = 'ammo_' + item.ammoType;
+                        if (!summaryAgg[key]) summaryAgg[key] = { icon: item.icon || '🔫', name: item.name, count: 0 };
+                        summaryAgg[key].count += item.count || 1;
                     } else if (item.id) {
                         addItemToInventory(item, item.count || 1);
-                        summary.push(`${item.icon || '📦'} ${item.count > 1 ? item.count + '× ' : ''}${item.name}`);
+                        const key = item.id;
+                        if (!summaryAgg[key]) summaryAgg[key] = { icon: item.icon || '📦', name: item.name, count: 0 };
+                        summaryAgg[key].count += item.count || 1;
                     }
                 });
+                
+                // Převést na seznam, seřadit dle počtu
+                const summary = Object.values(summaryAgg)
+                    .sort((a, b) => b.count - a.count)
+                    .map(s => `${s.icon} ${s.count > 1 ? s.count + '× ' : ''}${s.name}`);
                 
                 // Zobraz souhrn modálu
                 setTimeout(() => {
