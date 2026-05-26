@@ -51890,8 +51890,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                     <div style="background:#0a1a0a;border:1px solid #2a4a2a;border-radius:6px;padding:0.6rem;margin-bottom:0.5rem;font-size:0.75rem;">
                         <div style="color:#aaa;line-height:1.5;">
-                            ${stats}<br>
-                            <span style="color:#4caf50;">🎯 +50% bonus loot za východ</span>
+                            ${stats}
                         </div>
                     </div>
                     <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.5rem;margin-bottom:0.5rem;font-size:0.7rem;color:#ffa726;">
@@ -51971,12 +51970,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     add3DLog(`⚠️ Vidíš ${enemy.icon} ${enemy.name}!`);
                 }
                 
-                // Collision → boj
-                if (dist < 0.6) {
+                // Collision → boj (větší threshold pro rychlejší detekci)
+                if (dist < 0.7 && !E.inCombat && !E._pendingEnemy) {
                     E.inCombat = true;
                     E.running = false;
                     add3DLog(`⚔️ ${enemy.icon} ${enemy.name} po tobě skočil!`);
-                    setTimeout(() => start3DCombat(enemy), 500);
+                    setTimeout(() => start3DCombat(enemy), 400);
                     return;
                 }
             }
@@ -52557,20 +52556,34 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const E = window._explore3D;
             if (!E) return;
             
+            // 🆕 [v6.4.0 BUG FIX] Race condition guard - zabraň víceřnásobnému spuštění
+            if (E._pendingEnemy || window.combatState) {
+                console.warn('⚠️ start3DCombat: combat už probíhá nebo pending, ignoring');
+                return;
+            }
+            
             // Zavři 3D modal dočasně
             closeModal();
             
             // Označ enemy jako pending (po výhře označíme jako zabitého)
             E._pendingEnemy = enemy;
             
-            // Nastavíme callback že po boji se má vrátit zpět do 3D
+            // Reset stavu polleru - bude čekat než combat skutečně začne
             window._explore3D_returnAfterCombat = true;
+            window._explore3D_combatStarted = false; // 🆕 čeká až se combatState objeví
             
             // Spusť standardní combat se single enemy
             const enemyDef = ENEMIES.find(e => e.id === enemy.enemyId);
             if (!enemyDef) {
-                // Fallback - zavři 3D
-                exit3DExploration(true);
+                console.warn('⚠️ start3DCombat: enemy def nenalezena:', enemy.enemyId);
+                // Reset state - enemy zůstane živý
+                E._pendingEnemy = null;
+                E.inCombat = false;
+                E.running = true;
+                window._explore3D_returnAfterCombat = false;
+                window._explore3D_combatStarted = false;
+                notifyWarning('Chyba', 'Nepřítel nenalezen v databázi');
+                setTimeout(() => reopen3DExploration(), 300);
                 return;
             }
             
@@ -52579,10 +52592,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Spusť combat
             if (typeof startCombatWithGroup === 'function') {
-                startCombatWithGroup(enemyGroup, 'explore3d', false);
+                try {
+                    startCombatWithGroup(enemyGroup, 'explore3d', false);
+                    console.log('⚔️ 3D combat started with', enemyDef.name);
+                } catch(e) {
+                    console.error('❌ start3DCombat failed:', e);
+                    E._pendingEnemy = null;
+                    E.inCombat = false;
+                    E.running = true;
+                    window._explore3D_returnAfterCombat = false;
+                    window._explore3D_combatStarted = false;
+                    setTimeout(() => reopen3DExploration(), 300);
+                }
             } else {
-                notifyWarning('Chyba', 'Combat systém nedostupný');
-                exit3DExploration(false);
+                console.warn('⚠️ startCombatWithGroup not available');
+                E._pendingEnemy = null;
+                E.inCombat = false;
+                E.running = true;
+                window._explore3D_returnAfterCombat = false;
+                setTimeout(() => reopen3DExploration(), 300);
             }
         }
         
@@ -52592,13 +52620,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window._explore3DHookInstalled) return;
             window._explore3DHookInstalled = true;
             
-            // Polling - každých 500ms kontroluj zda combat skončil
+            // Polling - každých 300ms kontroluj zda combat skončil
             window._explore3DCombatPoller = setInterval(() => {
                 if (!window._explore3D_returnAfterCombat) return;
                 
-                // Pokud combat state už neexistuje, boj skončil
+                // 🆕 [v6.4.0 BUG FIX] Wait for combat to actually start before tracking exit
+                // Pokud combat ještě nezačal a combatState není, nehlas konec - čekej
+                if (!window._explore3D_combatStarted) {
+                    if (window.combatState) {
+                        // Combat se zapnul!
+                        window._explore3D_combatStarted = true;
+                        console.log('⚔️ 3D combat poller: detected combat start');
+                    }
+                    return;
+                }
+                
+                // Combat začal a teď čekáme až skončí (combatState zmizí)
                 if (!window.combatState) {
                     window._explore3D_returnAfterCombat = false;
+                    window._explore3D_combatStarted = false;
                     const E = window._explore3D;
                     if (E && E._pendingEnemy) {
                         // Označ enemy jako zabitého
@@ -52607,6 +52647,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         E._pendingEnemy = null;
                         E.inCombat = false;
                         E.running = true;
+                        console.log('⚔️ 3D combat poller: detected combat end, reopening 3D');
                         
                         // Pokud hráč přežil, znovu otevřít 3D
                         if (state.char && state.char.hp > 0) {
@@ -52617,7 +52658,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         }
                     }
                 }
-            }, 500);
+            }, 300);
         }
         
         // Znovu otevřít 3D modal po boji
@@ -52718,12 +52759,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (actualReward && (E.loot.length > 0 || E.killedEnemies.length > 0)) {
                 // 🆕 [v6.4.0] Reward: stejný loot pool jako klasický průzkum (loc.loot)
-                // + bonus za východ a zabité enemies
-                const lootMultiplier = E.exitReached ? 1.5 : 1.0;
+                // Bez bonusu za východ - hráč musí najít východ aby vůbec získal odměnu
                 const enemyBonus = Math.floor(E.killedEnemies.length * 1.5);
-                const totalRolls = Math.ceil(E.loot.length * lootMultiplier) + enemyBonus;
+                const totalRolls = E.loot.length + enemyBonus;
                 
-                addLog(`🎮 3D průzkum dokončen! Loot: ${E.loot.length} beden + ${E.killedEnemies.length} zabitých nepřátel${E.exitReached ? ' (+50% bonus za východ)' : ''}.`, '🏚️');
+                addLog(`🎮 3D průzkum dokončen! Loot: ${E.loot.length} beden + ${E.killedEnemies.length} zabitých nepřátel.`, '🏚️');
                 
                 const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId);
                 const rolledItems = generate3DLootBatch(loc, totalRolls);
@@ -52752,7 +52792,6 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <div style="color:#aaa;line-height:1.5;">
                                 📦 Sebráno beden: <b>${E.loot.length}</b><br>
                                 💀 Zabito nepřátel: <b>${E.killedEnemies.length}</b><br>
-                                ${E.exitReached ? '🎯 Bonus za východ: <b style="color:#4caf50;">+50%</b><br>' : ''}
                                 📜 Celkem loot rolů: <b>${totalRolls}</b>
                             </div>
                         </div>
@@ -92274,9 +92313,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (!unit.isPlayer && !(unit.isCompanion && cs.manualCompanions)) return;
             
-            // Auto-attack: kliknutí na nepřítele bez vybrané akce → automaticky zaútoč
-            if (!cs.selectedAction) {
-                const targetUnit = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'enemy');
+            // Auto-attack: kliknutí na nepřítele → automaticky zaútoč
+            // 🆕 [v6.4.0 BUG FIX] Fungovat i když selectedAction === 'move' (po pohybu zůstane nastaveno)
+            // Před opravou: po pohybu hráč nemohl střelit ranged zbraní, klik na enemy padl do move větve
+            const _clickedEnemy = cs.units.find(u => u.x === x && u.y === y && u.alive && u.team === 'enemy');
+            if (!cs.selectedAction || (cs.selectedAction === 'move' && _clickedEnemy)) {
+                const targetUnit = _clickedEnemy;
                 if (targetUnit) {
                     // 🆕 [v6.3.1] AUTO-RELOAD: pokud má prázdný magazine ale munici v inventáři → přebij místo melee
                     // (Hlášeno: "Když mi dojdou náboje, chci přebít i když kliknu na nepřítele")
