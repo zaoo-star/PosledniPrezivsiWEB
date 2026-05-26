@@ -7934,7 +7934,7 @@
             'trader_set_helmet': 'img/trader_set_helmet.png',
             'sandworm_hide': 'img/sandworm_hide.png',
             'cooking_pot': 'img/cooking_pot.png',
-            'zirael': 'img/zirael.png',
+            // 'zirael': 'img/zirael.png', // [v6.4.0] removed - file not in repo, fallback ⚔️ emoji
             // === NPC IKONY ===
             'grandma_marta': 'img/grandma_marta.png',
             'binoculars': 'img/binoculars.png',
@@ -19903,10 +19903,48 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             addLog(`📦 ${item.icon || '📦'} ${item.name} zůstalo na zemi (${locName})`, '📦');
         }
         
-        // Získá předměty na zemi na aktuální lokaci
+        // 🆕 [v6.4.0] Konstanta pro expiraci dropnutých itemů
+        const GROUND_ITEM_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 dní
+        
+        // Vyčisti expirované itemy (starší 7 dní) - vrací počet smazaných
+        function cleanExpiredGroundLoot() {
+            if (!state.world?.groundLoot) return 0;
+            const now = Date.now();
+            const cutoff = now - GROUND_ITEM_EXPIRATION_MS;
+            let removed = 0;
+            
+            for (const locId of Object.keys(state.world.groundLoot)) {
+                const before = state.world.groundLoot[locId].length;
+                state.world.groundLoot[locId] = state.world.groundLoot[locId].filter(item => {
+                    // Item bez droppedAt = legacy starý, vždy odstranit
+                    if (!item.droppedAt) {
+                        // Backfill timestamp pro legacy items - nech jeden pickup chance
+                        item.droppedAt = now;
+                        return true;
+                    }
+                    return item.droppedAt > cutoff;
+                });
+                removed += before - state.world.groundLoot[locId].length;
+                // Smaž prázdné lokace
+                if (state.world.groundLoot[locId].length === 0) {
+                    delete state.world.groundLoot[locId];
+                }
+            }
+            
+            if (removed > 0) {
+                console.log(`🌧️ cleanExpiredGroundLoot: smazáno ${removed} expirovaných itemů na zemi`);
+            }
+            return removed;
+        }
+        
+        // Získá předměty na zemi na aktuální lokaci (s filtrem expirovaných)
         function getGroundLoot() {
             const location = state.world?.currentLocation || 'shelter';
-            return state.world.groundLoot?.[location] || [];
+            const items = state.world.groundLoot?.[location] || [];
+            // Filter expired (nemažeme tady, jen vrátíme aktuální)
+            const now = Date.now();
+            const cutoff = now - GROUND_ITEM_EXPIRATION_MS;
+            return items.filter(it => !it.droppedAt || it.droppedAt > cutoff);
         }
         
         // Sebere předmět ze země
@@ -20217,11 +20255,34 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const canPickup = canPickupAll || canPickupSome;
                 const pickupLabel = canPickupAll ? 'Vzít' : (canPickupSome ? 'Vzít část' : '🚫');
                 
+                // 🆕 [v6.4.0] Expiration warning - kolik dní/hodin do zničení (max 7 dní)
+                let expiryHtml = '';
+                if (item.droppedAt) {
+                    const elapsed = Date.now() - item.droppedAt;
+                    const remaining = GROUND_ITEM_EXPIRATION_MS - elapsed;
+                    if (remaining > 0) {
+                        const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
+                        const hours = Math.floor((remaining % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                        let timeText, color;
+                        if (days >= 3) {
+                            timeText = `${days}d`;
+                            color = '#666'; // OK
+                        } else if (days >= 1) {
+                            timeText = `${days}d ${hours}h`;
+                            color = '#ff9800'; // varovně oranžová
+                        } else {
+                            timeText = `${hours}h`;
+                            color = '#f44336'; // kriticky červená
+                        }
+                        expiryHtml = ` <span style="color:${color};font-size:0.7rem;" title="Zničí se za ${timeText} vlivem počasí">🌧️${timeText}</span>`;
+                    }
+                }
+                
                 return `
                     <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.3rem; ${!canPickup ? 'opacity: 0.6;' : ''}">
                         <span style="font-size: 1.5rem;">${item.icon || '📦'}</span>
                         <div style="flex: 1;">
-                            <div style="color: ${color}; font-weight: bold;">${item.name}${countText}</div>
+                            <div style="color: ${color}; font-weight: bold;">${item.name}${countText}${expiryHtml}</div>
                             <div style="font-size: 0.75rem; color: #888;">
                                 ${item.damage ? `<span style="color: #c62828;">⚔️${item.damage}${item.aiUpgraded ? '<span style="color:#9c27b0;">🧠</span>' : ''}${typeof meetsWeaponRequirement === 'function' && WEAPON_REQUIREMENTS[item.id] && !meetsWeaponRequirement(item.id).met ? '<span style="color:#f44336;"> ⚠️</span>' : ''}</span> ` : ''}
                                 ${item.defense ? `<span style="color: #2196f3;">🛡️${item.defense}${item.aiUpgraded ? '<span style="color:#9c27b0;">🧠</span>' : ''}</span> ` : ''}
@@ -20247,6 +20308,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             `;
             
             showModal('📦 Předměty na zemi', `
+                <div style="background: #2a1a0a; padding: 0.4rem 0.7rem; border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid #5a3a15; font-size: 0.7rem; color: #ffa726;">
+                    🌧️ Předměty na zemi se zničí vlivem počasí po 7 dnech od vyhození
+                </div>
                 <div style="background: #1a1a2a; padding: 0.5rem 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid ${weightColor};">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
                         <span style="color: #888;">⚖️ Nosnost:</span>
@@ -40964,12 +41028,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             const _legComp = ['deathclaw_hand', 'mutant_heart', 'ai_chip', 'crystal', 'gold', 'gems'];
                             const _hasAnyLegComp = _legComp.some(comp => (state.inv?.filter(i => i.id === comp).length || 0) > 0);
                             if (_hasT5 || _hasAnyLegComp) {
-                                baseFilters.push({ id: 'legendary', icon: '⭐', img: 'img/legendary_blade.png', label: 'Legendary', bg: '#5a4a20' });
+                                baseFilters.push({ id: 'legendary', icon: '⭐', img: null, label: 'Legendary', bg: '#5a4a20' });
                             }
                             return baseFilters;
                         })().map(f => {
                             const isAct = (state.craftFilter || 'all') === f.id;
-                            const icoHtml = '<img src="' + f.img + '" style="width:1rem;height:1rem;object-fit:contain;vertical-align:middle;" onerror="this.outerHTML=\'' + f.icon + '\'">';
+                            const icoHtml = f.img ? ('<img src="' + f.img + '" style="width:1rem;height:1rem;object-fit:contain;vertical-align:middle;" onerror="this.outerHTML=\'' + f.icon + '\'">') : f.icon;
                             return '<button class="btn" onclick="filterCraft(\'' + f.id + '\')" style="padding: 0.3rem 0.5rem; font-size: 0.75rem; display: flex; align-items: center; gap: 0.2rem; ' + (isAct ? 'background:' + f.bg + '; border: 1.5px solid #888; box-shadow: 0 0 6px ' + f.bg + '88;' : 'background: #0d0d0d; border: 1px solid #222; opacity: 0.6;') + '">' + icoHtml + '<span style="font-size: 0.6rem;">' + f.label + '</span></button>';
                         }).join('')}
                     </div>
@@ -44465,7 +44529,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (location.enemies && location.enemies.length > 0 && 
                 ((typeof isAdmin === 'function' && isAdmin()) || 
                  (typeof isStaff === 'function' && isStaff()))) {
-                html += renderActionButton('🎮', '3D ruiny', `show3DExploration('${location.id}')`, '#8b6f47');
+                html += renderActionButton('🎮', 'Průzkum', `show3DExploration('${location.id}')`, '#8b6f47');
             }
             
             // === TĚŽBA - jen tam kde jsou skály/zem ===
@@ -52664,10 +52728,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Znovu otevřít 3D modal po boji
         function reopen3DExploration() {
             const E = window._explore3D;
-            if (!E) return;
+            if (!E) {
+                console.warn('⚠️ reopen3DExploration: state je null, nemůžu otevřít');
+                return;
+            }
             
             const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId);
-            if (!loc) return;
+            if (!loc) {
+                console.warn('⚠️ reopen3DExploration: lokace nenalezena');
+                return;
+            }
+            
+            // 🆕 [v6.4.0 BUG FIX] Cleanup stale state před re-init
+            // (po combat občas zůstal starý tickInterval + stale canvas cache → black screen)
+            if (E.tickInterval) { clearInterval(E.tickInterval); E.tickInterval = null; }
+            if (E._keyDown) { window.removeEventListener('keydown', E._keyDown); E._keyDown = null; }
+            if (E._keyUp) { window.removeEventListener('keyup', E._keyUp); E._keyUp = null; }
+            // Force recreate floor canvas cache (jinak je odpojený od DOM)
+            E._floorCanvas = null;
+            E._floorCtx = null;
+            E._floorTexData = null;
+            // Force reset běhu
+            E.running = true;
+            E.inCombat = false;
+            E.lastTick = Date.now();
+            E._statTickCounter = 0;
+            console.log('🎮 reopen3DExploration: cleanup done, re-rendering modal');
             
             // Re-render modal (stejný HTML jako show3DExploration, ale s existujícím stavem E)
             const html = `
@@ -52701,7 +52787,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             setTimeout(() => {
                 E.canvas = document.getElementById('explore3DCanvas');
                 E.miniMap = document.getElementById('exploreMiniMap');
-                if (!E.canvas) return;
+                if (!E.canvas || !E.miniMap) {
+                    console.warn('⚠️ reopen3D: canvas not found, retry in 200ms');
+                    setTimeout(() => reopen3DExploration(), 200);
+                    return;
+                }
                 E.ctx = E.canvas.getContext('2d');
                 E.miniMapCtx = E.miniMap.getContext('2d');
                 E.lastTick = Date.now();
@@ -52725,14 +52815,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     btn.addEventListener('mouseleave', endHandler);
                 });
                 
+                // Force jeden hard render aby nebyla černá obrazovka před prvním tick
+                try { 
+                    update3DExploration(); 
+                    render3DExploration();
+                } catch(e) { console.error('First render failed:', e); }
+                
                 E.tickInterval = setInterval(() => {
                     if (!E.running) return;
-                    update3DExploration();
-                    render3DExploration();
-                    if (++E._statTickCounter > 60) { E._statTickCounter = 0; updateExploreStatus(); }
+                    try {
+                        update3DExploration();
+                        render3DExploration();
+                        if (++E._statTickCounter > 60) { E._statTickCounter = 0; updateExploreStatus(); }
+                    } catch(e) {
+                        console.error('3D tick error:', e);
+                    }
                 }, 33);
                 E._statTickCounter = 0;
-            }, 100);
+                console.log('🎮 reopen3D: tick interval started');
+            }, 150);
         }
         window.reopen3DExploration = reopen3DExploration;
         
@@ -102674,6 +102775,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Migrace starých uložených her na novou verzi
         function migrateState() {
+            // 🆕 [v6.4.0] Cleanup expired ground items (>7 dní staré)
+            // Loadne se při každém startu hry + po cloud restore
+            try {
+                if (typeof cleanExpiredGroundLoot === 'function') {
+                    cleanExpiredGroundLoot();
+                }
+            } catch(e) { console.warn('cleanExpiredGroundLoot fail:', e); }
+            
             // 🆕 [v6.3.1] FreeRiderCz bug fix: obnov ztracené Pre-War zbraně z baseItems
             // Bug: když měl hráč přetížený inv při craftu, zbraň šla do baseItems (sklad osady)
             try {
@@ -177500,6 +177609,17 @@ async function checkDailyStats() {
 // Spusť při startu + kontrola každou hodinu
 setTimeout(checkDailyStats, 15000);
 setInterval(checkDailyStats, 3600000);
+
+// 🆕 [v6.4.0] Periodicky čisti expirované itemy na zemi (každých 30 min)
+setInterval(() => {
+    if (typeof cleanExpiredGroundLoot === 'function') {
+        const removed = cleanExpiredGroundLoot();
+        if (removed > 0 && typeof saveCloudSave === 'function') {
+            // Save cloud po cleanup aby se Firebase také vyčistil
+            try { saveCloudSave().catch(() => {}); } catch(_) {}
+        }
+    }
+}, 30 * 60 * 1000);
 
 </script>
     <script>
