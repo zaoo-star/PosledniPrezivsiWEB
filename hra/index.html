@@ -42086,6 +42086,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         })();
         
         function closeModal() {
+            // 🆕 [v6.4.0] Settler detail close callback (resume 3D)
+            if (typeof window._afterSettlerDetailClose === 'function') {
+                try { window._afterSettlerDetailClose(); } catch(e) {}
+            }
+            
             // Reset chat typewriter
             window._chatTyped = false;
             if (window._typewriterTimers) {
@@ -52204,11 +52209,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Strop podle tématu
             // 🆕 [v6.4.0] Sky texture (panorama, animuje se s úhlem hráče)
             // 🆕 Náhodně střídá varianty (sky_postapo / sky_postapo2) - vybráno při otevření 3D
-            if (E._skyVariant === undefined) {
+            // 🆕 [BUG FIX] Pokud textury ještě nejsou nahrané, retry každý frame
+            if (!E._skyVariant) {
                 const variants = [];
                 if (explore3DImages.sky_postapoLoaded) variants.push(explore3DImages.sky_postapo);
                 if (explore3DImages.sky_postapo2Loaded) variants.push(explore3DImages.sky_postapo2);
-                E._skyVariant = variants.length > 0 ? variants[Math.floor(Math.random() * variants.length)] : null;
+                if (variants.length > 0) {
+                    E._skyVariant = variants[Math.floor(Math.random() * variants.length)];
+                    E._skyExtended = null; // reset cache po výběru
+                }
             }
             const skyTex = E._skyVariant;
             if (skyTex) {
@@ -52241,9 +52250,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ctx.fillRect(0, 0, W, H/2);
                 }
             } else {
+                // 🆕 [v6.4.0] Fallback gradient - lepší než černý theme.ceiling
                 const ceilingGrad = ctx.createLinearGradient(0, 0, 0, H/2);
-                ceilingGrad.addColorStop(0, theme.ceiling.top);
-                ceilingGrad.addColorStop(1, theme.ceiling.bottom);
+                if (E.mode === 'settlement') {
+                    // Pseudo-západ slunce
+                    ceilingGrad.addColorStop(0, '#1a0f08');
+                    ceilingGrad.addColorStop(0.6, '#3a2818');
+                    ceilingGrad.addColorStop(1, '#8a5530');
+                } else {
+                    ceilingGrad.addColorStop(0, theme.ceiling.top);
+                    ceilingGrad.addColorStop(1, theme.ceiling.bottom);
+                }
                 ctx.fillStyle = ceilingGrad;
                 ctx.fillRect(0, 0, W, H/2);
             }
@@ -53314,18 +53331,136 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             settlerPositions.sort(() => Math.random() - 0.5);
             
-            // 🆕 [v6.4.0] Mapování typu osadníka na pracoviště + aktivita
+            // 🆕 [v6.4.0] Mapování typu osadníka na pracoviště + Fallout-style hlášky
             const settlerWorkMap = {
-                'farmer':    { buildings: ['farmland', 'garden'],          activity: '🌾', phrases: ['Hlína je dnes vlhká.', 'Bude úroda.', 'Plevel zase roste...', 'Práce, práce...'] },
-                'blacksmith':{ buildings: ['workshop', 'forge'],           activity: '🔨', phrases: ['*klap klap*', 'Tahle ocel je vzácná.', 'Potřebuju víc šrotu.', 'Ohnu i Pre-War.'] },
-                'medic_s':   { buildings: ['infirmary', 'medical'],        activity: '💊', phrases: ['Někdo zraněný?', 'Stimpaky docházejí.', 'Vrátí se ti to.', 'Žij, přeživší.'] },
-                'cook':      { buildings: ['kitchen', 'firepit'],          activity: '🍳', phrases: ['Dnes mám guláš.', 'Voní to dobře.', 'Ochutnej!', 'Hlad je nejlepší kuchař.'] },
-                'guard':     { buildings: ['wall', 'tower', 'barracks'],   activity: '🛡️', phrases: ['Klid v okolí.', 'Hlídám.', 'Někdo jde!', '*pozorně sleduje*'] },
-                'hunter':    { buildings: ['farmland'],                    activity: '🏹', phrases: ['Stopa raidera.', 'Mám pro tebe maso.', 'V pustině je zvěř.', 'Tichý jako stín.'] },
-                'merchant':  { buildings: ['market'],                      activity: '💰', phrases: ['Kup si něco!', 'Sleva 50%!', 'Mám novinky.', 'Šrot za zlato!'] },
-                'scout':     { buildings: ['tower'],                       activity: '🔭', phrases: ['Viděl jsem stopu.', 'Vrátím se za 2 dny.', 'Mapy jsou nepřesné.', 'Ticho.'] },
-                'mechanic':  { buildings: ['workshop'],                    activity: '⚙️', phrases: ['Tohle opravím.', 'Šroubek...', '*šroubuje*', 'Brzy bude funkční.'] },
-                'priest':    { buildings: [],                              activity: '🙏', phrases: ['Modli se za nás.', 'Pán pustinu...', 'Žij v míru.', 'Křest přeživším.'] },
+                'farmer':       { buildings: ['farmland', 'garden'], activity: '🌾', phrases: [
+                    'Pre-War mrkev by tu nevyrostla.',
+                    'Půda dýchá radiaci. Plodiny taky.',
+                    'Reklama říkala "plodiny v každé domácnosti". Lhala.',
+                    'Vault by se mi hodil. S klimatizací.',
+                    'Sklízím pomalu, jinak mi urvou ruku.',
+                    'Tahle rajčata svítí v noci. Dobré znamení? Ne.',
+                ]},
+                'blacksmith':   { buildings: ['workshop', 'forge'], activity: '🔨', phrases: [
+                    '*klap klap* ...slyšíš to? To je naděje.',
+                    'Pre-War ocel není jako tahle žvejka.',
+                    'Z tvých střepů ti udělám nůž. Ostrý.',
+                    'RobCo, Vault-Tec, GarbageCo - všechno stejný šrot.',
+                    'Bez kovu jsme zvířata. Tak kovám.',
+                    'Kovaný 200 let starý gauč. Vážně.',
+                ]},
+                'medic_s':      { buildings: ['infirmary', 'medical'], activity: '💊', phrases: [
+                    'Stimpak. Levné chemikálie, drahá cena.',
+                    'Měl jsi štěstí. Kulka jen tříštila kost.',
+                    'Mám RadAway. Stojí ti to víc než stehy.',
+                    'Nejlepší doktor v okruhu 100 km. Taky jediný.',
+                    'Když umřeš, vrátím ti to v krvi.',
+                    'Co je dnes nemoc? Včera to bylo včely.',
+                ]},
+                'cook':         { buildings: ['kitchen', 'firepit'], activity: '🍳', phrases: [
+                    'Dnes je gulášová polévka z krys. Vařím ji 6 hodin.',
+                    'Nuka-Cola receptura ztracena. Improvizuju.',
+                    'Předválečný plech, postválečný vývar.',
+                    'Když nezmíníš co je v misce, chutná to líp.',
+                    'Mám koření. Sůl a víc soli.',
+                    'Maso z radroach je překvapivě jemné.',
+                ]},
+                'guard':        { buildings: ['wall', 'tower', 'barracks'], activity: '🛡️', phrases: [
+                    'Klid. Strašně podezřelý klid.',
+                    'Pre-War armáda mě naučila: nikdo ti nepomůže.',
+                    'Vidíš to tam? Já taky ne. Ale tuším to.',
+                    'Brnění tě nezachrání. Ale aspoň vypadáš důstojně.',
+                    'Strážím. Když přestanu, jsme mrtví.',
+                    '*pozorně sleduje horizont*',
+                ]},
+                'hunter':       { buildings: ['farmland'], activity: '🏹', phrases: [
+                    'Krysy chutnají líp než radroaches. Trochu.',
+                    'Stopuju to tři dny. Zítra to zabiju.',
+                    'Vault-Tec sliboval bezpečí. Já slibuju maso.',
+                    'Lukem nezpůsobíš hluk. Hlučí jen tělo padající.',
+                    'Civilizace skončila. Lov nikdy.',
+                    'Mutace nejsou problém. Jsou to ingredience.',
+                ]},
+                'merchant':     { buildings: ['market'], activity: '💰', phrases: [
+                    '200 caps a je to tvoje. Pre-War ceny nečekej.',
+                    'Něco kupuješ, nebo se jen díváš?',
+                    'Vault-Tec voucher? Platí v Pre-War zlato.',
+                    'Mám zlato, drogy a špatné zprávy. Co potřebuješ?',
+                    'Tvoje ledviny by uživily moji rodinu.',
+                    'Sleva 50%! ...na obyčejné neštěstí.',
+                ]},
+                'trader_s':     { buildings: ['market'], activity: '💰', phrases: [
+                    'Caps mluví. Slova jen ucpávají vzduch.',
+                    'Pre-War ekonomika měla měnu - důvěru. Teď je to caps.',
+                    'Půjčuju s 50% úrokem. Měkce.',
+                    'Investice je risk. Smrt je jistota.',
+                    'Tvůj batoh váží podezřele. Co kdybys ho ulehčil?',
+                    'Obchod není válka. Je to válka pomalá.',
+                ]},
+                'scout':        { buildings: ['tower'], activity: '🔭', phrases: [
+                    '200 km od osady jsem viděl něco co tu nepatří.',
+                    'Mapy Pre-War jsou zbytečné. Krajina se hýbe.',
+                    'Tichý jako stín. Šeptám jak vítr v komínech.',
+                    'Vault-Tec radary lhaly. Já ne.',
+                    'Kde jsem byl, neexistuje. Až tam zase budu.',
+                    'Ráno svítí. Večer hoří. Nic mezi tím.',
+                ]},
+                'mechanic':     { buildings: ['workshop'], activity: '⚙️', phrases: [
+                    'Pre-War robot leží 200 let. Vstává po šroubku.',
+                    '*šroubuje*',
+                    'Někdy oprava trvá rok. Někdy jen vrznutí.',
+                    'Když to nefunguje, prácni do toho. Funguje.',
+                    'Vault-Tec dělal kvalitu. Někdy.',
+                    'RobCo. Měli vlastní svaté písmo. Manuál.',
+                ]},
+                'builder':      { buildings: ['workshop'], activity: '🏗️', phrases: [
+                    'Pre-War cement nevíme jak vyrobit. Improvizuju.',
+                    'Stavím. Stavím a stavím. Pak to spadne.',
+                    'Stěna co stojí v pustině je zázrak.',
+                    'Beton bez armatury... lepší se modlit.',
+                    'Někdo to musí postavit. To jsem já.',
+                    'Plocha je rovná. Stejně to bude křivé.',
+                ]},
+                'lumberjack':   { buildings: ['workshop'], activity: '🪓', phrases: [
+                    'Mrtvý strom je nejlepší přítel. Neutíká.',
+                    'Pre-War lesy zmizely. Tohle je kostlivčí porost.',
+                    'Sekyra a stromy - jediná čistá láska.',
+                    'Když pokácíš poslední strom, co budeš jíst?',
+                    'Dřevo z post-war stromů hoří... podivně.',
+                    'Stromy nekřičí. Aspoň ne nahlas.',
+                ]},
+                'water_carrier':{ buildings: ['well'], activity: '💧', phrases: [
+                    'Tahle voda zabije rad-leech v žaludku. Trochu.',
+                    'Po cestě s vědrem cítíš každý kámen.',
+                    'Voda = život. Život = peníze. Logická rovnice.',
+                    'Nepij dříve než to varím. Nebo si přej dlouhou cestu na záchod.',
+                    'Vault-Tec sliboval čistou vodu. Já dělám "míň radioaktivní".',
+                    'Studna mluví. Šeptá v noci. Nepříjemně.',
+                ]},
+                'scavenger_s':  { buildings: ['storage'], activity: '♻️', phrases: [
+                    'Lidi vyhazujou poklady. Jsem jejich osud.',
+                    'Pre-War záchod je poklad. Plný měděných trubek.',
+                    'Mám čich na šrot. Někdy i na kosti.',
+                    'Když to neuvidíš ty, sebere to někdo jiný.',
+                    'Civilizace byla bohatá. Já jsem chudší ale chytřejší.',
+                    'Vault-Tec krabice = jackpot. Většinou pasti.',
+                ]},
+                'alchemist':    { buildings: ['workshop'], activity: '⚗️', phrases: [
+                    'Tahle chemikálie ti urve kůži. Nebo jen zub.',
+                    'Mixuju jed s lékem. Někdy zaměním.',
+                    'Pre-War lab notebook... žádný recept neuvedl.',
+                    'V pustině je všechno chemie. I láska.',
+                    'Bez gas masky raději nedýchej.',
+                    'Pře-Mass effect chemikálie. Nevíš co dělají.',
+                ]},
+                'priest':       { buildings: [], activity: '🙏', phrases: [
+                    'Modli se za nás. Pán pustinu...',
+                    'Žij v míru. Nebo aspoň tiše umři.',
+                    'Bůh slíbil ráj. Vault-Tec slíbil bunkr.',
+                    'Křtím ti přeživším. Voda chudá na radiaci.',
+                    'Pre-War kostely jsou nejlepší úkryty. Bůh to chtěl.',
+                    'Smrt je jen převod do jiné databáze.',
+                ]},
             };
             
             settlers.forEach((s, i) => {
@@ -53511,42 +53646,34 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.exit3DSettlement = exit3DSettlement;
         
-        // 🆕 [v6.4.0] Settler info overlay z 3D osady (nezavírá 3D modal, jen overlay)
+        // 🆕 [v6.4.0] Otevři plný detail osadníka z 3D osady
         function showSettlerInfoFrom3D(settler) {
             if (!settler) return;
-            const wrapper = document.getElementById('explore3DWrapper');
-            if (!wrapper) return;
+            // Najdi index osadníka v state.settlement.settlers
+            const idx = (state.settlement?.settlers || []).findIndex(s => 
+                s.id === settler.id || (s.name === settler.name && s.type === settler.type)
+            );
+            if (idx < 0) return;
             
-            // Odebrat staré overlay
-            const oldOverlay = document.getElementById('settler3DOverlay');
-            if (oldOverlay) oldOverlay.remove();
+            // Pauza 3D (showSettlerDetail otevře showModal - přepíše 3D modal!)
+            const E = window._explore3D;
+            if (E) E.running = false;
             
-            const settlerName = settler.name || 'Osadník';
-            const settlerType = settler.type || 'osadník';
-            const morale = settler.morale ?? 50;
-            const moraleEmoji = morale > 70 ? '😊' : morale > 40 ? '😐' : '😞';
-            const moraleColor = morale > 70 ? '#4caf50' : morale > 40 ? '#ff9800' : '#f44336';
+            // Po zavření plného detail osadníka znovu otevřít 3D osadu
+            window._afterSettlerDetailClose = () => {
+                window._afterSettlerDetailClose = null;
+                // Re-otevři 3D osadu (zachová si layout3D z state)
+                setTimeout(() => {
+                    if (typeof show3DSettlement === 'function') show3DSettlement();
+                }, 100);
+            };
             
-            const overlay = document.createElement('div');
-            overlay.id = 'settler3DOverlay';
-            overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:240px;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
-            overlay.innerHTML = `
-                <div style="text-align:center;margin-bottom:0.6rem;">
-                    <div style="font-size:3rem;">${settler.icon || '🧑'}</div>
-                    <div style="color:#fff;font-weight:bold;font-size:1rem;margin-top:0.3rem;">${settlerName}</div>
-                    <div style="color:#aaa;font-size:0.8rem;">${settlerType}</div>
-                </div>
-                <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.6rem;font-size:0.75rem;">
-                    <div style="color:#aaa;line-height:1.7;">
-                        ${moraleEmoji} Nálada: <b style="color:${moraleColor};">${morale}/100</b><br>
-                        ${settler.skill ? `⚒️ Skill: <b style="color:#ffd700;">${settler.skill}</b><br>` : ''}
-                        ${settler.assignment ? `📋 Pracuje: <b>${settler.assignment}</b>` : '💤 <b>Volný</b>'}
-                    </div>
-                </div>
-                <button onclick="resume3DSettlement()" style="width:100%;margin-top:0.6rem;background:linear-gradient(135deg,#1a3d12 0%,#2d5c1f 50%,#1a3d12 100%);border:2px solid #4a8030;border-radius:6px;padding:0.6rem;color:#a8d893;font-weight:bold;text-shadow:1px 1px 2px #000;font-family:monospace;letter-spacing:1px;cursor:pointer;">✓ POKRAČOVAT</button>
-            `;
-            wrapper.style.position = 'relative';
-            wrapper.appendChild(overlay);
+            // Otevři plný detail
+            if (typeof showSettlerDetail === 'function') {
+                showSettlerDetail(idx);
+            } else {
+                window._afterSettlerDetailClose = null;
+            }
         }
         window.showSettlerInfoFrom3D = showSettlerInfoFrom3D;
         
@@ -53561,7 +53688,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const backX = E.player.x - Math.cos(E.player.angle) * 0.8;
             const backY = E.player.y - Math.sin(E.player.angle) * 0.8;
             const btx = Math.floor(backX), bty = Math.floor(backY);
-            if (E.map[bty] && E.map[bty][btx] !== 1) {
+            // 🆕 [v6.4.0 SUPER OSADA] Building tiles (4) jsou taky solidní
+            if (E.map[bty] && E.map[bty][btx] !== 1 && E.map[bty][btx] !== 4) {
                 E.player.x = backX;
                 E.player.y = backY;
             }
