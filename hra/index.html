@@ -8118,6 +8118,27 @@
             // 'wolf': 'img/wolf.png',
         };
         
+        // 🆕 [v6.4.0] Mapping vlastních PNG ikon pro budovy (3D osada + UI)
+        // Pokud klíč existuje a soubor je v img/, použije se místo emoji
+        // Postupně přidávej jak budou nové ikony hotové
+        const BUILDING_CUSTOM_ICONS = {
+            'bed': 'img/sleeping_bag.png', // Jediná aktuálně existující
+            // Přidej postupně:
+            // 'firepit': 'img/firepit.png',
+            // 'garden': 'img/garden.png',
+            // 'water': 'img/water_collector.png',
+            // 'workshop': 'img/workshop.png',
+            // 'storage': 'img/storage.png',
+            // 'well': 'img/well.png',
+            // 'farmland': 'img/farmland.png',
+            // 'infirmary': 'img/infirmary.png',
+            // 'kitchen': 'img/kitchen.png',
+            // 'wall': 'img/wall.png',
+            // 'tower': 'img/tower.png',
+            // 'market': 'img/market.png',
+            // 'barracks': 'img/barracks.png',
+        };
+        
         // Helper: vrátí <img> nebo emoji pro nepřítele
         function enemyIcon(enemyId, fallbackEmoji, size = '4rem') {
             const imgPath = ENEMY_CUSTOM_ICONS[enemyId];
@@ -22160,9 +22181,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 isOff ? '🔇 Bubliny vypnuty' : '💬 Bubliny zapnuty',
                 isOff ? 'Zprávy v boji nebudou zobrazovat bubliny' : 'Zprávy v boji se budou zobrazovat'
             );
-            // 🆕 [v6.3.1] V boji jen re-render combat UI (rychlejší + nepřetiskne hex)
-            if (window.combatState && typeof renderCombat === 'function') {
-                renderCombat();
+            // 🆕 [v6.4.0 BUG FIX] V boji volej renderHeroesCombatUI (renderCombat neexistuje!)
+            // Hráč hlásil: po vypnutí bublin v boji s bossem boj se bugnul a vyhodil ho ven s 0 zásahy
+            // Příčina: renderCombat() je undefined → padalo do renderFull() → zavřelo boss UI → watchdog cleanup
+            if (window.combatState) {
+                if (typeof renderHeroesCombatUI === 'function') {
+                    try { renderHeroesCombatUI(); } catch(e) { console.warn('renderHeroesCombatUI failed:', e); }
+                }
+                // NIKDY nevolej renderFull() v boji - může zavřít combat UI
             } else {
                 renderFull();
             }
@@ -41104,6 +41130,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             </div>
                             <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span style="background: #1a2a1a; padding: 0.15rem 0.5rem; border-radius: 3px; border: 1px solid #3a4a3a; color: #8bc34a; font-size: 0.75rem; font-weight: bold;">LVL ${state.settlement.level}</span>
+                                <!-- 🆕 [v6.4.0] 3D procházka osadou -->
+                                <button onclick="show3DSettlement()" title="Procházka osadou ve 3D" style="background: linear-gradient(135deg,#3d2817,#5c3a1f); border: 1px solid #7a5430; padding: 0.2rem 0.5rem; border-radius: 4px; color: #e8b863; font-size: 0.75rem; font-weight: bold; cursor: pointer; font-family: monospace;">🎮 3D</button>
                             </div>
                         </div>
                         <div style="margin-top: 0.5rem;">
@@ -51458,12 +51486,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function preloadExplore3DImages() {
             const list = {
                 lootBox: 'img/loot_box.png',
-                sky_postapo: 'img/sky_postapo.jpg',  // 🆕 JPG kvůli menší velikosti
+                sky_postapo: 'img/sky_postapo.jpg',   // 🆕 Sky varianta 1 (oranžovo-červené mraky)
+                sky_postapo2: 'img/sky_postapo2.jpg', // 🆕 Sky varianta 2 (tmavé bouřkové mraky)
+                wall_fence: 'img/wall_fence.jpg',    // 🆕 [v6.4.0 SUPER OSADA] Hradby okolo osady
+                floor_settlement: 'img/floor_settlement.jpg', // 🆕 [v6.4.0 SUPER OSADA] Popraskaná hlína v osadě
             };
             // Enemy custom ikon
             if (typeof ENEMY_CUSTOM_ICONS !== 'undefined') {
                 for (const [enemyId, path] of Object.entries(ENEMY_CUSTOM_ICONS)) {
                     list['enemy_' + enemyId] = path;
+                }
+            }
+            // 🆕 Building custom ikon (pro 3D osadu)
+            if (typeof BUILDING_CUSTOM_ICONS !== 'undefined') {
+                for (const [bid, path] of Object.entries(BUILDING_CUSTOM_ICONS)) {
+                    list['building_' + bid] = path;
+                }
+            }
+            // 🆕 [v6.4.0 SUPER OSADA] Settler custom ikon - PNG obrázky osadníků
+            if (typeof SETTLER_CUSTOM_ICONS !== 'undefined') {
+                for (const [stype, path] of Object.entries(SETTLER_CUSTOM_ICONS)) {
+                    list['settler_' + stype] = path;
                 }
             }
             // 🆕 Wall textury
@@ -51902,19 +51945,42 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (back) { dx -= Math.cos(E.player.angle) * moveSpeed * dt; dy -= Math.sin(E.player.angle) * moveSpeed * dt; }
             
             // Collision detection (s buffer 0.25 aby player nezasahoval do zdi)
+            // 🆕 [v6.4.0 SUPER OSADA] Building tiles (4) jsou solidní jako zdi
             const buffer = 0.25;
             const newX = E.player.x + dx;
             const newY = E.player.y + dy;
+            const isSolid = (cell) => cell === 1 || cell === 4;
             
             // Test X
             const txN = Math.floor(newX + (dx > 0 ? buffer : -buffer));
             const tyP = Math.floor(E.player.y);
-            if (E.map[tyP] && E.map[tyP][txN] !== 1) E.player.x = newX;
+            if (E.map[tyP] && !isSolid(E.map[tyP][txN])) {
+                E.player.x = newX;
+            } else if (E.map[tyP] && E.map[tyP][txN] === 4 && E.mode === 'settlement') {
+                // 🆕 Hráč narazil na budovu - otevři info overlay
+                const bKey = txN + ',' + tyP;
+                const bInfo = E.buildingMap?.[bKey];
+                if (bInfo && (!bInfo._lastInfoTime || Date.now() - bInfo._lastInfoTime > 3000)) {
+                    bInfo._lastInfoTime = Date.now();
+                    E.running = false;
+                    showBuildingInfoFrom3D({ buildingId: bInfo.id, name: bInfo.name, icon: bInfo.icon });
+                }
+            }
             
             // Test Y
             const txP = Math.floor(E.player.x);
             const tyN = Math.floor(newY + (dy > 0 ? buffer : -buffer));
-            if (E.map[tyN] && E.map[tyN][txP] !== 1) E.player.y = newY;
+            if (E.map[tyN] && !isSolid(E.map[tyN][txP])) {
+                E.player.y = newY;
+            } else if (E.map[tyN] && E.map[tyN][txP] === 4 && E.mode === 'settlement') {
+                const bKey = txP + ',' + tyN;
+                const bInfo = E.buildingMap?.[bKey];
+                if (bInfo && (!bInfo._lastInfoTime || Date.now() - bInfo._lastInfoTime > 3000)) {
+                    bInfo._lastInfoTime = Date.now();
+                    E.running = false;
+                    showBuildingInfoFrom3D({ buildingId: bInfo.id, name: bInfo.name, icon: bInfo.icon });
+                }
+            }
             
             // Kontrola loot/exit na aktuální buňce
             const tx = Math.floor(E.player.x);
@@ -51939,6 +52005,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const ldx = li.x - E.player.x;
                     const ldy = li.y - E.player.y;
                     if (Math.sqrt(ldx*ldx + ldy*ldy) < 0.55) {
+                        // 🆕 [v6.4.0] Settlement mode - budovy otevřou info, nesbírají se
+                        if (E.mode === 'settlement' && li.isBuilding) {
+                            if (!li._lastInfoTime || Date.now() - li._lastInfoTime > 3000) {
+                                li._lastInfoTime = Date.now();
+                                E.running = false;
+                                showBuildingInfoFrom3D(li);
+                            }
+                            continue;
+                        }
                         li.collected = true;
                         E.lootRemaining--;
                         E.loot.push({});
@@ -51989,6 +52064,59 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const dyP = E.player.y - enemy.y;
                 const distToPlayer = Math.sqrt(dxP*dxP + dyP*dyP);
                 
+                // 🆕 Settlement mode - osadníci nepronásledují, mají vlastní AI
+                if (E.mode === 'settlement' && enemy.isSettler) {
+                    // Občasná bublina s phrase
+                    if (!enemy.bubble && Math.random() < 0.003 && distToPlayer < 8) {
+                        const phrases = enemy.phrases || ['...'];
+                        enemy.bubble = phrases[Math.floor(Math.random() * phrases.length)];
+                        enemy.bubbleUntil = Date.now() + 3500;
+                    }
+                    // Vyčisti vyprchanou bublinu
+                    if (enemy.bubble && Date.now() > enemy.bubbleUntil) enemy.bubble = null;
+                    
+                    // Pomalý pohyb každé 3-4 sekundy
+                    if (Date.now() - enemy.lastMoveTime < 3000 + Math.random() * 1500) continue;
+                    
+                    const speed = 0.3;
+                    let mx = 0, my = 0;
+                    
+                    if (enemy.workTarget) {
+                        // Drž se u pracoviště - max 2 pole od něj
+                        const wdx = enemy.x - enemy.workTarget.x;
+                        const wdy = enemy.y - enemy.workTarget.y;
+                        const distFromWork = Math.sqrt(wdx*wdx + wdy*wdy);
+                        
+                        if (distFromWork > 2) {
+                            // Vrať se zpátky k pracovišti
+                            mx = -(wdx / distFromWork) * speed * 1.5;
+                            my = -(wdy / distFromWork) * speed * 1.5;
+                        } else {
+                            // Random wander v rámci radius (pracovní pohyb)
+                            const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+                            const dir = dirs[Math.floor(Math.random() * 4)];
+                            mx = dir[0] * speed;
+                            my = dir[1] * speed;
+                        }
+                    } else {
+                        // Bez pracoviště - random
+                        const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+                        const dir = dirs[Math.floor(Math.random() * 4)];
+                        mx = dir[0] * speed;
+                        my = dir[1] * speed;
+                    }
+                    
+                    const tx2 = Math.floor(enemy.x + mx);
+                    const ty2 = Math.floor(enemy.y + my);
+                    if (E.map[ty2] && E.map[ty2][tx2] !== 1 && E.map[ty2][tx2] !== 4) {
+                        enemy.x += mx;
+                        enemy.y += my;
+                    }
+                    enemy.lastMoveTime = Date.now();
+                    continue;
+                }
+                
+                // EXPLORE MODE - normal patrol/chase logic
                 // CHASE mode - pokud spotted a stále vidí hráče
                 if (enemy.spotted && distToPlayer < 8 && hasLineOfSight(enemy.x, enemy.y, E.player.x, E.player.y, E.map)) {
                     enemy.chasing = true;
@@ -51996,34 +52124,31 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     enemy.chasing = false;
                 }
                 
-                const moveDelay = enemy.chasing ? 600 : 2500; // chase = rychlejší
+                const moveDelay = enemy.chasing ? 600 : 2500;
                 if (Date.now() - enemy.lastMoveTime < moveDelay) continue;
                 
                 const speed = enemy.chasing ? 0.6 : 0.4;
                 let mx = 0, my = 0;
                 
                 if (enemy.chasing) {
-                    // Chase player - jdi směrem k hráči
                     const len = Math.sqrt(dxP*dxP + dyP*dyP) || 1;
                     mx = (dxP / len) * speed;
                     my = (dyP / len) * speed;
                 } else {
-                    // Random patrol - vyber random sousední tile (4 směry)
                     const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
                     const dir = dirs[Math.floor(Math.random() * 4)];
                     mx = dir[0] * speed;
                     my = dir[1] * speed;
                 }
                 
-                // Test pohyb (collision s zdí)
                 const tx2 = Math.floor(enemy.x + mx);
                 const ty2 = Math.floor(enemy.y + my);
-                if (E.map[ty2] && E.map[ty2][tx2] !== 1) {
+                if (E.map[ty2] && E.map[ty2][tx2] !== 1 && E.map[ty2][tx2] !== 4) {
                     enemy.x += mx;
                     enemy.y += my;
                     enemy.lastMoveTime = Date.now();
                 } else {
-                    enemy.lastMoveTime = Date.now() + (enemy.chasing ? 200 : 800); // zaseknul se, krátký delay
+                    enemy.lastMoveTime = Date.now() + (enemy.chasing ? 200 : 800);
                 }
             }
             
@@ -52036,15 +52161,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Detekce pohledem (víc než 5 buněk od hráče + spotted log)
                 // 🆕 [v6.4.0] Line-of-sight check - hráč nesmí "vidět" enemy přes zeď
-                if (!enemy.spotted && dist < 5 && hasLineOfSight(E.player.x, E.player.y, enemy.x, enemy.y, E.map)) {
+                // 🆕 V settlement mode přeskoč (osadníci nejsou nepřátelé)
+                if (!enemy.spotted && dist < 5 && !enemy.isSettler && hasLineOfSight(E.player.x, E.player.y, enemy.x, enemy.y, E.map)) {
                     enemy.spotted = true;
-                    // 🆕 [v6.4.0] Red flash alert
+                    // 🆕 [v6.4.0] Red flash alert (jen u skutečných enemies)
                     E._alertFlashUntil = Date.now() + 600;
                     add3DLog(`⚠️ Vidíš ${enemy.icon} ${enemy.name}!`);
                 }
                 
                 // Collision → boj (větší threshold pro rychlejší detekci)
                 if (dist < 0.7 && !E.inCombat && !E._pendingEnemy) {
+                    // 🆕 [v6.4.0] Settlement mode - místo combat otevři settler dialog
+                    if (E.mode === 'settlement' && enemy.isSettler) {
+                        if (!enemy._lastDialogTime || Date.now() - enemy._lastDialogTime > 3000) {
+                            enemy._lastDialogTime = Date.now();
+                            add3DLog(`💬 ${enemy.icon} ${enemy.name}: "Ahoj, přeživší!"`);
+                            // Otevři settler info modal (pause hry)
+                            E.running = false;
+                            showSettlerInfoFrom3D(enemy.settlerData);
+                        }
+                        return;
+                    }
                     E.inCombat = true;
                     E.running = false;
                     add3DLog(`⚔️ ${enemy.icon} ${enemy.name} po tobě skočil!`);
@@ -52066,7 +52203,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Strop podle tématu
             // 🆕 [v6.4.0] Sky texture (panorama, animuje se s úhlem hráče)
-            const skyTex = explore3DImages.sky_postapoLoaded ? explore3DImages.sky_postapo : null;
+            // 🆕 Náhodně střídá varianty (sky_postapo / sky_postapo2) - vybráno při otevření 3D
+            if (E._skyVariant === undefined) {
+                const variants = [];
+                if (explore3DImages.sky_postapoLoaded) variants.push(explore3DImages.sky_postapo);
+                if (explore3DImages.sky_postapo2Loaded) variants.push(explore3DImages.sky_postapo2);
+                E._skyVariant = variants.length > 0 ? variants[Math.floor(Math.random() * variants.length)] : null;
+            }
+            const skyTex = E._skyVariant;
             if (skyTex) {
                 // Vytvořit double-buffer sky canvas (skyTex × 2 vedle sebe) - eliminuje šev
                 if (!E._skyExtended) {
@@ -52105,8 +52249,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // 🆕 [v6.4.0] Texturovaná podlaha - floor casting
-            // Pokud máme floor texturu, použij raycast per-pixel sampling
-            const floorTex = explore3DImages.floor_rubbleLoaded ? explore3DImages.floor_rubble : null;
+            // 🆕 [SUPER OSADA] V settlement módu použij popraskanou hlínu místo rubble
+            let floorTex = null;
+            if (E.mode === 'settlement' && explore3DImages.floor_settlementLoaded) {
+                floorTex = explore3DImages.floor_settlement;
+            } else if (explore3DImages.floor_rubbleLoaded) {
+                floorTex = explore3DImages.floor_rubble;
+            }
             if (floorTex) {
                 // Vytvoř offscreen canvas pro pixel manipulation (rychlejší než per-pixel ctx.drawImage)
                 if (!E._floorCanvas) {
@@ -52174,11 +52323,26 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             const ty = (Math.floor(floorY * tH) % tH + tH) % tH;
                             const idx = (ty * tW + tx) * 4;
                             
+                            // 🆕 [v6.4.0 SUPER OSADA] Detect path tile (5) - světlejší/kamenná
+                            const wfx = Math.floor(floorX);
+                            const wfy = Math.floor(floorY);
+                            const isPath = E.map[wfy] && E.map[wfy][wfx] === 5;
+                            // Path = světlejší šedý odstín (jakoby kamenná dlažba)
+                            const pathBrightness = isPath ? 1.25 : 1.0;
+                            // Path má desaturovaný tón aby vypadal jak kámen ne jako rez
+                            const pathDesat = isPath ? 0.85 : 1.0;
+                            
                             const dstIdx = (y * W + x) * 4;
-                            // Aplikuj mlhu - fade do tmavé
-                            floorData[dstIdx] = (texData[idx] * fogF) | 0;
-                            floorData[dstIdx+1] = (texData[idx+1] * fogF) | 0;
-                            floorData[dstIdx+2] = (texData[idx+2] * fogF) | 0;
+                            // Aplikuj mlhu + path overlay
+                            const baseR = texData[idx], baseG = texData[idx+1], baseB = texData[idx+2];
+                            const avg = isPath ? (baseR + baseG + baseB) / 3 : 0;
+                            const finalR = isPath ? (baseR * pathDesat + avg * (1 - pathDesat)) * pathBrightness : baseR;
+                            const finalG = isPath ? (baseG * pathDesat + avg * (1 - pathDesat)) * pathBrightness : baseG;
+                            const finalB = isPath ? (baseB * pathDesat + avg * (1 - pathDesat)) * pathBrightness : baseB;
+                            
+                            floorData[dstIdx] = Math.min(255, finalR * fogF) | 0;
+                            floorData[dstIdx+1] = Math.min(255, finalG * fogF) | 0;
+                            floorData[dstIdx+2] = Math.min(255, finalB * fogF) | 0;
                             floorData[dstIdx+3] = 255;
                             // Duplikuj pro 2. pixel (perf)
                             if (x + 1 < W) {
@@ -52255,7 +52419,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         dist = maxDist;
                     } else {
                         const cell = E.map[ry][rx];
-                        if (cell === 1 || cell === 3) {
+                        if (cell === 1 || cell === 3 || cell === 4) {
                             hitWall = true;
                             hitType = cell;
                             hitTileX = rx;
@@ -52313,10 +52477,71 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
                         ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
                     }
+                } else if (hitType === 4 && E.buildingMap) {
+                    // 🆕 [v6.4.0 SUPER OSADA] Building tile - vykreslit s building-specific texturou
+                    const bKey = hitTileX + ',' + hitTileY;
+                    const buildingInfo = E.buildingMap[bKey];
+                    const bId = buildingInfo?.id;
+                    
+                    // Najdi texturu pro tuto budovu
+                    let bTex = null;
+                    if (bId && typeof BUILDING_CUSTOM_ICONS !== 'undefined' && BUILDING_CUSTOM_ICONS[bId]) {
+                        const bImgKey = 'building_' + bId;
+                        if (explore3DImages[bImgKey + 'Loaded'] && explore3DImages[bImgKey]) {
+                            bTex = explore3DImages[bImgKey];
+                        }
+                    }
+                    
+                    // Fallback - použij wall texturu deterministicky
+                    if (!bTex && loadedWallTextures.length > 0) {
+                        const texIdx = (hitTileX * 13 + hitTileY * 7) % loadedWallTextures.length;
+                        bTex = loadedWallTextures[texIdx];
+                    }
+                    
+                    if (bTex) {
+                        let u;
+                        if (hitSide === 0) {
+                            u = (py + sin * dist) - Math.floor(py + sin * dist);
+                        } else {
+                            u = (px + cos * dist) - Math.floor(px + cos * dist);
+                        }
+                        const srcX = Math.floor(u * bTex.width);
+                        try {
+                            ctx.drawImage(bTex, srcX, 0, 1, bTex.height, screenX, wallTop, rayStep, wallHeight);
+                        } catch(e) {
+                            // Fallback barva (nahnědlá pro budovu)
+                            const r = 120 * fogFactor;
+                            const g = 90 * fogFactor;
+                            const b = 60 * fogFactor;
+                            ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                            ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                        }
+                    } else {
+                        // Fallback - hnědá barva budovy
+                        const r = 120 * fogFactor;
+                        const g = 90 * fogFactor;
+                        const b = 60 * fogFactor;
+                        ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    }
+                    
+                    // Mlha + side darkening
+                    const darkness = (1 - fogFactor) + (hitSide === 1 ? 0.15 : 0);
+                    if (darkness > 0.05) {
+                        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.85, darkness)})`;
+                        ctx.fillRect(screenX, wallTop, rayStep, wallHeight);
+                    }
                 } else if (loadedWallTextures.length > 0) {
-                    // 🆕 Vyber wall texturu deterministicky podle pozice tile
-                    const texIdx = (hitTileX * 13 + hitTileY * 7) % loadedWallTextures.length;
-                    const wallTex = loadedWallTextures[texIdx];
+                    // 🆕 [v6.4.0 SUPER OSADA] V settlement módu: border zeď = hradby
+                    let wallTex;
+                    const fenceTex = explore3DImages.wall_fenceLoaded ? explore3DImages.wall_fence : null;
+                    if (E.mode === 'settlement' && fenceTex) {
+                        wallTex = fenceTex;
+                    } else {
+                        // 🆕 Vyber wall texturu deterministicky podle pozice tile
+                        const texIdx = (hitTileX * 13 + hitTileY * 7) % loadedWallTextures.length;
+                        wallTex = loadedWallTextures[texIdx];
+                    }
                     
                     // U-coordinate: kde podél zdi paprsek zasáhl
                     let u;
@@ -52325,7 +52550,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     } else {
                         u = (px + cos * dist) - Math.floor(px + cos * dist);
                     }
-                    const srcX = Math.floor(u * wallTex.width);
+                    
+                    // 🆕 Pro hradby (panorama): mapuj U přes celou texturu podle tile pozice
+                    let srcX;
+                    if (E.mode === 'settlement' && wallTex === fenceTex) {
+                        // Hradby - každá tile zabírá jiný úsek panorama textury
+                        const tilePerimeter = hitTileX + hitTileY * 0.001; // jednoznačné mapování per tile
+                        const panOffset = ((hitTileX * 0.1) + u * 0.1) % 1;
+                        srcX = Math.floor(panOffset * wallTex.width);
+                    } else {
+                        srcX = Math.floor(u * wallTex.width);
+                    }
                     
                     try {
                         ctx.drawImage(wallTex, srcX, 0, 1, wallTex.height, screenX, wallTop, rayStep, wallHeight);
@@ -52424,12 +52659,49 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 // 🆕 [v6.4.0] Render bedny pomocí PNG obrázku (s emoji fallback)
-                const useLootImage = sp.type === 'loot' && explore3DImages.lootBoxLoaded && explore3DImages.lootBox;
+                const useLootImage = sp.type === 'loot' && !sp.sprite.isBuilding && explore3DImages.lootBoxLoaded && explore3DImages.lootBox;
                 // 🆕 Custom enemy ikony pokud existují
-                const enemyImgKey = sp.type === 'enemy' && sp.enemyId ? ('enemy_' + sp.enemyId) : null;
+                const enemyImgKey = sp.type === 'enemy' && sp.enemyId && !sp.sprite.isSettler ? ('enemy_' + sp.enemyId) : null;
                 const useEnemyImage = enemyImgKey && explore3DImages[enemyImgKey + 'Loaded'] && explore3DImages[enemyImgKey];
+                // 🆕 Custom building ikony (v 3D osadě)
+                const buildingImgKey = sp.type === 'loot' && sp.sprite.isBuilding && sp.sprite.buildingId ? ('building_' + sp.sprite.buildingId) : null;
+                const useBuildingImage = buildingImgKey && explore3DImages[buildingImgKey + 'Loaded'] && explore3DImages[buildingImgKey];
+                // 🆕 [v6.4.0 SUPER OSADA] Custom settler ikony (PNG obrázky osadníků)
+                const settlerType = sp.sprite.isSettler ? sp.sprite.settlerData?.type : null;
+                const settlerImgKey = settlerType ? ('settler_' + settlerType) : null;
+                const useSettlerImage = settlerImgKey && explore3DImages[settlerImgKey + 'Loaded'] && explore3DImages[settlerImgKey];
                 
-                if (useLootImage) {
+                if (useSettlerImage) {
+                    // 🆕 Osadník s vlastní ikonou
+                    const img = explore3DImages[settlerImgKey];
+                    const aspectRatio = img.width / img.height;
+                    const drawWidth = spriteSize;
+                    const drawHeight = spriteSize / aspectRatio;
+                    const drawY = spriteTop + spriteSize - drawHeight;
+                    try {
+                        ctx.drawImage(img, screenX - drawWidth/2, drawY, drawWidth, drawHeight);
+                    } catch(e) {
+                        ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                    }
+                } else if (useBuildingImage) {
+                    // Building s vlastní ikonou
+                    const img = explore3DImages[buildingImgKey];
+                    const aspectRatio = img.width / img.height;
+                    const drawWidth = spriteSize;
+                    const drawHeight = spriteSize / aspectRatio;
+                    const drawY = spriteTop + spriteSize - drawHeight;
+                    try {
+                        ctx.drawImage(img, screenX - drawWidth/2, drawY, drawWidth, drawHeight);
+                    } catch(e) {
+                        ctx.font = `${spriteSize * 0.85}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                    }
+                } else if (useLootImage) {
                     const img = explore3DImages.lootBox;
                     const aspectRatio = img.width / img.height;
                     const drawWidth = spriteSize;
@@ -52463,6 +52735,54 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
                     ctx.fillText(icon, screenX, spriteTop + spriteSize / 2);
+                }
+                
+                // 🆕 [v6.4.0] Activity emoji a speech bubble pro osadníky
+                if (sp.sprite.isSettler) {
+                    // Activity emoji v pravém horním rohu sprite
+                    if (sp.sprite.activity) {
+                        ctx.font = `${spriteSize * 0.35}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(sp.sprite.activity, screenX + spriteSize * 0.35, spriteTop + spriteSize * 0.15);
+                    }
+                    // Speech bubble nad sprite
+                    if (sp.sprite.bubble && Date.now() < sp.sprite.bubbleUntil && dist < 6) {
+                        const text = sp.sprite.bubble;
+                        ctx.font = `${Math.max(11, spriteSize * 0.13)}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const textWidth = ctx.measureText(text).width;
+                        const bubbleW = textWidth + 16;
+                        const bubbleH = Math.max(20, spriteSize * 0.18);
+                        const bubbleX = screenX - bubbleW / 2;
+                        const bubbleY = spriteTop - bubbleH - 8;
+                        // Bublina pozadí (bílá, mírně průhledná)
+                        ctx.globalAlpha = 0.92;
+                        ctx.fillStyle = '#fff';
+                        ctx.beginPath();
+                        if (ctx.roundRect) {
+                            ctx.roundRect(bubbleX, bubbleY, bubbleW, bubbleH, 6);
+                        } else {
+                            ctx.rect(bubbleX, bubbleY, bubbleW, bubbleH);
+                        }
+                        ctx.fill();
+                        ctx.strokeStyle = '#444';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                        // Špička bubliny dolů
+                        ctx.beginPath();
+                        ctx.moveTo(screenX - 4, bubbleY + bubbleH);
+                        ctx.lineTo(screenX, bubbleY + bubbleH + 6);
+                        ctx.lineTo(screenX + 4, bubbleY + bubbleH);
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.stroke();
+                        // Text bubliny (černý)
+                        ctx.fillStyle = '#222';
+                        ctx.fillText(text, screenX, bubbleY + bubbleH / 2);
+                        ctx.globalAlpha = 1;
+                    }
                 }
                 
                 ctx.restore();
@@ -52574,35 +52894,41 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!E.visited || !E.visited[y] || !E.visited[y][x]) continue;
                     
                     const cell = E.map[y][x];
-                    if (cell === 1) ctx.fillStyle = '#5a4030';     // zeď
-                    else if (cell === 3) ctx.fillStyle = '#4caf50'; // exit
-                    else ctx.fillStyle = '#1a1a1a';                  // podlaha
+                    if (cell === 1) ctx.fillStyle = '#5a4030';        // zeď
+                    else if (cell === 3) ctx.fillStyle = '#4caf50';   // exit
+                    else if (cell === 4) ctx.fillStyle = '#42a5f5';   // 🆕 budova (modrá)
+                    else if (cell === 5) ctx.fillStyle = '#3a3a4a';   // 🆕 cesta (světle šedá)
+                    else ctx.fillStyle = '#1a1a1a';                    // podlaha
                     ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
                 }
             }
             
-            // 🆕 [v6.4.0] Loot sprites na minimapě (žluté kostky)
+            // 🆕 [v6.4.0] Loot sprites na minimapě - rozdílná barva pro budovy
             if (E.lootItems) {
                 E.lootItems.filter(l => !l.collected).forEach(l => {
                     const lx = Math.floor(l.x), ly = Math.floor(l.y);
-                    // Zobraz jen pokud je tile navštívený
                     if (E.visited && E.visited[ly] && E.visited[ly][lx]) {
-                        ctx.fillStyle = '#ffd700';
+                        // 🆕 Budovy = modré, loot bedny = žluté
+                        ctx.fillStyle = l.isBuilding ? '#42a5f5' : '#ffd700';
                         ctx.fillRect(l.x * cellSize - cellSize/3, l.y * cellSize - cellSize/3, cellSize*0.66, cellSize*0.66);
                     }
                 });
             }
             
-            // 🆕 Enemies na minimapě (jen ti živí a v visited tiles)
+            // 🆕 Enemies/settlers na minimapě
             if (E.enemies) {
                 E.enemies.filter(e => e.alive).forEach(e => {
                     const ex = Math.floor(e.x), ey = Math.floor(e.y);
-                    // Zobraz jen pokud je tile navštívený NEBO enemy v krátké vzdálenosti
                     const dx = e.x - E.player.x, dy = e.y - E.player.y;
                     const dist = Math.sqrt(dx*dx + dy*dy);
                     const visible = (E.visited && E.visited[ey] && E.visited[ey][ex]) || dist < 3;
                     if (visible) {
-                        ctx.fillStyle = e.spotted ? '#ff0000' : '#aa3030';
+                        // 🆕 Settlers = zelení (přátelé), enemies = červení (nepřátelé)
+                        if (e.isSettler) {
+                            ctx.fillStyle = '#4caf50';
+                        } else {
+                            ctx.fillStyle = e.spotted ? '#ff0000' : '#aa3030';
+                        }
                         ctx.beginPath();
                         ctx.arc(e.x * cellSize, e.y * cellSize, cellSize/2.5, 0, Math.PI*2);
                         ctx.fill();
@@ -52641,8 +52967,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const E = window._explore3D;
             const status = document.getElementById('exploreStatus');
             if (status && E) {
-                // 🆕 [v6.4.0] Žádná konkrétní čísla - hráč nemá vědět kolik zbývá
-                status.innerHTML = `🏚️ Prozkoumej trosky | 🚪 najdi východ`;
+                // 🆕 [v6.4.0] Settlement mode má jiný status
+                if (E.mode === 'settlement') {
+                    const builtCount = (state.settlement?.buildings || []).length;
+                    const settlersCount = (state.settlement?.settlers || []).length;
+                    status.innerHTML = `🏠 ${builtCount} budov | 👥 ${settlersCount} osadníků | Choď a sleduj!`;
+                } else {
+                    status.innerHTML = `🏚️ Prozkoumej trosky | 🚪 najdi východ`;
+                }
             }
             // 🆕 [v6.4.0] Aktualizuj HP/hunger/thirst
             const hpEl = document.getElementById('hp3DVal');
@@ -52791,6 +53123,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             E._floorCtx = null;
             E._floorTexData = null;
             E._skyExtended = null; // 🆕 [v6.4.0] sky cache reset
+            E._skyVariant = undefined; // 🆕 znovu náhodně vyber sky
             // Force reset běhu
             E.running = true;
             E.inCombat = false;
@@ -52879,6 +53212,389 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }, 150);
         }
         window.reopen3DExploration = reopen3DExploration;
+        
+        // 🆕 [v6.4.0] 3D Osada — procházka mezi budovami a osadníky
+        function show3DSettlement() {
+            if (typeof state === 'undefined' || !state.settlement) {
+                notifyWarning('Chyba', 'Osada ještě není inicializovaná');
+                return;
+            }
+            
+            closeModal();
+            
+            // Setup combat hook (i když ho v osadě nepoužijeme, je to safety)
+            setupExplore3DCombatHook();
+            preloadExplore3DImages();
+            
+            // ====== STAV 3D OSADA ======
+            const E = window._explore3D = {
+                mode: 'settlement', // 🆕 mode flag - 'explore' nebo 'settlement'
+                map: null,
+                player: { x: 7.5, y: 7.5, angle: 0 },
+                size: 15,
+                visited: null,
+                loot: [],
+                lootItems: [], // bude obsahovat budovy (s flag isBuilding)
+                lootRemaining: 0,
+                exitReached: false,
+                running: true,
+                canvas: null,
+                ctx: null,
+                keys: {},
+                touchControls: { fwd: false, back: false, left: false, right: false },
+                wallTextures: {},
+                lastTick: Date.now(),
+                tickInterval: null,
+                locationId: 'settlement',
+                theme: EXPLORE3D_THEMES.wasteland,
+                enemies: [], // bude obsahovat settlers (s flag isSettler)
+                inCombat: false,
+                killedEnemies: []
+            };
+            
+            // Init fog of war (otevřená plocha - vidíš všechno hned)
+            E.visited = Array.from({length: E.size}, () => Array(E.size).fill(true));
+            
+            // ====== GENERATE OPEN PLAZA MAP ======
+            // Jen zdi po obvodu, vnitřek otevřený
+            E.map = [];
+            for (let y = 0; y < E.size; y++) {
+                const row = [];
+                for (let x = 0; x < E.size; x++) {
+                    row.push((x === 0 || x === E.size - 1 || y === 0 || y === E.size - 1) ? 1 : 0);
+                }
+                E.map.push(row);
+            }
+            
+            // ====== SPAWN BUDOV ======
+            const builtBuildings = state.settlement.buildings || [];
+            const buildingDefs = builtBuildings.map(bid => {
+                const def = typeof BUILDINGS !== 'undefined' ? BUILDINGS.find(b => b.id === bid) : null;
+                return def || { id: bid, name: bid, icon: '🏠' };
+            });
+            
+            // Rozmísti budovy v gridu kolem středu (neutvořit cesty)
+            const buildingPositions = [];
+            // Grid 4×4 pozic v rastru 3 polí
+            for (let gx = 2; gx <= 12; gx += 3) {
+                for (let gy = 2; gy <= 12; gy += 3) {
+                    if (gx === 7 && gy === 7) continue; // střed = spawn hráče
+                    if (gx >= 6 && gx <= 8 && gy >= 6 && gy <= 8) continue; // kolem středu volné
+                    buildingPositions.push({x: gx, y: gy});
+                }
+            }
+            buildingPositions.sort(() => Math.random() - 0.5);
+            
+            buildingDefs.forEach((b, i) => {
+                if (i >= buildingPositions.length) return;
+                const pos = buildingPositions[i];
+                E.lootItems.push({
+                    x: pos.x + 0.5,
+                    y: pos.y + 0.5,
+                    icon: b.icon || '🏠',
+                    name: b.name,
+                    buildingId: b.id,
+                    isBuilding: true,
+                    collected: false
+                });
+            });
+            
+            // ====== SPAWN OSADNÍKŮ ======
+            const settlers = state.settlement.settlers || [];
+            const settlerPositions = [];
+            for (let y = 2; y < E.size - 2; y++) {
+                for (let x = 2; x < E.size - 2; x++) {
+                    // 🆕 [v6.4.0 SUPER OSADA] Volné pole = jen floor (0) nebo path (5), ne budova (4)
+                    const cellType = E.map[y]?.[x];
+                    if (cellType !== 0 && cellType !== 5) continue;
+                    // Ne u brány (spawn hráče)
+                    if (Math.abs(x - 8) < 2 && y > 12) continue;
+                    settlerPositions.push({x, y});
+                }
+            }
+            settlerPositions.sort(() => Math.random() - 0.5);
+            
+            // 🆕 [v6.4.0] Mapování typu osadníka na pracoviště + aktivita
+            const settlerWorkMap = {
+                'farmer':    { buildings: ['farmland', 'garden'],          activity: '🌾', phrases: ['Hlína je dnes vlhká.', 'Bude úroda.', 'Plevel zase roste...', 'Práce, práce...'] },
+                'blacksmith':{ buildings: ['workshop', 'forge'],           activity: '🔨', phrases: ['*klap klap*', 'Tahle ocel je vzácná.', 'Potřebuju víc šrotu.', 'Ohnu i Pre-War.'] },
+                'medic_s':   { buildings: ['infirmary', 'medical'],        activity: '💊', phrases: ['Někdo zraněný?', 'Stimpaky docházejí.', 'Vrátí se ti to.', 'Žij, přeživší.'] },
+                'cook':      { buildings: ['kitchen', 'firepit'],          activity: '🍳', phrases: ['Dnes mám guláš.', 'Voní to dobře.', 'Ochutnej!', 'Hlad je nejlepší kuchař.'] },
+                'guard':     { buildings: ['wall', 'tower', 'barracks'],   activity: '🛡️', phrases: ['Klid v okolí.', 'Hlídám.', 'Někdo jde!', '*pozorně sleduje*'] },
+                'hunter':    { buildings: ['farmland'],                    activity: '🏹', phrases: ['Stopa raidera.', 'Mám pro tebe maso.', 'V pustině je zvěř.', 'Tichý jako stín.'] },
+                'merchant':  { buildings: ['market'],                      activity: '💰', phrases: ['Kup si něco!', 'Sleva 50%!', 'Mám novinky.', 'Šrot za zlato!'] },
+                'scout':     { buildings: ['tower'],                       activity: '🔭', phrases: ['Viděl jsem stopu.', 'Vrátím se za 2 dny.', 'Mapy jsou nepřesné.', 'Ticho.'] },
+                'mechanic':  { buildings: ['workshop'],                    activity: '⚙️', phrases: ['Tohle opravím.', 'Šroubek...', '*šroubuje*', 'Brzy bude funkční.'] },
+                'priest':    { buildings: [],                              activity: '🙏', phrases: ['Modli se za nás.', 'Pán pustinu...', 'Žij v míru.', 'Křest přeživším.'] },
+            };
+            
+            settlers.forEach((s, i) => {
+                if (i >= settlerPositions.length) return;
+                const pos = settlerPositions[i];
+                
+                // 🆕 Najdi pracoviště podle typu osadníka (v buildingMap)
+                const workMap = settlerWorkMap[s.type] || { buildings: [], activity: '💭', phrases: ['*kouká do dálky*', 'Pěkný den.', 'Co dnes?'] };
+                let workTarget = null;
+                if (E.buildingMap) {
+                    for (const bId of workMap.buildings) {
+                        // Najdi v buildingMap první tile patřící této budově
+                        for (const [key, info] of Object.entries(E.buildingMap)) {
+                            if (info.id === bId) {
+                                const [bx, by] = key.split(',').map(Number);
+                                workTarget = { x: bx + 0.5, y: by + 0.5 };
+                                break;
+                            }
+                        }
+                        if (workTarget) break;
+                    }
+                }
+                
+                // Pokud má pracoviště, spawn blízko něj na floor/path (do 1.5 polí)
+                let spawnX = pos.x + 0.5, spawnY = pos.y + 0.5;
+                if (workTarget) {
+                    // Najdi nejbližší floor/path tile k budově
+                    for (let r = 1; r < 3; r++) {
+                        let found = false;
+                        for (let ang = 0; ang < 8; ang++) {
+                            const a = (ang / 8) * Math.PI * 2;
+                            const tx = Math.floor(workTarget.x + Math.cos(a) * r);
+                            const ty = Math.floor(workTarget.y + Math.sin(a) * r);
+                            if (tx > 0 && ty > 0 && tx < E.size - 1 && ty < E.size - 1) {
+                                const c = E.map[ty]?.[tx];
+                                if (c === 0 || c === 5) {
+                                    spawnX = tx + 0.5;
+                                    spawnY = ty + 0.5;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found) break;
+                    }
+                }
+                
+                E.enemies.push({
+                    x: spawnX,
+                    y: spawnY,
+                    enemyId: 'settler_' + (s.id || i),
+                    name: s.name || 'Osadník',
+                    icon: s.icon || '🧑',
+                    alive: true,
+                    spotted: false,
+                    isSettler: true,
+                    settlerData: s,
+                    workTarget: workTarget,
+                    activity: workMap.activity,
+                    phrases: workMap.phrases,
+                    bubble: null,
+                    bubbleUntil: 0,
+                    targetX: null, targetY: null,
+                    lastMoveTime: Date.now() + Math.random() * 5000,
+                    chasing: false
+                });
+            });
+            
+            // ====== UI MODAL ======
+            const html = `
+                <div id="explore3DWrapper" style="background: #0a0a0a; padding: 0.5rem; border-radius: 8px;">
+                    <div style="text-align:center;margin-bottom:0.3rem;">
+                        <div style="color:#ff8f00;font-weight:bold;font-size:0.85rem;">🏘️ Tvoje osada</div>
+                        <div id="exploreStatus" style="color:#888;font-size:0.7rem;">🏠 ${builtBuildings.length} budov | 👥 ${settlers.length} osadníků | Choď a sleduj!</div>
+                    </div>
+                    
+                    <!-- HP/Stats indicator -->
+                    <div id="explore3DStats" style="display:flex;gap:0.3rem;margin-bottom:0.4rem;font-size:0.7rem;">
+                        <div style="flex:1;background:#1a0a0a;border:1px solid #5a1a1a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#f44336;">❤️</span> 
+                            <span id="hp3DVal" style="color:#fff;font-weight:bold;">${state.char?.hp || 0}</span>
+                            <span style="color:#666;">/${state.char?.maxHp || 100}</span>
+                        </div>
+                        <div style="flex:1;background:#1a1408;border:1px solid #5a4015;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#ffa726;">🍞</span> 
+                            <span id="hunger3DVal" style="color:#fff;font-weight:bold;">${state.char?.hunger || 0}</span>
+                        </div>
+                        <div style="flex:1;background:#08141a;border:1px solid #15405a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#42a5f5;">💧</span> 
+                            <span id="thirst3DVal" style="color:#fff;font-weight:bold;">${state.char?.thirst || 0}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 3D CANVAS -->
+                    <div style="position:relative;background:#000;border:2px solid #3a3020;border-radius:4px;overflow:hidden;">
+                        <canvas id="explore3DCanvas" width="640" height="400" style="display:block;width:100%;height:auto;"></canvas>
+                        <canvas id="exploreMiniMap" width="75" height="75" style="position:absolute;top:5px;right:5px;background:rgba(0,0,0,0.85);border:1px solid #555;"></canvas>
+                    </div>
+                    
+                    <!-- LOG -->
+                    <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
+                        ▸ Procházíš svou osadou...
+                    </div>
+                    
+                    <!-- OVLÁDÁNÍ -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-top:0.6rem;">
+                        <div></div>
+                        <button id="ctrlFwd" class="explore3d-btn" style="background:linear-gradient(135deg,#3d2817 0%,#5c3a1f 50%,#3d2817 100%);border:2px solid #7a5430;border-radius:6px;padding:0.85rem;font-size:1.6rem;color:#e8b863;font-weight:bold;text-shadow:1px 1px 3px #000,0 0 8px rgba(0,0,0,0.5);box-shadow:inset 0 -3px 5px rgba(0,0,0,0.4),inset 0 2px 3px rgba(255,200,100,0.2),0 2px 4px rgba(0,0,0,0.6);font-family:monospace;letter-spacing:-2px;">▲</button>
+                        <div></div>
+                        <button id="ctrlLeft" class="explore3d-btn" style="background:linear-gradient(135deg,#3d2817 0%,#5c3a1f 50%,#3d2817 100%);border:2px solid #7a5430;border-radius:6px;padding:0.85rem;font-size:1.6rem;color:#e8b863;font-weight:bold;text-shadow:1px 1px 3px #000,0 0 8px rgba(0,0,0,0.5);box-shadow:inset 0 -3px 5px rgba(0,0,0,0.4),inset 0 2px 3px rgba(255,200,100,0.2),0 2px 4px rgba(0,0,0,0.6);font-family:monospace;letter-spacing:-2px;">◄</button>
+                        <button id="ctrlBack" class="explore3d-btn" style="background:linear-gradient(135deg,#3d2817 0%,#5c3a1f 50%,#3d2817 100%);border:2px solid #7a5430;border-radius:6px;padding:0.85rem;font-size:1.6rem;color:#e8b863;font-weight:bold;text-shadow:1px 1px 3px #000,0 0 8px rgba(0,0,0,0.5);box-shadow:inset 0 -3px 5px rgba(0,0,0,0.4),inset 0 2px 3px rgba(255,200,100,0.2),0 2px 4px rgba(0,0,0,0.6);font-family:monospace;letter-spacing:-2px;">▼</button>
+                        <button id="ctrlRight" class="explore3d-btn" style="background:linear-gradient(135deg,#3d2817 0%,#5c3a1f 50%,#3d2817 100%);border:2px solid #7a5430;border-radius:6px;padding:0.85rem;font-size:1.6rem;color:#e8b863;font-weight:bold;text-shadow:1px 1px 3px #000,0 0 8px rgba(0,0,0,0.5);box-shadow:inset 0 -3px 5px rgba(0,0,0,0.4),inset 0 2px 3px rgba(255,200,100,0.2),0 2px 4px rgba(0,0,0,0.6);font-family:monospace;letter-spacing:-2px;">►</button>
+                    </div>
+                    
+                    <div style="display:flex;gap:0.3rem;margin-top:0.3rem;">
+                        <button onclick="exit3DSettlement()" class="explore3d-btn-danger" style="flex:1;background:linear-gradient(135deg,#3a0e0e 0%,#5a1f1f 50%,#3a0e0e 100%);border:2px solid #7a3030;border-radius:6px;padding:0.6rem;font-size:0.75rem;color:#ffaaaa;font-weight:bold;text-shadow:1px 1px 2px #000;box-shadow:inset 0 -2px 4px rgba(0,0,0,0.4),0 2px 3px rgba(0,0,0,0.5);font-family:monospace;letter-spacing:1px;">✕ ODEJÍT</button>
+                    </div>
+                </div>
+            `;
+            
+            showModal('🏘️ Osada', html);
+            
+            setTimeout(() => {
+                E.canvas = document.getElementById('explore3DCanvas');
+                E.miniMap = document.getElementById('exploreMiniMap');
+                if (!E.canvas) return;
+                E.ctx = E.canvas.getContext('2d');
+                E.miniMapCtx = E.miniMap.getContext('2d');
+                
+                E._keyDown = (e) => { E.keys[e.key.toLowerCase()] = true; };
+                E._keyUp = (e) => { E.keys[e.key.toLowerCase()] = false; };
+                window.addEventListener('keydown', E._keyDown);
+                window.addEventListener('keyup', E._keyUp);
+                
+                ['Fwd', 'Back', 'Left', 'Right'].forEach(dir => {
+                    const btn = document.getElementById('ctrl' + dir);
+                    if (!btn) return;
+                    const key = dir.toLowerCase();
+                    const startHandler = (e) => { e.preventDefault(); E.touchControls[key] = true; };
+                    const endHandler = (e) => { e.preventDefault(); E.touchControls[key] = false; };
+                    btn.addEventListener('touchstart', startHandler, {passive: false});
+                    btn.addEventListener('touchend', endHandler, {passive: false});
+                    btn.addEventListener('mousedown', startHandler);
+                    btn.addEventListener('mouseup', endHandler);
+                    btn.addEventListener('mouseleave', endHandler);
+                });
+                
+                E.tickInterval = setInterval(() => {
+                    if (!E.running) return;
+                    update3DExploration();
+                    render3DExploration();
+                    if (++E._statTickCounter > 60) { E._statTickCounter = 0; updateExploreStatus(); }
+                }, 33);
+                E._statTickCounter = 0;
+                
+                add3DLog('Procházej se a klikni na osadníky pro dialog.');
+            }, 100);
+        }
+        window.show3DSettlement = show3DSettlement;
+        
+        // Exit z 3D osady - prostě zavřít modal
+        function exit3DSettlement() {
+            const E = window._explore3D;
+            if (!E) return;
+            
+            E.running = false;
+            if (E.tickInterval) clearInterval(E.tickInterval);
+            if (E._keyDown) window.removeEventListener('keydown', E._keyDown);
+            if (E._keyUp) window.removeEventListener('keyup', E._keyUp);
+            if (window._explore3DCombatPoller) {
+                clearInterval(window._explore3DCombatPoller);
+                window._explore3DCombatPoller = null;
+                window._explore3DHookInstalled = false;
+            }
+            
+            window._explore3D = null;
+            closeModal();
+            
+            // Vrátit do osady UI
+            if (typeof showSettlement === 'function') {
+                showSettlement();
+            }
+        }
+        window.exit3DSettlement = exit3DSettlement;
+        
+        // 🆕 [v6.4.0] Settler info overlay z 3D osady (nezavírá 3D modal, jen overlay)
+        function showSettlerInfoFrom3D(settler) {
+            if (!settler) return;
+            const wrapper = document.getElementById('explore3DWrapper');
+            if (!wrapper) return;
+            
+            // Odebrat staré overlay
+            const oldOverlay = document.getElementById('settler3DOverlay');
+            if (oldOverlay) oldOverlay.remove();
+            
+            const settlerName = settler.name || 'Osadník';
+            const settlerType = settler.type || 'osadník';
+            const morale = settler.morale ?? 50;
+            const moraleEmoji = morale > 70 ? '😊' : morale > 40 ? '😐' : '😞';
+            const moraleColor = morale > 70 ? '#4caf50' : morale > 40 ? '#ff9800' : '#f44336';
+            
+            const overlay = document.createElement('div');
+            overlay.id = 'settler3DOverlay';
+            overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:240px;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
+            overlay.innerHTML = `
+                <div style="text-align:center;margin-bottom:0.6rem;">
+                    <div style="font-size:3rem;">${settler.icon || '🧑'}</div>
+                    <div style="color:#fff;font-weight:bold;font-size:1rem;margin-top:0.3rem;">${settlerName}</div>
+                    <div style="color:#aaa;font-size:0.8rem;">${settlerType}</div>
+                </div>
+                <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.6rem;font-size:0.75rem;">
+                    <div style="color:#aaa;line-height:1.7;">
+                        ${moraleEmoji} Nálada: <b style="color:${moraleColor};">${morale}/100</b><br>
+                        ${settler.skill ? `⚒️ Skill: <b style="color:#ffd700;">${settler.skill}</b><br>` : ''}
+                        ${settler.assignment ? `📋 Pracuje: <b>${settler.assignment}</b>` : '💤 <b>Volný</b>'}
+                    </div>
+                </div>
+                <button onclick="resume3DSettlement()" style="width:100%;margin-top:0.6rem;background:linear-gradient(135deg,#1a3d12 0%,#2d5c1f 50%,#1a3d12 100%);border:2px solid #4a8030;border-radius:6px;padding:0.6rem;color:#a8d893;font-weight:bold;text-shadow:1px 1px 2px #000;font-family:monospace;letter-spacing:1px;cursor:pointer;">✓ POKRAČOVAT</button>
+            `;
+            wrapper.style.position = 'relative';
+            wrapper.appendChild(overlay);
+        }
+        window.showSettlerInfoFrom3D = showSettlerInfoFrom3D;
+        
+        // Resume 3D osady - odstranit overlay + obnovit běh + odsunout hráče
+        function resume3DSettlement() {
+            const overlay = document.getElementById('settler3DOverlay');
+            if (overlay) overlay.remove();
+            const E = window._explore3D;
+            if (!E) return;
+            E.running = true;
+            // Posunout hráče zpět od NPC aby ho dialog hned znovu nespustil
+            const backX = E.player.x - Math.cos(E.player.angle) * 0.8;
+            const backY = E.player.y - Math.sin(E.player.angle) * 0.8;
+            const btx = Math.floor(backX), bty = Math.floor(backY);
+            if (E.map[bty] && E.map[bty][btx] !== 1) {
+                E.player.x = backX;
+                E.player.y = backY;
+            }
+        }
+        window.resume3DSettlement = resume3DSettlement;
+        
+        // Building info overlay
+        function showBuildingInfoFrom3D(building) {
+            if (!building) return;
+            const wrapper = document.getElementById('explore3DWrapper');
+            if (!wrapper) return;
+            const oldOverlay = document.getElementById('settler3DOverlay');
+            if (oldOverlay) oldOverlay.remove();
+            
+            const def = typeof BUILDINGS !== 'undefined' ? BUILDINGS.find(b => b.id === building.buildingId) : null;
+            const overlay = document.createElement('div');
+            overlay.id = 'settler3DOverlay';
+            overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:240px;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
+            overlay.innerHTML = `
+                <div style="text-align:center;margin-bottom:0.6rem;">
+                    <div style="font-size:3rem;">${building.icon || '🏠'}</div>
+                    <div style="color:#fff;font-weight:bold;font-size:1rem;margin-top:0.3rem;">${building.name}</div>
+                    ${def?.category ? `<div style="color:#aaa;font-size:0.8rem;">${def.category}</div>` : ''}
+                </div>
+                <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.6rem;font-size:0.75rem;color:#aaa;">
+                    ${def?.desc || 'Postavená budova v tvé osadě'}
+                </div>
+                <button onclick="resume3DSettlement()" style="width:100%;margin-top:0.6rem;background:linear-gradient(135deg,#1a3d12 0%,#2d5c1f 50%,#1a3d12 100%);border:2px solid #4a8030;border-radius:6px;padding:0.6rem;color:#a8d893;font-weight:bold;text-shadow:1px 1px 2px #000;font-family:monospace;letter-spacing:1px;cursor:pointer;">✓ POKRAČOVAT</button>
+            `;
+            wrapper.style.position = 'relative';
+            wrapper.appendChild(overlay);
+        }
+        window.showBuildingInfoFrom3D = showBuildingInfoFrom3D;
         
         function exit3DExploration(withReward) {
             const E = window._explore3D;
