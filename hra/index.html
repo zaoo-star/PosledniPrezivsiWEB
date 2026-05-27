@@ -8122,13 +8122,13 @@
         // Pokud klíč existuje a soubor je v img/, použije se místo emoji
         // Postupně přidávej jak budou nové ikony hotové
         const BUILDING_CUSTOM_ICONS = {
-            'bed': 'img/sleeping_bag.png', // Jediná aktuálně existující
+            'bed': 'img/sleeping_bag.png', // Postel
+            'storage': 'img/storage.jpg',  // 🆕 Sklad (rezivá hala)
+            'garden': 'img/garden.jpg',    // 🆕 Zahrada (zarostlá zelení)
+            'water': 'img/water_collector.jpg', // 🆕 Sběrač vody "Bučovice 2147"
             // Přidej postupně:
             // 'firepit': 'img/firepit.png',
-            // 'garden': 'img/garden.png',
-            // 'water': 'img/water_collector.png',
             // 'workshop': 'img/workshop.png',
-            // 'storage': 'img/storage.png',
             // 'well': 'img/well.png',
             // 'farmland': 'img/farmland.png',
             // 'infirmary': 'img/infirmary.png',
@@ -52194,6 +52194,38 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     return;
                 }
             }
+            
+            // 🆕 [v6.4.0 SUPER OSADA] Particle systém - kouř a oheň
+            if (E.mode === 'settlement' && E.particles) {
+                for (const p of E.particles) {
+                    p.spawnTimer = (p.spawnTimer || 0) + 1;
+                    // Spawn nová particle každých ~5 ticks pro kouř, ~2 pro oheň
+                    const spawnRate = p.type === 'fire' ? 2 : 5;
+                    if (p.spawnTimer >= spawnRate) {
+                        p.spawnTimer = 0;
+                        p.items.push({
+                            x: p.source.x + (Math.random() - 0.5) * 0.2,
+                            y: p.source.y + (Math.random() - 0.5) * 0.2,
+                            z: 0,
+                            vx: (Math.random() - 0.5) * 0.01,
+                            vy: (Math.random() - 0.5) * 0.01,
+                            vz: p.type === 'fire' ? 0.04 : 0.03,
+                            life: 0,
+                            maxLife: p.type === 'fire' ? 25 : 60,
+                            type: p.type,
+                            size: p.type === 'fire' ? 0.3 + Math.random() * 0.2 : 0.4 + Math.random() * 0.3,
+                        });
+                    }
+                    // Update existující particles
+                    p.items = p.items.filter(it => {
+                        it.life++;
+                        it.x += it.vx;
+                        it.y += it.vy;
+                        it.z += it.vz;
+                        return it.life < it.maxLife;
+                    });
+                }
+            }
         }
         
         // Raycasting render
@@ -52891,6 +52923,51 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             ctx.lineTo(W/2, H/2 + 5);
             ctx.stroke();
             
+            // 🆕 [v6.4.0 SUPER OSADA] Render particles (kouř + oheň)
+            if (E.mode === 'settlement' && E.particles) {
+                const px = E.player.x, py = E.player.y, pa = E.player.angle;
+                const fov = Math.PI / 3;
+                for (const p of E.particles) {
+                    for (const it of p.items) {
+                        const dx = it.x - px;
+                        const dy = it.y - py;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist > 10 || dist < 0.3) continue;
+                        // Angle relative to view direction
+                        const angle = Math.atan2(dy, dx) - pa;
+                        let normAngle = angle;
+                        while (normAngle > Math.PI) normAngle -= Math.PI * 2;
+                        while (normAngle < -Math.PI) normAngle += Math.PI * 2;
+                        if (Math.abs(normAngle) > fov / 2 + 0.2) continue;
+                        // Screen position
+                        const screenX = W/2 + (normAngle / (fov/2)) * (W/2);
+                        const baseY = H/2 + 100 / dist;
+                        // Z-offset (vyšší = nižší Y na obrazovce)
+                        const screenY = baseY - it.z * (200 / dist);
+                        // Size by distance
+                        const size = (it.size * 100) / dist;
+                        // Life ratio for alpha
+                        const lifeRatio = 1 - (it.life / it.maxLife);
+                        const alpha = lifeRatio * 0.8;
+                        
+                        if (it.type === 'fire') {
+                            // Plameny - žlutooranžová
+                            const r = 255;
+                            const g = Math.floor(150 + lifeRatio * 105);
+                            const b = Math.floor(50 * lifeRatio);
+                            ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                        } else {
+                            // Kouř - tmavě šedá
+                            const v = Math.floor(80 + (1 - lifeRatio) * 80);
+                            ctx.fillStyle = `rgba(${v},${v},${v},${alpha * 0.6})`;
+                        }
+                        ctx.beginPath();
+                        ctx.arc(screenX, screenY, Math.max(2, size), 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+            }
+            
             // Mini-map render
             renderMiniMap();
         }
@@ -53248,11 +53325,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const E = window._explore3D = {
                 mode: 'settlement', // 🆕 mode flag - 'explore' nebo 'settlement'
                 map: null,
-                player: { x: 7.5, y: 7.5, angle: 0 },
-                size: 15,
+                player: { x: 8.5, y: 13.5, angle: -Math.PI / 2 }, // 🆕 spawn u brány, kouká dovnitř
+                size: 17, // 🆕 [v6.4.0 SUPER OSADA] větší mapa
                 visited: null,
                 loot: [],
-                lootItems: [], // bude obsahovat budovy (s flag isBuilding)
+                lootItems: [], // bude obsahovat budovy jako sprite okrasy nad map tiles
                 lootRemaining: 0,
                 exitReached: false,
                 running: true,
@@ -53267,26 +53344,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 theme: EXPLORE3D_THEMES.wasteland,
                 enemies: [], // bude obsahovat settlers (s flag isSettler)
                 inCombat: false,
-                killedEnemies: []
+                killedEnemies: [],
+                buildingMap: {}, // 🆕 'x,y' → building reference
+                particles: [], // 🆕 animace kouř/oheň
             };
             
             // Init fog of war (otevřená plocha - vidíš všechno hned)
             E.visited = Array.from({length: E.size}, () => Array(E.size).fill(true));
             
-            // ====== GENERATE OPEN PLAZA MAP ======
-            // Jen zdi po obvodu, vnitřek otevřený
+            // ====== GENERATE STRUCTURED MAP ======
+            // 🆕 [v6.4.0 SUPER OSADA]
+            // 0 = floor (hlína), 1 = wall (hradby), 4 = building wall, 5 = path (cesta)
             E.map = [];
             for (let y = 0; y < E.size; y++) {
                 const row = [];
                 for (let x = 0; x < E.size; x++) {
-                    row.push((x === 0 || x === E.size - 1 || y === 0 || y === E.size - 1) ? 1 : 0);
+                    if (x === 0 || x === E.size - 1 || y === 0 || y === E.size - 1) {
+                        // Brána na jih - 3 tile otvor uprostřed
+                        if (y === E.size - 1 && (x === 7 || x === 8 || x === 9)) {
+                            row.push(0);
+                        } else {
+                            row.push(1);
+                        }
+                    } else {
+                        row.push(0);
+                    }
                 }
                 E.map.push(row);
             }
             
-            // ====== SPAWN BUDOV ======
-            // 🆕 [v6.4.0 FIX] Sčítej obě pole: state.settlement.buildings + state.base
-            // Karta Osada UI počítá obě, tak musíme i my (jinak hlásí míň budov)
+            // ====== UMÍSTI BUDOVY (jako 2x2 tile bloky s map cell = 4) ======
             const settlementBuildings = state.settlement.buildings || [];
             const baseBuildings = state.base || [];
             const builtBuildings = [
@@ -53298,31 +53385,73 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return def || { id: bid, name: bid, icon: '🏠' };
             });
             
-            // Rozmísti budovy v gridu kolem středu (neutvořit cesty)
-            const buildingPositions = [];
-            // Grid 4×4 pozic v rastru 3 polí
-            for (let gx = 2; gx <= 12; gx += 3) {
-                for (let gy = 2; gy <= 12; gy += 3) {
-                    if (gx === 7 && gy === 7) continue; // střed = spawn hráče
-                    if (gx >= 6 && gx <= 8 && gy >= 6 && gy <= 8) continue; // kolem středu volné
-                    buildingPositions.push({x: gx, y: gy});
+            // Sloty pro budovy v gridu (každá zabírá 2x2 tile + mezera)
+            const buildingSlots = [];
+            for (let row = 0; row < 4; row++) {
+                for (let col = 0; col < 4; col++) {
+                    const bx = 2 + col * 3;
+                    const by = 2 + row * 3;
+                    if (by < E.size - 3) buildingSlots.push({ x: bx, y: by });
                 }
             }
-            buildingPositions.sort(() => Math.random() - 0.5);
             
-            buildingDefs.forEach((b, i) => {
-                if (i >= buildingPositions.length) return;
-                const pos = buildingPositions[i];
-                E.lootItems.push({
-                    x: pos.x + 0.5,
-                    y: pos.y + 0.5,
-                    icon: b.icon || '🏠',
-                    name: b.name,
-                    buildingId: b.id,
-                    isBuilding: true,
-                    collected: false
-                });
+            // Perzistentní layout v state
+            if (!state.settlement.layout3D) state.settlement.layout3D = {};
+            const usedKeys = new Set();
+            buildingDefs.forEach(b => {
+                if (state.settlement.layout3D[b.id]) {
+                    const s = state.settlement.layout3D[b.id];
+                    usedKeys.add(s.x + ',' + s.y);
+                }
             });
+            const availableSlots = buildingSlots.filter(s => !usedKeys.has(s.x + ',' + s.y));
+            availableSlots.sort(() => Math.random() - 0.5);
+            let slotIdx = 0;
+            
+            buildingDefs.forEach(b => {
+                if (!state.settlement.layout3D[b.id]) {
+                    if (slotIdx < availableSlots.length) {
+                        state.settlement.layout3D[b.id] = availableSlots[slotIdx++];
+                    } else return;
+                }
+                const slot = state.settlement.layout3D[b.id];
+                // 2x2 building tiles
+                for (let dy = 0; dy < 2; dy++) {
+                    for (let dx = 0; dx < 2; dx++) {
+                        const tx = slot.x + dx, ty = slot.y + dy;
+                        if (tx < E.size - 1 && ty < E.size - 1) {
+                            E.map[ty][tx] = 4;
+                            E.buildingMap[tx + ',' + ty] = b;
+                        }
+                    }
+                }
+                // 🆕 Animační particle source pro budovy s ohněm/kouřem
+                const smokeBuildings = ['firepit', 'workshop', 'kitchen', 'forge'];
+                if (smokeBuildings.includes(b.id)) {
+                    E.particles.push({
+                        source: { x: slot.x + 1, y: slot.y + 1 },
+                        type: b.id === 'firepit' ? 'fire' : 'smoke',
+                        spawnTimer: 0,
+                        items: [] // jednotlivé particles
+                    });
+                }
+            });
+            
+            // ====== CESTY (path tiles - 5) ======
+            // Horizontální a vertikální cesty mezi budovami
+            for (let y of [1, 4, 7, 10, 13, 14, 15]) {
+                for (let x = 1; x < E.size - 1; x++) {
+                    if (E.map[y]?.[x] === 0) E.map[y][x] = 5;
+                }
+            }
+            for (let x of [1, 4, 7, 8, 10, 13, 15]) {
+                for (let y = 1; y < E.size - 1; y++) {
+                    if (E.map[y]?.[x] === 0) E.map[y][x] = 5;
+                }
+            }
+            
+            E.lootItems = [];
+            E.lootRemaining = 0;
             
             // ====== SPAWN OSADNÍKŮ ======
             const settlers = state.settlement.settlers || [];
@@ -53545,20 +53674,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div id="exploreStatus" style="color:#888;font-size:0.7rem;">🏠 ${builtBuildings.length} budov | 👥 ${settlers.length} osadníků | Choď a sleduj!</div>
                     </div>
                     
-                    <!-- HP/Stats indicator -->
+                    <!-- 🆕 [v6.4.0] Stats osady (morale, jídlo, voda, obrana) -->
                     <div id="explore3DStats" style="display:flex;gap:0.3rem;margin-bottom:0.4rem;font-size:0.7rem;">
-                        <div style="flex:1;background:#1a0a0a;border:1px solid #5a1a1a;padding:0.3rem;border-radius:4px;">
-                            <span style="color:#f44336;">❤️</span> 
-                            <span id="hp3DVal" style="color:#fff;font-weight:bold;">${state.char?.hp || 0}</span>
-                            <span style="color:#666;">/${state.char?.maxHp || 100}</span>
-                        </div>
                         <div style="flex:1;background:#1a1408;border:1px solid #5a4015;padding:0.3rem;border-radius:4px;">
                             <span style="color:#ffa726;">🍞</span> 
-                            <span id="hunger3DVal" style="color:#fff;font-weight:bold;">${state.char?.hunger || 0}</span>
+                            <span id="settFoodVal" style="color:#fff;font-weight:bold;">${state.settlement?.food || 0}</span>
                         </div>
                         <div style="flex:1;background:#08141a;border:1px solid #15405a;padding:0.3rem;border-radius:4px;">
                             <span style="color:#42a5f5;">💧</span> 
-                            <span id="thirst3DVal" style="color:#fff;font-weight:bold;">${state.char?.thirst || 0}</span>
+                            <span id="settWaterVal" style="color:#fff;font-weight:bold;">${state.settlement?.water || 0}</span>
+                        </div>
+                        <div style="flex:1;background:#0a1a0a;border:1px solid #2a4a2a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#8bc34a;">😊</span> 
+                            <span id="settMoraleVal" style="color:#fff;font-weight:bold;">${state.settlement?.morale ?? 50}</span>
+                        </div>
+                        <div style="flex:1;background:#1a0a14;border:1px solid #5a153a;padding:0.3rem;border-radius:4px;">
+                            <span style="color:#e91e63;">🛡️</span> 
+                            <span id="settDefenseVal" style="color:#fff;font-weight:bold;">${typeof calculateSettlementDefense === 'function' ? calculateSettlementDefense() : '?'}</span>
                         </div>
                     </div>
                     
@@ -53567,8 +53699,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <canvas id="explore3DCanvas" width="640" height="400" style="display:block;width:100%;height:auto;"></canvas>
                     </div>
                     
-                    <!-- LOG -->
-                    <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.4rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.7rem;color:#8bc34a;height:60px;overflow-y:auto;">
+                    <!-- LOG (menší v osadě) -->
+                    <div id="exploreLog" style="background:#1a1a1a;border:1px solid #333;padding:0.3rem 0.5rem;margin-top:0.3rem;border-radius:4px;font-family:monospace;font-size:0.65rem;color:#8bc34a;max-height:32px;overflow-y:auto;">
                         ▸ Procházíš svou osadou...
                     </div>
                     
