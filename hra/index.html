@@ -52698,14 +52698,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 // 🆕 [v6.4.0] Smoother exponential fog - menší skoky
                 const fogFactor = Math.max(0.25, Math.exp(-dist * 0.1));
                 
-                // 🆕 [v6.4.0] Bobbing animace - sprites se jemně houpou
-                const bobOffset = sp.type === 'loot' 
-                    ? Math.sin(Date.now() / 400 + sp.sprite.x * 7) * 3   // loot pomaleji
-                    : Math.sin(Date.now() / 250 + sp.sprite.x * 5) * 5;  // enemy rychleji
+                // 🆕 [v6.4.0] Velikost: osadníci menší (válcovitý charakter), aby splývali s budovami
+                // Loot bedna 0.65, settlers v osadě 0.55, enemies 0.9
+                const isSettler = sp.sprite.isSettler;
+                let sizeMultiplier;
+                if (sp.type === 'loot') sizeMultiplier = 0.65;
+                else if (isSettler) sizeMultiplier = 0.55;
+                else sizeMultiplier = 0.9;
                 
-                const sizeMultiplier = sp.type === 'loot' ? 0.65 : 0.9;
                 const spriteSize = Math.min(H, (H / dist) * sizeMultiplier);
-                const spriteTop = (H - spriteSize) / 2 + bobOffset;
+                // 🆕 Osadníci stojí "nohama na zemi" - posunout dolů
+                const groundOffset = isSettler ? spriteSize * 0.25 : 0;
+                const spriteTop = (H - spriteSize) / 2 + groundOffset;
                 const spriteLeft = screenX - spriteSize / 2;
                 
                 // Z-buffer test
@@ -52718,12 +52722,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 ctx.save();
                 ctx.globalAlpha = fogFactor;
                 
-                // Stín pod sprite (loot/enemy stojí na zemi)
+                // Stín pod sprite
                 if (sp.type === 'loot') {
                     ctx.fillStyle = `rgba(0,0,0,${0.4 * fogFactor})`;
                     ctx.beginPath();
                     ctx.ellipse(screenX, spriteTop + spriteSize * 0.92, spriteSize * 0.35, spriteSize * 0.08, 0, 0, Math.PI * 2);
                     ctx.fill();
+                } else if (isSettler) {
+                    // 🆕 [v6.4.0] Osadníci - tmavší podstavec + jemný glow ring (válec efekt)
+                    // Stín pod nohama
+                    ctx.fillStyle = `rgba(0,0,0,${0.5 * fogFactor})`;
+                    ctx.beginPath();
+                    ctx.ellipse(screenX, spriteTop + spriteSize * 0.95, spriteSize * 0.32, spriteSize * 0.08, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Jemné podsvícení (zlatý ring) aby vystoupili z budov
+                    const glowAlpha = Math.max(0, 0.25 - dist / 30) * fogFactor;
+                    if (glowAlpha > 0.05) {
+                        ctx.fillStyle = `rgba(255,200,100,${glowAlpha})`;
+                        ctx.beginPath();
+                        ctx.ellipse(screenX, spriteTop + spriteSize * 0.93, spriteSize * 0.38, spriteSize * 0.1, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
                 }
                 
                 // 🆕 [v6.4.0] Render bedny pomocí PNG obrázku (s emoji fallback)
@@ -53483,7 +53502,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             E.lootRemaining = 0;
             
             // ====== SPAWN OSADNÍKŮ ======
-            const settlers = state.settlement.settlers || [];
+            // 🆕 [v6.4.0] Jen 1 osadník od každého typu (povolání)
+            // Najdi prvního z každého typu - reprezentanta
+            const allSettlers = state.settlement.settlers || [];
+            const settlersByType = {};
+            allSettlers.forEach(s => {
+                if (!settlersByType[s.type]) settlersByType[s.type] = s;
+            });
+            const settlers = Object.values(settlersByType);
             const settlerPositions = [];
             for (let y = 2; y < E.size - 2; y++) {
                 for (let x = 2; x < E.size - 2; x++) {
@@ -53939,19 +53965,90 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (oldOverlay) oldOverlay.remove();
             
             const def = typeof BUILDINGS !== 'undefined' ? BUILDINGS.find(b => b.id === building.buildingId) : null;
+            
+            // 🆕 [v6.4.0] Detailní info: kategorie, level, efekty, produkce, kdo zde pracuje
+            const categoryLabels = {
+                'living': '🛏️ Bydlení', 'production': '🌾 Produkce', 'utility': '⚙️ Užitkové',
+                'settlement': '🏘️ Komunální', 'defense': '🛡️ Obrana'
+            };
+            const catLabel = def?.category ? (categoryLabels[def.category] || def.category) : '';
+            const lvlLabel = def?.level ? `<span style="color:#ffd700;">★ Level ${def.level}</span>` : '';
+            
+            // Efekty
+            const effects = [];
+            if (def?.effect) {
+                if (def.effect.hp) effects.push(`❤️ <b>+${def.effect.hp}</b> HP/min`);
+                if (def.effect.energy) effects.push(`⚡ <b>+${def.effect.energy}</b> energie/min`);
+                if (def.effect.morale) effects.push(`😊 <b>+${def.effect.morale}</b> morale`);
+                if (def.effect.defense) effects.push(`🛡️ <b>+${def.effect.defense}</b> obrana`);
+                if (def.effect.baseCapacity) effects.push(`📦 <b>+${def.effect.baseCapacity}</b> kapacita skladu`);
+                if (def.effect.crafting) effects.push(`🔧 <b>Umožňuje crafting</b>`);
+                if (def.effect.cooking) effects.push(`🍳 <b>Umožňuje vaření</b>`);
+                if (def.effect.farmBonus) effects.push(`🌾 <b>+${(def.effect.farmBonus*100)|0}%</b> bonus farmářům`);
+                if (def.effect.guardBonus) effects.push(`🛡️ <b>+${(def.effect.guardBonus*100)|0}%</b> efekt strážců`);
+                if (def.effect.tradingBonus) effects.push(`💰 <b>+${(def.effect.tradingBonus*100)|0}%</b> prodejní ceny`);
+                if (def.effect.weaponBonus) effects.push(`⚔️ <b>+${def.effect.weaponBonus}</b> DMG zbraně`);
+                if (def.effect.damageBonus) effects.push(`💥 <b>+${def.effect.damageBonus}</b>% damage`);
+                if (def.effect.xpBonus) effects.push(`✨ <b>+${(def.effect.xpBonus*100)|0}%</b> XP`);
+                if (def.effect.raidWarning) effects.push(`👁️ <b>Varování před nájezdem</b>`);
+            }
+            // Produkce
+            if (def?.production) {
+                if (def.production.food) effects.push(`🍞 <b>+${def.production.food}</b> jídlo/den`);
+                if (def.production.water) effects.push(`💧 <b>+${def.production.water}</b> voda/den`);
+                if (def.production.wood) effects.push(`🪵 <b>+${def.production.wood}</b> dřevo/den`);
+                if (def.production.stone) effects.push(`🪨 <b>+${def.production.stone}</b> kámen/den`);
+                if (def.production.metal) effects.push(`⚙️ <b>+${def.production.metal}</b> kov/den`);
+            }
+            // Maintenance
+            const maintLabel = def?.maintenance > 0 ? `<div style="color:#ff8a65;font-size:0.7rem;margin-top:0.3rem;">⚠️ Údržba: ${def.maintenance}/den</div>` : '';
+            
+            // Kdo zde pracuje
+            const settlerWorkMap2 = {
+                'farmland': ['farmer'], 'garden': ['farmer'],
+                'workshop': ['blacksmith', 'mechanic', 'builder', 'lumberjack', 'alchemist'],
+                'forge': ['blacksmith'],
+                'infirmary': ['medic_s'], 'medical': ['medic_s'],
+                'kitchen': ['cook'], 'firepit': ['cook'],
+                'wall': ['guard'], 'tower': ['guard', 'scout'], 'barracks': ['guard'],
+                'market': ['merchant', 'trader_s'],
+                'well': ['water_carrier'],
+                'storage': ['scavenger_s'],
+            };
+            const validWorkerTypes = settlerWorkMap2[building.buildingId] || [];
+            const workersHere = (state.settlement?.settlers || []).filter(s => validWorkerTypes.includes(s.type));
+            const workersHTML = workersHere.length > 0
+                ? `<div style="background:#0a1a0a;border:1px solid #2a4a2a;border-radius:4px;padding:0.4rem;margin-top:0.4rem;font-size:0.7rem;">
+                       <div style="color:#8bc34a;margin-bottom:0.2rem;">👥 Pracovníci (${workersHere.length}):</div>
+                       ${workersHere.slice(0, 4).map(w => `<div style="color:#aaa;">• ${w.icon || '🧑'} ${w.name} <span style="color:#666;">(${w.type})</span></div>`).join('')}
+                       ${workersHere.length > 4 ? `<div style="color:#666;font-style:italic;">+ ${workersHere.length - 4} dalších</div>` : ''}
+                   </div>`
+                : (validWorkerTypes.length > 0 ? `<div style="color:#888;font-size:0.7rem;margin-top:0.4rem;font-style:italic;">⚠️ Nikdo zde nepracuje (chybí osadník typu ${validWorkerTypes[0]})</div>` : '');
+            
+            // Efekty HTML
+            const effectsHTML = effects.length > 0
+                ? `<div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:4px;padding:0.4rem;margin-top:0.4rem;font-size:0.7rem;color:#ddd;line-height:1.7;">
+                       ${effects.join('<br>')}
+                   </div>`
+                : '';
+            
             const overlay = document.createElement('div');
             overlay.id = 'settler3DOverlay';
-            overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:240px;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
+            overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:260px;max-width:90%;max-height:80%;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
             overlay.innerHTML = `
                 <div style="text-align:center;margin-bottom:0.6rem;">
-                    <div style="font-size:3rem;">${building.icon || '🏠'}</div>
-                    <div style="color:#fff;font-weight:bold;font-size:1rem;margin-top:0.3rem;">${building.name}</div>
-                    ${def?.category ? `<div style="color:#aaa;font-size:0.8rem;">${def.category}</div>` : ''}
+                    <div style="font-size:2.5rem;">${building.icon || '🏠'}</div>
+                    <div style="color:#fff;font-weight:bold;font-size:1.05rem;margin-top:0.3rem;">${building.name}</div>
+                    <div style="display:flex;justify-content:center;gap:0.6rem;font-size:0.7rem;margin-top:0.2rem;">
+                        ${catLabel ? `<span style="color:#aaa;">${catLabel}</span>` : ''}
+                        ${lvlLabel}
+                    </div>
                 </div>
-                <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:0.6rem;font-size:0.75rem;color:#aaa;">
-                    ${def?.desc || 'Postavená budova v tvé osadě'}
-                </div>
-                <button onclick="resume3DSettlement()" style="width:100%;margin-top:0.6rem;background:linear-gradient(135deg,#1a3d12 0%,#2d5c1f 50%,#1a3d12 100%);border:2px solid #4a8030;border-radius:6px;padding:0.6rem;color:#a8d893;font-weight:bold;text-shadow:1px 1px 2px #000;font-family:monospace;letter-spacing:1px;cursor:pointer;">✓ POKRAČOVAT</button>
+                <div style="color:#bbb;font-size:0.75rem;text-align:center;font-style:italic;">${def?.desc || ''}</div>
+                ${effectsHTML}
+                ${workersHTML}
+                ${maintLabel}
+                <button onclick="resume3DSettlement()" style="width:100%;margin-top:0.7rem;background:linear-gradient(135deg,#1a3d12 0%,#2d5c1f 50%,#1a3d12 100%);border:2px solid #4a8030;border-radius:6px;padding:0.6rem;color:#a8d893;font-weight:bold;text-shadow:1px 1px 2px #000;font-family:monospace;letter-spacing:1px;cursor:pointer;">✓ POKRAČOVAT</button>
             `;
             wrapper.style.position = 'relative';
             wrapper.appendChild(overlay);
