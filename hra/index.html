@@ -16234,7 +16234,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.overfed.thirstFlush) delete state.overfed.thirstFlush;
         }
         
-        const GAME_VERSION = '4.0.3';
+        const GAME_VERSION = '4.0.4';
         
         // Mapování quest itemů na lokace kde se vyskytují
         const QUEST_ITEM_LOCATIONS = {
@@ -16247,7 +16247,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             'old_toy': 'ruined_village', // [FIX] playground neexistuje v hře - použít ruined_village
             'ancient_relic': 'ancient_vault' // [FIX] ancient_ruins -> ancient_vault (správné ID)
         };
-        const VERSION_DATE = '2026-04-18';
+        const VERSION_DATE = '2026-05-28';
         
         // === AUTO-REFRESH PŘI NOVÉ VERZI ===
         (function() {
@@ -87182,8 +87182,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Hráč hlásí "odešel jsem z dungeonu/propasti a po chvíli mě to vrátilo zpět do boje"
                 // = watchdog viděl combatState v paměti ale UI bylo zavřené → omylem vyvolal startNextTurn
                 const _inCombatFullscreen = document.body.classList.contains('combat-fullscreen');
-                const _hexGridExists = !!document.getElementById('hexGrid');
-                const _combatLogExists = !!document.getElementById('combatLog');
+                // [FIX v6.4.1] Hledej SKUTEČNÉ combat elementy. 'hexGrid'/'combatLog' už neexistují
+                // (combat UI byl přejmenován na combatContainer/combatGridContainer/combatLogGrid).
+                // Předtím tyto checky vždy vracely false → detekce "boj žije" stála jen na
+                // combat-fullscreen + modal.show → při krátkém výpadku (resume/re-render) watchdog
+                // omylem ukončil živý boj ("boj se zruší").
+                const _hexGridExists = !!(document.getElementById('combatContainer') || document.getElementById('combatGridContainer'));
+                const _combatLogExists = !!document.getElementById('combatLogGrid');
                 const _modalElement = document.getElementById('modal');
                 const _modalIsVisible = _modalElement && _modalElement.classList.contains('show');
                 
@@ -88192,8 +88197,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Hráč hlásí "odešel jsem z dungeonu/propasti a po chvíli mě to vrátilo zpět do boje"
                     // = watchdog viděl combatState v paměti ale UI bylo zavřené → omylem vyvolal startNextTurn
                     const _inCombatFullscreenGW = document.body.classList.contains('combat-fullscreen');
-                    const _hexGridExistsGW = !!document.getElementById('hexGrid');
-                    const _combatLogExistsGW = !!document.getElementById('combatLog');
+                    // [FIX v6.4.1] Skutečné combat elementy (viz heartbeat výše)
+                    const _hexGridExistsGW = !!(document.getElementById('combatContainer') || document.getElementById('combatGridContainer'));
+                    const _combatLogExistsGW = !!document.getElementById('combatLogGrid');
                     const _modalElementGW = document.getElementById('modal');
                     const _modalIsVisibleGW = _modalElementGW && _modalElementGW.classList.contains('show');
                     
@@ -89844,6 +89850,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const target = allTargets[0];
             let dist = Math.max(Math.abs(target.x - unit.x), Math.abs(target.y - unit.y));
             let actionsUsed = 0;
+            // [FIX v6.4.1 — volba B] Kolik akcí má nepřítel reálně odehrát.
+            // Propast/dungeon/World Boss = 3, jinak 2. Předtím byl AI napevno na 2 akce, takže
+            // 3-akční nepřátelé udeřili jen 2× (snazší, než bylo zamýšleno). Teď to drží smyčka níže.
+            const maxActions = Math.max(1, unit.maxActions || unit.actionsLeft || 2);
             let movedThisTurn = false;
             
             // A* Pathfinding pro AI - najde cestu kolem překážek
@@ -90032,10 +90042,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             renderHeroesCombatUI();
             _combatHighlightCell(unit.x, unit.y, actionsUsed > 0 && dist > 1 ? 'moved' : 'attacked');
             
-            const doAction2 = () => {
+            const doFollowupAction = () => {
                 try {
                 if (!window.combatState || !unit.alive) { _finishAITurn(unit, actionsUsed); return; }
-                
+
+                // [FIX v6.4.1] Vyčerpal akce → konec tahu
+                if (actionsUsed >= maxActions) { _finishAITurn(unit, actionsUsed); return; }
+
                 // Re-target pokud cíl zemřel
                 let target2 = finalTarget;
                 if (!target2.alive || target2.hp <= 0) {
@@ -90045,25 +90058,26 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     target2 = newTargets[0];
                     dist = Math.max(Math.abs(target2.x - unit.x), Math.abs(target2.y - unit.y));
                 }
-                
-                // Akce 2
-                if (actionsUsed < 2 && unit.actionsLeft > 1 && unit.alive) {
+
+                const _usedBefore = actionsUsed;
+                // Jedna další akce
+                if (actionsUsed < maxActions && unit.alive) {
                     if (isRanged && dist <= effectiveAttackRange && dist >= 1) {
-                        // RANGED: Druhý výstřel
+                        // RANGED: další výstřel
                         performCombatAttack(unit, target2);
                         actionsUsed++;
                         const _d2a = (window.combatState?._attackVisualDelay) || 0;
                         if (_d2a > 0) setTimeout(() => _combatHighlightCell(target2.x, target2.y, 'hit'), _d2a);
                         else _combatHighlightCell(target2.x, target2.y, 'hit');
                     } else if (dist <= 1 && target2.alive) {
-                        // MELEE: Druhý úder
+                        // MELEE: další úder
                         performCombatAttack(unit, target2);
                         actionsUsed++;
                         _combatHighlightCell(target2.x, target2.y, 'hit');
                     } else if (isRanged && dist > effectiveAttackRange) {
                         // RANGED: moc daleko → pohyb blíž
                         const move2 = findTacticalMove(unit.x, unit.y, target2.x, target2.y);
-                        if (move2) { doMove(move2.x, move2.y); actionsUsed++; }
+                        if (move2) { doMove(move2.x, move2.y); actionsUsed++; dist = Math.max(Math.abs(target2.x - unit.x), Math.abs(target2.y - unit.y)); }
                     } else if (isRanged && dist < 2) {
                         // RANGED: moc blízko → ustup do krytu
                         const retreatMoves = [];
@@ -90080,7 +90094,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             }
                         }
                         retreatMoves.sort((a, b) => (b.cover - a.cover) || (b.d - a.d));
-                        if (retreatMoves[0]) { doMove(retreatMoves[0].x, retreatMoves[0].y); actionsUsed++; cs.log.push(`${unit.name} ustupuje do krytu.`); }
+                        if (retreatMoves[0]) { doMove(retreatMoves[0].x, retreatMoves[0].y); actionsUsed++; dist = Math.max(Math.abs(target2.x - unit.x), Math.abs(target2.y - unit.y)); cs.log.push(`${unit.name} ustupuje do krytu.`); }
                     } else {
                         // Melee nemůže dosáhnout cíle — zkus zaútočit na sousední player jednotku
                         const adjacentTarget = cs.units.find(u => u.team === 'player' && u.alive && u !== target2 &&
@@ -90092,26 +90106,42 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         } else {
                             // Pohyb
                             const move2 = findTacticalMove(unit.x, unit.y, target2.x, target2.y);
-                            if (move2) { doMove(move2.x, move2.y); actionsUsed++; }
+                            if (move2) { doMove(move2.x, move2.y); actionsUsed++; dist = Math.max(Math.abs(target2.x - unit.x), Math.abs(target2.y - unit.y)); }
                             else if (path.length > 1) {
                                 const nextStep = movedThisTurn ? (path[1] || path[0]) : path[0];
                                 if (nextStep && !cs.units.some(u => u.alive && u.x === nextStep.x && u.y === nextStep.y)) {
-                                    doMove(nextStep.x, nextStep.y); actionsUsed++;
+                                    doMove(nextStep.x, nextStep.y); actionsUsed++; dist = Math.max(Math.abs(target2.x - unit.x), Math.abs(target2.y - unit.y));
                                 }
                             }
                         }
                     }
                 }
-                
-                _finishAITurn(unit, actionsUsed);
+
+                // [FIX v6.4.1] Konec boje po této akci?
+                if (checkCombatEnd()) {
+                    if (window.combatState) window.combatState._turnLocked = false;
+                    if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
+                    return;
+                }
+
+                // [FIX v6.4.1] Akce neudělala nic (nemá kam jít / na koho) → ukonči tah, ať není nekonečná smyčka
+                if (actionsUsed === _usedBefore) { _finishAITurn(unit, actionsUsed); return; }
+
+                // [FIX v6.4.1] Zbývají akce? Pokračuj další (s prodlevou). Jinak dokonči tah.
+                if (actionsUsed < maxActions && window.combatState && unit.alive) {
+                    renderHeroesCombatUI();
+                    setTimeout(doFollowupAction, 1400);
+                } else {
+                    _finishAITurn(unit, actionsUsed);
+                }
                 } catch(e2) {
-                    console.error('⚠️ AI akce 2 chyba:', e2);
+                    console.error('⚠️ AI následná akce chyba:', e2);
                     _finishAITurn(unit, actionsUsed);
                 }
             };
             
             // Delay mezi akcemi - hráč vidí každou akci zvlášť (900ms projektil + 500ms pauza)
-            setTimeout(doAction2, 1400);
+            setTimeout(doFollowupAction, 1400);
             } catch(e) {
                 console.error('⚠️ performAITurn chyba:', e);
                 // [FIX] Uvolni lock i při chybě aby boj nezamrzl
@@ -90123,8 +90153,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // === HELPER: Dokončení AI tahu s renderem a delay ===
         function _finishAITurn(unit, actionsUsed) {
             const cs = window.combatState;
-            // [FIX BUG 2] Uvolni turn lock — AI tah je hotový
-            if (cs) cs._turnLocked = false;
             // [FIX BUG 3] Pokud combatState zmizel, vyčisti a pokračuj
             if (!cs) {
                 console.error('⚠️ _finishAITurn: combatState ztracen — vynucuji obnovu');
@@ -90139,6 +90167,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 return;
             }
+            // [FIX v6.4.1 — report Cinky] Vynuluj akce OKAMŽITĚ.
+            // Předtím se vynulovaly až v setTimeout(900) níže a zámek se uvolnil hned nahoře →
+            // v 900ms okně měl nepřítel pořád akce a zámek byl volný → re-entrantní startNextTurn
+            // (heartbeat/bublina) spustil tutéž jednotku ZNOVU → "jde 3-4x", "pohyb o 4 políčka",
+            // a dva čekající useAction posunuly index 2× → "přeskočí hráče".
+            unit.actionsLeft = 0;
             if (actionsUsed === 0 && unit.alive) {
                 unit.defending = true;
                 unit.defenseBonus = 5;
@@ -90148,6 +90182,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             setTimeout(() => {
                 // [FIX BUG 3] Další null check před useAction
                 if (!window.combatState) { console.error('⚠️ _finishAITurn setTimeout: combatState null'); return; }
+                // [FIX v6.4.1] Zámek DRŽ až sem (přes celé 900ms vizuální okno) a uvolni ho
+                // těsně před posunem tahu → žádná re-entrance, žádný dvojitý posun.
+                window.combatState._turnLocked = false;
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
             }, 900);
@@ -90156,8 +90193,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // === HELPER: Dokončení companion tahu ===
         function _finishCompanionTurn(unit, attacks, moved) {
             const cs = window.combatState;
-            // [FIX BUG 2] Uvolni turn lock — companion tah je hotový
-            if (cs) cs._turnLocked = false;
             // [FIX BUG 3] Pokud combatState zmizel, vyčisti a pokračuj
             if (!cs) {
                 console.error('⚠️ _finishCompanionTurn: combatState ztracen — vynucuji obnovu');
@@ -90172,6 +90207,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 return;
             }
+            // [FIX v6.4.1] Vynuluj akce hned + drž zámek do posunu (viz _finishAITurn)
+            unit.actionsLeft = 0;
             if (attacks === 0 && !moved && unit.alive) {
                 unit.defending = true;
                 unit.defenseBonus = 3;
@@ -90199,6 +90236,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             setTimeout(() => {
                 // [FIX BUG 3] Další null check před useAction
                 if (!window.combatState) { console.error('⚠️ _finishCompanionTurn setTimeout: combatState null'); return; }
+                // [FIX v6.4.1] Uvolni zámek těsně před posunem tahu
+                window.combatState._turnLocked = false;
                 unit.actionsLeft = 0;
                 useAction(unit, 0);
             }, 900);
@@ -95749,9 +95788,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (state.abyss?.inProgress && state.abyss.activeModifiers?.includes('no_retreat')) {
                 cs.log.push(`🚷 Propast tě nepustí! Útěk není možný!`);
                 notifyWarning('🚷 Bez ústupu!', 'Modifikátor Propasti blokuje útěk!');
-                if (document.getElementById('combatLog')) {
-                    document.getElementById('combatLog').innerHTML += `<div style="color: #ff4444;">🚷 Propast tě nepustí! Musíš bojovat!</div>`;
-                }
+                // [FIX v6.4.1] Odstraněn zápis do neexistujícího #combatLog (zpráva je už v cs.log + toast).
+                if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
                 return;
             }
             
@@ -96750,8 +96788,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Zkontroluj zda existují fyzické DOM elementy combat UI
             const modalEl = document.getElementById('modal');
             const modalVisible = modalEl && modalEl.classList.contains('show');
-            const hasCombatLog = document.getElementById('combatLog');
-            const hasHexGrid = document.getElementById('hexGrid');
+            // [FIX v6.4.1] Skutečné combat elementy — 'combatLog'/'hexGrid' už neexistují,
+            // combat UI je combatContainer/combatGridContainer/combatLogGrid.
+            const hasCombatLog = document.getElementById('combatLogGrid');
+            const hasHexGrid = document.getElementById('combatContainer') || document.getElementById('combatGridContainer');
             const hasCombatBanner = document.getElementById('combatEndBanner');
             const hasFloatBtn = document.getElementById('combatFloatingBtn');
             const inFullscreen = document.body.classList.contains('combat-fullscreen');
@@ -97982,7 +98022,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cs = window.combatState;
             if (!cs) return; // Combat už skončil
             
-            const log = document.getElementById('combatLog');
+            // [FIX v6.4.1] null-safe: prvek 'combatLog' už v UI neexistuje (legacy combat path).
+            // Bez fallbacku každý log.innerHTML += ... hodil TypeError → tah okamžitě zamrzl.
+            const log = document.getElementById('combatLog') || { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
             const enemyGroup = cs.enemyGroup;
             if (!enemyGroup) return; // Žádní nepřátelé
             
@@ -98209,7 +98251,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function performAttack(multiplier, isHeavy) {
             const cs = window.combatState;
-            const log = document.getElementById('combatLog');
+            // [FIX v6.4.1] null-safe: prvek 'combatLog' už v UI neexistuje (legacy combat path).
+            // Bez fallbacku každý log.innerHTML += ... hodil TypeError → tah okamžitě zamrzl.
+            const log = document.getElementById('combatLog') || { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
             const enemyGroup = cs.enemyGroup;
             
             // Check if AOE attack (from Berserker ability or throwables)
@@ -98397,7 +98441,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const cs = window.combatState;
             if (!cs || !cs.enemyGroup) return; // Combat už skončil
             
-            const log = document.getElementById('combatLog');
+            // [FIX v6.4.1] null-safe: prvek 'combatLog' už v UI neexistuje (legacy combat path).
+            // Bez fallbacku každý log.innerHTML += ... hodil TypeError → tah okamžitě zamrzl.
+            const log = document.getElementById('combatLog') || { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
             const enemyGroup = cs.enemyGroup;
             
             // Zkontroluj zda jsou vůbec živí nepřátelé
@@ -98708,7 +98754,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function useCombatItem(itemId, type) {
             const cs = window.combatState;
-            const log = document.getElementById('combatLog');
+            // [FIX v6.4.1] null-safe: prvek 'combatLog' už v UI neexistuje (legacy combat path).
+            // Bez fallbacku každý log.innerHTML += ... hodil TypeError → tah okamžitě zamrzl.
+            const log = document.getElementById('combatLog') || { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
             const item = state.inv.find(i => i.id === itemId);
             
             if (!item) return;
@@ -101187,7 +101235,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (!cs || !cs.enemyGroup) return;
             
             const enemyGroup = cs.enemyGroup;
-            const log = document.getElementById('combatLog');
+            // [FIX v6.4.1] null-safe: prvek 'combatLog' už v UI neexistuje (legacy combat path).
+            // Bez fallbacku každý log.innerHTML += ... hodil TypeError → tah okamžitě zamrzl.
+            const log = document.getElementById('combatLog') || { innerHTML: '', scrollTop: 0, scrollHeight: 0 };
             
             // === KONTROLA STUNU HRÁČE ===
             if (state.char.stunned && state.char.stunnedRounds > 0) {
@@ -101253,7 +101303,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             if (dotDamage > 0) {
                 state.char.hp = Math.max(0, state.char.hp - dotDamage);
-                document.getElementById('playerHp').textContent = Math.max(0, Math.round(state.char.hp));
+                { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = Math.max(0, Math.round(state.char.hp)); }
                 
                 if (state.char.hp <= 0) {
                     // Last Stand check (Survivor) + companion surviveChance
@@ -101266,14 +101316,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (_dotSurviveFinal > 0 && Math.random() < _dotSurviveFinal) {
                         state.char.hp = 1;
                         log.innerHTML += `<div style="color: #ffd700;">💪 POSLEDNÍ VZDOR! Přežil jsi DOT s 1 HP!</div>`;
-                        document.getElementById('playerHp').textContent = 1;
+                        { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = 1; }
                     }
                     // 🔥 Fénixův elixír check
                     else if (state.buffs?.phoenix?.active) {
                         state.char.hp = Math.floor(state.char.maxHp * 0.5);
                         delete state.buffs.phoenix;
                         log.innerHTML += `<div style="color: #ff5722; font-weight: bold;">🔥 FÉNIXŮV ELIXÍR! Vzkříšen na 50% HP!</div>`;
-                        document.getElementById('playerHp').textContent = state.char.hp;
+                        { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = state.char.hp; }
                     } else {
                         log.innerHTML += `<div style="color: #c62828; font-weight: bold;">💀 Zemřel jsi na DOT efekty!</div>`;
                         state.stats.deaths++;
@@ -101948,7 +101998,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         log.innerHTML += `<div style="color: #81c784;">🧪 Medik snížil radiaci: -${radReduce} ☢️</div>`;
                     }
                     
-                    document.getElementById('attackBtn').style.display = 'none';
+                    // [FIX v6.4.1] null-safe: 'attackBtn' v UI neexistuje (legacy combat)
+                    const _atkBtnHide = document.getElementById('attackBtn');
+                    if (_atkBtnHide) _atkBtnHide.style.display = 'none';
                     
                     // Přidej tlačítko OK
                     const okBtn = document.createElement('button');
@@ -101963,7 +102015,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                         renderFull();
                     };
-                    document.getElementById('attackBtn').parentNode.appendChild(okBtn);
+                    // [FIX v6.4.1] null-safe: bez tohoto by chybějící 'attackBtn' hodil TypeError
+                    // a tlačítko Pokračovat by se nikdy nepřidalo → hráč zaseknutý na obrazovce výhry.
+                    const _atkBtnParent = document.getElementById('attackBtn');
+                    if (_atkBtnParent && _atkBtnParent.parentNode) {
+                        _atkBtnParent.parentNode.appendChild(okBtn);
+                    } else {
+                        const _mc = document.getElementById('modalContent');
+                        if (_mc) _mc.appendChild(okBtn);
+                    }
                     
                     addLog(`Boj vyhrán! Zabil jsi ${enemyGroup.length}x ${targetEnemy.name}`, '⚔️');
                     state.stats.kills += enemyGroup.length;
@@ -102304,7 +102364,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 screenShake(enemyDmg > 15 ? 8 : 5, 200);
             });
             
-            document.getElementById('playerHp').textContent = Math.max(0, Math.round(state.char.hp));
+            { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = Math.max(0, Math.round(state.char.hp)); }
             
             if (state.char.hp <= 0) {
                 // Last Stand check (Survivor) - včetně set bonus improved verze
@@ -102315,7 +102375,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (lastStandPassive && state.char.hp <= 0 && Math.random() < lastStandChance) {
                     state.char.hp = 1;
                     log.innerHTML += `<div style="color: #ffd700;">💪 POSLEDNÍ VZDOR${setFx.lastStandImproved ? ' (ZESÍLENÝ)' : ''}! Přežil jsi s 1 HP!</div>`;
-                    document.getElementById('playerHp').textContent = 1;
+                    { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = 1; }
                     return;
                 }
                 
@@ -102324,7 +102384,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (compBonuses.surviveChance > 0 && Math.random() < compBonuses.surviveChance) {
                     state.char.hp = 1;
                     log.innerHTML += `<div style="color: #81c784;">🐾 Tvůj společník tě zachránil! Přežil jsi s 1 HP!</div>`;
-                    document.getElementById('playerHp').textContent = 1;
+                    { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = 1; }
                     return;
                 }
                 
@@ -102332,7 +102392,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (compBonuses.resurrectChance > 0 && Math.random() < compBonuses.resurrectChance) {
                     state.char.hp = Math.floor(state.char.maxHp * 0.3);
                     log.innerHTML += `<div style="color: #ffd700;">✨ Tvůj společník tě vzkřísil! HP obnoveno na 30%!</div>`;
-                    document.getElementById('playerHp').textContent = state.char.hp;
+                    { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = state.char.hp; }
                     return;
                 }
                 
@@ -102341,14 +102401,15 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.char.hp = Math.floor(state.char.maxHp * 0.5);
                     delete state.buffs.phoenix;
                     log.innerHTML += `<div style="color: #ff5722; font-weight: bold;">🔥 FÉNIXŮV ELIXÍR! Vzkříšen na 50% HP!</div>`;
-                    document.getElementById('playerHp').textContent = state.char.hp;
+                    { const __pHp = document.getElementById('playerHp'); if (__pHp) __pHp.textContent = state.char.hp; }
                     SoundSystem.play('pickup');
                     return;
                 }
                 
                 // Defeat
                 log.innerHTML += `<div style="color: #c62828; font-weight: bold; margin-top: 0.5rem;">💀 PROHRÁL JSI!</div>`;
-                document.getElementById('attackBtn').disabled = true;
+                // [FIX v6.4.1] null-safe attackBtn (legacy combat)
+                { const _atkBtnDis = document.getElementById('attackBtn'); if (_atkBtnDis) _atkBtnDis.disabled = true; }
                 state.stats.deaths++;
                 state.stats.daysSinceDeath = 0;
                 if (typeof aiGenerateEpitaph === 'function') aiGenerateEpitaph().catch(() => {});
@@ -117493,8 +117554,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Každých 30s zkontroluj jestli není nějaký raid blízko startu (5 min) nebo právě začíná
             const checkScheduledRaids = async () => {
                 if (!multiplayerEnabled || !firebaseDB) return;
-                // [LOCKED] PvP nájezdy v BETA - check běží jen pro adminy
-                if (!(typeof isAdmin === 'function' && isAdmin())) return;
+                // [FIX v6.4.1] Místo tvrdého admin-zámku: admin vždy; ne-admin jen když admin
+                // odemkl PvP nebo klanové nájezdy přes systemLocks (čteno z cache listeneru níže).
+                // Bez tohoto se duel dvou hráčů zasekl v lobby — scheduler (start boje) jim neběžel.
+                const _amAdmin = (typeof isAdmin === 'function' && isAdmin());
+                if (!_amAdmin) {
+                    const _locks = window._pvpLockCache || { pvp: true, clanRaid: true };
+                    const _pvpOpen = _locks.pvp === false;       // === true = zamčeno, false/null = odemčeno
+                    const _clanOpen = _locks.clanRaid === false;
+                    if (!_pvpOpen && !_clanOpen) return;          // oba zamčené → ne-admin scheduler neběží
+                }
                 try {
                     const myName = getPlayerName();
                     const raidsSnap = await firebaseDB.ref('scheduledRaids').once('value');
@@ -117737,6 +117806,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 } catch (e) { console.warn('Scheduled raid check error:', e); }
             };
+            // [FIX v6.4.1] Cache stavu zámků přes listener — scheduler tak nemusí číst Firebase
+            // na každý tik (běží každých 1–10 s u všech online hráčů). Default = zamčeno dokud se nenačte.
+            window._pvpLockCache = window._pvpLockCache || { pvp: true, clanRaid: true };
+            if (!window._pvpLockListenerSet) {
+                window._pvpLockListenerSet = true;
+                try {
+                    firebaseDB.ref('systemLocks/pvp').on('value', s => { window._pvpLockCache.pvp = (s.val() === true); });
+                    firebaseDB.ref('systemLocks/clanRaid').on('value', s => { window._pvpLockCache.clanRaid = (s.val() === true); });
+                } catch(e) { /* ignore */ }
+            }
             // Spusť hned a pak adaptivně:
             // - každých 10s normálně
             // - každou 1s v posledních 30s před plánovaným raidem (přesný start)
@@ -120421,24 +120500,50 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.submitPoll = submitPoll;
         
         // 🔇 FILTER SYSTEM MESSAGES
-        window._chatHideSystem = false;
+        // [FIX v6.4.1] Persistence — načti z localStorage
+        window._chatHideSystem = (function() {
+            try { return localStorage.getItem('chatHideSystem') === '1'; } catch (e) { return false; }
+        })();
         function toggleChatSystemFilter() {
             window._chatHideSystem = !window._chatHideSystem;
+            try { localStorage.setItem('chatHideSystem', window._chatHideSystem ? '1' : '0'); } catch (e) {}
             renderFull();
         }
         window.toggleChatSystemFilter = toggleChatSystemFilter;
         
         // 🆕 [v6.4.0] GRANULÁRNÍ FILTR ZPRÁV - kategorie
-        window._chatFilters = window._chatFilters || {
-            players: true,   // 💬 hráči
-            boss: true,      // 🐉 bossové / raidy
-            tombola: true,   // 🎟️ tombola
-            politics: true,  // 🏛️ politika / volby
-            clans: true,     // ⚔️ klany / války
-            poker: true,     // 🃏 poker
-            system: true,    // 🌍 pustina / systém
-        };
+        // [FIX v6.4.1] Persistence — filtr se teď načte z localStorage, takže přežije
+        // vypnutí/zapnutí hry. Nové kategorie (přidané v budoucnu) defaultují na true díky merge.
+        window._chatFilters = window._chatFilters || (function() {
+            const _defaultChatFilters = {
+                players: true,   // 💬 hráči
+                boss: true,      // 🐉 bossové / raidy
+                tombola: true,   // 🎟️ tombola
+                politics: true,  // 🏛️ politika / volby
+                clans: true,     // ⚔️ klany / války
+                poker: true,     // 🃏 poker
+                system: true,    // 🌍 pustina / systém
+            };
+            try {
+                const _saved = localStorage.getItem('chatFilters');
+                if (_saved) {
+                    const _parsed = JSON.parse(_saved);
+                    if (_parsed && typeof _parsed === 'object') {
+                        return { ..._defaultChatFilters, ..._parsed };
+                    }
+                }
+            } catch (e) { console.warn('chatFilters load error:', e); }
+            return _defaultChatFilters;
+        })();
         window._chatFilterPanelOpen = false;
+        
+        // [FIX v6.4.1] Ulož aktuální nastavení filtru do localStorage
+        function saveChatFilters() {
+            try {
+                localStorage.setItem('chatFilters', JSON.stringify(window._chatFilters));
+            } catch (e) { console.warn('chatFilters save error:', e); }
+        }
+        window.saveChatFilters = saveChatFilters;
         
         // Vrať kategorii zprávy podle authora
         function getChatMessageCategory(msg) {
@@ -120461,12 +120566,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function toggleChatFilter(category) {
             window._chatFilters[category] = !window._chatFilters[category];
+            saveChatFilters(); // [FIX v6.4.1] ulož změnu
             if (typeof showChatModal === 'function') showChatModal();
         }
         window.toggleChatFilter = toggleChatFilter;
         
         function setAllChatFilters(value) {
             Object.keys(window._chatFilters).forEach(k => window._chatFilters[k] = value);
+            saveChatFilters(); // [FIX v6.4.1] ulož změnu
             if (typeof showChatModal === 'function') showChatModal();
         }
         window.setAllChatFilters = setAllChatFilters;
@@ -158825,7 +158932,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         const sm = new Date(cycleStart); sm.setHours(0,0,0,0);
                         const tm = new Date(); tm.setHours(0,0,0,0);
                         const daysSinceStart = Math.round((tm - sm) / (24 * 60 * 60 * 1000));
-                        await firebaseDB.ref('politics/lastEvaluatedCycle').set(Math.floor(daysSinceStart / 7));
+                        await firebaseDB.ref('politics/lastEvaluatedCycle').set(Math.floor(daysSinceStart / 6)); // [FIX v6.4.1] 6denní cyklus (dříve /7 → každý druhý cyklus se nevyhodnotil)
                     }
                     
                     // [FIX] Ulož předchozího šéfa do historie (i při re-electu)
@@ -158997,7 +159104,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         const smClean = new Date(cycleStartClean); smClean.setHours(0,0,0,0);
                         const tmClean = new Date(); tmClean.setHours(0,0,0,0);
                         const daysSinceClean = Math.round((tmClean - smClean) / (24 * 60 * 60 * 1000));
-                        const currentCycleClean = Math.floor(daysSinceClean / 7);
+                        const currentCycleClean = Math.floor(daysSinceClean / 6); // [FIX v6.4.1] 6denní cyklus
                         
                         // Pokud existují kandidáti/hlasy z minulého cyklu, smaž je
                         const lastCleanedSnap = await firebaseDB.ref('politics/lastCleanedCycle').once('value');
@@ -159141,7 +159248,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         const sm = new Date(cycleStart); sm.setHours(0,0,0,0);
                         const tm = new Date(); tm.setHours(0,0,0,0);
                         const dss = Math.round((tm - sm) / (24 * 60 * 60 * 1000));
-                        const cc = Math.floor(dss / 7);
+                        const cc = Math.floor(dss / 6); // [FIX v6.4.1] 6denní cyklus
                         
                         const emptyResult = await firebaseDB.ref('politics/lastEvaluatedCycle').transaction(current => {
                             if (current !== null && current >= cc) return; // Abort
@@ -159165,7 +159272,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                             // Oznámení do chatu o prázdných volbách
                             const mayorName = currentMayor?.name;
                             const emptyText = mayorName
-                                ? `⚠️ VOLBY BEZ KANDIDÁTŮ\n\nNikdo se nepřihlásil jako kandidát.\n\n👑 ${mayorName} zůstává Šéfem Pustiny.\n\n🗓️ Nový cyklus začne za ${7 - (dss % 7)} dní — nominuj se příště!`
+                                ? `⚠️ VOLBY BEZ KANDIDÁTŮ\n\nNikdo se nepřihlásil jako kandidát.\n\n👑 ${mayorName} zůstává Šéfem Pustiny.\n\n🗓️ Nový cyklus začne za ${6 - (dss % 6)} dní — nominuj se příště!`
                                 : '⚠️ VOLBY BEZ KANDIDÁTŮ\n\nNikdo se nepřihlásil jako kandidát.\nPozice Šéfa Pustiny je prázdná!\n\n🗓️ Nový cyklus začne automaticky — přihlas se!';
                             
                             await firebaseDB.ref('chat/messages').push({
@@ -159188,7 +159295,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const todayMidnight = new Date();
                 todayMidnight.setHours(0, 0, 0, 0);
                 const daysSinceStart = Math.round((todayMidnight - startMidnight) / (24 * 60 * 60 * 1000));
-                const currentCycle = Math.floor(daysSinceStart / 7);
+                const currentCycle = Math.floor(daysSinceStart / 6); // [FIX v6.4.1] 6denní cyklus — /7 způsobovalo, že každý druhý cyklus se nevyhodnotil (vítěz nevyhlášen)
                 
                 // [FIX] Zkontroluj jestli tento cyklus už byl vyhodnocen - BEZ zápisu
                 // Transaction se zapíše AŽ po úspěšném zvolení vítěze (rollback pattern)
@@ -160156,7 +160263,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
                         <h4 style="color: #ffd700; margin: 0 0 0.5rem 0;">📊 Stav systému</h4>
                         <p style="margin: 0.3rem 0;">👑 Šéf: <strong style="color: ${mayor ? '#ffd700' : '#888'};">${mayor ? mayor.name : 'Nikdo'}</strong></p>
-                        <p style="margin: 0.3rem 0;">📅 Fáze: <strong style="color: #4caf50;">${phase.name}</strong> ${phase.dayInCycle ? `(den ${phase.dayInCycle}/7)` : ''}</p>
+                        <p style="margin: 0.3rem 0;">📅 Fáze: <strong style="color: #4caf50;">${phase.name}</strong> ${phase.dayInCycle ? `(den ${phase.dayInCycle}/6)` : ''}</p>
                         ${phase.nextPhaseAt ? `<p style="margin: 0.3rem 0; color: #ff9800; font-size: 0.8rem;">⏰ Další fáze (${phase.nextPhaseName}): ${phase.nextPhaseAt.toLocaleString('cs-CZ', {day:'numeric', month:'numeric', hour:'2-digit', minute:'2-digit'})}</p>` : ''}
                         <p style="margin: 0.3rem 0;">💰 Veřejná kasa: <strong>${formatNumber(publicMoney)}</strong></p>
                         <p style="margin: 0.3rem 0;">📝 Kandidátů: <strong>${candidateCount}</strong> | 🗳️ Hlasů: <strong>${voteCount}</strong></p>
@@ -168569,7 +168676,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             PLAYER_COOLDOWN: 30 * 60 * 1000,      // 30 min cooldown po souboji
             MIN_LEVEL: 5,                          // Min lvl 5 pro PvP
             MAX_LEVEL_DIFF: 10,                    // Max rozdíl 10 lvl mezi soupeři
-            GRID_SIZE_X: 4,                        // 4x6 koloseum (na výšku pro mobil)
+            GRID_SIZE_X: 6,                        // [FIX v6.4.1] 6x6 koloseum (x 0-5, y 0-5)
             GRID_SIZE_Y: 6
         };
         
@@ -169327,7 +169434,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const isDuel = !!raid.isDuel;
             
             // Grid sizing podle módu
-            const COLS = isDuel ? 4 : 5;
+            const COLS = isDuel ? 6 : 5;
             const ROWS = isDuel ? 6 : 9;
             const myZoneStart = isDuel 
                 ? (myTeam === 'attacker' ? 5 : 0)   // Duel 4x6: attacker y=5, defender y=0
@@ -169350,7 +169457,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const myCurrentPos = teamData?.[myName]?.position;
             
             // Render mřížky — 6 sloupců pro duel, 5 pro klanový
-            const gridCols = isDuel ? 'repeat(6,1fr)' : 'repeat(5,1fr)';
+            const gridCols = `repeat(${COLS},1fr)`; // [FIX v6.4.1] odvozeno z COLS — CSS sloupce vždy = render smyčka (oprava rozhozeného duel gridu)
             const maxWidth = isDuel ? '220px' : '280px';
             let gridHtml = `<div style="display:grid;grid-template-columns:${gridCols};gap:3px;background:#000;padding:6px;border-radius:6px;margin-bottom:0.5rem;max-width:${maxWidth};margin-left:auto;margin-right:auto;">`;
             for (let y = 0; y < ROWS; y++) {
@@ -169452,10 +169559,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 // Validace zóny — DUEL má jiný grid
                 if (raid.isDuel) {
-                    // Duel: 4x6 (x: 0-3, y: 0-5), útočník y=5 (dole), obránce y=0 (nahoře)
+                    // Duel: 6x6 (x: 0-5, y: 0-5), útočník y=5 (dole), obránce y=0 (nahoře)
                     if (isAttacker && y !== 5) { notifyWarning('🔒', 'Útočník stojí dole (y=5)!'); return; }
                     if (isDefender && y !== 0) { notifyWarning('🔒', 'Obránce stojí nahoře (y=0)!'); return; }
-                    if (x < 0 || x > 3) return;
+                    if (x < 0 || x > 5) return;  // [FIX v6.4.1] 6 sloupců (x 0-5)
                 } else {
                     // Klanový raid: 5x9
                     if (isAttacker && (y < 5 || y > 8)) { notifyWarning('🔒', 'Mimo tvoji zónu!'); return; }
@@ -170210,9 +170317,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const myCurrentPos = teamData?.[myName]?.position;
             
             // Render mřížky — DUEL 6x4, KLAN 5x9
-            const COLS = isDuel ? 4 : 5;
+            const COLS = isDuel ? 6 : 5;
             const ROWS = isDuel ? 6 : 9;
-            const gridCols = isDuel ? 'repeat(6,1fr)' : 'repeat(5,1fr)';
+            const gridCols = `repeat(${COLS},1fr)`; // [FIX v6.4.1] odvozeno z COLS — CSS sloupce vždy = render smyčka (oprava rozhozeného duel gridu)
             const maxWidth = isDuel ? '240px' : '300px';
             let gridHtml = `<div style="display:grid;grid-template-columns:${gridCols};gap:3px;background:#000;padding:6px;border-radius:6px;margin-bottom:0.5rem;max-width:${maxWidth};margin-left:auto;margin-right:auto;">`;
             for (let y = 0; y < ROWS; y++) {
@@ -170395,7 +170502,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // KLAN: attacker y=5-8, defender y=0-3, x: 0-4
                 function findFreePos(yStart, yEnd) {
                     const yPreference = _isDuel
-                        ? (yStart === 3 ? [3] : [0])  // Duel: jen 1 řádek
+                        ? (yStart === 5 ? [5] : [0])  // [FIX v6.4.1] Duel: útočník y=5, obránce y=0 (sjednoceno se zónami/validací/barvami)
                         : (yStart === 5 ? [8, 7, 6, 5] : [0, 1, 2, 3]);
                     const xPreference = _isDuel
                         ? [2, 3, 1, 4, 0, 5]  // Střed je nejlepší ve 1v1
@@ -170417,7 +170524,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 attackers.forEach(a => {
                     const pos = a.position;
                     const validPos = _isDuel
-                        ? (pos && pos.y === 5 && pos.x >= 0 && pos.x <= 3)
+                        ? (pos && pos.y === 5 && pos.x >= 0 && pos.x <= 5)
                         : (pos && pos.y >= 5 && pos.y <= 8 && pos.x >= 0 && pos.x <= 4);
                     if (validPos) {
                         const key = `${pos.x},${pos.y}`;
@@ -170430,7 +170537,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 defenders.forEach(d => {
                     const pos = d.position;
                     const validPos = _isDuel
-                        ? (pos && pos.y === 0 && pos.x >= 0 && pos.x <= 3)
+                        ? (pos && pos.y === 0 && pos.x >= 0 && pos.x <= 5)
                         : (pos && pos.y >= 0 && pos.y <= 3 && pos.x >= 0 && pos.x <= 4);
                     if (validPos) {
                         const key = `${pos.x},${pos.y}`;
@@ -170443,7 +170550,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 // 2) Pak auto-přiřaď ostatní (bez volby nebo kolizní volba)
                 attackers.forEach(a => {
-                    if (!a._finalPos) a._finalPos = _isDuel ? findFreePos(3, 3) : findFreePos(7, 8);
+                    if (!a._finalPos) a._finalPos = _isDuel ? findFreePos(5, 5) : findFreePos(7, 8);
                 });
                 defenders.forEach(d => {
                     if (!d._finalPos) d._finalPos = _isDuel ? findFreePos(0, 0) : findFreePos(0, 1);
@@ -170578,12 +170685,15 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 }
                 
                 // [NEW] Public chat — boj začal
-                firebaseDB.ref('chat/messages').push({
-                    author: '⚔️ KLANOVÁ VÁLKA',
-                    text: `🔥 BOJ ZAČAL! [${raid.attackerClanName}] (${attackers.length}) vs [${raid.defenderClanName}] (${defenders.length}). Sledujte výsledek!`,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    system: true
-                }).catch(()=>{});
+                // [FIX v6.4.1] Jen klanové boje — duely chat nezatěžují (jako u cancelled/result broadcastů)
+                if (!raid.isDuel) {
+                    firebaseDB.ref('chat/messages').push({
+                        author: '⚔️ KLANOVÁ VÁLKA',
+                        text: `🔥 BOJ ZAČAL! [${raid.attackerClanName}] (${attackers.length}) vs [${raid.defenderClanName}] (${defenders.length}). Sledujte výsledek!`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    }).catch(()=>{});
+                }
                 
                 console.log('⚔️ PvP combat initiated, opening UI for master');
                 
@@ -170719,7 +170829,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // Render grid — DUEL 6x4, KLAN 5x9
             const _isDuel = !!raid.isDuel;
-            const COLS = _isDuel ? 4 : 5;
+            const COLS = _isDuel ? 6 : 5;
             const ROWS = _isDuel ? 6 : 9;
             // Pozadí mapy (jako v klasickém combatu - random outdoor)
             const mapBg = window._pvpCombatMapBg || (() => {
@@ -170728,7 +170838,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 return window._pvpCombatMapBg;
             })();
             
-            const gridCols = _isDuel ? 'repeat(6,1fr)' : 'repeat(5,1fr)';
+            const gridCols = `repeat(${COLS},1fr)`; // [FIX v6.4.1] odvozeno z COLS — CSS sloupce vždy = render smyčka (oprava rozhozeného duel gridu)
             let gridHtml = `<div style="position:relative;background:url('${mapBg}') center/cover, #0a0a0a;border:2px solid #444;border-radius:6px;padding:6px;margin-bottom:0.5rem;box-shadow:inset 0 0 30px rgba(0,0,0,0.5);">`;
             gridHtml += `<div style="display:grid;grid-template-columns:${gridCols};gap:2px;">`;
             for (let y = 0; y < ROWS; y++) {
@@ -171457,7 +171567,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     const newY = attacker.y + action.dy;
                     // Validace: rozsah, vlastní zóna, ne kolize — DUEL má jiný grid
                     const _isDuel = !!raid.isDuel;
-                    const maxX = _isDuel ? 3 : 4;
+                    const maxX = _isDuel ? 5 : 4;
                     const myZoneStart = _isDuel ? 0 : (attacker.team === 'attacker' ? 4 : 0);
                     const myZoneEnd = _isDuel ? 5 : (attacker.team === 'attacker' ? 8 : 4);
                     if (newX < 0 || newX > maxX || newY < myZoneStart || newY > myZoneEnd) {
