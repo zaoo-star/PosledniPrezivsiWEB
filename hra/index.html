@@ -124420,8 +124420,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             try {
                 const sanitizedName = sanitizeFirebasePath(myName);
-                const snapshot = await firebaseDB.ref('marketplace/notifications/' + sanitizedName).once('value');
-                const notifications = snapshot.val() || {};
+                // [FIX v6.4.1] Atomicky ZABER+SMAŽ notifikace v jedné transakci. Dřív: once→...→remove,
+                // takže dvě souběžná čtení (auto při otevření tržnice + ruční výběr) stihla obě přečíst
+                // tytéž notifikace a obě připsat = dvojí výplata. Teď projde jen první claimant.
+                let _claimedNotifs = null;
+                const _claimRes = await firebaseDB.ref('marketplace/notifications/' + sanitizedName).transaction(current => {
+                    _claimedNotifs = current;
+                    return null; // smaž (zaber vše)
+                });
+                if (!_claimRes.committed || !_claimedNotifs) return 0;
+                const notifications = _claimedNotifs || {};
                 const notifList = Object.values(notifications);
                 
                 let totalEarnings = 0;
@@ -124463,7 +124471,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Smaž všechny notifikace najednou
                 if (totalEarnings > 0 || returnedItems.length > 0) {
                     if (totalEarnings > 0) addMoney(totalEarnings);
-                    await firebaseDB.ref('marketplace/notifications/' + sanitizedName).remove();
+                    // [FIX v6.4.1] Notifikace už byly smazány atomickou transakcí výše (žádný separátní remove)
                     saveGame(true);
                     if (totalEarnings > 0) {
                         if (totalFees > 0) {
@@ -124492,18 +124500,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         async function collectMarketEarnings(amount) {
             if (!multiplayerEnabled || !firebaseDB) return;
-            
-            const myName = getPlayerName();
-            const sanitizedName = sanitizeFirebasePath(myName);
-            
-            // Přidej peníze správně přes funkci
-            addMoney(amount);
-            
-            // Smaž oznámení
-            await firebaseDB.ref('marketplace/notifications/' + sanitizedName).remove();
-            
-            notifySuccess('Peníze vybrány!', `+${amount} 💰`);
-            saveGame();
+            // [FIX v6.4.1] Nevěř předanému 'amount' (spočítán při sestavení modalu) — mohl být
+            // mezitím připsán automaticky přes autoCollectMarketEarnings (běží při otevření tržnice),
+            // což vedlo k DVOJÍMU připsání. Místo toho znovu načti aktuální notifikace a připiš
+            // jen to, co tam reálně je (autoCollect dělá peníze + vrácené itemy + daily quest + smazání).
+            const collected = await autoCollectMarketEarnings();
+            if (!collected || collected <= 0) {
+                notifySuccess('Hotovo', 'Peníze už byly připsány');
+            }
             showMarketplace();
         }
         
@@ -126848,6 +126852,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         }
                         return `<button class="btn wl-btn wl-scratch" onclick="showPokerLobby()" style="flex:1;background:linear-gradient(180deg, #0a1510 0%, #050a08 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #1a4a2a;"><span style="font-size:0.7rem;color:#4caf50">🃏 TEXAS HOLD'EM POKER${playerCount > 0 ? ` <span style="color:#ffd700">(${playerCount} hr${playerCount === 1 ? 'áč' : playerCount < 5 ? 'áči' : 'áčů'})</span>` : ''}</span></button>`;
                     })()}
+                </div>
+                
+                <!-- ⚔️ PvP KOLOSEUM -->
+                <div style="display: flex; gap: 3px; margin-bottom: 4px;">
+                    <button class="btn wl-btn wl-scratch" onclick="showPvPArena()" style="flex:1;background:linear-gradient(180deg, #2a0a05 0%, #1a0500 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #ff6b35;"><span style="font-size:0.7rem;color:#ff8a5c;font-weight:bold;">⚔️ PvP KOLOSEUM</span></button>
                 </div>
                 
                 <!-- 🛡️ STAFF CHAT (jen admin/moderator) -->
@@ -152575,13 +152584,24 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     }
                 }
                 
-                // Ulož rozhodnutí
-                await firebaseDB.ref('politics/decisions/active').update({
-                    decided: true,
-                    choice: optionId,
-                    decidedBy: mayorName,
-                    decidedAt: firebase.database.ServerValue.TIMESTAMP
+                // [FIX v6.4.1] Atomicky "zaber" rozhodnutí transakcí — zabrání dvojímu provedení
+                // efektu při double-clicku. Efekt 'publicMoney' připisuje do kasy, takže 2× klik
+                // by jinak připsal do veřejné kasy dvojnásobek. Ostatní efekty jsou idempotentní (.set),
+                // ale tribut/peníze ne.
+                const _decClaim = await firebaseDB.ref('politics/decisions/active').transaction(current => {
+                    if (!current) return;            // žádné aktivní rozhodnutí
+                    if (current.decided) return;     // už rozhodnuto → abort
+                    current.decided = true;
+                    current.choice = optionId;
+                    current.decidedBy = mayorName;
+                    current.decidedAt = Date.now();  // ServerValue.TIMESTAMP nefunguje spolehlivě v transakci
+                    return current;
                 });
+                if (!_decClaim.committed) {
+                    notifyWarning('Už rozhodnuto', 'Toto rozhodnutí už bylo učiněno.');
+                    showPoliticsPanel();
+                    return;
+                }
                 
                 // Ulož do historie
                 await firebaseDB.ref('politics/decisions/history').push({
@@ -154264,8 +154284,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
             
             try {
-                // Odečti z kasy
-                await firebaseDB.ref('politics/publicMoney').set(publicMoney - amount);
+                // [FIX v6.4.1] Atomický odečet z kasy — transakce místo once→set.
+                // Zabraňuje rozhození kasy a overspendu při souběžných akcích šéfa (double-click apod.).
+                const _grantTx = await firebaseDB.ref('politics/publicMoney').transaction(current => {
+                    const cur = current || 0;
+                    if (cur < amount) return; // nedostatek → abort
+                    return cur - amount;
+                });
+                if (!_grantTx.committed) {
+                    notifyWarning('Nedostatek', 'V kase už není dost peněz');
+                    return;
+                }
                 await logTreasuryTransaction(-amount, 'grant', `Grant pro ${targetPlayer}: ${amount} 💰`);
                 
                 // Pošli notifikaci hráči
@@ -154363,7 +154392,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             try {
                 const now = Date.now();
                 
-                await firebaseDB.ref('politics/publicMoney').set(publicMoney - cost);
+                // [FIX v6.4.1] Atomický odečet (viz grant) — transakce místo once→set
+                const _bountyTx = await firebaseDB.ref('politics/publicMoney').transaction(current => {
+                    const cur = current || 0;
+                    if (cur < cost) return; // nedostatek → abort
+                    return cur - cost;
+                });
+                if (!_bountyTx.committed) {
+                    notifyWarning('Nedostatek', `V kase už není dost peněz (${cost} 💰)`);
+                    return;
+                }
                 await logTreasuryTransaction(-cost, 'bounty', `Lov na ${target}y`);
                 
                 await firebaseDB.ref('politics/activeEvents/bounty').set({
