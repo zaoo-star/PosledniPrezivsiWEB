@@ -59894,6 +59894,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🆕 [v6.3.1] Označ že je aktivní unified modal — adjust funkce ho refreshnou
             state._bulkActiveModal = 'unified';
+            // [FIX v6.4.1] Zapamatuj scroll pozici PŘED přestavením (restore po showModal níže)
+            window._bulkActionsScrollPos = document.getElementById('bulkActionsScroll')?.scrollTop || 0;
             
             // Init state - používáme stejný state jako bulkAmount modal
             if (!state._bulkDropAmounts) state._bulkDropAmounts = {};
@@ -59930,6 +59932,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (filter === 'weapons') return item.type === 'weapon';
                 if (filter === 'armor') return ['armor', 'helmet', 'gloves', 'boots'].includes(item.type);
                 if (filter === 'consumables') return item.type === 'consumable' || item.type === 'food';
+                // [FIX v6.4.1] Catch-all pro itemy bez standardní kategorie (AI moduly/jádra, páčidlo,
+                // dráp, materiály, speciální zbraně atd.) — hlášeno OwerLord: "jsou jen ve vše".
+                if (filter === 'other') return !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'food'].includes(item.type);
                 return true;
             };
             
@@ -59964,6 +59969,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 weapons: candidates.filter(({ item }) => item.type === 'weapon').length,
                 armor: candidates.filter(({ item }) => ['armor', 'helmet', 'gloves', 'boots'].includes(item.type)).length,
                 consumables: candidates.filter(({ item }) => item.type === 'consumable' || item.type === 'food').length,
+                other: candidates.filter(({ item }) => !['weapon', 'armor', 'helmet', 'gloves', 'boots', 'consumable', 'food'].includes(item.type)).length,
             };
             
             const quickBtn = (id, label, count) => {
@@ -60020,12 +60026,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${quickBtn('weapons', '⚔️ Zbraně', filterCounts.weapons)}
                     ${quickBtn('armor', '🛡️ Zbroj', filterCounts.armor)}
                     ${quickBtn('consumables', '🍖 Jídlo', filterCounts.consumables)}
+                    ${quickBtn('other', '🔩 Ostatní', filterCounts.other)}
                 </div>
                 <div style="display: flex; gap: 0.3rem; margin-bottom: 0.5rem;">
                     <button class="btn" onclick="bulkDropSetAllFiltered(${JSON.stringify(filteredItems.map(x => ({idx: x.idx, count: x.item.count || 1}))).replace(/"/g, '&quot;')})" style="flex:1; padding: 0.3rem; font-size: 0.7rem; background: #4a2a6a;" ${filteredItems.length === 0 ? 'disabled' : ''}>📌 Vybrat vše z filtru</button>
                     <button class="btn" onclick="bulkDropClearAll()" style="flex:1; padding: 0.3rem; font-size: 0.7rem; background: #4a2a2a;" ${Object.keys(state._bulkDropAmounts).length === 0 ? 'disabled' : ''}>✗ Vyčistit výběr</button>
                 </div>
-                <div style="max-height: 280px; overflow-y: auto; margin-bottom: 0.8rem; padding: 0.3rem; background: #08080a; border-radius: 4px;">
+                <div id="bulkActionsScroll" style="max-height: 280px; overflow-y: auto; margin-bottom: 0.8rem; padding: 0.3rem; background: #08080a; border-radius: 4px;">
                     ${filteredItems.length === 0 ? '<p style="text-align:center; color:#666; padding:1rem; font-size:0.85rem;">Nic neodpovídá filtru</p>' : itemsHtml}
                 </div>
                 <div style="padding: 0.6rem; background: #0d1a0d; border-radius: 8px; border: 1px solid ${totalCount > 0 ? '#ce93d8' : '#333'}; margin-bottom: 0.8rem;">
@@ -60042,6 +60049,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <button class="btn" onclick="closeModal(); state._bulkDropAmounts = {}; state._bulkFilter = 'all';" style="width: 100%; margin-top: 0.5rem; background: #555;">✗ Zavřít</button>
             `);
+            // [FIX v6.4.1] Obnov scroll pozici — +/- a filtr jinak skáčou na začátek seznamu (hlášeno OwerLord)
+            requestAnimationFrame(() => {
+                const _el = document.getElementById('bulkActionsScroll');
+                if (_el && window._bulkActionsScrollPos) _el.scrollTop = window._bulkActionsScrollPos;
+            });
         }
         window.showBulkActionsModal = showBulkActionsModal;
         
@@ -88657,7 +88669,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             while (attempts < cs.turnOrder.length * 2) {
                 const unit = cs.turnOrder[cs.currentTurnIndex];
                 
-                if (unit && unit.alive && unit.actionsLeft > 0) {
+                if (unit && unit.alive && unit.actionsLeft > 0 && !unit._actedThisRound) {
                     cs.selectedUnit = unit;
                     cs.selectedAction = null;
                     // Mark log position for this unit's turn (for condensation)
@@ -88769,7 +88781,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 attempts++;
                 
                 // OPRAVA: Robustní detekce konce kola - všechny živé jednotky odehrály
-                const allDone = cs.turnOrder.every(u => !u.alive || u.actionsLeft <= 0);
+                const allDone = cs.turnOrder.every(u => !u.alive || u.actionsLeft <= 0 || u._actedThisRound);
                 if (allDone) {
                     startNewRound();
                     return;
@@ -89232,6 +89244,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 u.actionsLeft = u.maxActions || defaultActions;
                 u.defending = false;
                 u._defendLogShown = false;
+                u._actedThisRound = false; // [FIX v6.4.1] pojistka: každá jednotka hraje jen 1× za kolo
                 
                 // 🕳️ ABYSS: poison_air - hráč a spojenci dostávají +3 jed DMG každé kolo
                 if (state.abyss?.inProgress && state.abyss.activeModifiers?.includes('poison_air') && u.alive && (u.isPlayer || u.team === 'player')) {
@@ -90044,6 +90057,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             const doFollowupAction = () => {
                 try {
+                // [FIX v6.4.1] Obnov časovač zámku při každé akci — 8s lock-watchdog tak neprolomí
+                // zámek uprostřed legitimního (jen pomalého na mobilu) 3-akčního tahu → žádná re-entrance.
+                if (window.combatState) window.combatState._turnLockedAt = Date.now();
                 if (!window.combatState || !unit.alive) { _finishAITurn(unit, actionsUsed); return; }
 
                 // [FIX v6.4.1] Vyčerpal akce → konec tahu
@@ -92938,6 +92954,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // Pokud jednotka nemá akce, přejdi na další
             if (unit.actionsLeft <= 0) {
+                unit._actedThisRound = true; // [FIX v6.4.1] tato jednotka už v tomto kole odehrála
                 // [FIX] Guard: turnOrder může být undefined/empty po cleanup race
                 if (!cs2.turnOrder || cs2.turnOrder.length === 0) {
                     console.warn('⚔️ useAction: turnOrder prázdný/null - abort');
@@ -92945,8 +92962,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 cs2.currentTurnIndex = (cs2.currentTurnIndex + 1) % cs2.turnOrder.length;
                 
-                // Zkontroluj jestli všichni odehráli (všichni mají 0 akcí)
-                const anyoneHasActions = cs2.turnOrder.some(u => u && u.alive && u.actionsLeft > 0);
+                // Zkontroluj jestli všichni odehráli (všichni mají 0 akcí NEBO už hráli)
+                const anyoneHasActions = cs2.turnOrder.some(u => u && u.alive && u.actionsLeft > 0 && !u._actedThisRound);
                 if (!anyoneHasActions) {
                     startNewRound();
                     return;
@@ -123712,13 +123729,43 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return { item, invIdx, basePrice, suggestedPrice, count: item.count || 1, qty: item.count || 1 };
             });
             
+            window._bulkSellFilter = 'all'; // [FIX v6.4.1] vždy začni na "Vše"
             renderBulkListModal();
         }
+        
+        // [FIX v6.4.1] Kategorie pro hromadný prodej (OwerLord: "hromadný prodej nemá filtry").
+        // Drží se původní index do _bulkItems, takže +/- a cena fungují i s filtrem.
+        function _bulkSellMatch(item, filter) {
+            if (!filter || filter === 'all') return true;
+            const t = item.type;
+            if (filter === 'weapons') return t === 'weapon' || t === 'throwable';
+            if (filter === 'armor') return ['armor', 'helmet', 'gloves', 'boots', 'power_armor', 'accessory'].includes(t);
+            if (filter === 'food') return t === 'consumable' || t === 'food';
+            if (filter === 'other') return !['weapon', 'throwable', 'armor', 'helmet', 'gloves', 'boots', 'power_armor', 'accessory', 'consumable', 'food'].includes(t);
+            return true;
+        }
+        function setBulkSellFilter(f) {
+            window._bulkSellFilter = f;
+            renderBulkListModal();
+        }
+        window.setBulkSellFilter = setBulkSellFilter;
         
         function renderBulkListModal() {
             const items = window._bulkItems;
             if (!items) return;
+            // [FIX v6.4.1] Zachovej scroll pozici seznamu — re-render přes showModal jinak skočí
+            // na začátek po každém +/- nebo "Vše" (hlášeno OwerLord: "vždy tě to hodí na začátek").
+            const _prevScroll = document.getElementById('bulkSellScroll')?.scrollTop || 0;
             const selectedCount = items.filter(x => x.qty > 0).length;
+            // [FIX v6.4.1] Filtr kategorií pro hromadný prodej
+            const _filter = window._bulkSellFilter || 'all';
+            const _fCount = (f) => items.filter(e => _bulkSellMatch(e.item, f)).length;
+            const _fBtn = (f, label) => {
+                const cnt = _fCount(f);
+                const on = _filter === f;
+                return `<button class="btn" onclick="setBulkSellFilter('${f}')" style="padding: 0.25rem 0.5rem; font-size: 0.7rem; background: ${on ? '#8bc34a' : '#1a1a1a'}; color: ${on ? '#000' : '#ccc'}; border: 1px solid ${on ? '#fff' : '#2a4a2a'};" ${cnt === 0 ? 'disabled' : ''}>${label} (${cnt})</button>`;
+            };
+            const _visibleCount = _fCount(_filter);
             
             let html = `
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
@@ -123728,11 +123775,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         <button class="btn" onclick="bulkSelectAll(false)" style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #333;">✗ Nic</button>
                     </div>
                 </div>
-                <div style="max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;">
+                <div style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.5rem;">
+                    ${_fBtn('all', '📦 Vše')}
+                    ${_fBtn('weapons', '⚔️ Zbraně')}
+                    ${_fBtn('armor', '🛡️ Zbroj')}
+                    ${_fBtn('food', '🍖 Jídlo')}
+                    ${_fBtn('other', '🔩 Ostatní')}
+                </div>
+                <div id="bulkSellScroll" style="max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;">
             `;
             
             items.forEach((entry, i) => {
                 const { item, suggestedPrice, qty } = entry;
+                if (!_bulkSellMatch(item, _filter)) return; // [FIX v6.4.1] skryj mimo filtr (index i zůstává původní)
                 const max = item.count || 1;
                 const active = qty > 0;
                 
@@ -123763,6 +123818,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 `;
             });
             
+            if (_visibleCount === 0) {
+                html += `<p style="text-align:center; color:#666; padding:1rem; font-size:0.85rem;">Nic neodpovídá filtru</p>`;
+            }
+            
             html += `
                 </div>
                 <div style="margin-top: 0.5rem; background: #1a2a1a; padding: 0.5rem; border-radius: 6px; border: 1px solid #3a5a3a; text-align: center;">
@@ -123777,6 +123836,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             `;
             
             showModal('📦 Hromadný výprodej', html);
+            // [FIX v6.4.1] Obnov scroll pozici po přestavení modalu
+            requestAnimationFrame(() => {
+                const _el = document.getElementById('bulkSellScroll');
+                if (_el) _el.scrollTop = _prevScroll;
+            });
         }
         
         function bulkToggleItem(i) {
@@ -123788,7 +123852,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         function bulkSelectAll(val) {
-            window._bulkItems?.forEach(x => x.qty = val ? x.count : 0);
+            // [FIX v6.4.1] "Vše/Nic" platí jen na položky v aktuálním filtru
+            const f = window._bulkSellFilter || 'all';
+            window._bulkItems?.forEach(x => { if (_bulkSellMatch(x.item, f)) x.qty = val ? x.count : 0; });
             renderBulkListModal();
         }
         
@@ -126140,6 +126206,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             const myName = getPlayerName();
+            const myLevel = state.char?.level || 1; // [FIX v6.4.1] chybělo → "myLevel is not defined" při otevření arény
             // Načti aktuální ELO/staty z Firebase (po duelech aktualizováno tam)
             let stats = state.pvp || {};
             try {
