@@ -149073,6 +149073,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 await firebaseDB.ref(`pokerHands/${tableId}/${POKER_BOT_NAME}`).remove().catch(() => {});
                 await firebaseDB.ref(`pokerTables/${tableId}/hasBot`).set(false);
                 clearPokerBotHoleLocal(tableId);
+                window._pokerBotTableMyCards = null;
                 await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
                 try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer opustil stůl — připojili se hráči.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
             } catch(e) { console.warn('_pokerBotLeave:', e); }
@@ -149284,6 +149285,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         await firebaseDB.ref(`pokerHands/${tableId}`).remove().catch(() => {});
                         clearPokerDeckLocal(tableId);
                         clearPokerBotHoleLocal(tableId);
+                        window._pokerBotTableMyCards = null;
                         _currentPokerTable = null; _myPokerHoleCards = null; _watchdogTriggered = false;
                         try { state._activePokerTable = null; } catch(e) {}
                         window._pokerMinimized = false;
@@ -149493,17 +149495,25 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // 🔒 Hole karty: 2 karty do PRIVÁTNÍHO uzlu
                 const holeCards = [deck.pop(), deck.pop()];
                 if (p.isBot) {
-                    // [v6.4.1] Bot: karty jen lokálně u hosta (Firebase rules nepovolí zápis karet bota)
+                    // [v6.4.1] Bot: karty jen lokálně u hosta
                     setPokerBotHoleLocal(tableId, holeCards);
+                } else if (table.hasBot) {
+                    // [v6.4.1] Bot stůl: Firebase rules nepovolí zápis do pokerHands dokud je tam bot,
+                    // tak i lidské karty (host je jediný člověk) drž jen lokálně.
+                    if (p.name === myName) window._pokerBotTableMyCards = holeCards;
                 } else {
                     privateHandsUpdates[`${p.name}`] = holeCards;
                 }
             });
             
             // Zapiš privátní karty (každá přístupná jen danému hráči přes Firebase rules — viz rules.json)
-            try {
-                await firebaseDB.ref(`pokerHands/${tableId}`).set(privateHandsUpdates);
-            } catch(e) { throw new Error('[pokerHands] ' + (e?.message || e)); }
+            // [v6.4.1] U bot-stolu se do pokerHands NEZAPISUJE (rules to nepovolí dokud je tam bot) —
+            // karty obou (host i bot) jsou lokálně u hosta, do showdownu se doplní.
+            if (!table.hasBot && Object.keys(privateHandsUpdates).length > 0) {
+                try {
+                    await firebaseDB.ref(`pokerHands/${tableId}`).set(privateHandsUpdates);
+                } catch(e) { throw new Error('[pokerHands] ' + (e?.message || e)); }
+            }
             
             // [SECURITY] Deck zůstává jen u hosta — NEJDE do Firebase (jinak by každý hráč
             // viděl budoucí community karty přes deck.pop()). Persistuje v sessionStorage
@@ -149933,10 +149943,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // 🔒 Načti PRIVÁTNÍ hole karty všech kontendrů
             const handsSnap = await firebaseDB.ref(`pokerHands/${tableId}`).once('value');
             const allHands = handsSnap.val() || {};
-            // [v6.4.1] Bot má karty jen lokálně u hosta → doplň je do vyhodnocení showdownu
+            // [v6.4.1] Bot stůl: karty (host i bot) jsou jen lokálně u hosta → doplň je do vyhodnocení
             if (table.hasBot) {
                 const botHole = getPokerBotHoleLocal(tableId);
                 if (botHole && botHole.length) allHands[POKER_BOT_NAME] = botHole;
+                if (window._pokerBotTableMyCards && window._pokerBotTableMyCards.length) allHands[getPlayerName()] = window._pokerBotTableMyCards;
             }
             
             // Evaluate každou ruku
@@ -151055,8 +151066,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // - Showdown + není folded → použij showdownCards pokud existují
                 // - Jinak → zobraz zakryté pokud hasCards
                 let cardsHtml = '<span style="color:#666;font-size:0.8rem;">—</span>';
-                if (isMe && _myPokerHoleCards) {
-                    cardsHtml = _myPokerHoleCards.map(c => renderCard(c, false)).join('');
+                const _myCards = (table.hasBot && window._pokerBotTableMyCards) ? window._pokerBotTableMyCards : _myPokerHoleCards;
+                if (isMe && !p.isBot && _myCards) {
+                    cardsHtml = _myCards.map(c => renderCard(c, false)).join('');
                 } else if (table.state === 'showdown' && !isFolded && table.showdownCards?.[p.name]) {
                     cardsHtml = table.showdownCards[p.name].map(c => renderCard(c, false)).join('');
                 } else if (p.hasCards && !isFolded) {
