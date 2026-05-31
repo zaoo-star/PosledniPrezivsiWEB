@@ -148278,6 +148278,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const sbWho = S.button, bbWho = (S.button === 'dealer' ? 'player' : 'dealer');
             _soloPay(sbWho, S.sb);
             _soloPay(bbWho, S.bb);
+            S.log = []; // nový log pro každou ruku
+            _soloLog(`— Ruka #${S.handNo} — blindy ${S.sb}/${S.bb}`);
+            _soloLog(`Tvé karty: ${_soloCardsStr(S.playerCards)}`);
             S.toAct = sbWho; // SB (button) je preflop na tahu první
             renderSoloPoker();
             if (S.toAct === 'dealer') setTimeout(_soloDealerAct, 800);
@@ -148289,6 +148292,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             return (S.phase === 'preflop' || S.phase === 'flop') ? S.bb : S.bb * 2;
         }
 
+        // [v6.4.1] Akční log solo pokeru — "kdo co udělal"
+        function _soloLog(msg) {
+            const S = window._soloPoker; if (!S) return;
+            S.log = S.log || [];
+            S.log.push(msg);
+            if (S.log.length > 40) S.log.shift();
+        }
+        function _soloCardsStr(cards) {
+            return (cards || []).map(c => `${c.rank}${c.suit}`).join(' ');
+        }
+
         function _soloApplyAction(who, act) {
             const S = window._soloPoker; if (!S || S.handOver) return;
             const opp = who === 'player' ? 'dealer' : 'player';
@@ -148297,12 +148311,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const myStack = who === 'player' ? 'playerStack' : 'dealerStack';
             const oppStack = who === 'player' ? 'dealerStack' : 'playerStack';
             const toCall = S[oppStreet] - S[myStreet];
+            const _who = who === 'player' ? 'Ty' : 'Dealer';
 
-            if (act === 'fold') { _soloEndHand(opp, 'fold'); return; }
+            if (act === 'fold') { _soloLog(`${_who}: složil`); _soloEndHand(opp, 'fold'); return; }
 
             // raise/bet (agrese): dorovnej + přihoď fixní sázku ulice
             if (act === 'raise' && S.raises < S.raiseCap && S[myStack] > Math.max(0, toCall)) {
-                _soloPay(who, toCall + _soloStreetBet());
+                const paid = _soloPay(who, toCall + _soloStreetBet());
+                _soloLog(`${_who}: ${toCall > 0 ? 'navýšil' : 'vsadil'} → ${S[myStreet]}${S[myStack] === 0 ? ' (all-in)' : ''}`);
                 S.raises++;
                 S.actedThisStreet[who] = true;
                 S.actedThisStreet[opp] = false;
@@ -148313,6 +148329,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
 
             // call / check
             const pay = _soloPay(who, Math.max(0, toCall));
+            if (toCall > 0) _soloLog(`${_who}: dorovnal ${pay}${S[myStack] === 0 ? ' (all-in)' : ''}`);
+            else _soloLog(`${_who}: check`);
             if (toCall > 0 && pay < toCall) { // short all-in → vrať nedorovnaný zbytek soupeři
                 const refund = toCall - pay;
                 S[oppStack] += refund; S[oppStreet] -= refund; S.pot -= refund;
@@ -148338,9 +148356,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const S = window._soloPoker;
             S.playerStreet = 0; S.dealerStreet = 0; S.raises = 0;
             S.actedThisStreet = { player: false, dealer: false };
-            if (S.phase === 'preflop') { S.phase = 'flop'; S.community.push(S.deck.pop(), S.deck.pop(), S.deck.pop()); }
-            else if (S.phase === 'flop') { S.phase = 'turn'; S.community.push(S.deck.pop()); }
-            else if (S.phase === 'turn') { S.phase = 'river'; S.community.push(S.deck.pop()); }
+            if (S.phase === 'preflop') { S.phase = 'flop'; S.community.push(S.deck.pop(), S.deck.pop(), S.deck.pop()); _soloLog(`— Flop: ${_soloCardsStr(S.community.slice(0, 3))}`); }
+            else if (S.phase === 'flop') { S.phase = 'turn'; S.community.push(S.deck.pop()); _soloLog(`— Turn: ${_soloCardsStr(S.community.slice(3, 4))}`); }
+            else if (S.phase === 'turn') { S.phase = 'river'; S.community.push(S.deck.pop()); _soloLog(`— River: ${_soloCardsStr(S.community.slice(4, 5))}`); }
             else { _soloShowdown(); return; }
             S.toAct = (S.button === 'dealer') ? 'player' : 'dealer'; // postflop hraje první non-button (BB)
             renderSoloPoker();
@@ -148422,6 +148440,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             } else if (winner === 'player') S.message = `🎉 Vyhráváš s: ${ph.name}!`;
             else if (winner === 'dealer') S.message = `Dealer vyhrál (${dh.name}). Tvá ruka: ${ph.name}.`;
             else S.message = `🤝 Remíza (${ph.name}) — pot se dělí.`;
+            _soloLog(`▶ ${S.message}`);
             renderSoloPoker();
         }
 
@@ -148483,8 +148502,19 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     <div>${_soloCardHtml(S.playerCards[0], false)} ${_soloCardHtml(S.playerCards[1], false)}</div>
                 </div>
                 ${S.message ? `<div style="text-align:center;margin-top:0.5rem;color:#ffd700;font-size:0.85rem;font-weight:bold;">${S.message}</div>` : ''}
+                <div id="soloPokerLog" style="margin-top:0.5rem;max-height:84px;overflow-y:auto;background:#080808;border:1px solid #222;border-radius:6px;padding:0.35rem 0.5rem;font-size:0.7rem;line-height:1.5;color:#9a9a9a;-webkit-overflow-scrolling:touch;">
+                    ${(S.log && S.log.length) ? S.log.map(l => {
+                        const c = l.startsWith('▶') ? '#ffd700' : (l.startsWith('—') ? '#6aa6e0' : (l.startsWith('Ty:') || l.startsWith('Tvé') ? '#8bc34a' : (l.startsWith('Dealer:') ? '#f0a0a0' : '#9a9a9a')));
+                        return `<div style="color:${c};">${l}</div>`;
+                    }).join('') : '<div style="color:#555;">Log akcí…</div>'}
+                </div>
                 ${actionsHtml}
             `);
+            // [v6.4.1] Log scrollni na poslední akci
+            requestAnimationFrame(() => {
+                const _lg = document.getElementById('soloPokerLog');
+                if (_lg) _lg.scrollTop = _lg.scrollHeight;
+            });
         }
         window.renderSoloPoker = renderSoloPoker;
 
@@ -148899,6 +148929,127 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
         }
         
+        // ============ POKER STŮL S DEALER-BOTEM (hraješ hned, lidi se můžou připojit) ============
+        // [v6.4.1] Stůl má bot-hráče, který drží stůl, ať nemusíš čekat. Bot řídí TVŮRCE stolu
+        // (jeho klient posílá akce bota přes auditovaný transakční pokerAction). Když dorazí 2. člověk,
+        // bot na konci ruky odejde → čistá hra lidí. Bot = 1v1 placeholder (ekonomicky jako solo).
+        const POKER_BOT_NAME = '🤖 Dealer';
+
+        function showBotPokerPicker() {
+            if (!firebaseDB || !multiplayerEnabled) { startSoloPoker(); return; } // offline → solo fallback
+            if ((state.char?.level || 0) < POKER_CONFIG.minLevel) { notifyWarning('🔒 Malý level', `Min level ${POKER_CONFIG.minLevel} pro poker.`); return; }
+            const money = state.money || 0;
+            const btns = POKER_CONFIG.blindLevels.map(l => {
+                const can = money >= l.minBuyIn;
+                return `<button class="btn" onclick="closeModal(); createPokerTableWithBot('${l.id}')" ${can ? '' : 'disabled'} style="width:100%;margin-bottom:0.4rem;background:${can ? '#1a3a1a' : '#222'};color:${can ? '#cfc' : '#555'};border:1px solid ${l.color};padding:0.6rem;text-align:left;font-size:0.82rem;"><b>${l.name}</b> — blindy ${l.sb}/${l.bb} · buy-in ${l.minBuyIn}💰</button>`;
+            }).join('');
+            showModal('🤖 Stůl s dealer-botem', `
+                <p style="color:#ccc;font-size:0.83rem;text-align:center;margin-bottom:0.7rem;">Hraješ <b>hned</b> proti dealer-botovi.<br><span style="color:#888;font-size:0.75rem;">Stůl je veřejný — když se připojí druhý hráč, bot odejde a hrajete spolu.</span></p>
+                ${btns}
+                <p style="color:#777;font-size:0.72rem;text-align:center;margin-top:0.3rem;">Máš: ${money}💰</p>
+                <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.3rem;background:#444;">Zrušit</button>
+            `);
+        }
+        window.showBotPokerPicker = showBotPokerPicker;
+
+        async function createPokerTableWithBot(blindLevelId) {
+            if (!firebaseDB || !multiplayerEnabled) { startSoloPoker(); return; }
+            const level = POKER_CONFIG.blindLevels.find(l => l.id === blindLevelId);
+            if (!level) return;
+            try {
+                const lockSnap = await firebaseDB.ref('shared/pokerLock').once('value');
+                if (lockSnap.val()?.locked && !(typeof isAdmin === 'function' && isAdmin())) { notifyWarning('🔒 Poker uzamčen', 'Admin zakázal novou hru'); return; }
+            } catch(e) {}
+            if ((state.money || 0) < level.minBuyIn) { notifyWarning('Málo peněz', `Potřebuješ ${level.minBuyIn}💰`); return; }
+            try {
+                const tableRef = firebaseDB.ref('pokerTables').push();
+                const myName = getPlayerName();
+                await tableRef.set({
+                    id: tableRef.key, createdAt: Date.now(), createdBy: myName,
+                    blindLevel: blindLevelId, smallBlind: level.sb, bigBlind: level.bb,
+                    minBuyIn: level.minBuyIn, maxBuyIn: level.maxBuyIn, maxPlayers: 6,
+                    state: 'waiting', phase: null, pot: 0, currentBet: 0, dealerPos: 0,
+                    currentTurn: null, players: {}, communityCards: [], deck: [],
+                    lastActivity: Date.now(), hasBot: true
+                });
+                try {
+                    await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
+                } catch(e) {}
+                await joinPokerTable(tableRef.key, level.minBuyIn); // tvůrce (reálné peníze)
+                // přidej bota (house žetony — nejsou kryté penězi, jako u solo/blackjacku)
+                await firebaseDB.ref(`pokerTables/${tableRef.key}/players/${POKER_BOT_NAME}`).set({
+                    name: POKER_BOT_NAME, seat: 1, chips: level.minBuyIn, initialBuyIn: level.minBuyIn,
+                    joinedAt: Date.now(), status: 'active', currentBet: 0, totalBetInHand: 0,
+                    actedThisRound: false, hasCards: false, isBot: true
+                });
+                await firebaseDB.ref(`pokerTables/${tableRef.key}/lastActivity`).set(Date.now());
+            } catch(e) { console.error('createPokerTableWithBot:', e); notifyWarning('Chyba', 'Nepodařilo se vytvořit stůl'); }
+        }
+        window.createPokerTableWithBot = createPokerTableWithBot;
+
+        function _pokerBotStrength(hole, community) {
+            if (!hole || hole.length < 2) return 0;
+            if (!community || community.length === 0) {
+                const va = POKER_RANK_VALUES[hole[0].rank], vb = POKER_RANK_VALUES[hole[1].rank];
+                const hi = Math.max(va, vb), lo = Math.min(va, vb);
+                const pair = va === vb, suited = hole[0].suit === hole[1].suit, gap = hi - lo;
+                if (pair && va >= 10) return 3;
+                if (pair) return 2;
+                if (hi >= 13 && lo >= 11) return 3;
+                if (hi >= 12 && (suited || gap <= 2)) return 2;
+                if (hi >= 11 && lo >= 9) return 2;
+                if (suited && gap <= 2 && hi >= 8) return 2;
+                if (hi >= 13) return 1;
+                return 0;
+            }
+            const ev = evaluatePokerHand([...hole, ...community]);
+            if (!ev) return 0;
+            if (ev.rank >= 3) return 3;
+            if (ev.rank === 2) return 2;
+            if (ev.rank === 1) return (ev.tiebreakers && ev.tiebreakers[0] >= 11) ? 2 : 1;
+            return 0;
+        }
+
+        async function _pokerBotAct(tableId) {
+            try {
+                if (_currentPokerTable !== tableId || !firebaseDB) return;
+                const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const table = snap.val();
+                if (!table || table.state !== 'playing' || table.currentTurn !== POKER_BOT_NAME) return;
+                const bot = table.players?.[POKER_BOT_NAME];
+                if (!bot || bot.status !== 'active') return;
+                const hSnap = await firebaseDB.ref(`pokerHands/${tableId}/${POKER_BOT_NAME}`).once('value');
+                const hole = hSnap.val() || [];
+                const community = table.communityCards || [];
+                const str = _pokerBotStrength(hole, community);
+                const toCall = (table.currentBet || 0) - (bot.currentBet || 0);
+                const bb = table.bigBlind || 20;
+                const r = Math.random();
+                let action = 'check', amount = 0;
+                if (toCall <= 0) {
+                    if (str >= 3) { action = (r < 0.72) ? 'raise' : 'check'; amount = (table.currentBet || 0) + bb * 2; }
+                    else if (str === 2) { action = (r < 0.35) ? 'raise' : 'check'; amount = (table.currentBet || 0) + bb * 2; }
+                    else action = 'check';
+                } else {
+                    if (str >= 3) { action = (r < 0.5) ? 'raise' : 'call'; amount = (table.currentBet || 0) + Math.max(bb * 2, toCall); }
+                    else if (str === 2) { action = (r < 0.82) ? 'call' : 'fold'; }
+                    else { action = (r < 0.18) ? 'call' : 'fold'; }
+                }
+                await pokerAction(action, amount, POKER_BOT_NAME);
+            } catch(e) { console.warn('_pokerBotAct:', e); }
+        }
+
+        async function _pokerBotLeave(tableId) {
+            try {
+                if (!firebaseDB) return;
+                await firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}`).remove();
+                await firebaseDB.ref(`pokerHands/${tableId}/${POKER_BOT_NAME}`).remove().catch(() => {});
+                await firebaseDB.ref(`pokerTables/${tableId}/hasBot`).set(false);
+                await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
+                try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer opustil stůl — připojili se hráči.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
+            } catch(e) { console.warn('_pokerBotLeave:', e); }
+        }
+
         async function joinPokerTable(tableId, buyIn) {
             if (!firebaseDB) return;
             const myName = getPlayerName();
@@ -149087,6 +149238,35 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const tableState = tableStateSnap.val();
                 const isHandInProgress = tableState?.state === 'playing' || tableState?.state === 'dealing';
                 const playerInHand = player?.hasCards && isHandInProgress;
+                
+                // [v6.4.1] Bot stůl: odchází-li tvůrce a není tam jiný člověk → smaž celý stůl (i bota)
+                if (tableState?.hasBot && myName === tableState.createdBy) {
+                    const otherHumans = Object.values(tableState.players || {}).filter(p => p && !p.isBot && p.name !== myName);
+                    if (otherHumans.length === 0) {
+                        if (player) {
+                            state.money = (state.money || 0) + (player.chips || 0);
+                            if (player.initialBuyIn && player.chips === player.initialBuyIn) {
+                                state._pokerDailyBuyIn = Math.max(0, (state._pokerDailyBuyIn || 0) - player.initialBuyIn);
+                            }
+                        }
+                        try { if (_pokerTableListener) { firebaseDB.ref(`pokerTables/${tableId}`).off('value', _pokerTableListener); _pokerTableListener = null; } } catch(e) {}
+                        try { if (_pokerHandsListener) { firebaseDB.ref(`pokerHands/${tableId}/${myName}`).off('value', _pokerHandsListener); _pokerHandsListener = null; } } catch(e) {}
+                        if (_pokerActionTimer) { clearTimeout(_pokerActionTimer); _pokerActionTimer = null; }
+                        await firebaseDB.ref(`pokerTables/${tableId}`).remove().catch(() => {});
+                        await firebaseDB.ref(`pokerHands/${tableId}`).remove().catch(() => {});
+                        clearPokerDeckLocal(tableId);
+                        _currentPokerTable = null; _myPokerHoleCards = null; _watchdogTriggered = false;
+                        try { state._activePokerTable = null; } catch(e) {}
+                        window._pokerMinimized = false;
+                        try { const ind = document.getElementById('pokerMiniIndicator'); if (ind) ind.style.display = 'none'; } catch(e) {}
+                        try { const tb = document.getElementById('pokerTopBanner'); if (tb) tb.style.display = 'none'; } catch(e) {}
+                        if (typeof saveGame === 'function') saveGame();
+                        window._pokerLeaving = false;
+                        closeModal();
+                        if (typeof showPokerLobby === 'function') showPokerLobby();
+                        return;
+                    }
+                }
                 
                 if (player) {
                     // Vrať hráčovi jeho nevsazené chips do peněz
@@ -149341,10 +149521,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             });
         }
         
-        async function pokerAction(action, raiseAmount) {
+        async function pokerAction(action, raiseAmount, actorName) {
             if (!_currentPokerTable || !firebaseDB) return;
             const tableId = _currentPokerTable;
-            const myName = getPlayerName();
+            const myName = actorName || getPlayerName(); // [v6.4.1] actorName umožní hostovi hrát za dealer-bota
             
             try {
                 // 🔒 Fix 3: Použij transaction pro atomický update — zabrání race condition
@@ -149460,15 +149640,15 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 });
                 
                 if (transactionResult?.error === 'not_my_turn') {
-                    notifyWarning('Není tvoje kolo', 'Někdo byl rychlejší');
+                    if (!actorName) notifyWarning('Není tvoje kolo', 'Někdo byl rychlejší');
                     return;
                 }
                 if (transactionResult?.error === 'cannot_check') {
-                    notifyWarning('Nelze checknout', 'Musíš dorovnat nebo složit');
+                    if (!actorName) notifyWarning('Nelze checknout', 'Musíš dorovnat nebo složit');
                     return;
                 }
                 if (transactionResult?.error === 'invalid_raise') {
-                    notifyWarning('Neplatná sázka', 'Sázka musí být kladná');
+                    if (!actorName) notifyWarning('Neplatná sázka', 'Sázka musí být kladná');
                     return;
                 }
                 
@@ -149477,7 +149657,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
             } catch(e) {
                 console.error('pokerAction:', e);
-                notifyWarning('Chyba', e.message);
+                if (!actorName) notifyWarning('Chyba', e.message);
             }
         }
         
@@ -149974,6 +150154,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         // [NEW] Poker statistics tracking (Firebase)
         async function trackPokerWin(playerName, winAmount, netProfit) {
             if (!firebaseDB || !playerName || winAmount <= 0) return;
+            if (playerName === POKER_BOT_NAME) return; // [v6.4.1] bot nepatří do statistik/leaderboardu
             try {
                 const statsRef = firebaseDB.ref('pokerStats/' + playerName);
                 const snap = await statsRef.once('value');
@@ -149999,6 +150180,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         
         async function trackPokerLoss(playerName, lossAmount) {
             if (!firebaseDB || !playerName || lossAmount <= 0) return;
+            if (playerName === POKER_BOT_NAME) return; // [v6.4.1] bot nepatří do statistik
             try {
                 const statsRef = firebaseDB.ref('pokerStats/' + playerName);
                 const snap = await statsRef.once('value');
@@ -150446,7 +150628,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         <div style="color:#f44336;font-size:0.65rem;margin-top:0.2rem;">⚠️ Rake: ${Math.round(POKER_CONFIG.rakePercent*100)}% z každého potu</div>
                     </div>
                     
-                    <button class="btn" onclick="startSoloPoker()" style="width:100%;background:linear-gradient(135deg,#2a6a2a,#1a4a1a);border:1px solid #3a7a3a;color:#cfc;padding:0.7rem;font-weight:bold;margin-bottom:0.6rem;">🤖 Hrát proti dealerovi <span style="color:#9c9;font-size:0.7rem;">(hned, bez čekání)</span></button>
+                    <button class="btn" onclick="showBotPokerPicker()" style="width:100%;background:linear-gradient(135deg,#2a6a2a,#1a4a1a);border:1px solid #3a7a3a;color:#cfc;padding:0.7rem;font-weight:bold;margin-bottom:0.6rem;">🤖 Hrát proti dealerovi <span style="color:#9c9;font-size:0.7rem;">(stůl, lidi se můžou připojit)</span></button>
                     
                     <div style="color:#8bc34a;font-size:0.75rem;margin-bottom:0.4rem;font-weight:bold;">🎴 AKTIVNÍ STOLY</div>
                     <div style="max-height:35vh;overflow-y:auto;margin-bottom:0.6rem;">
@@ -150532,6 +150714,26 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const table = snap.val();
                 if (!table) { leavePokerTable(); return; }
                 renderPokerTable(table);
+                
+                // [v6.4.1] DEALER-BOT driver — běží jen u tvůrce stolu
+                try {
+                    if (table.hasBot && getPlayerName() === table.createdBy) {
+                        const humans = Object.values(table.players || {}).filter(p => p && !p.isBot);
+                        if (humans.length >= 2 && (table.state === 'waiting' || table.state === 'showdown')) {
+                            // 2+ lidí → bot odejde (na bezpečném místě mezi/po ruce)
+                            if (window._pokerBotLeaving !== tableId) {
+                                window._pokerBotLeaving = tableId;
+                                _pokerBotLeave(tableId);
+                            }
+                        } else if (table.state === 'playing' && table.currentTurn === POKER_BOT_NAME) {
+                            const k = `${tableId}_bot_${table.turnStartTime}`;
+                            if (window._pokerBotActedKey !== k) {
+                                window._pokerBotActedKey = k;
+                                setTimeout(() => _pokerBotAct(tableId), 1100);
+                            }
+                        }
+                    }
+                } catch(e) {}
                 
                 // [NEW] Update poker mini indikátor (floating badge) + top banner
                 try {
