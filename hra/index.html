@@ -149049,6 +149049,13 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
                 } catch(e) {}
                 await joinPokerTable(tableRef.key, level.minBuyIn); // tvůrce (reálné peníze)
+                // [v6.4.1] Ověř, že připojení OPRAVDU uspělo (join má spoustu return cest:
+                // denní limit, málo peněz, plný stůl…) kde se okno NEOTEVŘE. Pak by vznikl
+                // osiřelý stůl bez okna ("zapnu stůl, ale nevidím ho"). Uklidíme ho.
+                if (_currentPokerTable !== tableRef.key) {
+                    await tableRef.remove().catch(() => {});
+                    return; // uživatel už dostal varování z joinPokerTable (proč to selhalo)
+                }
                 // přidej bota (house žetony — nejsou kryté penězi, jako u solo/blackjacku)
                 // [v6.4.1] Bot = "dům" s hlubokým stackem (min 10k, u vyšších sázek víc) — nebankrotuje pořád
                 const botStack = Math.max(10000, level.maxBuyIn);
@@ -149158,9 +149165,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 amount = Math.min(amount, maxAdd);
                 if (amount <= 0) { notifyWarning('Nelze dokoupit', `Max stack je ${maxB}💰`); return; }
                 if ((state.money || 0) < amount) { notifyWarning('Málo peněz', `Potřebuješ ${amount}💰`); return; }
-                // denní limit (anti-abuse) — stejně jako u join
+                // denní limit (anti-abuse) — stejně jako u join; admin vyňat
                 const daily = getPokerDailyBuyIn();
-                if (daily + amount > POKER_CONFIG.maxDailyBuyIn) {
+                if (!(typeof isAdmin === 'function' && isAdmin()) && daily + amount > POKER_CONFIG.maxDailyBuyIn) {
                     notifyWarning('Denní limit', `Dnes už můžeš vložit max ${Math.max(0, POKER_CONFIG.maxDailyBuyIn - daily)}💰`); return;
                 }
                 // zapiš žetony
@@ -149215,9 +149222,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const table = snap.val();
                 if (!table) { notifyWarning('Stůl neexistuje', ''); return; }
                 
-                // Check daily limit
+                // Check daily limit (admin je vyňat — testování / důvěryhodný)
                 const dailyBuyIn = getPokerDailyBuyIn();
-                if (dailyBuyIn + buyIn > POKER_CONFIG.maxDailyBuyIn) {
+                const _isAdm = typeof isAdmin === 'function' && isAdmin();
+                if (!_isAdm && dailyBuyIn + buyIn > POKER_CONFIG.maxDailyBuyIn) {
                     notifyWarning('🚫 Denní limit', `Dnes už můžeš vložit max ${POKER_CONFIG.maxDailyBuyIn - dailyBuyIn}💰`);
                     return;
                 }
