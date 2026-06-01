@@ -124752,11 +124752,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 );
                 if (myChallenge && myChallenge.id !== lastPvPNotificationId) {
                     lastPvPNotificationId = myChallenge.id;
-                    
-                    // Jen notifikace — hráč si najde výzvu v PvP Aréně
-                    const rank = getPvPRank(myChallenge.challengerStats?.elo || 1000);
-                    notifySuccess('⚔️ Nová PvP výzva!', `${rank.icon} ${myChallenge.challenger} tě vyzývá!${myChallenge.bet > 0 ? ' 💰' + myChallenge.bet : ''}`);
-                    addLog(`⚔️ PvP výzva od ${myChallenge.challenger}${myChallenge.bet > 0 ? ' (sázka ' + myChallenge.bet + ' 💰)' : ''}!`, '⚔️');
+                    // [v6.4.1] Okamžité souboje (System 1) jsou zrušené — žádná notifikace na ně.
+                    // PvP jede výhradně přes duely v Koloseu. Staré pvp/challenges záznamy jen vyprší (24h).
                 }
                 
                 // Auto-expire staré výzvy starší než 24h (pro challengera - vrať peníze)
@@ -124823,6 +124820,27 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.pvpChallengeOverlayActive = false;
         
         function showFullscreenPvPChallenge(challenge) {
+            // [FIX v6.4.1] Neruš hráče uprostřed dungeonu/boje. Fullscreen overlay (z-index 999999)
+            // se dřív narouboval přes dungeon a rozbil stav (hlášeno: "byl jsem v dungeonu a výzva to buglo").
+            // Odlož ji a periodicky zkus znovu, až bude hráč volný (max 2 min).
+            const _pvpBusy = () => !!(state.dungeon?.active || (typeof isInCombat === 'function' && isInCombat()) || window.combatState || state.inCombat || window.combatInProgress);
+            if (_pvpBusy()) {
+                if (typeof notifyWarning === 'function') {
+                    notifyWarning('⚔️ PvP výzva čeká', `${escapeHtml(challenge.challenger || challenge.attackerLeader || 'Soupeř')} tě vyzval — zobrazí se, až dokončíš ${state.dungeon?.active ? 'dungeon' : 'boj'}.`);
+                }
+                if (window._deferredPvpRetry) clearInterval(window._deferredPvpRetry);
+                const _ch = challenge, _start = Date.now();
+                window._deferredPvpRetry = setInterval(() => {
+                    if (Date.now() - _start > 120000 || window.pvpChallengeOverlayActive) {
+                        clearInterval(window._deferredPvpRetry); window._deferredPvpRetry = null; return;
+                    }
+                    if (!_pvpBusy()) {
+                        clearInterval(window._deferredPvpRetry); window._deferredPvpRetry = null;
+                        showFullscreenPvPChallenge(_ch);
+                    }
+                }, 2000);
+                return;
+            }
             // Označ že je aktivní PvP výzva
             window.pvpChallengeOverlayActive = true;
             
@@ -126185,6 +126203,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         async function showPvPArena() {
             initPvPStats();
             
+            // [v6.4.1] PvP Koloseum je ZAMČENO — není hotové/zabugované (hlášeno hráči: výzvy nejdou
+            // přijmout, duel se sekne v dungeonu). Admin má přístup pro testování.
+            if (!(typeof isAdmin === 'function' && isAdmin())) {
+                showModal('🔒 KOLOSEUM', `
+                    <div style="text-align: center; padding: 2rem;">
+                        <div style="font-size: 4rem;">🔒</div>
+                        <h3 style="color: #ff9800;">Koloseum se dolaďuje</h3>
+                        <p style="color: #aaa; font-size: 0.85rem;">PvP souboje jsou dočasně uzamčené, dokud nebudou plně hotové a opravené. Zkus to prosím později.</p>
+                        <button class="btn" onclick="closeModal()" style="margin-top: 1rem; background: #555;">Zavřít</button>
+                    </div>
+                `);
+                return;
+            }
+            
             if (!multiplayerEnabled) {
                 showModal('⚔️ KOLOSEUM', `
                     <div style="text-align: center; padding: 2rem;">
@@ -126961,7 +126993,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 <!-- ⚔️ PvP KOLOSEUM -->
                 <div style="display: flex; gap: 3px; margin-bottom: 4px;">
-                    <button class="btn wl-btn wl-scratch" onclick="showPvPArena()" style="flex:1;background:linear-gradient(180deg, #2a0a05 0%, #1a0500 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #ff6b35;"><span style="font-size:0.7rem;color:#ff8a5c;font-weight:bold;">⚔️ PvP KOLOSEUM</span></button>
+                    <button class="btn wl-btn wl-scratch" onclick="showPvPArena()" style="flex:1;background:linear-gradient(180deg, #2a0a05 0%, #1a0500 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #ff6b35;"><span style="font-size:0.7rem;color:#ff8a5c;font-weight:bold;">⚔️ PvP KOLOSEUM${(typeof isAdmin === 'function' && isAdmin()) ? '' : ' 🔒'}</span></button>
                 </div>
                 
                 <!-- 🛡️ STAFF CHAT (jen admin/moderator) -->
@@ -149851,16 +149883,23 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         }
         
         function findNextActivePokerPlayer(table, currentName) {
-            const players = Object.values(table.players || {})
-                .filter(p => p.status === 'active')
-                .sort((a, b) => a.seat - b.seat);
-            // [FIX v6.4.1] Když zbyde 0 aktivních (všichni all-in/složili) → null (runout bez sázek).
-            // POZOR: dřív to bylo "< 2 → null", což po all-inu soupeře nechalo POSLEDNÍHO aktivního
-            // hráče bez tahu (heads-up zásek — bot nikdy nedorovnal all-in). 1 aktivní MUSÍ jednat.
-            if (players.length === 0) return null;
-            const currentIdx = players.findIndex(p => p.name === currentName);
-            if (currentIdx === -1) return players[0].name;
-            return players[(currentIdx + 1) % players.length].name;
+            const all = Object.values(table.players || {});
+            const active = all.filter(p => p.status === 'active').sort((a, b) => a.seat - b.seat);
+            if (active.length === 0) return null;
+            // Nejvyšší sázka v kole — počítej i z all-in hráčů (ty musí aktivní dorovnat).
+            const maxBet = all.reduce((m, p) => Math.max(m, p.currentBet || 0), 0);
+            // Hráč MUSÍ jednat, pokud nedorovnal nejvyšší sázku NEBO v tomto kole ještě nehrál.
+            const needsToAct = (p) => (p.currentBet || 0) < maxBet || p.actedThisRound !== true;
+            const startIdx = active.findIndex(p => p.name === currentName); // -1 = aktuální už není aktivní (např. právě šel all-in)
+            const base = startIdx < 0 ? -1 : startIdx;
+            for (let i = 1; i <= active.length; i++) {
+                const cand = active[(base + i + active.length) % active.length];
+                if (needsToAct(cand)) return cand.name;
+            }
+            // [FIX v6.4.1] Všichni aktivní dorovnali a odehráli → kolo končí, žádný další tah (vrať null).
+            // Dřív se vracel "další aktivní" i když už neměl co dělat → po dorovnání all-inu dostal poslední
+            // aktivní hráč (bot) tah ZNOVU, driver ho spustil podruhé a závodil s showdownem → ruka zamrzla.
+            return null;
         }
         
         async function checkRoundEnd(tableId) {
@@ -150024,7 +150063,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 communityCards: community
                 // [SECURITY] deck NEPATŘÍ do Firebase
             });
-            await doPokerShowdown(tableId);
+            try {
+                await doPokerShowdown(tableId);
+            } catch(e) {
+                console.error('doPokerShowdown (z runoutu):', e);
+                if (typeof notifyWarning === 'function') notifyWarning('Chyba showdownu', e?.message || String(e));
+            }
         }
         
         // [NEW] Výpočet side potů pro situaci kdy hráči jsou all-in s různými částkami
