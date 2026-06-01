@@ -149050,8 +149050,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 } catch(e) {}
                 await joinPokerTable(tableRef.key, level.minBuyIn); // tvůrce (reálné peníze)
                 // přidej bota (house žetony — nejsou kryté penězi, jako u solo/blackjacku)
+                // [v6.4.1] Bot = "dům" s hlubokým stackem (min 10k, u vyšších sázek víc) — nebankrotuje pořád
+                const botStack = Math.max(10000, level.maxBuyIn);
                 await firebaseDB.ref(`pokerTables/${tableRef.key}/players/${POKER_BOT_NAME}`).set({
-                    name: POKER_BOT_NAME, seat: 1, chips: level.minBuyIn, initialBuyIn: level.minBuyIn,
+                    name: POKER_BOT_NAME, seat: 1, chips: botStack, initialBuyIn: botStack,
                     joinedAt: Date.now(), status: 'active', currentBet: 0, totalBetInHand: 0,
                     actedThisRound: false, hasCards: false, isBot: true
                 });
@@ -149134,6 +149136,49 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer opustil stůl — připojili se hráči.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
             } catch(e) { console.warn('_pokerBotLeave:', e); }
         }
+
+        // [v6.4.1] Dokoupení žetonů (rebuy) — nabízí se když hráč padne na nulu. Respektuje denní limit.
+        async function pokerRebuy(amount) {
+            if (!_currentPokerTable || !firebaseDB) return;
+            const tableId = _currentPokerTable;
+            const myName = getPlayerName();
+            amount = Math.floor(parseInt(amount) || 0);
+            if (amount <= 0) return;
+            try {
+                const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const table = snap.val();
+                if (!table) return;
+                const me = table.players?.[myName];
+                if (!me) { notifyWarning('Nejsi u stolu', ''); return; }
+                if (table.state === 'playing' && me.hasCards && me.status !== 'folded') {
+                    notifyWarning('Počkej na konec ruky', 'Dokoupit jde mezi rukama'); return;
+                }
+                const maxB = table.maxBuyIn || amount;
+                const maxAdd = Math.max(0, maxB - (me.chips || 0));
+                amount = Math.min(amount, maxAdd);
+                if (amount <= 0) { notifyWarning('Nelze dokoupit', `Max stack je ${maxB}💰`); return; }
+                if ((state.money || 0) < amount) { notifyWarning('Málo peněz', `Potřebuješ ${amount}💰`); return; }
+                // denní limit (anti-abuse) — stejně jako u join
+                const daily = getPokerDailyBuyIn();
+                if (daily + amount > POKER_CONFIG.maxDailyBuyIn) {
+                    notifyWarning('Denní limit', `Dnes už můžeš vložit max ${Math.max(0, POKER_CONFIG.maxDailyBuyIn - daily)}💰`); return;
+                }
+                // zapiš žetony
+                await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).update({
+                    chips: (me.chips || 0) + amount,
+                    status: 'active'
+                });
+                const vs = await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}/chips`).once('value');
+                if (!vs.exists()) { notifyWarning('Chyba', 'Dokoupení se nezapsalo'); return; }
+                // strhni reálné peníze až po ověřeném zápisu
+                state.money = (state.money || 0) - amount;
+                addPokerDailyBuyIn(amount);
+                if (typeof saveGame === 'function') saveGame();
+                await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
+                notifySuccess('💰 Dokoupeno', `+${amount} žetonů`);
+            } catch(e) { console.error('pokerRebuy:', e); notifyWarning('Chyba', 'Dokoupení selhalo'); }
+        }
+        window.pokerRebuy = pokerRebuy;
 
         async function joinPokerTable(tableId, buyIn) {
             if (!firebaseDB) return;
@@ -150758,11 +150803,6 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         ${tablesHtml}
                     </div>
                     
-                    <div style="color:#ffd700;font-size:0.75rem;margin-bottom:0.3rem;font-weight:bold;">➕ VYTVOŘIT NOVÝ STŮL ${createDisabled ? '<span style="color:#f44336;">(zamčeno)</span>' : ''}</div>
-                    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.3rem;margin-bottom:0.5rem;">
-                        ${createButtons}
-                    </div>
-                    
                     ${adminLockBtn}
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;margin-bottom:0.3rem;">
                         <button class="btn" onclick="showPokerLeaderboard()" style="background:linear-gradient(135deg,#ffd700,#ff9800);color:#000;font-size:0.75rem;font-weight:bold;">🏆 Leaderboard</button>
@@ -151207,7 +151247,23 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // Action buttons
             let actionsHtml = '';
-            if (table.state === 'waiting') {
+            const _busted = me && (me.chips || 0) <= 0 && (table.state === 'waiting' || table.state === 'showdown');
+            if (_busted) {
+                // [v6.4.1] Hráč padl na nulu → nabídni dokoupení (ne automaticky) nebo odchod
+                const minB = table.minBuyIn || 0;
+                const money = state.money || 0;
+                const canMin = money >= minB && minB > 0;
+                actionsHtml = `<div style="text-align:center;padding:0.5rem;background:linear-gradient(135deg,#2a1414,#1a0a0a);border:1px solid #c62828;border-radius:6px;">
+                    <div style="color:#ff8a80;font-weight:bold;">💸 Došly ti žetony</div>
+                    <div style="color:#aaa;font-size:0.72rem;margin:0.25rem 0;">Můžeš dokoupit za reálné peníze, nebo odejít. Máš: ${money}💰</div>
+                    <div style="display:flex;gap:0.3rem;margin-top:0.35rem;">
+                        ${canMin
+                            ? `<button class="btn" onclick="pokerRebuy(${minB})" style="flex:1;background:linear-gradient(135deg,#2e7d32,#1b5e20);padding:0.5rem;font-size:0.82rem;">💰 Dokoupit ${minB}</button>`
+                            : `<button class="btn" disabled style="flex:1;background:#333;opacity:0.5;padding:0.5rem;font-size:0.82rem;">💰 Málo peněz</button>`}
+                        <button class="btn" onclick="leavePokerTable()" style="flex:1;background:linear-gradient(135deg,#6a4a1a,#4a3010);padding:0.5rem;font-size:0.82rem;">🚪 Odejít</button>
+                    </div>
+                </div>`;
+            } else if (table.state === 'waiting') {
                 if (players.length >= 2 && players.some(p => p.chips > 0)) {
                     // [NEW] Auto-start - zobrazí informaci místo tlačítka
                     // Zjisti kdo je leader (creator nebo seat#0) pro zobrazení
