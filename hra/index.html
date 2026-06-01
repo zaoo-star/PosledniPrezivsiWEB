@@ -20578,8 +20578,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return false;
             }
             
-            // Stackovatelné typy: consumable, ammo, food, throwable
-            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable'];
+            // Stackovatelné typy: spotřební + fungibilní materiály/komponenty
+            // [FIX v6.4.1] Přidán 'component' (AI jádra — hlášeno OwerLord: "AI jádra se nestackují")
+            // + sjednoceno s pozemním stackováním (material/lore/rune/resource se na zemi stackovaly, ale v inv ne).
+            // Tyto typy nemají durability/enchantment, takže stack podle id je bezpečný.
+            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component', 'resource'];
             
             if (stackableTypes.includes(item.type) || item.stackable) {
                 // Hledej existující stack podle ID, ale ne pokud má stackId (rozdělený stack)
@@ -21335,7 +21338,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Konsolidace inventáře - sloučí duplicitní stacky stejných itemů
         function consolidateInventory() {
-            const stackableTypes = ['consumable', 'resource', 'ammo', 'food', 'throwable'];
+            // [FIX v6.4.1] Sjednoceno s addItemToInventory — přidán 'component' (AI jádra) + material/lore/rune.
+            // Slouží i jako migrace: existující nestacknuté kusy (OwerLordových 30 AI jader) se sloučí.
+            const stackableTypes = ['consumable', 'resource', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component'];
             const consolidated = [];
             const seen = {};
             
@@ -113921,7 +113926,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const settlers = state.settlement?.settlers?.length || 0;
             const booksRead = state.readBooks?.length || 0;
             const level = state.char?.level || 1;
-            const pvpWins = state.stats?.pvpWins || 0;
+            const pvpWins = state.pvp?.wins || 0; // [FIX v6.4.1] kanonický zdroj výher (dřív se četlo state.stats.pvpWins, co se nikdy nenastavilo)
             
             // PENÍZE SE NEPOČÍTAJÍ - aby žebříček nebyl o farmení peněz
             const score = (
@@ -118253,7 +118258,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const booksRead = state.readBooks?.length || 0;
             const dungeonsCleared = state.stats?.dungeonsCleared || (state.dungeon?.cleared ? Object.keys(state.dungeon.cleared).length : 0);
             const settlers = state.settlement?.settlers?.length || 0;
-            const pvpWins = state.stats?.pvpWins || 0;
+            const pvpWins = state.pvp?.wins || 0; // [FIX v6.4.1] kanonický zdroj výher (dřív se četlo state.stats.pvpWins, co se nikdy nenastavilo)
             
             // Postapo flavor pro každou kategorii
             const scoreBreakdown = [
@@ -123748,7 +123753,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (filter === 'armor') return ['armor', 'helmet', 'gloves', 'boots', 'power_armor', 'accessory'].includes(t);
             if (filter === 'food') return ['consumable', 'food', 'alchemy', 'instant'].includes(t);
             if (filter === 'ammo') return t === 'ammo';
-            if (filter === 'other') return !['weapon', 'throwable', 'armor', 'helmet', 'gloves', 'boots', 'power_armor', 'accessory', 'consumable', 'food', 'alchemy', 'instant', 'ammo'].includes(t);
+            // [FIX v6.4.1] AI jádra (component) mají vlastní čistou kategorii (hlášeno OwerLord:
+            // "mezi 30 AI jádry byl i obvaz, náboj, rádio, maso" — vše se míchalo v "Ostatní").
+            if (filter === 'components') return t === 'component';
+            if (filter === 'materials') return ['material', 'resource'].includes(t);
+            if (filter === 'other') return !['weapon', 'throwable', 'armor', 'helmet', 'gloves', 'boots', 'power_armor', 'accessory', 'consumable', 'food', 'alchemy', 'instant', 'ammo', 'component', 'material', 'resource'].includes(t);
             return true;
         }
         function setBulkSellFilter(f) {
@@ -123788,7 +123797,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     ${_fBtn('armor', '🛡️ Zbroj')}
                     ${_fBtn('food', '🍖 Spotřební')}
                     ${_fBtn('ammo', '🔫 Munice')}
-                    ${_fBtn('other', '🔩 Ostatní')}
+                    ${_fBtn('components', '🤖 Jádra')}
+                    ${_fBtn('materials', '🔩 Suroviny')}
+                    ${_fBtn('other', '📦 Ostatní')}
                 </div>
                 <div id="bulkSellScroll" style="max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain;">
             `;
@@ -124638,12 +124649,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // 🎖️ PvP TITULY (achievementy)
         const PVP_TITLES = [
-            { id: 'first_blood', name: 'První krev', icon: '🩸', req: 'Vyhrát první PvP', check: (s) => s.pvpWins >= 1 },
-            { id: 'warrior', name: 'Válečník', icon: '⚔️', req: '10 vítězství', check: (s) => s.pvpWins >= 10 },
-            { id: 'dominator', name: 'Dominátor', icon: '👑', req: '50 vítězství', check: (s) => s.pvpWins >= 50 },
-            { id: 'legend', name: 'Legenda', icon: '🌟', req: '100 vítězství', check: (s) => s.pvpWins >= 100 },
-            { id: 'streak5', name: 'Na vlně', icon: '🌊', req: '5 vítězství v řadě', check: (s) => s.pvpWinStreak >= 5 },
-            { id: 'streak10', name: 'Nezastavitelný', icon: '🔥', req: '10 vítězství v řadě', check: (s) => s.pvpWinStreak >= 10 },
+            { id: 'first_blood', name: 'První krev', icon: '🩸', req: 'Vyhrát první PvP', check: (s) => (s.pvp?.wins || 0) >= 1 },
+            { id: 'warrior', name: 'Válečník', icon: '⚔️', req: '10 vítězství', check: (s) => (s.pvp?.wins || 0) >= 10 },
+            { id: 'dominator', name: 'Dominátor', icon: '👑', req: '50 vítězství', check: (s) => (s.pvp?.wins || 0) >= 50 },
+            { id: 'legend', name: 'Legenda', icon: '🌟', req: '100 vítězství', check: (s) => (s.pvp?.wins || 0) >= 100 },
+            { id: 'streak5', name: 'Na vlně', icon: '🌊', req: '5 vítězství v řadě', check: (s) => (s.pvp?.maxWinStreak || 0) >= 5 },
+            { id: 'streak10', name: 'Nezastavitelný', icon: '🔥', req: '10 vítězství v řadě', check: (s) => (s.pvp?.maxWinStreak || 0) >= 10 },
             { id: 'comeback', name: 'Comeback King', icon: '👊', req: 'Vyhrát s <10% HP', check: (s) => s.pvpComeback >= 1 },
             { id: 'flawless', name: 'Perfektní', icon: '💎', req: 'Vyhrát bez zranění', check: (s) => s.pvpFlawless >= 1 },
             { id: 'rich', name: 'High Roller', icon: '💰', req: 'Vyhrát 10000+ sázku', check: (s) => s.pvpMaxBetWon >= 10000 },
@@ -126234,6 +126245,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const fbStats = fbStatsSnap.val();
                 if (fbStats) {
                     stats = { ...stats, pvpElo: fbStats.pvpElo, pvpWins: fbStats.pvpWins, pvpLosses: fbStats.pvpLosses, pvpWinStreak: fbStats.pvpWinStreak };
+                    // [FIX v6.4.1] Koloseum/duely zapisují výhry JEN do Firebase pvpStats. Skóre a achievementy
+                    // ale čtou lokální state.pvp.wins → výhry se "nezapočítávaly" (hlášeno OwerLord: "6 výher v PvP").
+                    // Přelij Firebase výhry do lokálního stavu (Math.max, ať nepřepíšu lokální challenge-PvP výhry).
+                    if (!state.pvp) state.pvp = {};
+                    state.pvp.wins = Math.max(state.pvp.wins || 0, fbStats.pvpWins || 0);
+                    state.pvp.maxWinStreak = Math.max(state.pvp.maxWinStreak || 0, fbStats.pvpWinStreak || 0);
+                    state.pvp.losses = Math.max(state.pvp.losses || 0, fbStats.pvpLosses || 0);
                 } else {
                     // Fallback - lokální
                     stats = { ...stats, pvpElo: stats.elo, pvpWins: stats.wins, pvpLosses: stats.losses, pvpWinStreak: stats.winStreak };
@@ -149127,6 +149145,15 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         action = cheap ? ((r < 0.7) ? 'call' : 'fold') : (reasonable ? ((r < 0.3) ? 'call' : 'fold') : 'fold');
                     }
                 }
+                // [FIX v6.4.1] Nepřesazuj all-in soupeře — když všichni ostatní nefoldnutí jsou all-in,
+                // nikdo už nemůže dorovnat, takže raise nemá smysl (jen dorovnej nebo slož).
+                if (action === 'raise' || action === 'allin') {
+                    const others = Object.values(table.players || {}).filter(p => p && p.name !== POKER_BOT_NAME && p.status !== 'folded');
+                    if (others.length > 0 && others.every(p => p.status === 'allin')) {
+                        action = (toCall > 0) ? 'call' : 'check';
+                        amount = 0;
+                    }
+                }
                 await pokerAction(action, amount, POKER_BOT_NAME);
             } catch(e) { console.warn('_pokerBotAct:', e); }
         }
@@ -149827,7 +149854,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const players = Object.values(table.players || {})
                 .filter(p => p.status === 'active')
                 .sort((a, b) => a.seat - b.seat);
-            if (players.length < 2) return null;
+            // [FIX v6.4.1] Když zbyde 0 aktivních (všichni all-in/složili) → null (runout bez sázek).
+            // POZOR: dřív to bylo "< 2 → null", což po all-inu soupeře nechalo POSLEDNÍHO aktivního
+            // hráče bez tahu (heads-up zásek — bot nikdy nedorovnal all-in). 1 aktivní MUSÍ jednat.
+            if (players.length === 0) return null;
             const currentIdx = players.findIndex(p => p.name === currentName);
             if (currentIdx === -1) return players[0].name;
             return players[(currentIdx + 1) % players.length].name;
