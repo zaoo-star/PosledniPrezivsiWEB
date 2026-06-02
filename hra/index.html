@@ -149906,6 +149906,13 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 : (playersSorted[0]?.name === myName);  // Creator pryč → první hráč je host
             if (!isHost) return;
             
+            // [v6.4.1] Debounce: stejný stav stolu (ruka+fáze+poslední akce) vyhodnoť jen jednou.
+            // Brání dvojímu posunu, když checkRoundEnd přijde z akce hráče i z host listeneru zároveň.
+            const _crSig = `${table.handNumber || 0}|${table.phase}|${table.lastActivity || 0}`;
+            window._pokerCRSig = window._pokerCRSig || {};
+            if (window._pokerCRSig[tableId] === _crSig) return;
+            window._pokerCRSig[tableId] = _crSig;
+            
             const activePlayers = Object.values(table.players || {}).filter(p => p.status === 'active' || p.status === 'allin');
             const activeOnly = activePlayers.filter(p => p.status === 'active');
             
@@ -150196,9 +150203,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // [NEW] Firebase stats tracking - jen host zapíše (zabrání duplicitnímu trackingu)
             const myName = getPlayerName();
             const creatorAtTable = table.createdBy && table.players?.[table.createdBy];
+            // [v6.4.1] Fallback hosta sjednocen na seat-sort (jako checkRoundEnd a listener) — jinak by se
+            // při odchodu creatora nespustila další ruka (jiný "host" by blok přeskočil).
+            const _hostBySeat = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
             const isHost = creatorAtTable
                 ? (table.createdBy === myName)
-                : (Object.keys(table.players || {})[0] === myName);
+                : (_hostBySeat[0]?.name === myName);
             if (isHost) {
                 try {
                     const statsUpdates = {};
@@ -150336,9 +150346,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // [FIX] Host logic: creator má prioritu. Pokud creator není u stolu, host = první hráč.
             const myName = getPlayerName();
             const creatorAtTable = table.createdBy && table.players?.[table.createdBy];
+            // [v6.4.1] Fallback hosta sjednocen na seat-sort (konzistence s checkRoundEnd/listener)
+            const _hostBySeat = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
             const isHost = creatorAtTable
                 ? (table.createdBy === myName)
-                : (Object.keys(table.players || {})[0] === myName);
+                : (_hostBySeat[0]?.name === myName);
             if (!isHost) return;
             
             // [NEW] Stats tracking - jen host zapíše
@@ -150973,6 +150985,24 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                             if (window._pokerBotActedKey !== k) {
                                 window._pokerBotActedKey = k;
                                 setTimeout(() => _pokerBotAct(tableId), 1100);
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
+                // [v6.4.1] HOST posun ruky — hlavně human-vs-human (bez bota), kde kolo může zavřít NE-host.
+                // checkRoundEnd má host guard, takže ho volá jen host; debounce klíč brání dvojímu posunu.
+                // Trigger: během hry je currentTurn prázdné = kolo skončilo (findNextActivePokerPlayer vrátil null).
+                try {
+                    if (table.state === 'playing' && !table.currentTurn) {
+                        const _psH = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                        const _creatorHere = table.createdBy && table.players?.[table.createdBy];
+                        const _amHostNow = _creatorHere ? (table.createdBy === getPlayerName()) : (_psH[0]?.name === getPlayerName());
+                        if (_amHostNow) {
+                            const _advK = `${tableId}_${table.handNumber || 0}_${table.phase}_${table.lastActivity || 0}`;
+                            if (window._pokerHostAdvKey !== _advK) {
+                                window._pokerHostAdvKey = _advK;
+                                setTimeout(() => checkRoundEnd(tableId), 350);
                             }
                         }
                     }
