@@ -117823,11 +117823,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 }
                             }
                             
-                            // Otevři combat UI pro všechny přihlášené (po deployment)
-                            const isParticipantHere = (raid.attackers && raid.attackers[myName]) || (raid.defenders && raid.defenders[myName]);
-                            if (isParticipantHere && typeof showDeploymentModal === 'function') {
-                                setTimeout(() => showDeploymentModal(raidId), 2000);
-                            } else if (typeof showScheduledRaidLobby === 'function') {
+                            // [v6.4.1] Výběr pozice ZRUŠEN — žádný deployment modal. Ukaž lobby;
+                            // boj se otevře automaticky, jakmile bude pvpCombat aktivní (jednotky se rozmístí samy).
+                            if (typeof showScheduledRaidLobby === 'function') {
                                 setTimeout(() => showScheduledRaidLobby(raidId), 1000);
                             }
                         }
@@ -126203,20 +126201,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         async function showPvPArena() {
             initPvPStats();
             
-            // [v6.4.1] PvP Koloseum je ZAMČENO — není hotové/zabugované (hlášeno hráči: výzvy nejdou
-            // přijmout, duel se sekne v dungeonu). Admin má přístup pro testování.
-            if (!(typeof isAdmin === 'function' && isAdmin())) {
-                showModal('🔒 KOLOSEUM', `
-                    <div style="text-align: center; padding: 2rem;">
-                        <div style="font-size: 4rem;">🔒</div>
-                        <h3 style="color: #ff9800;">Koloseum se dolaďuje</h3>
-                        <p style="color: #aaa; font-size: 0.85rem;">PvP souboje jsou dočasně uzamčené, dokud nebudou plně hotové a opravené. Zkus to prosím později.</p>
-                        <button class="btn" onclick="closeModal()" style="margin-top: 1rem; background: #555;">Zavřít</button>
-                    </div>
-                `);
-                return;
-            }
-            
             if (!multiplayerEnabled) {
                 showModal('⚔️ KOLOSEUM', `
                     <div style="text-align: center; padding: 2rem;">
@@ -126993,7 +126977,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 <!-- ⚔️ PvP KOLOSEUM -->
                 <div style="display: flex; gap: 3px; margin-bottom: 4px;">
-                    <button class="btn wl-btn wl-scratch" onclick="showPvPArena()" style="flex:1;background:linear-gradient(180deg, #2a0a05 0%, #1a0500 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #ff6b35;"><span style="font-size:0.7rem;color:#ff8a5c;font-weight:bold;">⚔️ PvP KOLOSEUM${(typeof isAdmin === 'function' && isAdmin()) ? '' : ' 🔒'}</span></button>
+                    <button class="btn wl-btn wl-scratch" onclick="showPvPArena()" style="flex:1;background:linear-gradient(180deg, #2a0a05 0%, #1a0500 100%);padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #ff6b35;"><span style="font-size:0.7rem;color:#ff8a5c;font-weight:bold;">⚔️ PvP KOLOSEUM${(window._pvpLockCache && window._pvpLockCache.pvp === true) ? ' 🔒' : ''}</span></button>
                 </div>
                 
                 <!-- 🛡️ STAFF CHAT (jen admin/moderator) -->
@@ -128808,17 +128792,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         notifyInfo('❌ Nájezd zrušen', v.message);
                         firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
                     }
-                    // [NEW] Deployment phase - 25s na rozmístění
+                    // [v6.4.1] Deployment (výběr pozice) ZRUŠEN — staré notifikace jen tiše zahodíme, žádný modal.
                     if (v.type === 'pvp_deployment' && !v.processed) {
                         processedRewards.add('deployment_' + k);
-                        notifyWarning('📍 Rozmístění (25s)', v.message || 'Vyber pozici teď!');
-                        addLog('📍 25s na rozmístění před bojem', '⚔️');
-                        // Vibrace pro mobilní zařízení
-                        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
-                        // Auto-otevři deployment modal
-                        if (typeof showDeploymentModal === 'function' && v.raidId) {
-                            setTimeout(() => showDeploymentModal(v.raidId), 200);
-                        }
                         firebaseDB.ref('notifications/' + myName + '/' + k).remove().catch(function(e){});
                     }
                     if (v.type === 'scheduled_raid_starting' && !v.processed) {
@@ -171112,50 +171088,18 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         // Vytvoří combat state se všemi přihlášenými hráči
         // [NEW] Spustí deployment fázi (25s na rozmístění) předtím než combat začne
         async function startDeploymentPhase(raidId) {
+            // [v6.4.1] VÝBĚR POZICE ZRUŠEN — z lobby jdeme rovnou do boje s automatickým rozmístěním.
+            // (Fáze "deployment" zlobila mezi lobby a bojem; initiatePvPRaidCombat rozmístí jednotky sám.)
             if (!multiplayerEnabled || !firebaseDB) return;
             const myName = getPlayerName();
             try {
                 const raidSnap = await firebaseDB.ref(`scheduledRaids/${raidId}`).once('value');
                 const raid = raidSnap.val();
                 if (!raid) return;
-                
-                // Pouze master (vůdce útoku) spustí deployment
-                if (raid.attackerLeader !== myName) return;
-                if (raid.status === 'deployment' || raid.pvpCombat) return;  // Už běží
-                
-                // Duel = 8s (jen 1 pozice), klanový raid = 25s (víc hráčů)
-                const _deploySec = raid.isDuel ? 8 : 25;
-                const deploymentEndAt = Date.now() + _deploySec * 1000;
-                
-                // Update status
-                await firebaseDB.ref(`scheduledRaids/${raidId}`).update({
-                    status: 'deployment',
-                    deploymentEndAt: deploymentEndAt
-                });
-                
-                // Notifikace všem účastníkům
-                const allParticipants = [...Object.keys(raid.attackers || {}), ...Object.keys(raid.defenders || {})];
-                for (const name of allParticipants) {
-                    const safe = name.replace(/[\/\.#$\[\]]/g, '_');
-                    firebaseDB.ref(`notifications/${safe}`).push({
-                        type: 'pvp_deployment',
-                        timestamp: Date.now(),
-                        message: `📍 ${_deploySec}s na rozmístění! Vyber pozici teď.`,
-                        raidId: raidId,
-                        deploymentEndAt: deploymentEndAt
-                    }).catch(()=>{});
-                }
-                
-                // Po _deploySec: auto-init combat
-                setTimeout(async () => {
-                    const recheckSnap = await firebaseDB.ref(`scheduledRaids/${raidId}`).once('value');
-                    const recheck = recheckSnap.val();
-                    if (recheck && recheck.status === 'deployment' && !recheck.pvpCombat) {
-                        await initiatePvPRaidCombat(raidId);
-                    }
-                }, _deploySec * 1000);
-                
-                console.log('📍 Deployment phase started for raid', raidId);
+                if (raid.attackerLeader !== myName) return; // jen master spustí boj
+                if (raid.pvpCombat) return; // už běží
+                await initiatePvPRaidCombat(raidId);
+                console.log('⚔️ PvP combat started directly (deployment skipped) for raid', raidId);
             } catch (e) { console.error('startDeploymentPhase error:', e); }
         }
         window.startDeploymentPhase = startDeploymentPhase;
