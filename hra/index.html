@@ -103062,18 +103062,46 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 return;
             }
             
+            // [v6.4.1] Primární save je nejdůležitější. Když je úložiště plné, UVOLNI místo (zálohy/šifr. verzi)
+            // a zkus znovu — dřív celý save selhal (a sebrané itemy se nepersistovaly = "věci nikde").
+            let _primarySaved = false;
             try {
                 localStorage.setItem('survival_hero_save', jsonData);
-                localStorage.setItem('survival_hero_backup', jsonData);
-                // [FIX cross-device sync] Tracking timestamp pro porovnání s cloudem
-                localStorage.setItem('lastSaveAt', Date.now().toString());
+                _primarySaved = true;
             } catch(e) {
-                console.error('Chyba při ukládání do localStorage:', e);
-                if (!silent) {
-                    showModal('Chyba', 'Nelze uložit - úložiště je plné nebo blokované.');
+                console.warn('Save: úložiště plné, uvolňuji místo a zkouším znovu…', e);
+                try {
+                    // Uvolni redundantní kopie (zálohu + šifrovanou verzi) a zkus primární save znovu
+                    localStorage.removeItem('survival_hero_backup');
+                    localStorage.removeItem('survival_hero_save_v2');
+                    localStorage.setItem('survival_hero_save', jsonData);
+                    _primarySaved = true;
+                } catch(e2) {
+                    // Stále plno → zkus oříznout objemná data (combat/dungeon snapshot, delší logy) a naposledy zkusit
+                    try {
+                        delete state.savedCombatState;
+                        if (state.log && state.log.length > 20) state.log = state.log.slice(-20);
+                        if (state.settlement?.eventLog && state.settlement.eventLog.length > 5) state.settlement.eventLog = state.settlement.eventLog.slice(0, 5);
+                        const _trimmed = JSON.stringify(state);
+                        localStorage.setItem('survival_hero_save', _trimmed);
+                        jsonData = _trimmed;
+                        _primarySaved = true;
+                    } catch(e3) {
+                        console.error('Chyba při ukládání do localStorage (i po uvolnění):', e3);
+                        if (!silent) {
+                            showModal('Chyba', 'Nelze uložit — úložiště prohlížeče je plné. Zkus prodat/vyhodit část inventáře nebo smazat cache. Tvůj postup se zatím ukládá do cloudu (pokud jsi přihlášen).');
+                        }
+                        // I tak zkus cloud save (in-memory stav máš), ať se postup neztratí
+                        if (currentUser && !currentUser.isAnonymous && typeof saveCloudSave === 'function') {
+                            try { saveCloudSave(); } catch(_) {}
+                        }
+                        return;
+                    }
                 }
-                return;
             }
+            localStorage.setItem('lastSaveAt', Date.now().toString());
+            // Záloha + šifrovaná verze jsou BEST-EFFORT — nesmí shodit primární save
+            try { localStorage.setItem('survival_hero_backup', jsonData); } catch(e) { /* plno — záloha se přeskočí */ }
             
             // Zkus šifrovanou verzi (volitelné)
             try {
@@ -150264,6 +150292,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 return { name: p.name, chips: p.chips, eval: eval7, totalBet: p.totalBetInHand || 0, cards: holeCards };
             });
             
+            // [v6.4.1] POJISTKA: chybí-li některému kontendrovi hole karty (typicky human-vs-human, kde se
+            // pokerHands nesdílí přes Firebase pravidla), NEVYHODNOCUJ ho jen z community karet — dávalo by to
+            // FALEŠNOU ruku ("Pár" ze stolu) a špatného vítěze → mizely peníze. Místo toho ruku vrať (refund).
+            const _missingCards = contenders.filter(p => !(allHands[p.name] && allHands[p.name].length >= 2));
+            if (_missingCards.length > 0) {
+                console.error('⚠️ Showdown: chybí hole karty pro', _missingCards.map(p => p.name).join(', '), '— vracím sázky.');
+                await abortPokerHandRefund(tableId, 'karty se nepodařilo načíst');
+                return;
+            }
+            
             // [FIX #2] Spočítej side poty z VŠECH hráčů (včetně foldnutých)
             const allPlayers = Object.values(table.players || {});
             const sidePots = calculateSidePots(allPlayers);
@@ -151105,7 +151143,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                     const rk = `${tableId}_rebuy_${table.handNumber || 0}`;
                                     if (window._pokerBotRebuyKey !== rk) {
                                         window._pokerBotRebuyKey = rk;
-                                        firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}/chips`).set(_bot.initialBuyIn || table.minBuyIn || 200).catch(() => {});
+                                        firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}`).update({ chips: _bot.initialBuyIn || table.minBuyIn || 200, name: POKER_BOT_NAME, isBot: true }).catch(() => {});
                                     }
                                 } else if (table.state === 'playing' && table.currentTurn === POKER_BOT_NAME) {
                                     const k = `${tableId}_bot_${table.turnStartTime}`;
@@ -151139,6 +151177,24 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                             if (window._pokerHostAdvKey !== _advK) {
                                 window._pokerHostAdvKey = _advK;
                                 setTimeout(() => checkRoundEnd(tableId), 350);
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
+                // [v6.4.1] HOST cleanup "zombie" uzlů hráčů bez jména (vznikají přepisem chips na odebraný uzel).
+                // Řeší hlášený "undefined" hráč u stolu. Maže jen host, jen mezi rukama (bezpečné).
+                try {
+                    if (table.state === 'waiting' || table.state === 'showdown') {
+                        const _humansSorted = Object.values(table.players || {}).filter(p => p && p.name && !p.isBot).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                        const _creatorHere2 = table.createdBy && table.players?.[table.createdBy];
+                        const _amHost2 = _creatorHere2 ? (table.createdBy === getPlayerName()) : (_humansSorted[0]?.name === getPlayerName());
+                        if (_amHost2) {
+                            const _zombies = Object.entries(table.players || {}).filter(([k, p]) => !p || !p.name);
+                            if (_zombies.length > 0) {
+                                const _del = {};
+                                _zombies.forEach(([k]) => { _del[`players/${k}`] = null; });
+                                firebaseDB.ref(`pokerTables/${tableId}`).update(_del).catch(() => {});
                             }
                         }
                     }
@@ -151385,7 +151441,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
           try {
             const myName = getPlayerName();
             const me = table.players?.[myName];
-            const players = Object.values(table.players || {}).sort((a, b) => a.seat - b.seat);
+            // [v6.4.1] Vyfiltruj "zombie" uzly hráčů bez jména (zbytek po odejití/přepisu chips) → nezobrazuj "undefined"
+            const players = Object.values(table.players || {}).filter(p => p && p.name).sort((a, b) => a.seat - b.seat);
             const isMyTurn = table.currentTurn === myName;
             const callAmount = me ? ((table.currentBet || 0) - (me.currentBet || 0)) : 0;
             
