@@ -20443,8 +20443,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // Centrální funkce pro přidání předmětu do inventáře se stackováním
-        function addItemToInventory(item, count = 1, silent = false) {
+        function addItemToInventory(item, count = 1, silent = false, autoLoot = false) {
             if (!item) return false;
+            
+            // [v6.4.1] Loot filtr — platí JEN pro automatický sběr (autoLoot=true).
+            // Nákup, odměny, craft, ruční sběr ze země ho ignorují (autoLoot=false).
+            if (autoLoot && typeof passesLootFilter === 'function' && !passesLootFilter(item)) {
+                if (typeof addToGroundLoot === 'function') {
+                    for (let i = 0; i < (count || 1); i++) addToGroundLoot({ ...item });
+                }
+                return false; // odmítnuto filtrem — necháno na zemi
+            }
             
             // [NEW FreeRiderCz] Runová kniha - runy jdou do oddělené sbírky, ne do inventáře
             // Důvod: hráči mívají 10-20 run v inventáři které zabírají sloty
@@ -48241,7 +48250,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 if (canAddItem(lootItem, lootCount)) {
-                    addItemToInventory(lootItem, lootCount, true);
+                    if (addItemToInventory(lootItem, lootCount, true, true)) { // [v6.4.1] autoLoot → loot filtr
                     const countText = lootCount > 1 ? ` x${lootCount}` : '';
                     notifyLoot(lootItem.name + countText, lootItem.rarity, lootItem.icon);
                     MobileNotifications.notifyLootFound(lootItem.name + countText, lootItem.icon);
@@ -48251,6 +48260,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     });
                     humor = lootItem.rarity === 'rare' || lootItem.rarity === 'epic' ? getRandomHumor('lootGood') : getRandomHumor('lootJunk');
                     itemAdded = true;
+                    } else {
+                        // Odmítnuto loot filtrem → na zem
+                        addToGroundLoot({...lootItem, count: lootCount}, state.world.travelTo || state.world.currentLocation);
+                        humor = 'Nechávám ležet (loot filtr)...';
+                        extraText = '<p style="color: #888; font-size: 0.9rem;">📦 Odmítnuto loot filtrem — zůstalo na zemi.</p>';
+                    }
                 } else {
                     // Ulož na zem cílové lokace
                     addToGroundLoot({...lootItem, count: lootCount}, state.world.travelTo || state.world.currentLocation);
@@ -48609,13 +48624,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                     
                     if (canAddItem(lootItem, lootCount)) {
-                        addItemToInventory(lootItem, lootCount);
+                        if (addItemToInventory(lootItem, lootCount, false, true)) { // [v6.4.1] autoLoot → loot filtr
                         const countText = lootCount > 1 ? ` x${lootCount}` : '';
                         addLog(`🔍 Průzkum: Nalezeno ${lootItem.icon} ${lootItem.name}${countText}`, '🔍', 'explore', {
                             items: [{ id: lootItem.id, count: lootCount }],
                             location: state.world?.currentLocation
                         });
                         notifyLoot(lootItem.name + countText, lootItem.rarity, lootItem.icon);
+                        } else {
+                            addToGroundLoot({...lootItem, count: lootCount});
+                        }
                     } else {
                         addToGroundLoot({...lootItem, count: lootCount});
                     }
@@ -48653,13 +48671,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                     
                     if (canAddItem(lootItem, lootCount)) {
-                        addItemToInventory(lootItem, lootCount);
+                        if (addItemToInventory(lootItem, lootCount, false, true)) { // [v6.4.1] autoLoot → loot filtr
                         const countText = lootCount > 1 ? ` x${lootCount}` : '';
                         addLog(`🔍 ${event.name}: Nalezeno ${lootItem.icon} ${lootItem.name}${countText}`, '🔍', 'explore', {
                             items: [{ id: lootItem.id, count: lootCount }],
                             location: state.world?.currentLocation
                         });
                         reward = '<p style="color: var(--toxic-green);">Našel jsi: ' + lootItem.icon + ' ' + lootItem.name + countText + '</p>';
+                        } else {
+                            addToGroundLoot({...lootItem, count: lootCount});
+                            reward = '<p style="color: #888;">📦 ' + lootItem.icon + ' ' + lootItem.name + ' — odmítnuto loot filtrem (na zemi)</p>';
+                        }
                     } else {
                         addToGroundLoot({...lootItem, count: lootCount});
                         reward = '<p style="color: #ff9800;">📦 ' + lootItem.icon + ' ' + lootItem.name + ' zůstal na zemi (plný inventář)</p>';
@@ -54706,10 +54728,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (hiddenLootPool.length > 0) {
                     const hiddenItem = hiddenLootPool[Math.floor(Math.random() * hiddenLootPool.length)];
                     if (canAddItem(hiddenItem, 1)) {
-                        addItemToInventory(hiddenItem, 1);
-                        foundItems.push('💎 ' + hiddenItem.icon + ' ' + hiddenItem.name + ' (SKRYTÉ!)');
-                        notifyLoot(hiddenItem.name + ' (skryté!)', 'epic', '💎');
-                        addLog('💎 Společník našel skrytý předmět: ' + hiddenItem.name, '💎');
+                        if (addItemToInventory(hiddenItem, 1, false, true)) { // [v6.4.1] autoLoot → loot filtr
+                            foundItems.push('💎 ' + hiddenItem.icon + ' ' + hiddenItem.name + ' (SKRYTÉ!)');
+                            notifyLoot(hiddenItem.name + ' (skryté!)', 'epic', '💎');
+                            addLog('💎 Společník našel skrytý předmět: ' + hiddenItem.name, '💎');
+                        } else {
+                            groundItems.push('💎 ' + hiddenItem.icon + ' ' + hiddenItem.name + ' (filtr)');
+                        }
                     } else {
                         addToGroundLoot({...hiddenItem});
                         groundItems.push('💎 ' + hiddenItem.icon + ' ' + hiddenItem.name + ' (SKRYTÉ!)');
@@ -68912,7 +68937,7 @@ function openFullscreenMap() {
                 const _origAddItem = addItemToInventory;
                 const _trackingAddItem = function(item, count, silent) {
                     trackItem(item, count || 1);
-                    return _origAddItem(item, count, silent);
+                    return _origAddItem(item, count, silent, true); // [v6.4.1] autoLoot=true → respektuj loot filtr (boj/dungeon loot)
                 };
                 // Wrap addToGroundLoot pro trackování i itemů na zemi
                 const _origGroundLoot = typeof addToGroundLoot === 'function' ? addToGroundLoot : null;
@@ -69850,8 +69875,7 @@ function openFullscreenMap() {
                 } else {
                     const item = ITEMS.find(i => i.id === itemId);
                     if (item) {
-                        addItemToInventory(item, 1, true);
-                        itemsAdded++;
+                        if (addItemToInventory(item, 1, true, true)) itemsAdded++; // [v6.4.1] autoLoot → loot filtr (jinak na zem)
                     }
                 }
             });
@@ -106616,6 +106640,40 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         { label: '🏋️ Střední', color: '#ff5722', over: '+10–25 %', dmg: '-22 %', def: '-18 %', dodge: '-45 %', travel: '+40 %', hunger: '+35 %', lvl: 2 },
                         { label: '💀 Těžké', color: '#f44336', over: 'nad +25 %', dmg: '-38 %', def: '-32 %', dodge: '-75 %', travel: '+65 %', hunger: '+60 %', lvl: 3 },
                     ].map(r => { const active = _encInfo.active && _encInfo.level === r.lvl; return `<tr style="background:${active ? r.color+'22' : 'transparent'}; outline:${active ? '1px solid '+r.color : 'none'};"><td style="padding:0.3rem 0.3rem; color:${r.color}; font-weight:${active?'bold':'normal'}; white-space:nowrap;">${r.label}${active?' ◀':''}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#777; font-size:0.72rem;">${r.over}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#f44336;">${r.dmg}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#2196f3;">${r.def}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#9c27b0;">${r.dodge}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#ff9800;">${r.travel}</td><td style="text-align:center; padding:0.25rem 0.2rem; color:#8bc34a;">${r.hunger}</td></tr>`; }).join('');
+                    // [v6.4.1] Rozpad NÁKLADU — diagnostika "fantomové" váhy (co přesně tě tíží)
+                    let _loadBreakdownHtml = '';
+                    try {
+                        const _contribs = [];
+                        const _idSlots = {};
+                        (state.inv || []).forEach(it => {
+                            if (it.type === 'resource') return;
+                            const w = (it.weight || 0) * (it.count || 1);
+                            if (w > 0) _contribs.push({ name: (it.icon || '📦') + ' ' + (it.name || it.id), w, count: it.count || 1 });
+                            if (!it.stackId && !it.durability) _idSlots[it.id] = (_idSlots[it.id] || 0) + 1;
+                        });
+                        _contribs.sort((a, b) => b.w - a.w);
+                        let _mpWeight = 0;
+                        const _myN = (typeof getPlayerName === 'function') ? getPlayerName() : '';
+                        if (typeof marketplaceOffers !== 'undefined' && marketplaceOffers) {
+                            marketplaceOffers.forEach(o => {
+                                if (o.item?.type === 'resource') return;
+                                if (o.seller === _myN && o.status === 'active') _mpWeight += (o.item?.weight || 0) * (o.count || o.item?.count || 1);
+                            });
+                        }
+                        const _dupes = Object.entries(_idSlots).filter(([id, n]) => n > 1).map(([id, n]) => {
+                            const it = state.inv.find(x => x.id === id);
+                            return it ? { n, name: (it.icon || '📦') + ' ' + (it.name || id) } : null;
+                        }).filter(Boolean);
+                        const _rows = _contribs.slice(0, 8).map(c => `<div style="display:flex; justify-content:space-between; font-size:0.78rem;"><span style="color:#ccc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:68%;">${c.name}${c.count > 1 ? ' ×' + c.count : ''}</span><span style="color:#fff;">${c.w.toFixed(1)} kg</span></div>`).join('');
+                        _loadBreakdownHtml = `
+                            <div style="background:#1a1a1a; padding:0.8rem; border-radius:8px; margin-bottom:0.8rem;">
+                                <h4 style="margin:0 0 0.4rem 0; color:#ff9800; font-size:0.82rem;">📦 Co tě nejvíc tíží</h4>
+                                <div style="display:flex; flex-direction:column; gap:0.15rem;">${_rows || '<span style="color:#666; font-size:0.78rem;">Žádné těžké předměty.</span>'}</div>
+                                ${_mpWeight > 0 ? `<div style="display:flex; justify-content:space-between; font-size:0.78rem; border-top:1px solid #333; margin-top:0.3rem; padding-top:0.3rem;"><span style="color:#ce93d8;">🏪 Vystaveno na tržišti (počítá se!)</span><span style="color:#fff;">${_mpWeight.toFixed(1)} kg</span></div>` : ''}
+                            </div>
+                            ${_dupes.length > 0 ? `<div style="background:#2a1a0a; padding:0.8rem; border-radius:8px; margin-bottom:0.8rem; border:1px solid #ff9800;"><h4 style="margin:0 0 0.4rem 0; color:#ff9800; font-size:0.82rem;">⚠️ Nesloučené stacky (${_dupes.length})</h4><div style="font-size:0.76rem; color:#aaa; line-height:1.5;">${_dupes.slice(0, 6).map(d => `${d.name} — ${d.n}× sloty`).join('<br>')}</div><button class="btn" onclick="consolidateInventory(); closeModal(); if(typeof notifySuccess==='function')notifySuccess('🎒 Sloučeno','Stacky byly sloučeny.'); if(typeof render==='function')render();" style="width:100%; margin-top:0.5rem; background:linear-gradient(135deg,#2e7d32,#1b5e20); font-size:0.8rem;">🔧 Sloučit stacky teď</button></div>` : ''}
+                        `;
+                    } catch(e) { _loadBreakdownHtml = ''; }
                     title = '⚖️ Nosnost & Postihy';
                     content = `
                         <div style="text-align:center; margin-bottom:0.8rem;">
@@ -106626,6 +106684,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         ${_encInfo.active ? `<div style="background:${_encInfo.color}18; border:1px solid ${_encInfo.color}; border-radius:8px; padding:0.8rem; margin-bottom:0.8rem;"><h4 style="margin:0 0 0.5rem 0; color:${_encInfo.color}; font-size:0.9rem;">⚠️ Aktuální postihy</h4><div style="display:grid; grid-template-columns:1fr 1fr; gap:0.25rem; font-size:0.83rem;"><div style="background:#1a1a1a; padding:0.35rem 0.6rem; border-radius:5px;">⚔️ Útok <span style="color:#f44336; float:right; font-weight:bold;">-${Math.round((1-_encInfo.damagePenalty)*100)} %</span></div><div style="background:#1a1a1a; padding:0.35rem 0.6rem; border-radius:5px;">🛡️ Obrana <span style="color:#2196f3; float:right; font-weight:bold;">-${Math.round((1-_encInfo.defensePenalty)*100)} %</span></div><div style="background:#1a1a1a; padding:0.35rem 0.6rem; border-radius:5px;">💨 Úhyb <span style="color:#9c27b0; float:right; font-weight:bold;">-${Math.round((1-_encInfo.dodgePenalty)*100)} %</span></div><div style="background:#1a1a1a; padding:0.35rem 0.6rem; border-radius:5px;">🚶 Cesta <span style="color:#ff9800; float:right; font-weight:bold;">+${Math.round((_encInfo.travelPenalty-1)*100)} %</span></div><div style="background:#1a1a1a; padding:0.35rem 0.6rem; border-radius:5px; grid-column:span 2;">🍖 Spotřeba jídla <span style="color:#8bc34a; float:right; font-weight:bold;">+${Math.round((_encInfo.hungerMult-1)*100)} %</span></div></div></div>` : ''}
                         <div style="background:#1a1a1a; padding:0.8rem; border-radius:8px; margin-bottom:0.8rem;"><h4 style="margin:0 0 0.4rem 0; color:#aaa; font-size:0.82rem;">📊 Tabulka postihů</h4><table style="width:100%; border-collapse:collapse; font-size:0.72rem;"><tr style="color:#555; border-bottom:1px solid #2a2a2a;"><th style="text-align:left; padding:0.2rem 0.3rem; font-weight:normal;">Stupeň</th><th style="text-align:center; padding:0.2rem; font-weight:normal;">Přes limit</th><th style="text-align:center; padding:0.2rem; font-weight:normal; color:#f44336;">⚔️</th><th style="text-align:center; padding:0.2rem; font-weight:normal; color:#2196f3;">🛡️</th><th style="text-align:center; padding:0.2rem; font-weight:normal; color:#9c27b0;">💨</th><th style="text-align:center; padding:0.2rem; font-weight:normal; color:#ff9800;">🚶</th><th style="text-align:center; padding:0.2rem; font-weight:normal; color:#8bc34a;">🍖</th></tr>${_penRows}</table></div>
                         <div style="background:#1a1a1a; padding:0.8rem; border-radius:8px; margin-bottom:0.8rem;"><h4 style="margin:0 0 0.4rem 0; color:#ffd700; font-size:0.82rem;">📈 Výpočet nosnosti</h4><div style="font-size:0.8rem; color:#aaa; display:flex; flex-direction:column; gap:0.2rem;"><div style="display:flex; justify-content:space-between;"><span>🏕️ Základ</span><span style="color:#fff;">50 kg</span></div><div style="display:flex; justify-content:space-between;"><span>💪 Síla ${str} (+${Math.max(0,str-5)} × 5 kg)</span><span style="color:${str>5?'#8bc34a':'#666'};">${str>5?'+':''}${Math.max(0,(str-5)*5)} kg</span></div>${hasBackpack ? `<div style="display:flex; justify-content:space-between;"><span>🎒 Batoh</span><span style="color:#8bc34a;">+20 kg</span></div>` : `<div style="display:flex; justify-content:space-between; opacity:0.4;"><span>🎒 Batoh (nemáš)</span><span>+0 kg</span></div>`}${packRatLevel > 0 ? `<div style="display:flex; justify-content:space-between;"><span>📦 Pack Rat (úr. ${packRatLevel})</span><span style="color:#8bc34a;">+${packRatLevel*10} kg</span></div>` : ''}<div style="border-top:1px solid #333; margin-top:0.2rem; padding-top:0.3rem; display:flex; justify-content:space-between; font-weight:bold;"><span>Celkem</span><span style="color:${weightColor};">${state.maxCarryWeight} kg</span></div></div></div>
+                        ${_loadBreakdownHtml}
                         <div style="background:#1a2a1a; padding:0.8rem; border-radius:8px;"><h4 style="margin:0 0 0.4rem 0; color:#8bc34a; font-size:0.82rem;">💡 Jak snížit zátěž</h4><div style="font-size:0.78rem; color:#aaa; line-height:1.6;">• Ulož těžké věci do <strong style="color:#fff;">úkrytu</strong><br>• Vyrob si <strong style="color:#fff;">🎒 Batoh</strong> (+20 kg)<br>• Zvyš <strong style="color:#fff;">Sílu</strong> — každý bod nad 5 = +5 kg<br>• Skill <strong style="color:#fff;">Pack Rat</strong> — každá úroveň = +10 kg<br>• Prodej nebo zahoď nepotřebné věci</div></div>
                     `;
                     break;
@@ -117621,6 +117680,22 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     for (const [raidId, raid] of Object.entries(raids)) {
                         if (!raid || !raid.scheduledTime) continue;
+                        
+                        // [v6.4.1] Úklid ZASTARALÝCH raidů/duelů — start dávno v minulosti a nikdy nedoběhl.
+                        // Řeší "starý duel pořád vyskakuje" (uvázlý v lobby/starting). Smaže z Firebase → přestane vyskakovat všem.
+                        {
+                            const _liveStatuses = ['lobby', 'starting', 'deployment', 'active'];
+                            if (_liveStatuses.includes(raid.status)) {
+                                const _ageMs = now - raid.scheduledTime;
+                                const _staleMs = (raid.status === 'active') ? 6 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000;
+                                if (_ageMs > _staleMs) {
+                                    firebaseDB.ref(`scheduledRaids/${raidId}`).remove().catch(() => {});
+                                    try { delete window[`duelModalShown_${raidId}`]; } catch(_) {}
+                                    continue;
+                                }
+                            }
+                        }
+                        
                         if (raid.status !== 'lobby' && raid.status !== 'starting' && raid.status !== 'active') continue;
                         
                         const isParticipant = (raid.attackers && raid.attackers[myName]) || (raid.defenders && raid.defenders[myName]);
@@ -149069,7 +149144,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     minBuyIn: level.minBuyIn, maxBuyIn: level.maxBuyIn, maxPlayers: 6,
                     state: 'waiting', phase: null, pot: 0, currentBet: 0, dealerPos: 0,
                     currentTurn: null, players: {}, communityCards: [], deck: [],
-                    lastActivity: Date.now(), hasBot: true
+                    lastActivity: Date.now(), hasBot: true, botTable: true
                 });
                 try {
                     await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
@@ -149172,11 +149247,39 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 await firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}`).remove();
                 await firebaseDB.ref(`pokerHands/${tableId}/${POKER_BOT_NAME}`).remove().catch(() => {});
                 await firebaseDB.ref(`pokerTables/${tableId}/hasBot`).set(false);
+                window._pokerBotRejoinKey = null; // [v6.4.1] umožni pozdější návrat bota
                 clearPokerBotHoleLocal(tableId);
                 clearPokerMyHoleLocal(tableId);
                 await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
                 try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer opustil stůl — připojili se hráči.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
             } catch(e) { console.warn('_pokerBotLeave:', e); }
+        }
+
+        // [v6.4.1] Návrat dealer-bota — když u bot stolu zbyde jen 1 hráč (druhý odešel), bot se vrátí, ať je s kým hrát.
+        async function _pokerBotRejoin(tableId) {
+            try {
+                if (!firebaseDB) return;
+                const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
+                const table = snap.val();
+                if (!table || !table.botTable || table.hasBot) return;
+                if (table.state !== 'waiting' && table.state !== 'showdown') return;
+                const humans = Object.values(table.players || {}).filter(p => p && !p.isBot);
+                if (humans.length !== 1) return; // vrať jen když zbyl přesně jeden člověk
+                // volný seat (člověk může sedět na seatu 1)
+                const usedSeats = Object.values(table.players || {}).map(p => p.seat);
+                let botSeat = 1;
+                while (usedSeats.includes(botSeat)) botSeat++;
+                const botStack = Math.max(10000, table.maxBuyIn || 10000);
+                await firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}`).set({
+                    name: POKER_BOT_NAME, seat: botSeat, chips: botStack, initialBuyIn: botStack,
+                    joinedAt: Date.now(), status: 'active', currentBet: 0, totalBetInHand: 0,
+                    actedThisRound: false, hasCards: false, isBot: true
+                });
+                await firebaseDB.ref(`pokerTables/${tableId}/hasBot`).set(true);
+                await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
+                window._pokerBotLeaving = null; // reset leave-flag, ať může příště zase odejít
+                try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer se vrátil ke stolu — zbyl jeden hráč.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
+            } catch(e) { console.warn('_pokerBotRejoin:', e); }
         }
 
         // [v6.4.1] Dokoupení žetonů (rebuy) — nabízí se když hráč padne na nulu. Respektuje denní limit.
@@ -149507,13 +149610,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // Pokud zbyl 0 nebo 1 hráč, smaž stůl
                 const tableSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
                 const table = tableSnap.val();
-                const remaining = Object.keys(table?.players || {}).length;
-                if (remaining === 0) {
+                // [v6.4.1] Smaž stůl, když nezbyl ŽÁDNÝ člověk (prázdno nebo jen bot). Vítězem banku jen člověk.
+                const _remainingPlayers = Object.values(table?.players || {});
+                const _remainingHumans = _remainingPlayers.filter(p => p && !p.isBot);
+                if (_remainingHumans.length === 0) {
                     await firebaseDB.ref(`pokerTables/${tableId}`).remove();
-                } else if (remaining === 1 && table.state === 'playing') {
-                    // Poslední hráč vyhrává bank
-                    const lastPlayerName = Object.keys(table.players)[0];
-                    const lastPlayer = table.players[lastPlayerName];
+                    await firebaseDB.ref(`pokerHands/${tableId}`).remove().catch(() => {});
+                } else if (_remainingHumans.length === 1 && table.state === 'playing') {
+                    // Poslední ČLOVĚK vyhrává bank (bot se nebere jako vítěz)
+                    const lastPlayer = _remainingHumans[0];
+                    const lastPlayerName = lastPlayer.name;
                     const pot = table.pot || 0;
                     const winAmount = Math.floor(pot * (1 - POKER_CONFIG.rakePercent));
                     await firebaseDB.ref(`pokerTables/${tableId}/players/${lastPlayerName}/chips`).set(
@@ -149607,7 +149713,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             if (!table.hasBot && window._pokerHandsDenied && window._pokerHandsDenied[tableId]) return;
             
             // 🔒 Fix: Kontrola kdo může spustit
-            const playersSorted = Object.values(table.players || {}).sort((a, b) => a.seat - b.seat);
+            const playersSorted = Object.values(table.players || {}).filter(p => p && !p.isBot).sort((a, b) => a.seat - b.seat);
             // [FIX] Creator je "aktivní" jen pokud je ve Firebase A má čerstvou aktivitu (< 30s)
             // Jinak se stává leaderem seat#0 (prevence zaseknutí hry když creator zavře prohlížeč)
             const creatorData = table.createdBy ? table.players?.[table.createdBy] : null;
@@ -149899,7 +150005,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // [FIX] Host logic: creator má prioritu. Pokud creator není u stolu, host = první hráč podle seatu.
             // Předtím ternary operator dělal "creator NEBO první hráč" — což mohlo dát 2 hosty.
             const myName = getPlayerName();
-            const playersSorted = Object.values(table.players || {}).sort((a, b) => a.seat - b.seat);
+            const playersSorted = Object.values(table.players || {}).filter(p => p && !p.isBot).sort((a, b) => a.seat - b.seat);
             const creatorAtTable = table.createdBy && table.players?.[table.createdBy];
             const isHost = creatorAtTable
                 ? (table.createdBy === myName)  // Jen creator je host
@@ -150205,7 +150311,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const creatorAtTable = table.createdBy && table.players?.[table.createdBy];
             // [v6.4.1] Fallback hosta sjednocen na seat-sort (jako checkRoundEnd a listener) — jinak by se
             // při odchodu creatora nespustila další ruka (jiný "host" by blok přeskočil).
-            const _hostBySeat = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+            const _hostBySeat = Object.values(table.players || {}).filter(p => p && !p.isBot).sort((a, b) => (a.seat || 0) - (b.seat || 0));
             const isHost = creatorAtTable
                 ? (table.createdBy === myName)
                 : (_hostBySeat[0]?.name === myName);
@@ -150347,7 +150453,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const myName = getPlayerName();
             const creatorAtTable = table.createdBy && table.players?.[table.createdBy];
             // [v6.4.1] Fallback hosta sjednocen na seat-sort (konzistence s checkRoundEnd/listener)
-            const _hostBySeat = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+            const _hostBySeat = Object.values(table.players || {}).filter(p => p && !p.isBot).sort((a, b) => (a.seat || 0) - (b.seat || 0));
             const isHost = creatorAtTable
                 ? (table.createdBy === myName)
                 : (_hostBySeat[0]?.name === myName);
@@ -150781,13 +150887,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     notifyInfo('💰 Vráceno', `+${orphanRefund}💰 (opuštěný stůl)`);
                 }
                 
-                // Cleanup starých (neaktivních > 5min, bez hráčů)
+                // Cleanup starých (neaktivních > 5min): prázdné NEBO jen s botem (žádný člověk)
                 const now = Date.now();
                 for (const [id, t] of Object.entries(tables)) {
-                    const playerCount = Object.keys(t.players || {}).length;
+                    const allP = Object.values(t.players || {});
+                    const playerCount = allP.length;
+                    const humanCount = allP.filter(p => p && !p.isBot).length;
                     const idle = now - (t.lastActivity || 0);
-                    if (playerCount === 0 && idle > POKER_CONFIG.autoCleanupIdleMs) {
+                    // [v6.4.1] Smaž i stoly, kde po nečinnosti nezbyl žádný člověk (jen bot = opuštěný bot stůl)
+                    if (humanCount === 0 && idle > POKER_CONFIG.autoCleanupIdleMs) {
                         firebaseDB.ref(`pokerTables/${id}`).remove().catch(() => {});
+                        firebaseDB.ref(`pokerHands/${id}`).remove().catch(() => {});
                         delete tables[id];
                     }
                 }
@@ -150962,29 +151072,43 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 if (!table) { leavePokerTable(); return; }
                 renderPokerTable(table);
                 
-                // [v6.4.1] DEALER-BOT driver — běží jen u tvůrce stolu
+                // [v6.4.1] DEALER-BOT driver — běží u efektivního hosta (tvůrce; když odešel, seat #0)
                 try {
-                    if (table.hasBot && getPlayerName() === table.createdBy) {
+                    if (table.botTable || table.hasBot) {
                         const humans = Object.values(table.players || {}).filter(p => p && !p.isBot);
-                        const _bot = table.players?.[POKER_BOT_NAME];
-                        if (humans.length >= 2 && (table.state === 'waiting' || table.state === 'showdown')) {
-                            // 2+ lidí → bot odejde (na bezpečném místě mezi/po ruce)
-                            if (window._pokerBotLeaving !== tableId) {
-                                window._pokerBotLeaving = tableId;
-                                _pokerBotLeave(tableId);
-                            }
-                        } else if ((table.state === 'waiting' || table.state === 'showdown') && _bot && (_bot.chips || 0) < (table.bigBlind || 20)) {
-                            // [v6.4.1] Bot zbankrotoval → domácí dobití na buy-in, ať hra pokračuje (jako kasino)
-                            const rk = `${tableId}_rebuy_${table.handNumber || 0}`;
-                            if (window._pokerBotRebuyKey !== rk) {
-                                window._pokerBotRebuyKey = rk;
-                                firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}/chips`).set(_bot.initialBuyIn || table.minBuyIn || 200).catch(() => {});
-                            }
-                        } else if (table.state === 'playing' && table.currentTurn === POKER_BOT_NAME) {
-                            const k = `${tableId}_bot_${table.turnStartTime}`;
-                            if (window._pokerBotActedKey !== k) {
-                                window._pokerBotActedKey = k;
-                                setTimeout(() => _pokerBotAct(tableId), 1100);
+                        const _hSorted = humans.slice().sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                        const _creatorPresent = table.createdBy && table.players?.[table.createdBy];
+                        const _amBotHost = _creatorPresent ? (getPlayerName() === table.createdBy) : (_hSorted[0]?.name === getPlayerName());
+                        if (_amBotHost) {
+                            const _bot = table.players?.[POKER_BOT_NAME];
+                            if (table.hasBot) {
+                                if (humans.length >= 2 && (table.state === 'waiting' || table.state === 'showdown')) {
+                                    // 2+ lidí → bot odejde (na bezpečném místě mezi/po ruce)
+                                    if (window._pokerBotLeaving !== tableId) {
+                                        window._pokerBotLeaving = tableId;
+                                        _pokerBotLeave(tableId);
+                                    }
+                                } else if ((table.state === 'waiting' || table.state === 'showdown') && _bot && (_bot.chips || 0) < (table.bigBlind || 20)) {
+                                    // Bot zbankrotoval → domácí dobití na buy-in, ať hra pokračuje (jako kasino)
+                                    const rk = `${tableId}_rebuy_${table.handNumber || 0}`;
+                                    if (window._pokerBotRebuyKey !== rk) {
+                                        window._pokerBotRebuyKey = rk;
+                                        firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}/chips`).set(_bot.initialBuyIn || table.minBuyIn || 200).catch(() => {});
+                                    }
+                                } else if (table.state === 'playing' && table.currentTurn === POKER_BOT_NAME) {
+                                    const k = `${tableId}_bot_${table.turnStartTime}`;
+                                    if (window._pokerBotActedKey !== k) {
+                                        window._pokerBotActedKey = k;
+                                        setTimeout(() => _pokerBotAct(tableId), 1100);
+                                    }
+                                }
+                            } else if (humans.length === 1 && (table.state === 'waiting' || table.state === 'showdown')) {
+                                // [v6.4.1] Zpět na 1 hráče (druhý odešel) → vrať dealer-bota, ať je s kým hrát
+                                const rjKey = `${tableId}_rejoin_${_hSorted[0]?.name || ''}`;
+                                if (window._pokerBotRejoinKey !== rjKey) {
+                                    window._pokerBotRejoinKey = rjKey;
+                                    _pokerBotRejoin(tableId);
+                                }
                             }
                         }
                     }
@@ -150995,7 +151119,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // Trigger: během hry je currentTurn prázdné = kolo skončilo (findNextActivePokerPlayer vrátil null).
                 try {
                     if (table.state === 'playing' && !table.currentTurn) {
-                        const _psH = Object.values(table.players || {}).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                        const _psH = Object.values(table.players || {}).filter(p => p && !p.isBot).sort((a, b) => (a.seat || 0) - (b.seat || 0));
                         const _creatorHere = table.createdBy && table.players?.[table.createdBy];
                         const _amHostNow = _creatorHere ? (table.createdBy === getPlayerName()) : (_psH[0]?.name === getPlayerName());
                         if (_amHostNow) {
@@ -151135,7 +151259,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                         // 1. Pokud je creator stále u stolu → leader = creator
                                         // 2. Jinak → leader = hráč s nejnižším seat
                                         const creatorStillAtTable = !!(rt.createdBy && rt.players?.[rt.createdBy] && (rt.players[rt.createdBy].chips || 0) > 0);
-                                        const playersSorted = Object.values(rt.players || {}).filter(p => (p.chips || 0) > 0).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+                                        const playersSorted = Object.values(rt.players || {}).filter(p => p && !p.isBot && (p.chips || 0) > 0).sort((a, b) => (a.seat || 0) - (b.seat || 0));
                                         const leader = creatorStillAtTable ? rt.createdBy : playersSorted[0]?.name;
                                         
                                         if (leader === getPlayerName()) {
@@ -151381,31 +151505,45 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         ? `<button class="btn" onclick="startPokerHand('${table.id}')" style="margin-top:0.4rem;width:100%;background:linear-gradient(135deg,#4caf50,#2e7d32);font-size:0.85rem;padding:0.5rem;">🎴 Rozdat karty TEĎ</button>` 
                         : '';
                     
+                    // [v6.4.1] Dokup žetonů i bez vybustění — mezi rukama, když máš míň než max stack
+                    const _maxB = table.maxBuyIn || 0;
+                    const _myChips = me ? (me.chips || 0) : 0;
+                    const _money = state.money || 0;
+                    const _canTopUp = me && _myChips > 0 && _maxB > 0 && _myChips < _maxB && _money > 0;
+                    const topUpButton = _canTopUp
+                        ? `<button class="btn" onclick="pokerRebuy(${_maxB})" style="margin-top:0.4rem;width:100%;background:linear-gradient(135deg,#2e7d32,#1b5e20);font-size:0.8rem;padding:0.45rem;">💰 Dokoupit žetony (máš ${_myChips}, max ${_maxB})</button>`
+                        : '';
+                    
                     actionsHtml = `<div style="text-align:center;padding:0.5rem;background:linear-gradient(135deg,#1a2a1a,#0a1a0a);border:1px solid #4caf50;border-radius:6px;">
                         <div style="color:#4caf50;font-weight:bold;">🎴 Hra začne automaticky...</div>
                         <div style="color:#888;font-size:0.75rem;margin-top:0.2rem;">Jsou 2+ hráči u stolu. Karty se rozdají do 5 sekund.</div>
                         <div style="color:#aaa;font-size:0.7rem;margin-top:0.3rem;">Spouští: <b style="color:${iAmLeader?'#8bc34a':'#888'}">${escapeHtml(leaderName || '?')}</b> ${leaderLabel}${iAmLeader ? ' — ty' : ''}</div>
                         ${manualButton}
+                        ${topUpButton}
                     </div>`;
                 } else {
                     actionsHtml = `<div style="text-align:center;color:#888;padding:0.5rem;">⏳ Čekám na více hráčů... (${players.length}/2 s chipy)</div>`;
                 }
             } else if (isMyTurn && me?.status === 'active') {
                 const canCheck = callAmount === 0;
-                const canCall = callAmount > 0 && callAmount <= me.chips;
+                const _chips = me.chips || 0;
+                // [v6.4.1] Dorovnat jde VŽDY i částečně (= all-in tím, co mám). pokerAction('call') dělá min(callAmount,chips).
+                const callPartial = Math.min(callAmount, _chips);
+                const canCall = callAmount > 0 && _chips > 0;
+                const callIsAllIn = callAmount >= _chips; // nemám na plné dorovnání → call = all-in
                 // [FIX] Sjednoceno se serverovou logikou v pokerAction:
                 // min raise total = currentBet + lastRaiseSize (nebo BB pokud chybí)
                 const minRaiseDelta = table.lastRaiseSize || table.bigBlind || 0;
                 const minRaise = (table.currentBet || 0) + minRaiseDelta;
-                // Pokud hráč nemá dost na full min raise, může jít aspoň all-in (pod min raise)
-                const canRaise = me.chips > callAmount;
+                // Samostatný All-in (shove) má smysl jen když mám víc než callAmount (jinak je all-in = ten Call výše)
+                const canRaise = _chips > callAmount;
                 
                 actionsHtml = `
                     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.3rem;margin-bottom:0.3rem;">
                         <button class="btn" onclick="pokerAction('fold')" style="background:linear-gradient(135deg,#c62828,#8b0000);padding:0.5rem;font-size:0.8rem;">🂠 Fold</button>
                         ${canCheck ? 
                             `<button class="btn" onclick="pokerAction('check')" style="background:linear-gradient(135deg,#455a64,#263238);padding:0.5rem;font-size:0.8rem;">✓ Check</button>` :
-                            (canCall ? `<button class="btn" onclick="pokerAction('call')" style="background:linear-gradient(135deg,#1976d2,#0d47a1);padding:0.5rem;font-size:0.8rem;">💰 Call ${callAmount}</button>` : 
+                            (canCall ? `<button class="btn" onclick="pokerAction('call')" style="background:linear-gradient(135deg,${callIsAllIn ? '#e91e63,#880e4f' : '#1976d2,#0d47a1'});padding:0.5rem;font-size:0.8rem;">💰 Call ${callPartial}${callIsAllIn ? ' (All-in)' : ''}</button>` : 
                             `<button class="btn" disabled style="background:#333;opacity:0.5;padding:0.5rem;">Call N/A</button>`)
                         }
                         ${canRaise ? `<button class="btn" onclick="pokerAction('allin')" style="background:linear-gradient(135deg,#e91e63,#880e4f);padding:0.5rem;font-size:0.8rem;">💥 All-in</button>` :
@@ -170198,7 +170336,6 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     ${canJoinAttacker ? `<button class="btn" onclick="joinScheduledRaid('${raidId}', 'attacker')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);width:100%;padding:0.7rem;">${isDuel ? '⚔️ Vstoupit do souboje' : '⚔️ Přihlásit se jako útočník'}</button>` : ''}
                     ${canJoinDefender ? `<button class="btn" onclick="${isDuel ? `acceptPvPDuel('${raidId}')` : `joinScheduledRaid('${raidId}', 'defender')`}" style="background:linear-gradient(135deg,#c62828,#7b0000);width:100%;padding:0.7rem;">${isDuel ? '🛡️ Přijmout výzvu' : '🛡️ Přihlásit se jako obránce'}</button>` : ''}
                     ${isDuel && canJoinDefender ? `<button class="btn" onclick="declinePvPDuel('${raidId}')" style="background:#444;color:#aaa;width:100%;padding:0.5rem;">❌ Odmítnout výzvu</button>` : ''}
-                    ${(isAttacker || isDefender) && raid.status === 'lobby' ? `<button class="btn" onclick="pickRaidPosition('${raidId}')" style="background:linear-gradient(135deg,#3949AB,#1A237E);color:#fff;width:100%;padding:0.6rem;">📍 Vybrat pozici v boji</button>` : ''}
                     ${(isAttacker || isDefender) && raid.status === 'lobby' && !isDuel ? `<button class="btn" onclick="leaveScheduledRaid('${raidId}')" style="background:#555;width:100%;padding:0.5rem;">🚪 Odhlásit se z boje</button>` : ''}
                     ${isMyClanLeader && raid.status === 'lobby' ? `<button class="btn" onclick="cancelScheduledRaid('${raidId}')" style="background:#444;color:#f44336;width:100%;padding:0.5rem;">${isDuel ? '❌ Zrušit výzvu' : '❌ Zrušit nájezd'}</button>` : ''}
                     ${(raid.status === 'active' || raid.status === 'starting') && (isAttacker || isDefender) ? `<button class="btn" onclick="closeModal();showPvPRaidCombat('${raidId}')" style="background:linear-gradient(135deg,#ffd700,#f57f17);color:#000;width:100%;padding:0.8rem;font-weight:bold;animation:pulse 2s infinite;">⚔️ VSTOUPIT DO BOJE</button>` : ''}
