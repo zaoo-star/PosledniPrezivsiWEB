@@ -148705,8 +148705,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         // --- POKER CONFIG ---
         const POKER_CONFIG = {
             minLevel: 3,                  // Min level pro vstup
-            maxDailyBuyIn: 10000,         // Max denně vložené peníze (anti-abuse)
-            rakePercent: 0.05,            // 5% rake z každého potu
+            maxDailyBuyIn: 100000,        // Max denně vložené peníze (anti-abuse) — zvýšeno, ať jde hrát i high stakes
+            rakePercent: 0.02,            // 2% rake z každého potu (sníženo z 5 % — méně "žere" peníze)
             actionTimeout: 15000,         // 15s na akci
             autoCleanupIdleMs: 300000,    // 5 min neaktivity → smaž stůl
             blindLevels: [
@@ -149120,8 +149120,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     });
                 } catch(chatErr) { console.warn('Poker chat notif failed:', chatErr); }
                 
-                // Auto-join creator
-                await joinPokerTable(tableRef.key, level.minBuyIn);
+                // Auto-join creator — [v6.4.1] default ~50 blindů (ne 10 BB), oříznuto na peníze/denní limit
+                const _stdBuyIn1 = Math.max(level.minBuyIn, Math.min(level.maxBuyIn, level.bb * 50, (state.money || 0), POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn()));
+                await joinPokerTable(tableRef.key, _stdBuyIn1);
                 
             } catch(e) {
                 console.error('createPokerTable error:', e);
@@ -149175,9 +149176,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     lastActivity: Date.now(), hasBot: true, botTable: true
                 });
                 try {
-                    await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
+                    // [v6.4.1] Throttle pozvánky do chatu (max 1× / 5 min), ať opakované otevírání stolů nespamuje chat.
+                    const _nowOpen = Date.now();
+                    if (!window._lastPokerInviteAt || (_nowOpen - window._lastPokerInviteAt) > 5 * 60 * 1000) {
+                        window._lastPokerInviteAt = _nowOpen;
+                        await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
+                    }
                 } catch(e) {}
-                await joinPokerTable(tableRef.key, level.minBuyIn); // tvůrce (reálné peníze)
+                // [v6.4.1] tvůrce (reálné peníze) — default ~50 blindů (ne 10 BB), oříznuto na peníze/denní limit
+                const _stdBuyIn2 = Math.max(level.minBuyIn, Math.min(level.maxBuyIn, level.bb * 50, (state.money || 0), POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn()));
+                await joinPokerTable(tableRef.key, _stdBuyIn2);
                 // [v6.4.1] Ověř, že připojení OPRAVDU uspělo (join má spoustu return cest:
                 // denní limit, málo peněz, plný stůl…) kde se okno NEOTEVŘE. Pak by vznikl
                 // osiřelý stůl bez okna ("zapnu stůl, ale nevidím ho"). Uklidíme ho.
@@ -149279,7 +149287,6 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 clearPokerBotHoleLocal(tableId);
                 clearPokerMyHoleLocal(tableId);
                 await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
-                try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer opustil stůl — připojili se hráči.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
             } catch(e) { console.warn('_pokerBotLeave:', e); }
         }
 
@@ -149306,7 +149313,6 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 await firebaseDB.ref(`pokerTables/${tableId}/hasBot`).set(true);
                 await firebaseDB.ref(`pokerTables/${tableId}/lastActivity`).set(Date.now());
                 window._pokerBotLeaving = null; // reset leave-flag, ať může příště zase odejít
-                try { await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 Dealer se vrátil ke stolu — zbyl jeden hráč.`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }); } catch(e) {}
             } catch(e) { console.warn('_pokerBotRejoin:', e); }
         }
 
@@ -150262,6 +150268,21 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             return pots;
         }
         
+        // [v6.4.1] Rake z pokeru → městská pokladna (místo zničení). Připisuje jen host (1× za ruku).
+        function _pokerRakeToTreasury(rakeAmount) {
+            if (!rakeAmount || rakeAmount <= 0 || !firebaseDB) return;
+            try {
+                firebaseDB.ref('politics/publicMoney').transaction(current => (current || 0) + rakeAmount);
+                firebaseDB.ref('politics/treasuryLog').push({
+                    type: 'income',
+                    amount: rakeAmount,
+                    reason: 'poker_rake',
+                    details: `🃏 Poker rake (${Math.round(POKER_CONFIG.rakePercent * 100)}%) do veřejné kasy`,
+                    timestamp: firebase.database.ServerValue.TIMESTAMP
+                }).catch(() => {});
+            } catch(e) { console.warn('poker rake → treasury:', e); }
+        }
+        
         async function doPokerShowdown(tableId) {
             const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
             const table = snap.val();
@@ -150366,6 +150387,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 ? (table.createdBy === myName)
                 : (_hostBySeat[0]?.name === myName);
             if (isHost) {
+                // [v6.4.1] Rake → městská pokladna (jen host, 1× za ruku)
+                _pokerRakeToTreasury(rake);
                 try {
                     const statsUpdates = {};
                     Object.entries(finalWinnings).forEach(([name, won]) => {
@@ -150508,8 +150531,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 ? (table.createdBy === myName)
                 : (_hostBySeat[0]?.name === myName);
             if (!isHost) return;
-            
-            // [NEW] Stats tracking - jen host zapíše
+            // [v6.4.1] Rake → městská pokladna (jen host, 1× za ruku)
+            _pokerRakeToTreasury(rake);
             try {
                 const winnerPlayer = table.players[winnerName];
                 const winnerInvested = winnerPlayer?.totalBetInHand || 0;
@@ -151078,7 +151101,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         <div style="color:#888;font-size:0.75rem;">Buy-in: ${table.minBuyIn} - ${table.maxBuyIn}💰</div>
                     </div>
                     <label style="color:#ccc;font-size:0.8rem;">Vlož (💰):</label>
-                    <input type="number" id="pokerBuyInInput" min="${table.minBuyIn}" max="${Math.min(table.maxBuyIn, state.money || 0)}" value="${Math.min(table.minBuyIn, state.money || 0)}" style="width:100%;padding:0.5rem;background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:4px;margin:0.3rem 0 0.6rem 0;">
+                    <input type="number" id="pokerBuyInInput" min="${table.minBuyIn}" max="${Math.min(table.maxBuyIn, state.money || 0)}" value="${Math.max(table.minBuyIn, Math.min(table.maxBuyIn, (table.bigBlind || 20) * 50, state.money || 0))}" style="width:100%;padding:0.5rem;background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:4px;margin:0.3rem 0 0.6rem 0;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;">
                         <button class="btn" onclick="const v=parseInt(document.getElementById('pokerBuyInInput').value)||${table.minBuyIn};joinPokerTable('${tableId}',v);" style="background:linear-gradient(135deg,#4caf50,#2e7d32);">✓ Vstoupit</button>
                         <button class="btn" onclick="showPokerLobby()" style="background:#555;">← Zpět</button>
@@ -151493,8 +151516,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // pozice kolem oválu — můj seat dole (90°), ostatní po kruhu
                 const di = (_myIdx >= 0) ? ((i - _myIdx + _N) % _N) : i;
                 const ang = (Math.PI / 2) + (di * 2 * Math.PI / Math.max(1, _N));
-                const left = 50 + 40 * Math.cos(ang);
-                const top = 50 + 30 * Math.sin(ang);
+                const left = 50 + 42 * Math.cos(ang);
+                const top = 50 + 36 * Math.sin(ang);
 
                 // karty
                 let cardsHtml = '';
@@ -151522,7 +151545,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     : '';
 
                 return `
-                    <div style="position:absolute;left:${left}%;top:${top}%;transform:translate(-50%,-50%);width:96px;text-align:center;z-index:${isTurn ? 5 : 2};${isFolded ? 'opacity:0.5;' : ''}">
+                    <div style="position:absolute;left:${left}%;top:${top}%;transform:translate(-50%,-50%);width:86px;text-align:center;z-index:${isTurn ? 5 : 2};${isFolded ? 'opacity:0.5;' : ''}">
                         <div style="min-height:30px;line-height:0;margin-bottom:2px;">${cardsHtml}</div>
                         <div style="background:${plateBg};border:2px solid ${ringColor};border-radius:9px;padding:3px 5px;box-shadow:${isTurn ? '0 0 10px rgba(76,175,80,0.7)' : '0 2px 5px rgba(0,0,0,0.5)'};">
                             <div style="color:${nameColor};font-weight:bold;font-size:0.68rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${dealerChip}${p.isBot ? '🤖 Dealer' : escapeHtml(p.name)}${isMe ? ' (Ty)' : ''}</div>
@@ -151653,11 +151676,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 ${showdownHtml}
                 
                 <!-- POKEROVÝ STŮL -->
-                <div style="position:relative;width:100%;max-width:440px;height:340px;margin:0.2rem auto 0.5rem;">
+                <div style="position:relative;width:100%;max-width:440px;height:360px;margin:0.2rem auto 0.5rem;">
                     <!-- apokalyptický stůl (obrázek) -->
                     <div style="position:absolute;inset:0;background:url('${POKER_TABLE_BG}') center center / 100% 100% no-repeat;border-radius:50%/40%;"></div>
-                    <!-- střed: POT + společné karty -->
-                    <div style="position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);width:80%;text-align:center;">
+                    <!-- střed: POT + společné karty (níž, ať horní seaty nepřekrývají karty) -->
+                    <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:72%;text-align:center;">
                         <div style="color:#ffd700;font-weight:bold;font-size:0.92rem;text-shadow:0 1px 3px #000;letter-spacing:0.5px;">💰 POT: ${table.pot || 0}</div>
                         <div style="margin:0.35rem 0;display:flex;justify-content:center;flex-wrap:nowrap;gap:2px;transform:scale(0.92);">${communityHtml}${placeholderHtml}</div>
                         <div style="color:#bfe8cf;font-size:0.6rem;opacity:0.8;text-transform:uppercase;letter-spacing:0.5px;">${table.phase || 'čekání'}</div>
