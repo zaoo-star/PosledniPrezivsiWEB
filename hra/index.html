@@ -121582,6 +121582,40 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 })()}
                 
                 ${(() => {
+                    // [v6.4.1] Banner OTEVŘENÉHO POKER STOLU (jako world boss) — připojení přímo z chatu
+                    try {
+                        const _tbls = window._openPokerTables || [];
+                        if (!_tbls.length) return '';
+                        const _sorted = [..._tbls].sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0));
+                        const t = _sorted[0];
+                        const _money = state.money || 0;
+                        const _bb = t.bigBlind || 20;
+                        const _buyIn = Math.max(t.minBuyIn || 0, Math.min(t.maxBuyIn || 0, _bb * 50, _money));
+                        const _stakes = (typeof POKER_CONFIG !== 'undefined' && POKER_CONFIG.blindLevels && POKER_CONFIG.blindLevels[t.blindLevel] && POKER_CONFIG.blindLevels[t.blindLevel].name) || `Sázky ${t.smallBlind}/${t.bigBlind}`;
+                        const _more = _sorted.length > 1 ? ` <span style="color:#777;font-size:0.55rem;">+${_sorted.length - 1} dalších</span>` : '';
+                        const _canAfford = _money >= (t.minBuyIn || 0);
+                        return `
+                        <div style="background: linear-gradient(135deg, #0a2a12, #06160a); padding: 0.4rem 0.6rem; border-radius: 6px; margin-bottom: 0.4rem; border: 1px solid #2e7d32;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.3rem;">
+                                <div style="display:flex; align-items:center; gap:0.3rem;">
+                                    <span style="font-size:1rem;">🃏</span>
+                                    <span style="color:#66bb6a; font-weight:bold; font-size:0.78rem;">${_stakes}</span>
+                                    ${t.hasBot ? '<span style="font-size:0.8rem;" title="Stůl s dealer-botem">🤖</span>' : ''}
+                                    <span style="color:#666; font-size:0.6rem; background:#0a1a0a; padding:0.05rem 0.3rem; border-radius:3px;">👥 ${t.playerCount}/${t.maxPlayers}</span>
+                                </div>
+                                <span style="color:#888; font-size:0.6rem;">${escapeHtml(String(t.createdBy || '?'))}${_more}</span>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:0.4rem;">
+                                <span style="color:#7a8a7a; font-size:0.6rem; flex:1;">Otevřený stůl — ${_canAfford ? `připoj se za ${_buyIn}💰` : 'málo peněz na vstup'}</span>
+                                ${_canAfford
+                                    ? `<button onclick="joinPokerTable('${t.id}', ${_buyIn});" style="background:linear-gradient(135deg,#2e7d32,#1b5e20); color:#fff; border:none; border-radius:4px; padding:0.25rem 0.7rem; font-size:0.68rem; font-weight:bold; cursor:pointer;">▶ Připojit</button>`
+                                    : `<button onclick="showPokerLobby();" style="background:#333; color:#aaa; border:none; border-radius:4px; padding:0.25rem 0.7rem; font-size:0.68rem; cursor:pointer;">Lobby</button>`}
+                            </div>
+                        </div>`;
+                    } catch(e) { return ''; }
+                })()}
+                
+                ${(() => {
                     // Tombola banner přesunut do horní eventBanners (nahoře na hlavní obrazovce) - zde nezobrazujeme aby nebyl duplicitní
                     return '';
                 })()}
@@ -148857,6 +148891,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     let totalPlayers = 0;
                     let totalTables = 0;
                     const myName = getPlayerName();
+                    const openTables = []; // [v6.4.1] cache volných stolů pro banner v chatu
                     
                     Object.entries(tables).forEach(([tableId, table]) => {
                         if (!table) return;
@@ -148865,6 +148900,22 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         if (playerCount > 0) {
                             totalPlayers += playerCount;
                             totalTables++;
+                        }
+                        // [v6.4.1] Volný stůl (má místo, nejsem tam já) → do cache pro banner
+                        const _maxP = table.maxPlayers || 6;
+                        if (playerCount >= 1 && playerCount < _maxP && !playerNames.includes(myName)) {
+                            openTables.push({
+                                id: tableId,
+                                createdBy: table.createdBy || '?',
+                                playerCount,
+                                maxPlayers: _maxP,
+                                smallBlind: table.smallBlind || 0,
+                                bigBlind: table.bigBlind || 0,
+                                minBuyIn: table.minBuyIn || 0,
+                                maxBuyIn: table.maxBuyIn || 0,
+                                blindLevel: table.blindLevel || '',
+                                hasBot: !!(table.hasBot || table.botTable)
+                            });
                         }
                         
                         // [NEW] Detekce nových hráčů u MÉHO stolu (když jsem creator a jsem u něj)
@@ -148908,6 +148959,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         }
                     });
                     
+                    window._openPokerTables = openTables; // [v6.4.1] pro banner v chatu
+                    // [v6.4.1] Když se změní sada volných stolů a chat je otevřený, překresli (kvůli banneru)
+                    try {
+                        const _sig = openTables.map(t => `${t.id}:${t.playerCount}`).sort().join('|');
+                        if (_sig !== window._openPokerTablesSig) {
+                            window._openPokerTablesSig = _sig;
+                            if (typeof renderChatMessages === 'function' && document.getElementById('chatMessagesContainer')) {
+                                renderChatMessages();
+                            }
+                        }
+                    } catch(e) {}
                     const prev = window._pokerActivePlayers;
                     window._pokerActivePlayers = totalPlayers;
                     window._pokerActiveTables = totalTables;
