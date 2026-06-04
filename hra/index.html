@@ -149206,7 +149206,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const money = state.money || 0;
             const btns = POKER_CONFIG.blindLevels.map(l => {
                 const can = money >= l.minBuyIn;
-                return `<button class="btn" onclick="closeModal(); createPokerTableWithBot('${l.id}')" ${can ? '' : 'disabled'} style="width:100%;margin-bottom:0.4rem;background:${can ? '#1a3a1a' : '#222'};color:${can ? '#cfc' : '#555'};border:1px solid ${l.color};padding:0.6rem;text-align:left;font-size:0.82rem;"><b>${l.name}</b> — blindy ${l.sb}/${l.bb} · buy-in ${l.minBuyIn}💰</button>`;
+                return `<button class="btn" onclick="showBotTableBuyInChooser('${l.id}')" ${can ? '' : 'disabled'} style="width:100%;margin-bottom:0.4rem;background:${can ? '#1a3a1a' : '#222'};color:${can ? '#cfc' : '#555'};border:1px solid ${l.color};padding:0.6rem;text-align:left;font-size:0.82rem;"><b>${l.name}</b> — blindy ${l.sb}/${l.bb} · buy-in ${l.minBuyIn}–${l.maxBuyIn}💰</button>`;
             }).join('');
             showModal('🤖 Stůl s dealer-botem', `
                 <p style="color:#ccc;font-size:0.83rem;text-align:center;margin-bottom:0.7rem;">Hraješ <b>hned</b> proti dealer-botovi.<br><span style="color:#888;font-size:0.75rem;">Stůl je veřejný — když se připojí druhý hráč, bot odejde a hrajete spolu.</span></p>
@@ -149217,7 +149217,37 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         }
         window.showBotPokerPicker = showBotPokerPicker;
 
-        async function createPokerTableWithBot(blindLevelId) {
+        // [v6.4.1] Výběr buy-inu (počtu žetonů) při zakládání stolu s botem — hráč si zvolí sám
+        function showBotTableBuyInChooser(blindLevelId) {
+            const level = POKER_CONFIG.blindLevels.find(l => l.id === blindLevelId);
+            if (!level) return;
+            const money = state.money || 0;
+            const _isAdm = typeof isAdmin === 'function' && isAdmin();
+            const remDaily = _isAdm ? Infinity : Math.max(0, POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn());
+            const maxAfford = Math.max(0, Math.min(level.maxBuyIn, money, remDaily));
+            if (maxAfford < level.minBuyIn) {
+                notifyWarning('Málo peněz', `Na ${level.name} potřebuješ aspoň ${level.minBuyIn}💰${remDaily < level.minBuyIn ? ' (denní limit pokeru)' : ''}`);
+                return;
+            }
+            const def = Math.max(level.minBuyIn, Math.min(maxAfford, level.bb * 50));
+            const presetMid = Math.max(level.minBuyIn, Math.min(maxAfford, level.bb * 50));
+            showModal(`🤖 ${level.name}`, `
+                <p style="color:#ccc;font-size:0.8rem;text-align:center;margin-bottom:0.5rem;">Blindy ${level.sb}/${level.bb} · vyber si, s kolika žetony chceš sednout ke stolu.</p>
+                <label style="color:#888;font-size:0.72rem;">Buy-in (${level.minBuyIn}–${maxAfford}💰):</label>
+                <input type="number" id="botBuyInInput" min="${level.minBuyIn}" max="${maxAfford}" value="${def}" oninput="var o=document.getElementById('botBuyInBB'); if(o){var v=parseInt(this.value)||0; o.textContent=Math.round(v/${level.bb})+' BB';}" style="width:100%;padding:0.5rem;background:#1a1a1a;color:#fff;border:1px solid #2e7d32;border-radius:4px;margin:0.3rem 0;font-size:1rem;text-align:center;">
+                <div style="text-align:center;color:#66bb6a;font-size:0.7rem;margin-bottom:0.4rem;"><span id="botBuyInBB">${Math.round(def / level.bb)} BB</span></div>
+                <div style="display:flex;gap:0.3rem;margin-bottom:0.6rem;">
+                    <button class="btn" onclick="var i=document.getElementById('botBuyInInput');i.value=${level.minBuyIn};i.dispatchEvent(new Event('input'));" style="flex:1;background:#222;font-size:0.68rem;padding:0.3rem;">Min (${Math.round(level.minBuyIn / level.bb)} BB)</button>
+                    <button class="btn" onclick="var i=document.getElementById('botBuyInInput');i.value=${presetMid};i.dispatchEvent(new Event('input'));" style="flex:1;background:#222;font-size:0.68rem;padding:0.3rem;">${Math.round(presetMid / level.bb)} BB</button>
+                    <button class="btn" onclick="var i=document.getElementById('botBuyInInput');i.value=${maxAfford};i.dispatchEvent(new Event('input'));" style="flex:1;background:#222;font-size:0.68rem;padding:0.3rem;">Max (${Math.round(maxAfford / level.bb)} BB)</button>
+                </div>
+                <button class="btn" onclick="var v=parseInt(document.getElementById('botBuyInInput').value)||${def}; v=Math.max(${level.minBuyIn},Math.min(${maxAfford},v)); closeModal(); createPokerTableWithBot('${level.id}', v);" style="width:100%;background:linear-gradient(135deg,#2e7d32,#1b5e20);color:#fff;padding:0.6rem;font-weight:bold;">▶ Vytvořit stůl</button>
+                <button class="btn" onclick="showBotPokerPicker();" style="width:100%;margin-top:0.3rem;background:#444;">← Zpět</button>
+            `);
+        }
+        window.showBotTableBuyInChooser = showBotTableBuyInChooser;
+
+        async function createPokerTableWithBot(blindLevelId, buyIn) {
             if (!firebaseDB || !multiplayerEnabled) { startSoloPoker(); return; }
             const level = POKER_CONFIG.blindLevels.find(l => l.id === blindLevelId);
             if (!level) return;
@@ -149246,7 +149276,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     }
                 } catch(e) {}
                 // [v6.4.1] tvůrce (reálné peníze) — default ~50 blindů (ne 10 BB), oříznuto na peníze/denní limit
-                const _stdBuyIn2 = Math.max(level.minBuyIn, Math.min(level.maxBuyIn, level.bb * 50, (state.money || 0), POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn()));
+                // [v6.4.1] Buy-in si volí hráč (showBotTableBuyInChooser). Bez parametru → default ~50 BB.
+                const _isAdmCb = typeof isAdmin === 'function' && isAdmin();
+                const _remDailyCb = _isAdmCb ? Infinity : Math.max(0, POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn());
+                const _maxAffordCb = Math.min(level.maxBuyIn, (state.money || 0), _remDailyCb);
+                let _stdBuyIn2 = (typeof buyIn === 'number' && buyIn > 0)
+                    ? buyIn
+                    : Math.min(level.maxBuyIn, level.bb * 50, (state.money || 0), _remDailyCb);
+                _stdBuyIn2 = Math.max(level.minBuyIn, Math.min(_maxAffordCb, _stdBuyIn2)); // ořež na min..afford
                 await joinPokerTable(tableRef.key, _stdBuyIn2);
                 // [v6.4.1] Ověř, že připojení OPRAVDU uspělo (join má spoustu return cest:
                 // denní limit, málo peněz, plný stůl…) kde se okno NEOTEVŘE. Pak by vznikl
