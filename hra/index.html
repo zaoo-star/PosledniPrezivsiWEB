@@ -148739,7 +148739,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         // --- POKER CONFIG ---
         const POKER_CONFIG = {
             minLevel: 3,                  // Min level pro vstup
-            maxDailyBuyIn: 100000,        // Max denně vložené peníze (anti-abuse) — zvýšeno, ať jde hrát i high stakes
+            maxDailyBuyIn: 1000000000,    // Neomezený denní buy-in (hráč si může koupit kolik chce, klidně za vše)
             rakePercent: 0.02,            // 2% rake z každého potu (sníženo z 5 % — méně "žere" peníze)
             actionTimeout: 15000,         // 15s na akci
             autoCleanupIdleMs: 300000,    // 5 min neaktivity → smaž stůl
@@ -149224,7 +149224,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             const money = state.money || 0;
             const _isAdm = typeof isAdmin === 'function' && isAdmin();
             const remDaily = _isAdm ? Infinity : Math.max(0, POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn());
-            const maxAfford = Math.max(0, Math.min(level.maxBuyIn, money, remDaily));
+            const maxAfford = Math.max(0, Math.min(money, remDaily)); // [v6.4.1] neomezeno stropem stolu — jen podle peněz
             if (maxAfford < level.minBuyIn) {
                 notifyWarning('Málo peněz', `Na ${level.name} potřebuješ aspoň ${level.minBuyIn}💰${remDaily < level.minBuyIn ? ' (denní limit pokeru)' : ''}`);
                 return;
@@ -149276,14 +149276,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     }
                 } catch(e) {}
                 // [v6.4.1] tvůrce (reálné peníze) — default ~50 blindů (ne 10 BB), oříznuto na peníze/denní limit
-                // [v6.4.1] Buy-in si volí hráč (showBotTableBuyInChooser). Bez parametru → default ~50 BB.
+                // [v6.4.1] Buy-in si volí hráč (showBotTableBuyInChooser). Neomezeno stropem — jen podle peněz.
                 const _isAdmCb = typeof isAdmin === 'function' && isAdmin();
                 const _remDailyCb = _isAdmCb ? Infinity : Math.max(0, POKER_CONFIG.maxDailyBuyIn - getPokerDailyBuyIn());
-                const _maxAffordCb = Math.min(level.maxBuyIn, (state.money || 0), _remDailyCb);
+                const _maxAffordCb = Math.min((state.money || 0), _remDailyCb);
                 let _stdBuyIn2 = (typeof buyIn === 'number' && buyIn > 0)
                     ? buyIn
-                    : Math.min(level.maxBuyIn, level.bb * 50, (state.money || 0), _remDailyCb);
-                _stdBuyIn2 = Math.max(level.minBuyIn, Math.min(_maxAffordCb, _stdBuyIn2)); // ořež na min..afford
+                    : Math.min(level.bb * 50, (state.money || 0), _remDailyCb);
+                _stdBuyIn2 = Math.max(level.minBuyIn, Math.min(_maxAffordCb, _stdBuyIn2)); // ořež na min..peníze
                 await joinPokerTable(tableRef.key, _stdBuyIn2);
                 // [v6.4.1] Ověř, že připojení OPRAVDU uspělo (join má spoustu return cest:
                 // denní limit, málo peněz, plný stůl…) kde se okno NEOTEVŘE. Pak by vznikl
@@ -149293,8 +149293,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     return; // uživatel už dostal varování z joinPokerTable (proč to selhalo)
                 }
                 // přidej bota (house žetony — nejsou kryté penězi, jako u solo/blackjacku)
-                // [v6.4.1] Bot = "dům" s hlubokým stackem (min 10k, u vyšších sázek víc) — nebankrotuje pořád
-                const botStack = Math.max(10000, level.maxBuyIn);
+                // [v6.4.1] Bot = "dům" s hlubokým stackem — aspoň jako buy-in tvůrce (fér 1v1), min 10k
+                const botStack = Math.max(10000, level.maxBuyIn, _stdBuyIn2);
                 await firebaseDB.ref(`pokerTables/${tableRef.key}/players/${POKER_BOT_NAME}`).set({
                     name: POKER_BOT_NAME, seat: 1, chips: botStack, initialBuyIn: botStack,
                     joinedAt: Date.now(), status: 'active', currentBet: 0, totalBetInHand: 0,
@@ -149403,7 +149403,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const usedSeats = Object.values(table.players || {}).map(p => p.seat);
                 let botSeat = 1;
                 while (usedSeats.includes(botSeat)) botSeat++;
-                const botStack = Math.max(10000, table.maxBuyIn || 10000);
+                const botStack = Math.max(10000, table.maxBuyIn || 0, humans[0]?.chips || 0);
                 await firebaseDB.ref(`pokerTables/${tableId}/players/${POKER_BOT_NAME}`).set({
                     name: POKER_BOT_NAME, seat: botSeat, chips: botStack, initialBuyIn: botStack,
                     joinedAt: Date.now(), status: 'active', currentBet: 0, totalBetInHand: 0,
@@ -149501,9 +149501,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     return;
                 }
                 
-                // Check buy-in
-                if (buyIn < table.minBuyIn || buyIn > table.maxBuyIn) {
-                    notifyWarning('Špatný buy-in', `Musí být ${table.minBuyIn}-${table.maxBuyIn}💰`);
+                // [v6.4.1] Buy-in neomezený stropem — jen minimum stolu, horní mez je kolik máš (níže)
+                if (buyIn < table.minBuyIn) {
+                    notifyWarning('Malý buy-in', `Minimum je ${table.minBuyIn}💰`);
                     return;
                 }
                 if (myMoney < buyIn) {
@@ -151197,10 +151197,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 <div style="padding:0.5rem;">
                     <div style="background:#1a1a0a;padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;">
                         <div style="color:#ffd700;font-size:0.85rem;">Blinds: ${table.smallBlind} / ${table.bigBlind}💰</div>
-                        <div style="color:#888;font-size:0.75rem;">Buy-in: ${table.minBuyIn} - ${table.maxBuyIn}💰</div>
+                        <div style="color:#888;font-size:0.75rem;">Buy-in: od ${table.minBuyIn}💰 (max = kolik máš)</div>
                     </div>
                     <label style="color:#ccc;font-size:0.8rem;">Vlož (💰):</label>
-                    <input type="number" id="pokerBuyInInput" min="${table.minBuyIn}" max="${Math.min(table.maxBuyIn, state.money || 0)}" value="${Math.max(table.minBuyIn, Math.min(table.maxBuyIn, (table.bigBlind || 20) * 50, state.money || 0))}" style="width:100%;padding:0.5rem;background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:4px;margin:0.3rem 0 0.6rem 0;">
+                    <input type="number" id="pokerBuyInInput" min="${table.minBuyIn}" max="${state.money || 0}" value="${Math.max(table.minBuyIn, Math.min((table.bigBlind || 20) * 50, state.money || 0))}" style="width:100%;padding:0.5rem;background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:4px;margin:0.3rem 0 0.6rem 0;">
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;">
                         <button class="btn" onclick="const v=parseInt(document.getElementById('pokerBuyInInput').value)||${table.minBuyIn};joinPokerTable('${tableId}',v);" style="background:linear-gradient(135deg,#4caf50,#2e7d32);">✓ Vstoupit</button>
                         <button class="btn" onclick="showPokerLobby()" style="background:#555;">← Zpět</button>
