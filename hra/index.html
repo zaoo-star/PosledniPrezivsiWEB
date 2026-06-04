@@ -90596,11 +90596,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         // Získej pixel pozici buňky v bojové mřížce
-        function _combatCellCenter(x, y) {
-            const grid = document.getElementById('combatGridContainer');
+        // [v6.4.1] gridSel/cols volitelné — výchozí klasický boj, lze předat PvP grid ('pvpCombatGrid')
+        function _combatCellCenter(x, y, gridSel, cols) {
+            const grid = document.getElementById(gridSel || 'combatGridContainer');
             if (!grid) return null;
+            const nCols = cols || COMBAT_GRID.cols;
             const cells = grid.querySelectorAll('[style*="aspect-ratio"]');
-            const idx = y * COMBAT_GRID.cols + x;
+            const idx = y * nCols + x;
             const cell = cells[idx];
             if (!cell) return null;
             const rect = cell.getBoundingClientRect();
@@ -90609,9 +90611,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // 🎯 Projektil letící z [fromX,fromY] na [toX,toY]
         // type: 'bullet' | 'arrow' | 'rocket' | 'laser' | 'shell' | 'throwable'
-        function combatProjectile(fromX, fromY, toX, toY, type = 'bullet') {
-            const from = _combatCellCenter(fromX, fromY);
-            const to = _combatCellCenter(toX, toY);
+        function combatProjectile(fromX, fromY, toX, toY, type = 'bullet', gridSel, cols) {
+            const from = _combatCellCenter(fromX, fromY, gridSel, cols);
+            const to = _combatCellCenter(toX, toY, gridSel, cols);
             if (!from || !to) return;
             
             const overlay = _combatEffectOverlay();
@@ -90752,8 +90754,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // 🗡️ Melee slash animace nad cílem
         // type: 'slash' (meč/sekera) | 'punch' (pěst/pálka) | 'claw' (dráp/zub)
-        function combatMeleeEffect(targetX, targetY, type = 'slash') {
-            const to = _combatCellCenter(targetX, targetY);
+        function combatMeleeEffect(targetX, targetY, type = 'slash', gridSel, cols) {
+            const to = _combatCellCenter(targetX, targetY, gridSel, cols);
             if (!to) return;
             
             const overlay = _combatEffectOverlay();
@@ -90849,6 +90851,48 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         window.combatProjectile = combatProjectile;
         window.combatMeleeEffect = combatMeleeEffect;
         window.combatAttackVisual = combatAttackVisual;
+
+        // [v6.4.1] PvP varianta — přehraje efekt výstřelu/úderu na PvP gridu (id="pvpCombatGrid")
+        // attacker/target = PvP jednotky (mají x,y,weapon,weaponAmmoType,weaponDamageType,weaponRange)
+        function pvpAttackVisual(attacker, target) {
+            if (!attacker || !target || attacker.x === undefined || target.x === undefined) return;
+            const cols = window._pvpGridCols || 6;
+            const wname = (attacker.weapon || '').toLowerCase();
+            const ammo = attacker.weaponAmmoType;
+            const dtype = attacker.weaponDamageType;
+            const range = attacker.weaponRange || 1;
+            if (wname.includes('granát') || wname.includes('molotov') || wname.includes('bomb')) {
+                combatProjectile(attacker.x, attacker.y, target.x, target.y, 'throwable', 'pvpCombatGrid', cols);
+                return;
+            }
+            const ranged = !!ammo || range > 1 ||
+                wname.includes('pistole') || wname.includes('puška') || wname.includes('pusk') ||
+                wname.includes('brokovnice') || wname.includes('laser') || wname.includes('raketomet') ||
+                wname.includes('gun') || wname.includes('rifle') || wname.includes('revolver') ||
+                wname.includes('luk') || wname.includes('kuše') || wname.includes('kuš') ||
+                wname.includes('samopal') || wname.includes('minigun') || wname.includes('sniper') ||
+                wname.includes('bazooka') || wname.includes('plazm') || wname.includes('energetick') ||
+                dtype === 'energy';
+            if (ranged) {
+                let projType = 'bullet';
+                if (ammo === 'shell') projType = 'shell';
+                else if (ammo === 'arrow') projType = 'arrow';
+                else if (ammo === 'rocket') projType = 'rocket';
+                else if (ammo === 'cell') projType = 'laser';
+                else if (dtype === 'energy' || wname.includes('laser') || wname.includes('plazm') || wname.includes('energetick')) projType = 'laser';
+                else if (wname.includes('brokovnice')) projType = 'shell';
+                else if (wname.includes('luk') || wname.includes('kuše') || wname.includes('kuš')) projType = 'arrow';
+                else if (wname.includes('raketomet') || wname.includes('bazooka')) projType = 'rocket';
+                combatProjectile(attacker.x, attacker.y, target.x, target.y, projType, 'pvpCombatGrid', cols);
+            } else {
+                let meleeType = 'slash';
+                if (wname.includes('dráp') || wname.includes('tesák') || wname.includes('zub')) meleeType = 'claw';
+                else if (wname.includes('pálka') || wname.includes('kladivo')) meleeType = 'hammer';
+                else if (wname.includes('pěst') || !wname) meleeType = 'punch';
+                combatMeleeEffect(target.x, target.y, meleeType, 'pvpCombatGrid', cols);
+            }
+        }
+        window.pvpAttackVisual = pvpAttackVisual;
         
         // === FALLOUT-STYLE COMBAT LOG ===
         // Kondenzuje všechny log entries z jednoho tahu do 1-2 humorných vět
@@ -151580,10 +151624,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 // Auto-fold po uplynutí času
                 if (_pokerActionTimer) clearTimeout(_pokerActionTimer);
-                _pokerActionTimer = setTimeout(() => {
-                    if (_currentPokerTable === table.id) {
-                        pokerAction('fold').catch(() => {});
-                    }
+                _pokerActionTimer = setTimeout(async () => {
+                    if (_currentPokerTable !== table.id || !firebaseDB) return;
+                    // [v6.4.1] ANTI-RACE: znovu ověř z živého stavu, že jsem OPRAVDU pořád na tahu.
+                    // Bez toho mohl doběhnout starý timer i poté, co bot (SB) složil preflop → currentTurn=null,
+                    // a hráč se "složil naprázdno" → oba folded → pot s blindy se nevyplatil (mizely blindy).
+                    try {
+                        const _fresh = (await firebaseDB.ref(`pokerTables/${table.id}`).once('value')).val();
+                        if (_fresh && _fresh.state === 'playing' && _fresh.currentTurn === myName) {
+                            pokerAction('fold').catch(() => {});
+                        }
+                    } catch(e) {}
                 }, Math.max(1000, POKER_CONFIG.actionTimeout - elapsed));
                 
                 // Živý odpočet (1×/s aktualizuje zobrazené číslo)
@@ -153448,6 +153499,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // Spočítej statistiky + detaily
                 let totalShopIncome = 0, totalShopExpenses = 0, totalMarketFees = 0, totalTaxes = 0, totalLandIncome = 0, totalExpenses = 0, totalMayorSalary = 0, totalNewPlayer = 0;
                 let totalMayorEvents = 0, totalGrants = 0, totalBounty = 0, totalInvestments = 0;
+                let totalPokerRake = 0; // [v6.4.1] poker rake do kasy
+                const pokerRakeItems = [];
                 
                 // Detailní mapy per-player/per-item
                 const taxByPlayer = {};       // kdo kolik zaplatil na daních
@@ -172070,6 +172123,27 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // Render — buď je otevřený modal, nebo je můj tah, nebo spectating
                 if (modalOpen || (isMyTurn && myUnit?.alive) || wantSpectate) {
                     renderPvPCombatUI(raidId, raid);
+                    // [v6.4.1] Přehraj efekt POSLEDNÍHO útoku (výstřel/úder) na PvP gridu — jako v klasickém boji
+                    try {
+                        const la = raid.pvpCombat && raid.pvpCombat.lastAttack;
+                        if (la && la.id) {
+                            if (window._pvpLastAttackPlayedId === undefined) {
+                                window._pvpLastAttackPlayedId = la.id; // init — nepřehrávej útok z doby, než jsem se díval
+                            } else if (la.id !== window._pvpLastAttackPlayedId) {
+                                window._pvpLastAttackPlayedId = la.id;
+                                window._pvpGridCols = raid.isDuel ? 6 : 5;
+                                const _la = la;
+                                setTimeout(() => {
+                                    if (typeof pvpAttackVisual === 'function') {
+                                        pvpAttackVisual(
+                                            { x: _la.fromX, y: _la.fromY, weapon: _la.weapon, weaponAmmoType: _la.weaponAmmoType, weaponDamageType: _la.weaponDamageType, weaponRange: _la.weaponRange },
+                                            { x: _la.toX, y: _la.toY }
+                                        );
+                                    }
+                                }, 60);
+                            }
+                        }
+                    } catch(e) {}
                 }
             });
         }
@@ -172102,7 +172176,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             const gridCols = `repeat(${COLS},1fr)`; // [FIX v6.4.1] odvozeno z COLS — CSS sloupce vždy = render smyčka (oprava rozhozeného duel gridu)
             let gridHtml = `<div style="position:relative;background:url('${mapBg}') center/cover, #0a0a0a;border:2px solid #444;border-radius:6px;padding:6px;margin-bottom:0.5rem;box-shadow:inset 0 0 30px rgba(0,0,0,0.5);">`;
-            gridHtml += `<div style="display:grid;grid-template-columns:${gridCols};gap:2px;">`;
+            window._pvpGridCols = COLS; // [v6.4.1] pro vizuální efekty (projektily) na PvP gridu
+            gridHtml += `<div id="pvpCombatGrid" style="display:grid;grid-template-columns:${gridCols};gap:2px;">`;
             for (let y = 0; y < ROWS; y++) {
                 for (let x = 0; x < COLS; x++) {
                     const unitOnCell = Object.values(cs.units || {}).find(u => u.x === x && u.y === y);
@@ -172683,6 +172758,19 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     } else {
                     const target = cs.units?.[action.target];
                     if (target && target.alive && target.team !== attacker.team) {
+                        // [v6.4.1] Vysílej "lastAttack" → všichni klienti přehrají efekt výstřelu/úderu (jako klasický boj)
+                        try {
+                            await firebaseDB.ref(`scheduledRaids/${raidId}/pvpCombat/lastAttack`).set({
+                                id: `${Date.now()}_${action.player}`,
+                                fromX: attacker.x, fromY: attacker.y,
+                                toX: target.x, toY: target.y,
+                                weapon: attacker.weapon || '',
+                                weaponAmmoType: attacker.weaponAmmoType || null,
+                                weaponDamageType: attacker.weaponDamageType || 'physical',
+                                weaponRange: attacker.weaponRange || 1,
+                                ts: Date.now()
+                            });
+                        } catch(e) {}
                         // [NEW] Plný damage výpočet s crit/dodge/variance — stejně jako klasický boj
                         // 1. Dodge roll - cíl se může vyhnout (heavy attack -50% dodge proti)
                         const dodgeRoll = Math.random();
