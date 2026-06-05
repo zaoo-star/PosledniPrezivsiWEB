@@ -95467,13 +95467,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!unit || unit.team !== 'player' || unit.actionsLeft <= 0) return;
                 
                 if (item.effect === 'health' || item.effect === 'heal_injury') {
-                // [v6.4.1] Plné HP → nedovol plýtvat lékem (hlášeno: léčení šlo dávat donekonečna i při full HP).
-                // Výjimka: lék na zranění, když hráč má zranění k vyléčení.
-                const _atFullHp = unit.hp >= unit.maxHp;
-                const _canHealInjury = item.healsInjuries && item.healsInjuries.length > 0 && unit.isPlayer &&
-                    (state.injuries || []).some(inj => item.healsInjuries.includes(inj.type || inj.id));
-                if (_atFullHp && !_canHealInjury) {
-                    if (typeof notifyWarning === 'function') notifyWarning('Plné HP', `${unit.name || 'Jednotka'} už má plné životy — lék by se jen ztratil.`);
+                // [v6.4.1] Plné HP u SPOLEČNÍKA → neplýtvej lékem (hlášený bug: léčení společníků donekonečna při full HP).
+                // Hráče NEblokuj — může chtít vyčistit zranění (stimpak léčí i zranění) nebo je to prostě jeho volba.
+                if (unit.isCompanion && unit.hp >= unit.maxHp) {
+                    if (typeof notifyWarning === 'function') notifyWarning('Plné HP', `${unit.name || 'Společník'} už má plné životy — lék by se jen ztratil.`);
                     if (typeof renderHeroesCombatUI === 'function') renderHeroesCombatUI();
                     return; // nespotřebuj item ani akci
                 }
@@ -149348,14 +149345,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     currentTurn: null, players: {}, communityCards: [], deck: [],
                     lastActivity: Date.now(), hasBot: true, botTable: true
                 });
-                try {
-                    // [v6.4.1] Throttle pozvánky do chatu (max 1× / 5 min), ať opakované otevírání stolů nespamuje chat.
-                    const _nowOpen = Date.now();
-                    if (!window._lastPokerInviteAt || (_nowOpen - window._lastPokerInviteAt) > 5 * 60 * 1000) {
-                        window._lastPokerInviteAt = _nowOpen;
-                        await firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: `🤖 ${myName} otevřel stůl s dealer-botem (${level.name}) — připoj se!`, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true });
-                    }
-                } catch(e) {}
+                // [v6.4.1] Pozvánka do chatu zrušena (Zaoo) — místo ní se píše výhra/prohra při odchodu od stolu.
+                // (Otevřený stůl je vidět v bannerech chatu.)
                 // [v6.4.1] tvůrce (reálné peníze) — default ~50 blindů (ne 10 BB), oříznuto na peníze/denní limit
                 // [v6.4.1] Buy-in si volí hráč (showBotTableBuyInChooser). Neomezeno stropem — jen podle peněz.
                 const _isAdmCb = typeof isAdmin === 'function' && isAdmin();
@@ -149525,7 +149516,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // zapiš žetony
                 await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).update({
                     chips: (me.chips || 0) + amount,
-                    status: 'active'
+                    status: 'active',
+                    totalBuyIn: (me.totalBuyIn || me.initialBuyIn || 0) + amount // [v6.4.1] pro přesný výpočet výhry/prohry při odchodu
                 });
                 const vs = await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}/chips`).once('value');
                 if (!vs.exists()) { notifyWarning('Chyba', 'Dokoupení se nezapsalo'); return; }
@@ -149630,6 +149622,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                 seat: seat,
                                 chips: buyIn,
                                 initialBuyIn: buyIn,
+                                totalBuyIn: buyIn,
                                 joinedAt: Date.now(),
                                 status: isHandInProgress ? 'sitting_out' : 'active',
                                 currentBet: 0,
@@ -149722,6 +149715,20 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             try {
                 const snap = await firebaseDB.ref(`pokerTables/${tableId}/players/${myName}`).once('value');
                 const player = snap.val();
+                
+                // [v6.4.1] Místo pozvánky: napiš do chatu kolik hráč vyhrál/prohrál (jen člověk, ne dealer; jen když reálně hrál).
+                try {
+                    if (player && !player.isBot && (typeof player.totalBuyIn === 'number' || typeof player.initialBuyIn === 'number')) {
+                        const _spent = (typeof player.totalBuyIn === 'number' ? player.totalBuyIn : player.initialBuyIn) || 0;
+                        const _net = (player.chips || 0) - _spent;
+                        if (_spent > 0 && _net !== 0) {
+                            const _txt = _net > 0
+                                ? `🃏 ${myName} odešel od pokeru s výhrou +${_net.toLocaleString('cs-CZ')}💰`
+                                : `🃏 ${myName} odešel od pokeru se ztrátou ${Math.abs(_net).toLocaleString('cs-CZ')}💰`;
+                            firebaseDB.ref('chat/messages').push({ author: '🃏 POKER', text: _txt, timestamp: firebase.database.ServerValue.TIMESTAMP, system: true }).catch(() => {});
+                        }
+                    }
+                } catch(e) {}
                 
                 // Získej stav stolu pro zjištění, zda hra probíhá
                 const tableStateSnap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
@@ -150084,13 +150091,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         table.players[myName].actedThisRound = true;
                         actionDesc = `${myName} checkuje ✓`;
                     } else if (action === 'call') {
+                        const _chipsBeforeCall = me.chips; // [v6.4.1] zachyť PŘED odečtem — jinak se all-in vyhodnotí ze sníženého stacku
                         const actualCall = Math.min(callAmount, me.chips);
                         table.players[myName].chips = me.chips - actualCall;
                         table.players[myName].currentBet = me.currentBet + actualCall;
                         table.players[myName].totalBetInHand = (me.totalBetInHand || 0) + actualCall;
                         table.players[myName].actedThisRound = true;
                         table.pot = (table.pot || 0) + actualCall;
-                        if (actualCall >= me.chips) {
+                        if (actualCall >= _chipsBeforeCall) {
                             table.players[myName].status = 'allin';
                             actionDesc = `${myName} jde ALL-IN 💥 (${actualCall}💰)`;
                         } else {
