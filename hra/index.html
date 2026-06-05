@@ -148901,12 +148901,15 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             try { sessionStorage.setItem('_pokerMyHole_' + tableId, JSON.stringify(cards)); } catch(e) {}
         }
         function getPokerMyHoleLocal(tableId) {
+            // [v6.4.1] Preferuj sessionStorage klíčovaný tableId — window._pokerBotTableMyCards není klíčovaný
+            // a mohl vracet karty z jiné ruky/stolu → špatné vyhodnocení showdownu.
+            if (tableId) {
+                try {
+                    const s = sessionStorage.getItem('_pokerMyHole_' + tableId);
+                    if (s) { const c = JSON.parse(s); if (Array.isArray(c) && c.length) { window._pokerBotTableMyCards = c; return c; } }
+                } catch(e) {}
+            }
             if (window._pokerBotTableMyCards) return window._pokerBotTableMyCards;
-            if (!tableId) return null;
-            try {
-                const s = sessionStorage.getItem('_pokerMyHole_' + tableId);
-                if (s) { const c = JSON.parse(s); if (Array.isArray(c)) { window._pokerBotTableMyCards = c; return c; } }
-            } catch(e) {}
             return null;
         }
         function clearPokerMyHoleLocal(tableId) {
@@ -150549,6 +150552,15 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     winners: winners.map(w => w.name),
                     handName: winners[0].eval.name
                 });
+            }
+            
+            // [v6.4.1] POJISTKA proti mizení peněz (hlášeno: ~každá 4. ruka — pot se nevyplatil ani nevrátil).
+            // Když se z JAKÉHOKOLI důvodu neurčil žádný vítěz (prázdné winningsPerPlayer), NEVYRESETUJ pot
+            // do prázdna — vrať všem sázky (refund), ať peníze nezmizí.
+            if (Object.keys(winningsPerPlayer).length === 0) {
+                console.error('⚠️ Showdown: nepodařilo se určit vítěze (prázdné winnings) — vracím sázky všem.');
+                await abortPokerHandRefund(tableId, 'nepodařilo se určit vítěze');
+                return;
             }
             
             // Aplikuj rake na kumulativní výhry (snížení rake z celkového potu)
