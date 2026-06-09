@@ -149920,12 +149920,19 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         // ═══════════════════════════════════════════════════════════════
         
         async function startPokerHand(tableId) {
+          // [v6.4.1] Re-entrancy guard: zabraň dvojitému startu (race mezi auto-start cestami showdown/resolve/listener).
+          // Bez něj se blindy strhnou dvakrát a první ruka se přepíše → "poker bere blindy bez rozdání" (hlášeno Fillou).
+          window._pokerStarting = window._pokerStarting || {};
+          if (window._pokerStarting[tableId]) { console.warn('startPokerHand: už probíhá start, přeskakuji'); return; }
+          window._pokerStarting[tableId] = true;
           try {
             // Omezit: může spustit jen creator stolu (nebo první hráč pokud creator chybí)
             const myName = getPlayerName();
             const snap = await firebaseDB.ref(`pokerTables/${tableId}`).once('value');
             const table = snap.val();
             if (!table) return;
+            // [v6.4.1] Pokud už ruka běží (state='playing'), NEZAČÍNEJ novou — přepsala by ji a strhla blindy znovu.
+            if (table.state === 'playing') { console.warn('startPokerHand: ruka už běží (state=playing), přeskakuji'); return; }
             // [v6.4.1] Hráč-vs-hráč rozdání už jednou selhalo na pravidlech (pokerHands) → nezkoušej dokola.
             if (!table.hasBot && window._pokerHandsDenied && window._pokerHandsDenied[tableId]) return;
             
@@ -150049,6 +150056,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
           } catch(e) {
             console.error('startPokerHand:', e);
             notifyWarning('Chyba rozdání', e?.message || 'Nepodařilo se rozdat karty');
+          } finally {
+            // [v6.4.1] Uvolni guard — od teď stav 'playing' brání dalšímu startu, takže žádné dvojité strhnutí blindů.
+            if (window._pokerStarting) window._pokerStarting[tableId] = false;
           }
         }
         
