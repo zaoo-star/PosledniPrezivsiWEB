@@ -5089,7 +5089,8 @@
                 hp: state.char?.hp,
                 maxHp: state.char?.maxHp,
                 level: state.char?.level,
-                xp: state.char?.xp
+                xp: state.char?.xp,
+                totalXP: state.char?.totalXP // [v6.4.1] pro XP jump check (jediný zdroj pravdy)
             };
             lastValidChecksum = calculateChecksum(criticalValues);
             lastValidValues = {...criticalValues};
@@ -5110,11 +5111,15 @@
             let tampered = false;
             
             // Detekce nerealistických hodnot
-            if (state.money > 1000000) {
+            // [v6.4.1] Strop celkových peněz zvýšen 1M → 2 mld. Hráči 1M legitimně přesahují
+            // (poker s buy-iny až 1e9, drahé prodeje, vysoké sázky) a hra jim peněženku srážela
+            // na poslední hodnotu NEBO ROVNOU NA 10 000! Fallback 10K odstraněn (příliš trestající).
+            const MONEY_HARD_CAP = 2000000000;
+            if (state.money > MONEY_HARD_CAP) {
                 console.warn('🚨 Detekována anomálie: příliš mnoho peněz:', state.money);
-                const safeValue = lastValidValues.money && lastValidValues.money < 1000000 
+                const safeValue = (lastValidValues.money && lastValidValues.money <= MONEY_HARD_CAP)
                     ? lastValidValues.money 
-                    : 10000;
+                    : MONEY_HARD_CAP;
                 console.warn('🔧 Peníze opraveny na:', safeValue);
                 state.money = safeValue;
                 tampered = true;
@@ -5145,12 +5150,15 @@
                 }
             }
             
-            if (lastValidValues.xp !== undefined && state.char?.xp !== undefined) {
-                const xpDiff = (state.char.xp || 0) - (lastValidValues.xp || 0);
-                // [v6.4.1] Strop zvýšen 100K → 5M (velké odměny z bossů/questů byly chybně sráženy)
+            if (lastValidValues.totalXP !== undefined && typeof state.char?.totalXP === 'number') {
+                // [v6.4.1] Sleduj totalXP (jediný zdroj pravdy). state.char.xp je jen "zbytek do levelu" —
+                // po level-upu legitimně skáče i klesá (falešné poplachy, např. výhra XP v tombole se
+                // hned vracela), a podvod přes totalXP starý check vůbec neviděl.
+                const xpDiff = state.char.totalXP - lastValidValues.totalXP;
                 if (xpDiff > 5000000) {
                     console.warn('🚨 Detekován podezřelý skok XP:', xpDiff);
-                    state.char.xp = lastValidValues.xp;
+                    state.char.totalXP = lastValidValues.totalXP;
+                    if (typeof recalcLevelFromTotalXP === 'function') recalcLevelFromTotalXP();
                     tampered = true;
                 }
             }
@@ -27016,6 +27024,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (state.char.classId === 'berserker') {
                 percentBonuses.push({ name: '🎭 Berserker', percent: 50 });
             }
+            // [v6.4.1] Demolitionist s výbušnou zbraní (+70 %) — chyběl v rozpisu (padal do "Ostatní")
+            if (state.char.classId === 'demolitionist') {
+                const _dw = state.equipped?.weapon;
+                const _dwN = (_dw?.name || '').toLowerCase(), _dwI = (_dw?.id || '').toLowerCase(), _dwA = _dw?.ammoType || '';
+                const _isExpl = _dwA === 'rocket' || _dwA === 'grenade' || _dwN.includes('raket') || _dwN.includes('bazoo') ||
+                                _dwN.includes('granát') || _dwN.includes('bomb') || _dwI.includes('rocket') || _dwI.includes('grenade') || _dwI.includes('launcher');
+                if (_isExpl) percentBonuses.push({ name: '💣 Demolitionist (výbušniny)', percent: 70 });
+            }
             
             // Mutant v radioaktivní zóně
             if (state.char.classId === 'mutant') {
@@ -27108,6 +27124,36 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 percentBonuses.push({ name: '🤢 Nevolnost', percent: Math.round((state.buffs.nausea.value) * 100) });
             }
             
+            // [v6.4.1] Doplněné položky, které calculateDamage() započítává, ale rozpis je neznal
+            // (schovávaly se do "Ostatní bonusy" a vypadalo to jako nesoulad):
+            // 🌙/☀️ Obecný modifikátor denní doby (mimo assassin bonus)
+            if (dayPhase.playerDmgMod && dayPhase.playerDmgMod !== 1) {
+                const dpPct = Math.round((dayPhase.playerDmgMod - 1) * 100);
+                if (dpPct !== 0) percentBonuses.push({ name: `${dayPhase.icon || '🕐'} ${dayPhase.name || 'Denní doba'}`, percent: dpPct });
+            }
+            // 💢 Rage ability (dočasný damage buff)
+            if (state.combatBonuses?.damageBonus > 0 && Date.now() < (state.combatBonuses?.damageBonusExpires || state.combatBonuses?.expires || 0)) {
+                percentBonuses.push({ name: '💢 Vztek (dočasný)', percent: Math.round(state.combatBonuses.damageBonus) });
+            }
+            // 🧬 Mutace damageBonus (getMutationBonuses)
+            if (typeof getMutationBonuses === 'function') {
+                const _mutB = getMutationBonuses();
+                if (_mutB.damageBonus > 0) percentBonuses.push({ name: '🧬 Mutace', percent: Math.round(_mutB.damageBonus * 100) });
+            }
+            // 🏛️ Politické efekty (rozhodnutí šéfa)
+            if (typeof cachedPoliticalEffects !== 'undefined' && cachedPoliticalEffects) {
+                const _nowPol = Date.now();
+                if (cachedPoliticalEffects.decision_damageBonus && cachedPoliticalEffects.decision_damageBonus.until > _nowPol) {
+                    percentBonuses.push({ name: '🏛️ Politika (DMG)', percent: Math.round((cachedPoliticalEffects.decision_damageBonus.value || 0.10) * 100) });
+                }
+                if (cachedPoliticalEffects.decision_energyWeaponBonus && cachedPoliticalEffects.decision_energyWeaponBonus.until > _nowPol && state.equipped?.weapon?.ammoType === 'cell') {
+                    percentBonuses.push({ name: '🏛️ Politika (energet.)', percent: Math.round((cachedPoliticalEffects.decision_energyWeaponBonus.value || 0.15) * 100) });
+                }
+                if (cachedPoliticalEffects.decision_damagePenalty && cachedPoliticalEffects.decision_damagePenalty.until > _nowPol) {
+                    percentBonuses.push({ name: '🏛️ Regulace zbraní', percent: -Math.round((cachedPoliticalEffects.decision_damagePenalty.value || 0.25) * 100) });
+                }
+            }
+            
             // Set bonusy
             if (typeof getActiveSetEffects === 'function') {
                 const setEffects = getActiveSetEffects();
@@ -27130,6 +27176,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const totalDamage = Math.floor(baseDmgBeforePercent * finalMultiplier);
             
             // Skutečná hodnota z calculateDamage pro ověření
+            // [v6.4.1] Cache invalidovat PŘED čtením (dřív až po — hlavička panelu mohla ukázat
+            // až 2 s starou hodnotu, zatímco rozpis níže se počítal čerstvě → dvě odlišná čísla).
+            window._cachedDamage = null;
             const actualDamage = typeof calculateDamage === 'function' ? calculateDamage() : totalDamage;
             
             // [DEBUG v3.9.99] Log breakdown pro diagnostiku rozdílů actualDamage vs totalDamage
@@ -28715,6 +28764,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.deleteLoadout = deleteLoadout;
         
         function equipItem(itemId, slotType) {
+            window._cachedDamage = null; // [v6.4.1] invaliduj cache útoku — změna výbavy musí být vidět hned
             // Blokace během dovolené
             if (state.vacationMode) {
                 showVacationScreen();
@@ -61122,6 +61172,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function equipWeaponByIndex(idx) {
+            window._cachedDamage = null; // [v6.4.1] invaliduj cache útoku — změna výbavy musí být vidět hned
             const item = state.inv[idx];
             if (!item) return;
             
@@ -61248,6 +61299,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         function unequipItem(slotType) {
+            window._cachedDamage = null; // [v6.4.1] invaliduj cache útoku — změna výbavy musí být vidět hned
             // Zamkni výměnu vybavení během cestování a boje
             if (state.map?.traveling || state.world?.traveling) {
                 notifyWarning('Nelze změnit', 'Během cestování nelze měnit vybavení!');
@@ -85133,9 +85185,38 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         }
         
         // Šéf dostává 1% z veřejné kasy denně - automaticky se mu připíše
+        // [v6.4.1] VYZVEDNUTÍ PLATU OFFLINE ŠÉFA — plat se při offline šéfovi ukládal do
+        // politics/mayorIncome/<jméno> "k vyzvednutí", ale vyzvedávací kód NEEXISTOVAL.
+        // Peníze tam ležely navždy (odečtené z kasy, šéf je nikdy nedostal).
+        async function claimMayorIncome() {
+            if (!multiplayerEnabled || !firebaseDB) return;
+            try {
+                const mayorSnap = await firebaseDB.ref('politics/mayor').once('value');
+                const mayor = mayorSnap.val();
+                if (!mayor || !mayor.name) return;
+                const myName = getPlayerName();
+                if ((mayor.name || '').trim().toLowerCase() !== (myName || '').trim().toLowerCase()) return;
+                
+                const ref = firebaseDB.ref(`politics/mayorIncome/${mayor.name}`);
+                let _claimed = 0;
+                const res = await ref.transaction(v => {
+                    if (!v || v <= 0) return; // Abort — nic k vyzvednutí
+                    _claimed = v;
+                    return null; // Vynuluj (atomicky — žádný double-claim)
+                });
+                if (res.committed && _claimed > 0) {
+                    addMoney(_claimed);
+                    saveGame(true);
+                    addLog(`👑 Vyzvednut nashromážděný plat šéfa: +${_claimed} 💰`, '🏛️');
+                    notifySuccess('💰 Plat šéfa', `Vyzvedl sis nashromážděný plat: +${_claimed.toLocaleString('cs-CZ')}💰`);
+                    console.log('👑 Nashromážděný plat vyzvednut:', _claimed);
+                }
+            } catch(e) { console.warn('claimMayorIncome:', e); }
+        }
+        window.claimMayorIncome = claimMayorIncome;
+
         async function processMayorDailyIncome() {
             if (!multiplayerEnabled || !firebaseDB) return;
-            
             // [FIX] Neplat šéfa před 12:00 — počkat až většina hráčů zaplatí daně a kasa se naplní
             const currentHour = new Date().getHours();
             if (currentHour < 12) return; // Periodický check to zkusí znovu po 12:00
@@ -89397,6 +89478,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 // DoT efekty
+                // [v6.4.1] IMUNITY u hráče vynucené přímo v ticku — dřív se kontrolovaly jen PŘED aplikací
+                // efektů (které přijdou až po checku), takže gas_filter/fireproof reálně nefungovaly.
+                if (u.isPlayer && typeof hasEquippedSpecial === 'function') {
+                    try {
+                        if ((u.poisoned > 0 || u.poisonedPct > 0) && hasEquippedSpecial('gas_filter')) {
+                            u.poisoned = 0; u.poisonedPct = 0;
+                            cs.log.push('🥽 Plynová maska: Imunita proti otravě!');
+                        }
+                        if ((u.burnDamage > 0 || u.burnRounds > 0) && hasEquippedSpecial('fireproof')) {
+                            u.burnDamage = 0; u.burnRounds = 0; u.burnDamagePct = 0;
+                            cs.log.push('🧯 Ohnivzdorné: Imunita proti hoření!');
+                        }
+                    } catch(e) {}
+                }
                 if (u.alive && u.poisoned > 0) {
                     let dmg = u.poisoned;
                     // 🆕 [DoT %] Procentuální složka jedu (pro endgame bossy s 10k+ HP)
@@ -92105,8 +92200,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         cs.log.push(`🪖 Motorkářská helma: -25% crit damage (+${restored} HP)`);
                     }
                     // 🔥 fireproof — imunita na hoření
-                    if (target.burning > 0 && hasEquippedSpecial('fireproof')) {
-                        target.burning = 0;
+                    // [v6.4.1] FIX: kontrola burnDamage/burnRounds — útoky zapalují přes tato pole,
+                    // `target.burning` na combat jednotce nikdy nikdo nenastavil (imunita byla mrtvý kód)
+                    if ((target.burnDamage > 0 || target.burnRounds > 0 || target.burning > 0) && hasEquippedSpecial('fireproof')) {
+                        target.burnDamage = 0; target.burnRounds = 0; target.burnDamagePct = 0; target.burning = 0;
                         cs.log.push('🧯 Ohnivzdorné: Imunita proti hoření!');
                     }
                 } catch(e) { console.warn('Immunity check error:', e); }
@@ -92406,11 +92503,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             // [FIX v3.9.76] ⚔️ WEAPON SPECIAL efekty v hex combat (poison, bleed, stun, fire)
             // Předtím byly jen v legacy funkci (ř. 82536+) - nyní fungují i v hex combat
-            if ((attacker.isPlayer || (attacker.team === 'player' && !attacker.isCompanion)) && 
-                finalDamage > 0 && target.team === 'enemy' && target.alive) {
-                const playerWeapon = state.equipped?.weapon;
-                // Munice special (otrávené šípy, stříbrné náboje)
-                const ammoSpec = playerWeapon?.ammoType ? 
+            // [v6.4.1] FIX: guard vylučoval SPOLEČNÍKY a vždy bral zbraň HRÁČE — specials companion
+            // zbraní (splash raketometu, burn, freeze, lifesteal...) tak NIKDY nefungovaly.
+            // (Hlášeno Štístkem: "splash raketometu nefunguje" — měl ho společník.)
+            if (attacker.team === 'player' && finalDamage > 0 && target.team === 'enemy' && target.alive) {
+                let playerWeapon;
+                if (attacker.isCompanion && attacker.companionId) {
+                    const _cw = state.companions?.find(c => c.uniqueId === attacker.companionId || c.id === attacker.companionId);
+                    playerWeapon = _cw?.equipped?.weapon || null;
+                } else {
+                    playerWeapon = state.equipped?.weapon;
+                }
+                // Munice special (otrávené šípy, stříbrné náboje) — jen hráč (companion munici nepoužívá)
+                const ammoSpec = (attacker.isPlayer && playerWeapon?.ammoType) ? 
                     (state.inv.find(i => i.type === 'ammo' && i.ammoType === playerWeapon.ammoType && i.special)?.special) : null;
                 const effSpec = playerWeapon?.special || ammoSpec;
                 
@@ -92496,11 +92601,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 // 🧛 Lifesteal (vampírské zbraně - special 'lifesteal')
-                if (playerWeapon?.special === 'lifesteal' && finalDamage > 0 && state.char.hp < state.char.maxHp) {
+                // [v6.4.1] Léčí toho, kdo útočí (dřív vždy hráče — companion s upírskou zbraní se neléčil)
+                if (playerWeapon?.special === 'lifesteal' && finalDamage > 0) {
                     const lsHeal = Math.max(1, Math.floor(finalDamage * 0.15));
-                    state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
-                    if (attacker.isPlayer) attacker.hp = state.char.hp;
-                    cs.log.push(`🧛 Vysávání života: +${lsHeal} HP`);
+                    if (attacker.isPlayer) {
+                        if (state.char.hp < state.char.maxHp) {
+                            state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
+                            attacker.hp = state.char.hp;
+                            cs.log.push(`🧛 Vysávání života: +${lsHeal} HP`);
+                        }
+                    } else if (attacker.hp < (attacker.maxHp || attacker.hp)) {
+                        attacker.hp = Math.min(attacker.maxHp || attacker.hp + lsHeal, attacker.hp + lsHeal);
+                        cs.log.push(`🧛 ${attacker.name} vysává život: +${lsHeal} HP`);
+                    }
                 }
                 
                 // ❄️ Freeze (kryo zbraně - special 'freeze')
@@ -146988,6 +147101,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             safeSetInterval(() => {
                 checkAutoElectionEvaluation();
                 if (typeof processMayorDailyIncome === 'function') processMayorDailyIncome();
+                if (typeof claimMayorIncome === 'function') claimMayorIncome(); // [v6.4.1] plat se vyzvedne i bez restartu (start race fix)
                 if (typeof updatePoliticsBtn === 'function') updatePoliticsBtn();
                 // [NEW #5] Kontrola dokončených investičních projektů
                 if (typeof checkAndFinishInvestments === 'function') checkAndFinishInvestments();
@@ -147006,22 +147120,10 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Okamžitá kontrola platu šéfa při startu
             setTimeout(async () => {
                 if (typeof processMayorDailyIncome === 'function') processMayorDailyIncome();
-                // Auto-vyzvednutí nahromaděného platu pokud jsem šéf
-                try {
-                    if (isMayor()) {
-                        const playerName = getPlayerName();
-                        const incomeRef = firebaseDB.ref(`politics/mayorIncome/${playerName}`);
-                        const incomeSnap = await incomeRef.once('value');
-                        const pendingIncome = incomeSnap.val() || 0;
-                        if (pendingIncome > 0) {
-                            addMoney(pendingIncome);
-                            await incomeRef.set(0);
-                            saveGame(true);
-                            addLog(`👑 Denní plat šéfa vyplacen: +${pendingIncome} 💰`, '🏛️');
-                            notifySuccess('💰 Plat vyplacen', `+${pendingIncome} 💰 (1% z veřejné kasy)`);
-                        }
-                    }
-                } catch(e) { console.error('Auto-collect mayor income error:', e); }
+                // [v6.4.1] Auto-vyzvednutí nahromaděného platu — nahrazeno atomickou claimMayorIncome().
+                // Starý kód četl klíč podle getPlayerName(), ale zápis jde pod mayor.name z DB —
+                // při rozdílu (mezera/velikost písmen) se plat NIKDY nevyzvedl. Navíc nebyl atomický.
+                if (typeof claimMayorIncome === 'function') claimMayorIncome();
             }, 5000);
             
             // Listener na hlasování o sesazení - notifikace všem hráčům
@@ -149057,6 +149159,45 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         
         // [NEW] Heartbeat - udržuje tvoji přítomnost u stolu (každých 30s)
         // Cleanup detekuje stoly kde creator je déle než 5 min offline a nikdo tam není
+        // [v6.4.1] TREZOR NEVYPLACENÝCH PENĚZ — když se stůl maže a hráč (offline) má u něj žetony,
+        // nelze mu je připsat do peněženky (state.money je lokální). Místo zmizení se zapíšou do
+        // pokerPayouts/<jméno> a hráč si je automaticky vyzvedne při příštím spuštění.
+        // (Hlášeno Fillou: AFK uprostřed hry → stůl se po 5 min smazal → 100K pryč.)
+        function _pokerSanitizeKey(name) {
+            return String(name || '').replace(/[.#$\/\[\]]/g, '_');
+        }
+        async function _pokerWritePayout(playerName, amount, reason) {
+            if (!firebaseDB || !playerName || !(amount > 0)) return;
+            try {
+                await firebaseDB.ref(`pokerPayouts/${_pokerSanitizeKey(playerName)}`).push({
+                    amount: Math.floor(amount),
+                    reason: reason || 'zrušený stůl',
+                    ts: Date.now()
+                });
+                console.log(`🃏 Payout uložen do trezoru: ${playerName} +${amount} (${reason})`);
+            } catch(e) { console.warn('_pokerWritePayout:', e); }
+        }
+        async function claimPokerPayouts() {
+            if (!firebaseDB) return;
+            const myName = getPlayerName();
+            if (!myName) return;
+            const key = _pokerSanitizeKey(myName);
+            try {
+                const snap = await firebaseDB.ref(`pokerPayouts/${key}`).once('value');
+                const payouts = snap.val();
+                if (!payouts) return;
+                let total = 0;
+                Object.values(payouts).forEach(p => { if (p && p.amount > 0) total += Math.floor(p.amount); });
+                if (total > 0) {
+                    state.money = (state.money || 0) + total;
+                    if (typeof saveGame === 'function') saveGame();
+                    if (typeof notifySuccess === 'function') notifySuccess('🃏 Poker — vráceno', `${total.toLocaleString('cs-CZ')}💰 ze zrušeného stolu se ti vrátilo.`);
+                }
+                await firebaseDB.ref(`pokerPayouts/${key}`).remove();
+            } catch(e) { console.warn('claimPokerPayouts:', e); }
+        }
+        window.claimPokerPayouts = claimPokerPayouts;
+
         function setupPokerHeartbeat() {
             if (window._pokerHeartbeatSetup) return;
             window._pokerHeartbeatSetup = true;
@@ -149096,6 +149237,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                             const lastSeen = player.lastSeen || table.createdAt || table.lastActivity || 0;
                             if (now - lastSeen > ZOMBIE_THRESHOLD) {
                                 console.log(`🃏 Auto-cleanup zombie stolu ${tableId} (osamělý hráč ${playerNames[0]} offline ${Math.floor((now-lastSeen)/60000)}min)`);
+                                // [v6.4.1] PŘED smazáním ulož hráči žetony + rozehrané sázky do trezoru,
+                                // ať mu nezmizí (dřív se smazaly se stolem — hlášená ztráta 100K).
+                                if (player && !player.isBot) {
+                                    const _owed = (player.chips || 0) + (player.totalBetInHand || 0);
+                                    if (_owed > 0) await _pokerWritePayout(playerNames[0], _owed, 'stůl zrušen (neaktivita)');
+                                }
                                 await firebaseDB.ref(`pokerTables/${tableId}`).remove();
                                 // Chat notifikace
                                 try {
@@ -149106,6 +149253,27 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                         system: true
                                     });
                                 } catch(chatErr) {}
+                            }
+                            continue;
+                        }
+                        
+                        // [v6.4.1] Stoly s více záznamy (typicky bot-stůl: člověk + Dealer-Bot) se dřív
+                        // NIKDY neuklidily (length===1 nematchnul) → visely věčně a žetony AFK hráče v nich.
+                        // Když jsou VŠICHNI lidé offline > 5 min → žetony lidí do trezoru a stůl smaž.
+                        const _humansAtTable = Object.values(table.players).filter(p => p && !p.isBot);
+                        if (_humansAtTable.length > 0) {
+                            const _allHumansGone = _humansAtTable.every(p => {
+                                const seen = p.lastSeen || table.createdAt || table.lastActivity || 0;
+                                return (now - seen) > ZOMBIE_THRESHOLD;
+                            });
+                            if (_allHumansGone) {
+                                console.log(`🃏 Auto-cleanup opuštěného stolu ${tableId} (všichni lidé offline > 5 min)`);
+                                for (const hp of _humansAtTable) {
+                                    const _owed = (hp.chips || 0) + (hp.totalBetInHand || 0);
+                                    if (_owed > 0) await _pokerWritePayout(hp.name, _owed, 'stůl zrušen (neaktivita)');
+                                }
+                                await firebaseDB.ref(`pokerTables/${tableId}`).remove();
+                                await firebaseDB.ref(`pokerHands/${tableId}`).remove().catch(() => {});
                             }
                         }
                     }
@@ -149175,6 +149343,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             setupPokerPlayerCountListener();
             autoReconnectPokerTable();
             setupPokerHeartbeat();
+            claimPokerPayouts(); // [v6.4.1] vyzvedni peníze ze zrušených stolů (trezor)
         }, 3000);
         
         // Helper: získat denní buy-in
@@ -150302,8 +150471,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // [SECURITY] Načti deck z lokálního storage hosta (ne z Firebase!)
             const deck = getPokerDeckLocal(tableId);
-            if (!deck || deck.length === 0) {
-                console.error('⚠️ advancePokerPhase: deck není dostupný (změna hosta nebo refresh tabu) — přerušuji ruku');
+            // [v6.4.1] Kontrola PŘESNÉHO počtu karet (flop = burn+3 = 4, turn/river = burn+1 = 2).
+            // Pouhé `length === 0` propustilo částečně poškozený deck → deck.pop() = undefined
+            // → community s undefined kartou → rozbitá ruka.
+            const _needed = table.phase === 'preflop' ? 4 : 2;
+            if (!deck || deck.length < _needed) {
+                console.error('⚠️ advancePokerPhase: deck nedostupný/nekompletní (' + (deck ? deck.length : 'null') + ' karet, potřeba ' + _needed + ') — přerušuji ruku');
                 await abortPokerHandRefund(tableId, 'deck nedostupný');
                 return;
             }
@@ -150381,8 +150554,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // [SECURITY] Deck z lokálu, ne z Firebase
             const deck = getPokerDeckLocal(tableId);
-            if (!deck || deck.length === 0) {
-                console.error('⚠️ dealAllRemainingAndShowdown: deck nedostupný — přerušuji');
+            const _commLen = (table.communityCards || []).length;
+            // [v6.4.1] Přesný počet potřebných karet vč. burnů: z preflopu = 8 (burn+3, burn+1, burn+1),
+            // z flopu = 4, z turnu = 2. Neúplný deck → undefined karty → rozbitý showdown.
+            const _neededRunout = _commLen === 0 ? 8 : (5 - _commLen) * 2;
+            if (!deck || deck.length < _neededRunout) {
+                console.error('⚠️ dealAllRemainingAndShowdown: deck nedostupný/nekompletní (' + (deck ? deck.length : 'null') + ' karet, potřeba ' + _neededRunout + ') — přerušuji');
                 await abortPokerHandRefund(tableId, 'deck nedostupný před showdownem');
                 return;
             }
@@ -151345,7 +151522,13 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Listener pro veřejný stav stolu
             _pokerTableListener = firebaseDB.ref(`pokerTables/${tableId}`).on('value', (snap) => {
                 const table = snap.val();
-                if (!table) { leavePokerTable(); return; }
+                if (!table) {
+                    // [v6.4.1] Stůl zmizel pod rukama (cleanup/smazání) → zkus vyzvednout trezor
+                    // (cleanup tam před smazáním uložil tvoje žetony), pak normální odchod.
+                    setTimeout(() => { try { claimPokerPayouts(); } catch(e) {} }, 1500);
+                    leavePokerTable();
+                    return;
+                }
                 renderPokerTable(table);
                 
                 // [v6.4.1] DEALER-BOT driver — běží u efektivního hosta (tvůrce; když odešel, seat #0)
