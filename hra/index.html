@@ -3497,7 +3497,9 @@
             MAX_HP: 9999,
             MAX_LEVEL: 100,
             MAX_INVENTORY_WEIGHT: 999,
-            MAX_STACK_SIZE: 999,
+            MAX_STACK_SIZE: 999999, // [v6.4.1] Bylo 999 — validateInventory při loadu ZNIČIL přebytek stacku
+                                    // (hlášeno Cinkym: ~1000 energo článků + 1000 z tomboly → po loadu přesně 999).
+                                    // 999999 dál chytá poškozená/NaN data, ale legitimní zásoby nechává.
             
             // Časové konstanty (ms)
             AUTOSAVE_INTERVAL: 60000,           // 1 minuta
@@ -172333,6 +172335,38 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     el.style.color = color;
                     el.style.textShadow = `0 0 5px ${color}`;
                 }
+                // [v6.4.1] VYNUCENÍ LIMITU — dřív byl countdown jen kosmetika: po vypršení nikdo
+                // tah neposunul a boj při AFK hráči ZAMRZL NAVŽDY. Master skipne po 12 s,
+                // fallback kdokoliv po 20 s (kdyby byl AFK sám master). Atomický claim přes
+                // transaction na lastActionAt zaručí, že skip provede jen JEDEN klient.
+                (async () => {
+                    try {
+                        if (window._pvpSkipInFlight) return;
+                        const _rid = window._pvpCombatRaidId;
+                        if (!_rid || !firebaseDB) return;
+                        const _age = Date.now() - window._pvpLastActionCache;
+                        const _meName = typeof getPlayerName === 'function' ? getPlayerName() : null;
+                        const _limit = (window._pvpMasterCache && window._pvpMasterCache === _meName) ? 12000 : 20000;
+                        if (_age < _limit) return;
+                        window._pvpSkipInFlight = true;
+                        const _claim = await firebaseDB.ref(`scheduledRaids/${_rid}/pvpCombat/lastActionAt`).transaction(v => {
+                            if (!v) return; // abort
+                            if (Date.now() - v < 12000) return; // někdo už jednal — abort
+                            return Date.now();
+                        });
+                        if (_claim.committed) {
+                            const _curName = window._pvpCurrentTurnNameCache || 'Hráč';
+                            await firebaseDB.ref(`scheduledRaids/${_rid}/pvpCombat/log`).transaction(log => {
+                                log = log || [];
+                                log.push({ msg: `⏱️ ${_curName} promeškal časový limit — tah přeskočen.`, ts: Date.now() });
+                                if (log.length > 50) log = log.slice(-50);
+                                return log;
+                            }).catch(() => {});
+                            if (typeof advancePvPTurn === 'function') await advancePvPTurn(_rid);
+                        }
+                    } catch(e) { console.warn('PvP timeout skip:', e); }
+                    finally { window._pvpSkipInFlight = false; }
+                })();
             }, 1000);
             
             window._pvpCombatListener.on('value', (snap) => {
@@ -172341,6 +172375,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 // [NEW] Cache lastActionAt pro countdown ticker
                 window._pvpLastActionCache = raid.pvpCombat.lastActionAt || Date.now();
+                // [v6.4.1] Cache mastera + jména hráče na tahu (pro timeout-skip v tickeru)
+                window._pvpMasterCache = raid.pvpCombat.masterClient || null;
+                window._pvpCurrentTurnNameCache = raid.pvpCombat.turnOrder?.[raid.pvpCombat.currentTurnIdx] || null;
                 
                 // Pokud combat skončil → ukázat výsledek
                 if (raid.pvpCombat.status === 'finished') {
@@ -172463,7 +172500,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                 : `<div style="font-size:1.4rem;">${teamIcon}</div>`;
                             const hpPct = Math.max(0, unitOnCell.hp / unitOnCell.maxHp * 100);
                             const hpBarColor = hpPct > 60 ? '#4caf50' : hpPct > 30 ? '#ff9800' : '#f44336';
-                            const isClickable = isMyTurn && isAlive && !isMe && unitOnCell.team !== myUnit?.team;
+                            // [v6.4.1] KONTROLA DOSAHU — klikatelný jen nepřítel v dosahu zbraně (Chebyshev).
+                            // Dřív šlo útočit přes celou mapu a pohyb ztrácel smysl.
+                            const _cellDist = myUnit ? Math.max(Math.abs((unitOnCell.x||0) - (myUnit.x||0)), Math.abs((unitOnCell.y||0) - (myUnit.y||0))) : 99;
+                            const _inRange = _cellDist <= (myUnit?.weaponRange || 1);
+                            const isClickable = isMyTurn && isAlive && !isMe && unitOnCell.team !== myUnit?.team && _inRange;
                             content = `
                                 <div ${isClickable ? `onclick="submitPvPAttack('${raidId}','${unitOnCell.name.replace(/'/g, "\\'")}')"` : ''}
                                     style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:${isClickable ? 'crosshair' : 'default'};${isClickable ? 'animation:pulse 1.5s infinite;' : ''}">
@@ -173016,7 +173057,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         advanceAfter = false;  // Akce neprošla, ne odečítej tah
                     } else {
                     const target = cs.units?.[action.target];
-                    if (target && target.alive && target.team !== attacker.team) {
+                    // [v6.4.1] AUTORITATIVNÍ KONTROLA DOSAHU na masterovi — UI ji má taky, ale tady je pojistka.
+                    const _atkDist = target ? Math.max(Math.abs((attacker.x||0) - (target.x||0)), Math.abs((attacker.y||0) - (target.y||0))) : 0;
+                    if (target && target.alive && target.team !== attacker.team && _atkDist > (attacker.weaponRange || 1)) {
+                        logMsg = `📏 ${attacker.name}: ${target.name} je mimo dosah (${_atkDist} > ${attacker.weaponRange || 1}) — přibliž se!`;
+                        advanceAfter = false; // tah neztrácí, jen akce neprošla
+                    } else if (target && target.alive && target.team !== attacker.team) {
                         // [v6.4.1] Vysílej "lastAttack" → všichni klienti přehrají efekt výstřelu/úderu (jako klasický boj)
                         try {
                             await firebaseDB.ref(`scheduledRaids/${raidId}/pvpCombat/lastAttack`).set({
@@ -173474,6 +173520,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 const raidSnap = await firebaseDB.ref(`scheduledRaids/${raidId}`).once('value');
                 const raid = raidSnap.val();
                 if (!raid) return;
+                // [v6.4.1] Guard proti dvojímu dokončení (např. zabití posledního + timeout naráz)
+                // — ELO, cooldowny a notifikace by se jinak zpracovaly dvakrát.
+                if (raid.status === 'finished' || raid.pvpCombat?.status === 'finished') return;
                 
                 // Pouze master zapíše finished status
                 if (raid.attackerLeader !== myName && raid.pvpCombat?.masterClient !== myName) return;
