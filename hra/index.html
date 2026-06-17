@@ -5157,7 +5157,7 @@
                 // po level-upu legitimně skáče i klesá (falešné poplachy, např. výhra XP v tombole se
                 // hned vracela), a podvod přes totalXP starý check vůbec neviděl.
                 const xpDiff = state.char.totalXP - lastValidValues.totalXP;
-                if (xpDiff > 5000000) {
+                if (xpDiff > 50000000) {
                     console.warn('🚨 Detekován podezřelý skok XP:', xpDiff);
                     state.char.totalXP = lastValidValues.totalXP;
                     if (typeof recalcLevelFromTotalXP === 'function') recalcLevelFromTotalXP();
@@ -21501,9 +21501,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (typeof console.trace === 'function') console.trace('Zdroj peněz:');
             }
             
-            // Ochrana proti extrémním hodnotám (max 50000 najednou - legitní prodeje legend, world boss)
-            // [FIX AUDIT] Zvýšeno z 5000 - pohlcovalo legitimní prodeje legend a bossů
-            const MAX_SINGLE_TRANSACTION = 50000;
+            // [v6.4.1] Strop jedné transakce 50K → 10M. 50K stále pohlcovalo legitimní příjmy
+            // (prodej 3 BFG za 60K, poker výhry, odměny bossů/questů). 10M je nad jakýkoli reálný
+            // jednorázový příjem, ale pod prahem anti-cheatu (50M/tick), takže nekoliduje.
+            const MAX_SINGLE_TRANSACTION = 10000000;
             if (amount > MAX_SINGLE_TRANSACTION) {
                 console.error(`🚨 EXTRÉMNÍ peněžní příjem omezen: ${amount}💰 → ${MAX_SINGLE_TRANSACTION}`);
                 amount = MAX_SINGLE_TRANSACTION;
@@ -58216,10 +58217,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // === SYSTÉM PENĚZ OBCHODNÍKŮ ===
         const SHOP_MONEY_LIMITS = {
-            default: 4000,      // Běžný obchod (zvýšeno z 2000)
-            trader_hub: 8000,   // Obchodní centrum (zvýšeno z 5000)
-            caravan: 5000,      // Karavana (zvýšeno z 3000)
-            pawnshop: 2000      // Zastavárna (zvýšeno z 1000)
+            // [v6.4.1] Výrazně zvednuto — 4000 nestačilo ani na JEDNU legendární zbraň (3000–9000),
+            // takže prodej drahých věcí obchodníkům byl skoro nemožný. Denní reset zůstává jako pacing.
+            default: 50000,      // Běžný obchod (bylo 4000)
+            trader_hub: 200000,  // Obchodní centrum (bylo 8000)
+            caravan: 50000,      // Karavana (bylo 5000)
+            pawnshop: 25000      // Zastavárna (bylo 2000)
         };
         
         // Získá aktuální peníze obchodu na lokaci
@@ -146810,7 +146813,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         }
                         
                         const money = Math.min(parseInt(notif.money) || 0, 999999);
-                        const xp = Math.min(parseInt(notif.xp) || 0, 999999);
+                        const xp = Math.min(parseInt(notif.xp) || 0, 10000000); // [v6.4.1] 999999 → 10M
                         totalMoney += money;
                         totalXP += xp;
                         if (notif.reason) reasons.push(notif.reason);
@@ -146931,7 +146934,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         }
                         
                         const reward = notif.reward || {};
-                        const money = Math.min(parseInt(reward.money) || 0, 999999);
+                        const money = Math.min(parseInt(reward.money) || 0, 10000000); // [v6.4.1] 999999 → 10M (admin kompenzace)
                         totalMoney += money;
                         if (notif.title) reasons.push(notif.title);
                         
@@ -146976,9 +146979,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         }
                         
                         // Raid odměny nemají cap, ostatní ano
+                        // [v6.4.1] Stropy zvednuty (1000→1M money, 500→500K XP, 10→99 items). Ne-raid odměny
+                        // chodí hlavně z admin funkcí (sendIdeaReward apod.) a 1000/500 dusilo legitimní
+                        // kompenzace. Strop zůstává jako pojistka proti injection, ale na rozumné úrovni.
                         const isRaid = reward.type === 'raid_reward';
-                        const money = isRaid ? (reward.money || 0) : Math.min(reward.money || 0, 1000);
-                        const xp = isRaid ? (reward.xp || 0) : Math.min(reward.xp || 0, 500);
+                        const money = isRaid ? (reward.money || 0) : Math.min(reward.money || 0, 1000000);
+                        const xp = isRaid ? (reward.xp || 0) : Math.min(reward.xp || 0, 500000);
                         totalMoney += money;
                         totalXP += xp;
                         if (reward.reason) reasons.push(reward.reason);
@@ -146987,7 +146993,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         if (reward.item && reward.item.id) {
                             const itemDef = ITEMS.find(i => i.id === reward.item.id);
                             if (itemDef) {
-                                const count = Math.min(reward.item.count || 1, 10);
+                                const count = Math.min(reward.item.count || 1, 99); // [v6.4.1] 10 → 99
                                 const itemCopy = JSON.parse(JSON.stringify(itemDef));
                                 itemCopy.count = count;
                                 // [FIX] Force add — reward nesmí být tiše zahozena
@@ -163938,14 +163944,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             let receivedItems = [];
             
             // Přidej peníze
-            const money = Math.min(parseInt(reward.money) || 0, 999999);
+            const money = Math.min(parseInt(reward.money) || 0, 10000000); // [v6.4.1] 999999 → 10M (admin kompenzace)
             if (money > 0) {
                 state.money = (state.money || 0) + money;
                 console.log('🎁 Přidáno peněz:', money);
             }
             
             // Přidej XP
-            const xp = Math.min(parseInt(reward.xp) || 0, 999999);
+            const xp = Math.min(parseInt(reward.xp) || 0, 10000000); // [v6.4.1] 999999 → 10M
             if (xp > 0) {
                 // 🆕 [v6.3.1] Admin reward XP = PŘESNÝ amount (bez bonusů)
                 // Když admin pošle 1000 XP, hráč dostane přesně 1000 XP (ne 1000+bonusy)
@@ -163956,7 +163962,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Přidej náboje
             let receivedAmmo = '';
             if (reward.ammo && reward.ammo.type && reward.ammo.count > 0) {
-                const ammoCount = Math.min(reward.ammo.count, 9999);
+                const ammoCount = Math.min(reward.ammo.count, 999999); // [v6.4.1] 9999 → 999999
                 addAmmo(reward.ammo.type, ammoCount);
                 receivedAmmo = `${ammoCount}x ${reward.ammo.name || reward.ammo.type}`;
                 console.log('🎁 Přidáno nábojů:', reward.ammo.type, 'x', ammoCount);
