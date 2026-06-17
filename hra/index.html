@@ -19808,6 +19808,33 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 validItems.push(item);
             });
             
+            // [v6.4.1] KONSOLIDACE duplikátů stackovatelných itemů — hráči, co nasbírali víc kusů
+            // PŘED tím, než daný typ začal stackovat (např. trophy/component), mají v inventáři víc
+            // oddělených záznamů (hlášeno OwerLord: "srdce mutanta se nestackuje"). Sloučíme je do jednoho stacku.
+            // Bezpečné: slučují se jen items se stejným id BEZ durability/enchantment/uniqueId/stackId.
+            try {
+                const _stackTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component', 'resource', 'trophy'];
+                const _merged = [];
+                const _byId = {};
+                for (const it of validItems) {
+                    const _canStack = (_stackTypes.includes(it.type) || it.stackable) &&
+                        it.durability === undefined && it.enchantment === undefined &&
+                        !it.uniqueId && !it.stackId && !it.unique && it.maxStack !== 1;
+                    if (_canStack && _byId[it.id]) {
+                        _byId[it.id].count = (_byId[it.id].count || 1) + (it.count || 1);
+                    } else {
+                        if (_canStack) _byId[it.id] = it;
+                        _merged.push(it);
+                    }
+                }
+                if (_merged.length < validItems.length) {
+                    report.fixed += (validItems.length - _merged.length);
+                    report.issues.push(`Sloučeno ${validItems.length - _merged.length} duplicitních stacků`);
+                    validItems.length = 0;
+                    validItems.push(..._merged);
+                }
+            } catch(e) { console.warn('Konsolidace inv:', e); }
+            
             state.inv = validItems;
             
             if (report.issues.length > 0) {
@@ -19910,7 +19937,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🆕 [v6.3.1] STACKOVÁNÍ na zemi — hlášeno OwerLord: "leží mi na zemi 600 věcí, nestackují se"
             // Pokus najít stejný item co se dá stackovat (stejné id, durability, enchantment, count není unique)
-            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune'];
+            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component', 'trophy'];
             const isStackable = stackableTypes.includes(item.type) || item.stackable || 
                                 (item.id && (item.id.startsWith('rune_') || item.id.startsWith('lore_')));
             
@@ -20597,8 +20624,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Stackovatelné typy: spotřební + fungibilní materiály/komponenty
             // [FIX v6.4.1] Přidán 'component' (AI jádra — hlášeno OwerLord: "AI jádra se nestackují")
             // + sjednoceno s pozemním stackováním (material/lore/rune/resource se na zemi stackovaly, ale v inv ne).
+            // [v6.4.1] Přidán 'trophy' (Srdce Mutanta apod. — hlášeno OwerLord: "srdce mutanta se nestackuje").
             // Tyto typy nemají durability/enchantment, takže stack podle id je bezpečný.
-            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component', 'resource'];
+            const stackableTypes = ['consumable', 'ammo', 'food', 'throwable', 'material', 'lore', 'rune', 'component', 'resource', 'trophy'];
             
             if (stackableTypes.includes(item.type) || item.stackable) {
                 // Hledej existující stack podle ID, ale ne pokud má stackId (rozdělený stack)
@@ -38280,7 +38308,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Quest itemy nelze prodat
             if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') {
-                const msg = item.type === 'rune' ? 'Runy nelze prodat karavanám. Prodej je na online tržišti!' : 'Tento předmět je potřebný pro quest a nelze ho prodat!';
+                const msg = getCantSellMessage(item, 'karavanám');
                 notifyWarning('Nelze prodat', msg);
                 return;
             }
@@ -59005,6 +59033,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return Math.max(1, sellPrice);
         }
         
+        // [v6.4.1] Sdílená hláška "nelze prodat" — přesná podle typu (hlášeno OwerLord: artefakty
+        // mylně hlásily "potřebný pro quest"). channel = 'obchodníkům' / 'karavanám'.
+        function getCantSellMessage(item, channel = 'obchodníkům') {
+            if (!item) return 'Tento předmět nelze prodat.';
+            if (item.type === 'rune') return `Runy nelze prodat ${channel}. Prodej je na online tržišti!`;
+            if (item.type === 'quest' || item.type === 'quest_item') return 'Tento předmět je potřebný pro quest a nelze ho prodat!';
+            if (item.crafted) return `Vlastnoručně vyrobené věci ${channel === 'karavanám' ? 'karavany' : 'obchodníci'} neberou. Zkus online tržiště!`;
+            if (item.rarity === 'legendary') return `${item.name} je unikátní artefakt — nelze prodat ${channel}. Nech si ho, nasaď (equip) nebo využij na legendární craft.`;
+            return `${item.name} nelze prodat ${channel}.`;
+        }
+
         function sellItem(itemId, amount = 1) {
             // 🆕 [v6.3.1 EXPLOIT FIX] Validace amount - zabraň negativním/NaN hodnotám
             // Předtím: sellItem('x', -5) → item.count -= -5 = +5 (duplikace!) + addMoney(-X) ignoruje
@@ -59057,7 +59096,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Quest itemy nelze prodat
             if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') {
-                const msg = item.type === 'rune' ? 'Runy nelze prodat obchodníkům. Prodej je na online tržišti!' : 'Tento předmět je potřebný pro quest a nelze ho prodat!';
+                const msg = getCantSellMessage(item, 'obchodníkům');
                 notifyWarning('Nelze prodat', msg);
                 return;
             }
@@ -59296,7 +59335,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Quest itemy nelze prodat
             if (item.cantSell || item.type === 'quest' || item.type === 'quest_item') {
-                const msg = item.type === 'rune' ? 'Runy nelze prodat obchodníkům. Prodej je na online tržišti!' : 'Tento předmět je potřebný pro quest a nelze ho prodat!';
+                const msg = getCantSellMessage(item, 'obchodníkům');
                 notifyWarning('Nelze prodat', msg);
                 return;
             }
@@ -78675,7 +78714,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (req.find_npc) {
                 const found = prog.npcFound || false;
-                html += `<li style="color: ${found ? '#8bc34a' : '#ff9800'};">👤 Přeživší: ${found ? '✅ Nalezen!' : '❌ Nenalezen — prohledej opuštěné budovy, vesnice, farmy'}</li>`;
+                // [v6.4.1] Ukaž KONKRÉTNÍ přidělenou lokaci (data tam byla, jen se nezobrazovala → hráči bloudili)
+                if (found) {
+                    html += `<li style="color: #8bc34a;">👤 Přeživší: ✅ Nalezen!</li>`;
+                } else if (prog.targetLocationName) {
+                    html += `<li style="color: #ff9800;">👤 Přeživší: ❌ Nenalezen — jdi na lokaci <strong style="color:#ffd54f;">${prog.targetLocationName}</strong> a prohledej ji (Prozkoumat).</li>`;
+                } else {
+                    html += `<li style="color: #ff9800;">👤 Přeživší: ❌ Nenalezen — prohledej opuštěné budovy, vesnice, farmy</li>`;
+                }
             }
             if (req.rescue) {
                 const done = prog.rescued || false;
@@ -79090,6 +79136,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const availableTargets = quest.deliverTargets.filter(t => t !== npcId && FRIENDLY_NPCS.find(n => n.id === t));
                 if (availableTargets.length > 0) {
                     state.npcQuests[npcId].deliverTarget = availableTargets[Math.floor(Math.random() * availableTargets.length)];
+                }
+            }
+            
+            // [v6.4.1] find_npc quest: přiděl konkrétní cílovou lokaci HNED při přijetí a ukaž ji hráči.
+            // Dřív se přidělovala až při prvním průzkumu a NIKDY se nezobrazila → hráči slepě bloudili
+            // (hlášeno: Cameron Brecit hledal přeživšího z Mayina questu několik dní).
+            if (quest.requirement?.find_npc && !state.npcQuests[npcId].progress.targetLocation) {
+                const validFindIds = ['ruined_village', 'abandoned_house', 'old_farm', 'motel', 'safehouse', 'old_church', 'ruins_north', 'ruins_south', 'cemetery', 'old_bunker', 'hospital', 'warehouse'];
+                const validFindLocs = (typeof WORLD_LOCATIONS !== 'undefined' ? WORLD_LOCATIONS : []).filter(l => validFindIds.includes(l.id) || l.type === 'explore');
+                if (validFindLocs.length > 0) {
+                    const picked = validFindLocs[Math.floor(Math.random() * validFindLocs.length)];
+                    state.npcQuests[npcId].progress.targetLocation = picked.id;
+                    state.npcQuests[npcId].progress.targetLocationName = picked.name;
+                    console.log(`👤 Find NPC quest: cíl přidělen při přijetí = ${picked.id}`);
                 }
             }
             
