@@ -147655,7 +147655,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     </div>
                     
                     <div style="display:grid;gap:0.4rem;">
-                        <button class="btn" onclick="confirmMayorInvestment('${projectId}')" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);width:100%;padding:0.7rem;">✓ Investovat ${adminOk ? 'ZDARMA (admin)' : project.cost.toLocaleString() + '💰'}</button>
+                        <button class="btn" onclick="confirmMayorInvestment('${projectId}', 1)" style="background:linear-gradient(135deg,#2e7d32,#1b5e20);width:100%;padding:0.7rem;">✓ Investovat ×1 — ${adminOk ? 'ZDARMA (admin)' : project.cost.toLocaleString() + '💰'}</button>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;">
+                            <button class="btn" onclick="confirmMayorInvestment('${projectId}', 5)" style="background:linear-gradient(135deg,#1565c0,#0d47a1);padding:0.6rem;font-size:0.9rem;">⚡ ×5 — ${adminOk ? 'zdarma' : (project.cost * 5).toLocaleString() + '💰'}</button>
+                            <button class="btn" onclick="confirmMayorInvestment('${projectId}', 10)" style="background:linear-gradient(135deg,#6a1b9a,#4a148c);padding:0.6rem;font-size:0.9rem;">🚀 ×10 — ${adminOk ? 'zdarma' : (project.cost * 10).toLocaleString() + '💰'}</button>
+                        </div>
                         <button class="btn" onclick="closeModal()" style="background:#333;width:100%;">✗ Zrušit</button>
                     </div>
                 `);
@@ -147665,9 +147669,32 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         }
         
         // Vlastní investování po potvrzení
-        function confirmMayorInvestment(projectId) {
+        function confirmMayorInvestment(projectId, count = 1) {
             const project = MAYOR_SYSTEM.investments.find(p => p.id === projectId);
             if (!project) return;
+            // [v6.4.1] Bulk investice (×5, ×10) — spusť count-krát, každá odečte z kasy zvlášť
+            if (count > 1) {
+                const adminOk2 = (typeof isAdmin === 'function' && isAdmin());
+                const pub2 = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
+                const totalCost = project.cost * count;
+                if (!adminOk2 && pub2 < totalCost) {
+                    // Kolik si můžeme dovolit?
+                    const canAfford = adminOk2 ? count : Math.floor(pub2 / project.cost);
+                    if (canAfford <= 0) { notifyWarning('💰 Málo peněz', `V kase není dost (${pub2.toLocaleString()}💰, potřeba ${totalCost.toLocaleString()}💰).`); closeModal(); return; }
+                    notifyWarning('💰 Částečná investice', `Kasa má dost jen na ${canAfford}× (${(canAfford * project.cost).toLocaleString()}💰 z ${totalCost.toLocaleString()}💰).`);
+                    count = canAfford;
+                }
+                // Spusť sekvenčně — každé volání samo odečte z kasy a zapíše Firebase
+                let i = 0;
+                function doNext() {
+                    if (i >= count) return;
+                    i++;
+                    confirmMayorInvestment(projectId, 1);
+                    setTimeout(doNext, 120); // krátká pauza, aby Firebase transakce nesplývaly
+                }
+                doNext();
+                return;
+            }
             
             const adminOk = (typeof isAdmin === 'function' && isAdmin());
             const inv = getMayorInvestments();
@@ -147825,12 +147852,21 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     : `💰 Cena: ${project.cost.toLocaleString()}💰 z veřejné kasy`;
                 const countWord = optimisticTotal === 1 ? 'investice' : (optimisticTotal < 5 ? 'investice' : 'investic');
                 
-                firebaseDB.ref('chat/messages').push({
-                    author: '🏛️ POLITIKA',
-                    text: `${titleLine}\n\n${project.icon} ${project.name} #${optimisticTotal}\n${investorName}\n${costLine}\n\n📜 ${project.desc || ''}\n\n🎁 PERMANENTNÍ BONUS PRO VŠECHNY:\n${detailedBonusInfo}\n\n📊 Projekt má teď celkem ${optimisticTotal} ${countWord}.`,
-                    timestamp: firebase.database.ServerValue.TIMESTAMP,
-                    system: true
-                }).catch(e => console.warn('🔇', e));
+                // [v6.4.1] Throttle — max 1 chat zpráva per projekt per 10 min (hlášeno: spam při opakované investici)
+                const _invThrottleKey = `_mayorInvChatAt_${project.id}`;
+                const _invLastAt = window[_invThrottleKey] || 0;
+                const _invThrottle = 10 * 60 * 1000; // 10 minut
+                if (Date.now() - _invLastAt > _invThrottle) {
+                    window[_invThrottleKey] = Date.now();
+                    firebaseDB.ref('chat/messages').push({
+                        author: '🏛️ POLITIKA',
+                        text: `${titleLine}\n\n${project.icon} ${project.name} #${optimisticTotal}\n${investorName}\n${costLine}\n\n📜 ${project.desc || ''}\n\n🎁 PERMANENTNÍ BONUS PRO VŠECHNY:\n${detailedBonusInfo}\n\n📊 Projekt má teď celkem ${optimisticTotal} ${countWord}.`,
+                        timestamp: firebase.database.ServerValue.TIMESTAMP,
+                        system: true
+                    }).catch(e => console.warn('🔇', e));
+                } else {
+                    console.log(`🏛️ Investice chat throttled (${project.id}) — příliš brzy po minulé zprávě`);
+                }
             }
             
             saveGame();
