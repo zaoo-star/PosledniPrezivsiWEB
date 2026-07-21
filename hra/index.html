@@ -65341,6 +65341,9 @@ function openFullscreenMap() {
             // INT bonus: -3% materiálů za bod Inteligence (i v zobrazení)
             const _intCraftDisp = (state.char?.attrs?.int || 5) * 0.03;
             engineerReduction = engineerReduction * (1 - _intCraftDisp);
+            // [v6.4.1] Floor jako v craftItem — bez něj se při 100% slevách zobrazovala cena 0
+            // a maxCrafts (dělení nulou) se rozbil → šlo vyrábět jen po jednom (hlášeno OwerLord)
+            engineerReduction = Math.max(0.05, engineerReduction);
             
             // Companion bonusy (jednou, ne v každém filter callu)
             const craftCompBonuses = getAllCompanionBonuses();
@@ -65538,6 +65541,8 @@ function openFullscreenMap() {
             // INT bonus: -3% materiálů za bod Inteligence
             const _intCraftDetail = (state.char?.attrs?.int || 5) * 0.03;
             engineerReduction = engineerReduction * (1 - _intCraftDetail);
+            // [v6.4.1] Floor jako v craftItem (viz výše) — jinak cena 0 a NaN maxCrafts
+            engineerReduction = Math.max(0.05, engineerReduction);
             
             // Check if can craft - portable věci nepotřebují dílnu
             const needsWorkshop = recipe.portable !== true;
@@ -65793,6 +65798,7 @@ function openFullscreenMap() {
                                 maxCrafts = Math.min(maxCrafts, Math.floor(has / adjustedAmt));
                             }
                             maxCrafts = Math.max(1, Math.min(maxCrafts, 99));
+                            if (!isFinite(maxCrafts)) maxCrafts = 99; // [v6.4.1] NaN/Infinity pojistka (dělení nulou)
                             return `
                                 <div style="background: #1a2a1a; padding: 0.6rem; border-radius: 6px; border: 1px solid #4CAF50;">
                                     <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.5rem;">
@@ -122715,7 +122721,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const countText = count > 1 ? ` (${count}x)` : '';
             
             // [v4.0.1] Váha předmětu - pomáhá hráči odhadnout zda mu zboží projde do kapsy
-            const itemWeight = Number(offer.item?.weight || 0);
+            // [v6.4.1] Suroviny (resource) jdou do skladu a do váhy se NEPOČÍTAJÍ — neukazuj u nich váhu
+            // (hlášeno OwerLord: "proč má měď při nákupu váhu, když se do váhy nepočítá")
+            const itemWeight = offer.item?.type === 'resource' ? 0 : Number(offer.item?.weight || 0);
             const totalWeight = itemWeight * count;
             const myCarry = Number(state.char?.carryWeight || state.carryWeight || 0);
             const myMaxCarry = Number(state.char?.maxCarryWeight || state.maxCarryWeight || 50);
@@ -147221,6 +147229,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // Starý kód četl klíč podle getPlayerName(), ale zápis jde pod mayor.name z DB —
                 // při rozdílu (mezera/velikost písmen) se plat NIKDY nevyzvedl. Navíc nebyl atomický.
                 if (typeof claimMayorIncome === 'function') claimMayorIncome();
+                // [v6.4.1] OPRAVA ZÁPORNÉ KASY — nefloorovaná investiční transakce mohla dostat kasu
+                // do mínusu (blokovala pak granty/lov, hlášeno OwerLord). Jednorázový heal na 0.
+                try {
+                    if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                        firebaseDB.ref('politics/publicMoney').transaction(v => {
+                            if ((v || 0) < 0) { console.warn('🏛️ Kasa byla záporná (' + v + ') — opravuji na 0'); return 0; }
+                            return; // abort — nic neměň
+                        }).catch(()=>{});
+                    }
+                } catch(e) {}
             }, 5000);
             
             // Listener na hlasování o sesazení - notifikace všem hráčům
@@ -147685,12 +147703,13 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     count = canAfford;
                 }
                 // Spusť sekvenčně — každé volání samo odečte z kasy a zapíše Firebase
+                window._mayorInvAbort = false; // [v6.4.1] reset stop-flagu
                 let i = 0;
                 function doNext() {
-                    if (i >= count) return;
+                    if (i >= count || window._mayorInvAbort) return; // stop při vyčerpání kasy
                     i++;
                     confirmMayorInvestment(projectId, 1);
-                    setTimeout(doNext, 120); // krátká pauza, aby Firebase transakce nesplývaly
+                    setTimeout(doNext, 250); // pauza, aby Firebase transakce doběhly a případný abort stihl zastavit řetěz
                 }
                 doNext();
                 return;
@@ -147704,14 +147723,31 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             if (!adminOk && publicMoney < project.cost) {
                 notifyWarning('💰 Málo peněz', 'V kase už není dost peněz.');
                 if (typeof closeModal === 'function') closeModal();
+                window._mayorInvAbort = true; // [v6.4.1] zastav bulk řetěz
                 return;
             }
             
             // Odečti z kasy (admin neplatí)
             if (!adminOk) {
                 if (typeof firebaseDB !== 'undefined' && firebaseDB) {
-                    firebaseDB.ref('politics/publicMoney').transaction(current => (current || 0) - project.cost)
-                        .catch(e => console.warn('🔇 Firebase:', e?.message || e));
+                    // [v6.4.1] FLOOROVANÁ transakce — dřív `current - cost` odečítalo BEZPODMÍNEČNĚ
+                    // i pod nulu → kasa šla do MÍNUSU a pak blokovala granty/lov ("nedostatek financí",
+                    // hlášeno OwerLord). Teď: v kase < cost → abort, investice se stornuje.
+                    firebaseDB.ref('politics/publicMoney').transaction(current => {
+                        const cur = current || 0;
+                        if (cur < project.cost) return; // abort — nedostatek
+                        return cur - project.cost;
+                    }).then(tx => {
+                        if (!tx.committed) {
+                            // Storno: vrať lokální odečet i inkrement totals
+                            if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = (_cachedPublicMoney || 0) + project.cost;
+                            state.publicMoney = (state.publicMoney || 0) + project.cost;
+                            inv.totals[projectId] = Math.max(0, (inv.totals[projectId] || 1) - 1);
+                            if (typeof firebaseDB !== 'undefined') firebaseDB.ref(`mayorInvestments/totals/${projectId}`).set(inv.totals[projectId]).catch(()=>{});
+                            window._mayorInvAbort = true;
+                            notifyWarning('💰 Málo peněz', 'V kase reálně není dost — investice stornována.');
+                        }
+                    }).catch(e => console.warn('🔇 Firebase:', e?.message || e));
                 }
                 if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = publicMoney - project.cost;
                 state.publicMoney = publicMoney - project.cost;
