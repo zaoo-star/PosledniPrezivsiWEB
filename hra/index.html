@@ -12957,7 +12957,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'first_blueprint_crafted', name: 'Vlastní kovář', icon: '🔨', desc: 'Vyrob svou první zbraň z plánku', check: () => (state.stats?.blueprintsCrafted || 0) >= 1, reward: { xp: 500, money: 1500 } },
             { id: 'settlement_magnate', name: 'Magnát Pustiny', icon: '👑', desc: 'Dovedl jsi osadu na Level 6', check: () => (state.settlement?.level || 0) >= 6, reward: { xp: 2000, money: 5000 } },
             // [v6.4.1] Sběr deníků Dr. Nováka — dřív se sběr nikam nepropisoval (úkol chyběl)
-            { id: 'lore_collector', name: 'Kronikář pustiny', icon: '📚', desc: 'Sesbírej a přečti všech 5 deníků Dr. Nováka', check: () => { const ids = ['lore_1','lore_2','lore_3','lore_4','lore_5']; return ids.every(id => (state.readBooks || []).includes(id) || (state.inv || []).some(i => i.id === id)); }, reward: { xp: 800, money: 1500 } }
+            { id: 'lore_collector', name: 'Kronikář pustiny', icon: '📚', desc: 'Sesbírej a přečti všech 5 deníků Dr. Nováka', check: () => { const ids = ['lore_1','lore_2','lore_3','lore_4','lore_5']; const inStash = (id) => Object.values(state.stashes || {}).some(arr => Array.isArray(arr) && arr.some(i => i && i.id === id)); return ids.every(id => (state.readBooks || []).includes(id) || (state.inv || []).some(i => i.id === id) || inStash(id)); }, reward: { xp: 800, money: 1500 } }
         ];
         
         // 📖 BESTIÁŘ - Popisy nepřátel
@@ -32230,21 +32230,44 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 let fed = !needsFood; // Pokud nepotřebuje, považuj za najedeného
                 let watered = !needsWater;
                 
+                // [v6.4.1] Výběr jídla/vody: 1) BATOH SPOLEČNÍKA (dřív se vůbec nečetl — hlášeno:
+                // "mají v batohu, nejí"), 2) inventář hráče. Filtr bere type 'consumable' i 'food'
+                // a padá zpět na vlastní pole itemu, když není v ITEMS (eventové/vlastní jídlo).
+                const _pickConsumable = (effectWanted) => {
+                    const sources = [
+                        { list: comp.inventory, isBag: true },
+                        { list: state.inv, isBag: false }
+                    ];
+                    for (const src of sources) {
+                        if (!Array.isArray(src.list)) continue;
+                        for (const it of src.list) {
+                            if (!it) continue;
+                            const d = ITEMS.find(x => x.id === it.id);
+                            const _type = (d && d.type) || it.type;
+                            const _eff = (d && d.effect) || it.effect;
+                            if ((_type === 'consumable' || _type === 'food') && _eff === effectWanted) {
+                                return { item: it, src };
+                            }
+                        }
+                    }
+                    return null;
+                };
+                const _consumeOne = (pick) => {
+                    if (pick.item.count && pick.item.count > 1) {
+                        pick.item.count--;
+                    } else if (pick.src.isBag) {
+                        comp.inventory = comp.inventory.filter(i => i !== pick.item);
+                    } else {
+                        state.inv = state.inv.filter(i => i !== pick.item);
+                    }
+                };
+                
                 // Potřebuje jídlo?
                 if (needsFood) {
-                    const foodItems = state.inv.filter(i => {
-                        const itemData = ITEMS.find(d => d.id === i.id);
-                        return itemData && itemData.type === 'consumable' && itemData.effect === 'hunger';
-                    });
-                    
-                    if (foodItems.length > 0) {
-                        const food = foodItems[0];
-                        consumedFood.push(`${food.icon || '🍖'} ${food.name} → ${comp.name}`);
-                        if (food.count && food.count > 1) {
-                            food.count--;
-                        } else {
-                            state.inv = state.inv.filter(i => i !== food);
-                        }
+                    const _food = _pickConsumable('hunger');
+                    if (_food) {
+                        consumedFood.push(`${_food.item.icon || '🍖'} ${_food.item.name}${_food.src.isBag ? ' (🎒 batoh)' : ''} → ${comp.name}`);
+                        _consumeOne(_food);
                         fed = true;
                         comp.lastFed = true;
                         comp.lastFedTime = now;
@@ -32255,19 +32278,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 // Potřebuje vodu?
                 if (needsWater) {
-                    const waterItems = state.inv.filter(i => {
-                        const itemData = ITEMS.find(d => d.id === i.id);
-                        return itemData && itemData.type === 'consumable' && itemData.effect === 'thirst';
-                    });
-                    
-                    if (waterItems.length > 0) {
-                        const water = waterItems[0];
-                        consumedWater.push(`${water.icon || '💧'} ${water.name} → ${comp.name}`);
-                        if (water.count && water.count > 1) {
-                            water.count--;
-                        } else {
-                            state.inv = state.inv.filter(i => i !== water);
-                        }
+                    const _water = _pickConsumable('thirst');
+                    if (_water) {
+                        consumedWater.push(`${_water.item.icon || '💧'} ${_water.item.name}${_water.src.isBag ? ' (🎒 batoh)' : ''} → ${comp.name}`);
+                        _consumeOne(_water);
                         watered = true;
                         comp.lastWatered = true;
                         comp.lastWateredTime = now;
@@ -147239,6 +147253,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         }).catch(()=>{});
                     }
                 } catch(e) {}
+                // [v6.4.1] Retroaktivní kontrola achievementů při startu (hlášeno Štístko: má všechny
+                // deníky, ale úspěch se nesplnil — splnil podmínku dřív, než achievement existoval).
+                try { if (typeof checkAchievements === 'function') checkAchievements(); } catch(e) {}
             }, 5000);
             
             // Listener na hlasování o sesazení - notifikace všem hráčům
