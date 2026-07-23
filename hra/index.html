@@ -84926,7 +84926,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // Přidat peníze do veřejné kasy s logováním
         async function addToPublicTreasury(amount, source, details = '') {
-            if (!multiplayerEnabled || !firebaseDB || amount <= 0) return;
+            if (!multiplayerEnabled || !firebaseDB || amount <= 0) return false; // [v6.4.1] vrací úspěch
             
             try {
                 // 🆕 [v6.3.1 BUG FIX] Použít transaction místo set(ServerValue.increment) pro spolehlivost
@@ -84940,6 +84940,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 if (!result.committed) {
                     console.error('Treasury add transaction NOT committed:', result);
+                    return false; // [v6.4.1] volající může vrátit peníze hráči
                 }
                 
                 // Zaloguj transakci
@@ -84959,8 +84960,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 console.log(`🏦 Treasury +${amount} from ${source}: ${details}`);
                 
+                return true; // [v6.4.1] úspěch
             } catch (e) {
                 console.error('Treasury add error:', e);
+                return false;
             }
         }
         
@@ -84986,7 +84989,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 saveGame(true);
                 
                 // Přidej do kasy (atomic)
-                await addToPublicTreasury(amount, 'donation', `Dar od ${getPlayerName()}`);
+                // [v6.4.1] Když zápis selže (rules/síť), VRAŤ hráči peníze — dřív tiše zmizely
+                const _donOk = await addToPublicTreasury(amount, 'donation', `Dar od ${getPlayerName()}`);
+                if (_donOk === false) {
+                    state.money = (state.money || 0) + amount;
+                    saveGame(true);
+                    notifyWarning('💰 Dar se nepodařil', 'Peníze ti byly vráceny. Zkus to znovu.');
+                    return;
+                }
                 
                 // Zapiš do donator logu v Firebase
                 const safeName = (getPlayerName() || 'Anonym').replace(/[.#$/[\]]/g, '_');
@@ -148160,6 +148170,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
             
             const inv = getMayorInvestments();
+            // [v6.4.1] Autoritativní čtení kasy i pro ZOBRAZENÍ — panel ukazoval cache, zatímco
+            // grant/lov čtou reálný Firebase → šéf viděl staré číslo a myslel si, že peníze jsou
+            // ("pořád hlásí nedostatek financí" — hlášeno OwerLord).
+            if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                try {
+                    const _pmS = await firebaseDB.ref('politics/publicMoney').once('value');
+                    const _pmV = _pmS.val() || 0;
+                    if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = _pmV;
+                    state.publicMoney = _pmV;
+                } catch(e) {}
+            }
             const publicMoney = (typeof _cachedPublicMoney !== 'undefined' ? _cachedPublicMoney : (state.publicMoney || 0)) || 0;
             const daysPlayed = state.time?.days || 1;
             
@@ -156051,7 +156072,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
             
             if (amount > publicMoney) {
-                notifyWarning('Nedostatek', 'V kase není tolik peněz');
+                notifyWarning('Nedostatek', `V kase je ${publicMoney.toLocaleString('cs-CZ')}💰, grant vyžaduje ${amount.toLocaleString('cs-CZ')}💰.`);
                 return;
             }
             
@@ -156157,7 +156178,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             } catch(e) { console.error("Silent error:", e); }
             
             if (publicMoney < cost) {
-                notifyWarning('Nedostatek', `Potřebuješ ${cost} 💰`);
+                notifyWarning('Nedostatek', `V kase je ${publicMoney.toLocaleString('cs-CZ')}💰, potřeba ${cost.toLocaleString('cs-CZ')}💰.`);
                 return;
             }
             
