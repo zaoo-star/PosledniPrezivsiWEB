@@ -147258,7 +147258,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 try {
                     if (typeof firebaseDB !== 'undefined' && firebaseDB) {
                         firebaseDB.ref('politics/publicMoney').transaction(v => {
-                            if ((v || 0) < 0) { console.warn('🏛️ Kasa byla záporná (' + v + ') — opravuji na 0'); return 0; }
+                            if (v === null) return v; // [v6.4.1] 1. průchod bez cache → retry se serverovou hodnotou
+                            if ((Number(v) || 0) < 0) { console.warn('🏛️ Kasa byla záporná (' + v + ') — opravuji na 0'); return 0; }
                             return; // abort — nic neměň
                         }).catch(()=>{});
                     }
@@ -147781,11 +147782,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     // i pod nulu → kasa šla do MÍNUSU a pak blokovala granty/lov ("nedostatek financí",
                     // hlášeno OwerLord). Teď: v kase < cost → abort, investice se stornuje.
                     firebaseDB.ref('politics/publicMoney').transaction(current => {
-                        const cur = current || 0;
+                        if (current === null) return current; // [v6.4.1] 1. průchod bez cache → retry se serverovou hodnotou
+                        const cur = Number(current) || 0;
                         if (cur < project.cost) return; // abort — nedostatek
                         return cur - project.cost;
                     }).then(tx => {
-                        if (!tx.committed) {
+                        if (!tx.committed || tx.snapshot?.val() === null) { // [v6.4.1] vč. null snapshotu
                             // Storno: vrať lokální odečet i inkrement totals
                             if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = (_cachedPublicMoney || 0) + project.cost;
                             state.publicMoney = (state.publicMoney || 0) + project.cost;
@@ -156080,11 +156082,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 // [FIX v6.4.1] Atomický odečet z kasy — transakce místo once→set.
                 // Zabraňuje rozhození kasy a overspendu při souběžných akcích šéfa (double-click apod.).
                 const _grantTx = await firebaseDB.ref('politics/publicMoney').transaction(current => {
-                    const cur = current || 0;
+                    if (current === null) return current; // [v6.4.1] 1. průchod bez cache → retry se serverovou hodnotou (jinak abort i při plné kase!)
+                    const cur = Number(current) || 0;
                     if (cur < amount) return; // nedostatek → abort
                     return cur - amount;
                 });
-                if (!_grantTx.committed) {
+                if (!_grantTx.committed || _grantTx.snapshot?.val() === null) { // [v6.4.1] null snapshot = uzel neexistuje → ber jako nedostatek
                     notifyWarning('Nedostatek', 'V kase už není dost peněz');
                     return;
                 }
@@ -156187,11 +156190,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 // [FIX v6.4.1] Atomický odečet (viz grant) — transakce místo once→set
                 const _bountyTx = await firebaseDB.ref('politics/publicMoney').transaction(current => {
-                    const cur = current || 0;
+                    if (current === null) return current; // [v6.4.1] 1. průchod bez cache → retry se serverovou hodnotou (jinak abort i při plné kase!)
+                    const cur = Number(current) || 0;
                     if (cur < cost) return; // nedostatek → abort
                     return cur - cost;
                 });
-                if (!_bountyTx.committed) {
+                if (!_bountyTx.committed || _bountyTx.snapshot?.val() === null) { // [v6.4.1] null snapshot = uzel neexistuje → ber jako nedostatek
                     notifyWarning('Nedostatek', `V kase už není dost peněz (${cost} 💰)`);
                     return;
                 }
