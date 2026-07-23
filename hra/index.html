@@ -147618,7 +147618,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             return state.mayorInvestments;
         }
         
-        function startMayorInvestment(projectId) {
+        async function startMayorInvestment(projectId) {
             const adminOk = (typeof isAdmin === 'function' && isAdmin());
             if (!isMayor() && !adminOk) { 
                 notifyWarning('❌ Nejsi šéf pustiny', 'Pouze aktuální šéf může investovat z veřejné kasy.'); 
@@ -147626,6 +147626,17 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
             const project = MAYOR_SYSTEM.investments.find(p => p.id === projectId);
             if (!project) return;
+            
+            // [v6.4.1] AUTORITATIVNÍ čtení kasy z Firebase (hlášeno: "pořád málo peněz na investici"
+            // i když kasa peníze má — cache _cachedPublicMoney mohla být stará/neaktualizovaná).
+            if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                try {
+                    const _pmSnap = await firebaseDB.ref('politics/publicMoney').once('value');
+                    const _pmVal = _pmSnap.val() || 0;
+                    if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = _pmVal;
+                    state.publicMoney = _pmVal;
+                } catch(e) { console.warn('🏛️ Čtení kasy selhalo, používám cache:', e?.message || e); }
+            }
             
             const inv = getMayorInvestments();
             
@@ -147704,9 +147715,18 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         }
         
         // Vlastní investování po potvrzení
-        function confirmMayorInvestment(projectId, count = 1) {
+        async function confirmMayorInvestment(projectId, count = 1) {
             const project = MAYOR_SYSTEM.investments.find(p => p.id === projectId);
             if (!project) return;
+            // [v6.4.1] Čerstvé čtení kasy z Firebase před KAŽDOU kontrolou (cache mohla být stará)
+            if (typeof firebaseDB !== 'undefined' && firebaseDB) {
+                try {
+                    const _pmSnap = await firebaseDB.ref('politics/publicMoney').once('value');
+                    const _pmVal = _pmSnap.val() || 0;
+                    if (typeof _cachedPublicMoney !== 'undefined') _cachedPublicMoney = _pmVal;
+                    state.publicMoney = _pmVal;
+                } catch(e) {}
+            }
             // [v6.4.1] Bulk investice (×5, ×10) — spusť count-krát, každá odečte z kasy zvlášť
             if (count > 1) {
                 const adminOk2 = (typeof isAdmin === 'function' && isAdmin());
@@ -147738,7 +147758,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             // Re-check kasa (mezitím mohla klesnout) — admin přeskakuje
             if (!adminOk && publicMoney < project.cost) {
-                notifyWarning('💰 Málo peněz', 'V kase už není dost peněz.');
+                notifyWarning('💰 Málo peněz', `V kase je ${publicMoney.toLocaleString('cs-CZ')}💰, potřeba ${project.cost.toLocaleString('cs-CZ')}💰.`);
                 if (typeof closeModal === 'function') closeModal();
                 window._mayorInvAbort = true; // [v6.4.1] zastav bulk řetěz
                 return;
