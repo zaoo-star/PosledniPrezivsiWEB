@@ -5085,6 +5085,13 @@
         let lastValidChecksum = 0;
         let lastValidValues = {};
         
+        // [v6.4.1] Označ, že právě proběhl LEGITIMNÍ velký příjem (poker výplata, trezor, odměna).
+        // Anti-cheat pak skok peněz nevrací zpět. Okno je krátké, ať to nejde zneužít natrvalo.
+        function markLegitIncome(ms = 15000) {
+            window._legitIncomeUntil = Date.now() + ms;
+        }
+        window.markLegitIncome = markLegitIncome;
+        
         function updateIntegrityCheck() {
             const criticalValues = {
                 money: state.money,
@@ -5142,13 +5149,17 @@
             // [NOVÉ] Detekce náhlých skoků mezi ticky (rate-limit)
             if (lastValidValues.money !== undefined) {
                 const moneyDiff = state.money - lastValidValues.money;
-                // [v6.4.1] Strop zvýšen 50K → 50M. Legit příjmy (prodej drahých zbraní, poker s neomezeným
-                // buy-inem, odměny z bossů/questů) běžně překročily 50K a hra je chybně srazila na +5000
-                // (hlášeno: prodej 3 BFG za 60K → dostal jen 5K). Při skutečně absurdním skoku vrať původní hodnotu.
-                if (moneyDiff > 50000000) {
+                // [v6.4.1] Práh zvýšen 50M → 2 mld (shodně s MONEY_HARD_CAP). Poker má buy-iny až 1 mld,
+                // takže výběr žetonů po velké výhře překročil 50M a hra peníze VRÁTILA na stav před výhrou
+                // (hlášeno: "vyhrál jsem 40 mil a ono mi to odečetlo"). Navíc se přeskakuje okno
+                // legitimního příjmu (poker výplata, trezor, odměny) — viz markLegitIncome().
+                const _legitWindow = (window._legitIncomeUntil || 0) > Date.now();
+                if (moneyDiff > 2000000000 && !_legitWindow) {
                     console.warn('🚨 Detekován podezřelý skok peněz:', moneyDiff);
                     state.money = lastValidValues.money;
                     tampered = true;
+                } else if (moneyDiff > 50000000) {
+                    console.log('💰 Velký legitimní příjem:', moneyDiff, _legitWindow ? '(v okně legit. příjmu)' : '');
                 }
             }
             
@@ -149396,7 +149407,20 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             return String(name || '').replace(/[.#$\/\[\]]/g, '_');
         }
         async function _pokerWritePayout(playerName, amount, reason) {
-            if (!firebaseDB || !playerName || !(amount > 0)) return;
+            if (!playerName || !(amount > 0)) return false;
+            // [v6.4.1] Když platíme SOBĚ, připiš rovnou lokálně — nezávisí to na Firebase pravidlech
+            // (dřív: když zápis do pokerPayouts selhal kvůli rules, peníze se TIŠE ztratily).
+            try {
+                const _meName = (typeof getPlayerName === 'function') ? getPlayerName() : null;
+                if (_meName && String(playerName).trim().toLowerCase() === String(_meName).trim().toLowerCase()) {
+                    if (typeof markLegitIncome === 'function') markLegitIncome();
+                    state.money = (state.money || 0) + Math.floor(amount);
+                    if (typeof saveGame === 'function') saveGame(true);
+                    if (typeof notifySuccess === 'function') notifySuccess('🃏 Poker — vráceno', `${Math.floor(amount).toLocaleString('cs-CZ')}💰 ze zrušeného stolu.`);
+                    return true;
+                }
+            } catch(e) { console.warn('_pokerWritePayout(self):', e); }
+            if (!firebaseDB) return false;
             try {
                 await firebaseDB.ref(`pokerPayouts/${_pokerSanitizeKey(playerName)}`).push({
                     amount: Math.floor(amount),
@@ -149404,7 +149428,12 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     ts: Date.now()
                 });
                 console.log(`🃏 Payout uložen do trezoru: ${playerName} +${amount} (${reason})`);
-            } catch(e) { console.warn('_pokerWritePayout:', e); }
+                return true;
+            } catch(e) {
+                // Zápis selhal (nejčastěji Firebase rules pro uzel pokerPayouts) — nahlas to
+                console.error('🃏 CHYBA: payout do trezoru selhal — peníze NEJSOU vyplaceny:', playerName, amount, e);
+                return false;
+            }
         }
         async function claimPokerPayouts() {
             if (!firebaseDB) return;
@@ -149418,6 +149447,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 let total = 0;
                 Object.values(payouts).forEach(p => { if (p && p.amount > 0) total += Math.floor(p.amount); });
                 if (total > 0) {
+                    if (typeof markLegitIncome === 'function') markLegitIncome(); // [v6.4.1] legit příjem z trezoru
                     state.money = (state.money || 0) + total;
                     if (typeof saveGame === 'function') saveGame();
                     if (typeof notifySuccess === 'function') notifySuccess('🃏 Poker — vráceno', `${total.toLocaleString('cs-CZ')}💰 ze zrušeného stolu se ti vrátilo.`);
@@ -150135,6 +150165,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     const otherHumans = Object.values(tableState.players || {}).filter(p => p && !p.isBot && p.name !== myName);
                     if (otherHumans.length === 0) {
                         if (player) {
+                            if (typeof markLegitIncome === 'function') markLegitIncome(); // [v6.4.1] legit výplata pokeru
                             state.money = (state.money || 0) + (player.chips || 0);
                             if (player.initialBuyIn && player.chips === player.initialBuyIn) {
                                 state._pokerDailyBuyIn = Math.max(0, (state._pokerDailyBuyIn || 0) - player.initialBuyIn);
@@ -150163,6 +150194,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 if (player) {
                     // Vrať hráčovi jeho nevsazené chips do peněz
+                    if (typeof markLegitIncome === 'function') markLegitIncome(); // [v6.4.1] legit výplata pokeru
                     state.money = (state.money || 0) + (player.chips || 0);
                     
                     // [FIX] Pokud hráč nehrál ani jednu ruku (chips === buyIn), vrátit daily limit
