@@ -97495,8 +97495,226 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             showModal('📋 Legenda terénu', html);
         }
         
+        // ============================================================
+        // 🆕 [v6.6] KENNEY GRAFIKA BOJE (CC0, kenney.nl – Topdown Shooter, postapo úprava)
+        // Zatím jen pro admina. Pro všechny hráče přepni KENNEY_COMBAT_FOR_ALL = true.
+        // Logika boje se NEMĚNÍ – jen vzhled mřížky (podlaha, překážky, postavy).
+        // ============================================================
+        const KENNEY_COMBAT_FOR_ALL = false;
+        const KC_IMG = 'img/kenney/';
+        function kenneyCombatEnabled() {
+            try {
+                if (state.settings && state.settings.kenneyCombat === false) return false;
+                if (KENNEY_COMBAT_FOR_ALL) return true;
+                return typeof isAdmin === 'function' && isAdmin();
+            } catch (e) { return false; }
+        }
+        window.kenneyCombatEnabled = kenneyCombatEnabled;
+
+        // Deterministický "náhodný" výběr podle souřadnic (aby se dlaždice při překreslení neměnily)
+        function _kcPick(arr, x, y, salt) {
+            const h = Math.abs(((x + 1) * 73856093) ^ ((y + 1) * 19349663) ^ ((salt || 0) * 83492791));
+            return arr[h % arr.length];
+        }
+
+        // Biom podle typů terénu, které generateCombatTerrain() vytvořil
+        function _kcBiome(cs) {
+            if (cs._kcBiome) return cs._kcBiome;
+            const types = new Set();
+            (cs.terrain || []).forEach(row => (row || []).forEach(t => { if (t && t.type) types.add(t.type); }));
+            const has = (...l) => l.some(t => types.has(t));
+            const indoor = ['dungeon', 'dungeon_explore', 'abyss', 'settlement_raid'].includes(cs.combatType);
+            let b = 'waste';
+            if (has('rad_water', 'deep_water', 'reed', 'lily', 'mud')) b = 'swamp';
+            else if (has('dense_forest', 'tree', 'log', 'mushroom', 'snare')) b = 'forest';
+            else if (has('machine', 'pipe', 'steam_vent', 'electric', 'acid_pool')) b = 'factory';
+            else if (has('stalactite', 'crystal', 'glow_moss', 'unstable')) b = 'cave';
+            else if (has('barricade', 'wire', 'mine_field', 'turret_wreck', 'ammo_crate')) b = 'military';
+            else if (has('car', 'glass', 'sandbag')) b = 'city';
+            if (indoor && b !== 'cave') b = 'indoor';
+            cs._kcBiome = b;
+            return b;
+        }
+        const KC_FLOORS = {
+            waste: ['f_dirt1'], swamp: ['f_grass2'], forest: ['f_grass1'], factory: ['f_metal'],
+            cave: ['f_dirt2'], military: ['f_conc1'], city: ['f_conc1'], indoor: ['f_wood']
+        };
+        // Typ terénu → sprite (pole = varianty). Co tu není, zůstane jako emoji.
+        const KC_TERRAIN = {
+            crate: ['o_crate1', 'o_crate2', 'o_crate3', 'o_crate4'], ammo_crate: ['o_crate1', 'o_crate3'], cover: ['o_crate3', 'o_crate1'],
+            barrel: ['o_barrel', 'o_barrel2'], rubble: ['o_bricks', 'o_debris', 'o_debris2'], unstable: ['o_debris2', 'o_debris'],
+            rock: ['o_rock1', 'o_rock2', 'o_rock3'], stalactite: ['o_rock3', 'o_rock2'], high_ground: ['o_rock2'],
+            bush: ['o_bush1', 'o_bush2'], reed: ['o_plant', 'o_bush2'], dense_forest: ['o_bush1', 'o_bush2'], tree: ['o_bush1'],
+            mushroom: ['o_bush_dry'], glow_moss: ['o_leaves'], lily: ['o_plant'], log: ['o_plank'], bones: ['o_bone', 'o_sticks'],
+            glass: ['o_glass', 'o_shards'], crystal: ['o_crystal'], fire: ['o_scorch'], lava_crack: ['o_scorch'],
+            rad_pool: ['o_toxic'], rad_water: ['o_toxic'], toxic: ['o_toxic'], acid_pool: ['o_toxic'], toxic_gas: ['o_toxic'],
+            mud: ['o_mud'], crater: ['o_splat'], pit: ['o_splat'], mine_field: ['o_mine'], wall: ['o_slab']
+        };
+        const KC_TERRAIN_SCALE = { tree: 1.25, dense_forest: 1.1, crate: 0.85, ammo_crate: 0.85, cover: 0.9, barrel: 0.75, mine_field: 0.6, high_ground: 0.95 };
+        // Na sprite ještě přidej malou emoji, aby byl typ poznat (oheň, výbušný sud…)
+        const KC_TERRAIN_CENTER = { fire: '🔥', lava_crack: '🌋' };
+        const KC_TERRAIN_BADGE = { rad_pool: '☢️', rad_water: '☢️', toxic: '☢️', acid_pool: '🧪', toxic_gas: '💨', mine_field: '💣', mushroom: '🍄', high_ground: '⛰️', crystal: '💎', glow_moss: '💚', lily: '💚' };
+
+        const KC_ANIMAL_ICONS = ['🐕', '🐈', '🐀', '🐺', '🦅', '🐦', '🦇', '🐍', '🐗', '🐻', '🦊', '🐴', '🐎', '🦝', '🐾', '🐶', '🐱', '🦉', '🐓', '🐐'];
+        function _kcUnitSprite(unit) {
+            const ranged = (typeof isUnitRanged === 'function') ? isUnitRanged(unit) : false;
+            const v = ranged ? '_gun' : '_hold';
+            if (unit.isPlayer) return { src: 'c_survivor' + v };
+            if (unit.team === 'enemy') {
+                const id = unit.enemyId || '';
+                if (id === 'toxic_zombie') return { src: 'c_zombie_toxic' };
+                if (id === 'zombie_cop') return { src: 'c_zombie_cop' };
+                if (id === 'zombie_hulk') return { src: 'c_zombie', scale: 1.3 };
+                if (id === 'zombie' || id === 'feral' || id === 'soldier_zombie') return { src: 'c_zombie' };
+                if (id === 'raider_boss') return { src: 'c_hitman' + v, scale: 1.2 };
+                if (id.startsWith('raider')) return { src: 'c_hitman' + v };
+                if (id === 'bandit') return { src: 'c_brown' + v };
+                if (id === 'slaver_boss') return { src: 'c_blue' + v, scale: 1.2 };
+                if (id === 'slaver') return { src: 'c_blue' + v };
+                if (id === 'soldier') return { src: 'c_soldier' + v };
+                if (id === 'robot') return { src: 'c_robot' + v };
+                if (id === 'elite_robot') return { src: 'c_robot' + v, scale: 1.2 };
+                return null; // ostatní (zvířata, mutanti, bossové) → původní PNG / emoji
+            }
+            if (unit.isCompanion) {
+                if (KC_ANIMAL_ICONS.some(a => (unit.icon || '').includes(a))) return null;
+                const pool = ['c_woman', 'c_brown', 'c_old', 'c_blue', 'c_soldier'];
+                const key = String(unit.companionId || unit.name || '');
+                let h = 0; for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+                return { src: pool[Math.abs(h) % pool.length] + v };
+            }
+            return null;
+        }
+        // Natočení postavy k nejbližšímu živému protivníkovi (sprity koukají doprava = 0°)
+        function _kcFacing(unit, cs) {
+            let best = null, bd = 1e9;
+            for (const o of cs.units) {
+                if (!o.alive || o.team === unit.team) continue;
+                const d = Math.abs(o.x - unit.x) + Math.abs(o.y - unit.y);
+                if (d < bd) { bd = d; best = o; }
+            }
+            if (!best) return unit.team === 'enemy' ? 90 : -90;
+            return Math.round(Math.atan2(best.y - unit.y, best.x - unit.x) * 180 / Math.PI);
+        }
+        function _kcEsc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+
+        function renderCombatGridKenney() {
+            const cs = window.combatState;
+            const biome = _kcBiome(cs);
+            const floors = KC_FLOORS[biome] || KC_FLOORS.waste;
+            let html = '';
+            for (let y = 0; y < COMBAT_GRID.rows; y++) {
+                for (let x = 0; x < COMBAT_GRID.cols; x++) {
+                    const unitsHere = cs.units.filter(u => u.alive && u.x === x && u.y === y);
+                    const unit = unitsHere[0] || null;
+                    const hasStacked = unitsHere.length > 1;
+                    const terrain = cs.terrain?.[y]?.[x];
+                    const isValidMove = cs.validMoves.some(m => m.x === x && m.y === y);
+                    const isValidTarget = unit && cs.validTargets.includes(unit);
+                    const isSelected = cs.selectedUnit && cs.selectedUnit.x === x && cs.selectedUnit.y === y;
+
+                    // Klikatelnost – STEJNÁ pravidla jako renderCombatGrid()
+                    const isEnemyCell = unit && unit.team === 'enemy' && unit.alive;
+                    const hasSelectedPlayerUnit = cs.selectedUnit && cs.selectedUnit.team === 'player' && cs.selectedUnit.actionsLeft > 0;
+                    const isClickableEnemy = isEnemyCell && hasSelectedPlayerUnit && !isValidTarget;
+                    const isEmptyWalkable = !unit && hasSelectedPlayerUnit && !terrain?.blocked;
+                    const canClick = isValidMove || isValidTarget || isClickableEnemy || isEmptyWalkable;
+                    const onClick = canClick ? `onclick="clickCell(${x},${y})"` : '';
+                    const terrainTitle = terrain && terrain.type !== 'empty' ? `title="${_kcEsc((terrain.name || terrain.type) + (terrain.desc ? ': ' + terrain.desc : '') + (terrain.blocked ? ' [NEPROSTUPNÉ]' : ''))}"` : '';
+
+                    // Podlaha
+                    let floor = _kcPick(floors, x, y, 1);
+                    if (terrain && terrain.type === 'deep_water') floor = 'f_water';
+
+                    // Barevné orámování efektu terénu (stejné barvy jako dřív)
+                    let tBorder = '';
+                    if (terrain && terrain.type !== 'empty' && !terrain.blocked) {
+                        if (terrain.healPerTurn) tBorder = '#2a8a4a';
+                        else if (terrain.radiation || ['rad_water', 'rad_pool', 'toxic'].includes(terrain.type)) tBorder = '#6aca2a';
+                        else if (terrain.explode) tBorder = '#ff5722';
+                        else if (terrain.damage >= 8) tBorder = '#e53935';
+                        else if (terrain.damage) tBorder = '#d08030';
+                        else if (terrain.attackBonus) tBorder = '#9c27b0';
+                        else if (terrain.dodge) tBorder = '#00a08b';
+                        else if (terrain.defenseBonus > 0) tBorder = '#1e88e5';
+                        else if (terrain.defenseBonus < 0) tBorder = '#8d6e63';
+                        else if (terrain.stunChance) tBorder = '#f9a825';
+                    }
+                    let overlay = '';
+                    if (isSelected) overlay = 'background: rgba(76,175,80,0.28); box-shadow: inset 0 0 0 2px #4caf50;';
+                    else if (isValidMove) overlay = 'background: rgba(33,150,243,0.30); box-shadow: inset 0 0 0 2px rgba(100,181,246,0.9);';
+                    else if (isValidTarget) overlay = 'background: rgba(244,67,54,0.25); box-shadow: inset 0 0 0 2px #f44336;';
+                    else if (tBorder) overlay = `box-shadow: inset 0 0 0 1px ${tBorder}; background: ${tBorder}22;`;
+                    else if (terrain?.blocked) overlay = 'background: rgba(0,0,0,0.18);';
+
+                    let inner = '';
+                    // Terén
+                    if (terrain && terrain.type !== 'empty') {
+                        const spr = KC_TERRAIN[terrain.type];
+                        const tType = (terrain.type === 'barrel' && terrain.explode) ? null : terrain.type;
+                        if (terrain.type === 'barrel' && terrain.explode) {
+                            inner += `<img src="${KC_IMG}o_barrel_ex.png" alt="" draggable="false" style="position:absolute;left:12%;top:12%;width:76%;height:76%;object-fit:contain;pointer-events:none;filter:drop-shadow(1px 2px 1px rgba(0,0,0,.6));">`;
+                        } else if (spr && terrain.type !== 'deep_water') {
+                            const sc = KC_TERRAIN_SCALE[tType] || 1;
+                            const sz = Math.round(sc * 100), off = Math.round((100 - sz) / 2);
+                            const rot = ['rock', 'stalactite', 'rubble', 'bones', 'glass', 'log', 'crate', 'cover', 'debris'].includes(terrain.type) ? _kcPick([0, 90, 180, 270, 15, -20], x, y, 3) : 0;
+                            inner += `<img src="${KC_IMG}${_kcPick(spr, x, y, 2)}.png" alt="" draggable="false" style="position:absolute;left:${off}%;top:${off}%;width:${sz}%;height:${sz}%;object-fit:contain;pointer-events:none;transform:rotate(${rot}deg);filter:drop-shadow(1px 2px 1px rgba(0,0,0,.55));${unit ? 'opacity:.85;' : ''}">`;
+                            const ctr = KC_TERRAIN_CENTER[terrain.type];
+                            if (ctr) inner += `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:${unit ? '.6rem' : '1.05rem'};pointer-events:none;filter:drop-shadow(0 0 3px rgba(255,120,0,.8));${unit ? 'align-items:flex-end;justify-content:flex-start;' : ''}">${ctr}</span>`;
+                            const badge = KC_TERRAIN_BADGE[terrain.type];
+                            if (badge && !unit) inner += `<span style="position:absolute;right:1px;bottom:0;font-size:.55rem;pointer-events:none;">${badge}</span>`;
+                        } else if (terrain.type !== 'deep_water') {
+                            inner += `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:${unit ? '.55rem' : '1rem'};opacity:${unit ? .6 : .9};pointer-events:none;${unit ? 'align-items:flex-start;justify-content:flex-start;' : ''}filter:drop-shadow(1px 1px 1px rgba(0,0,0,.8));">${terrain.icon || ''}</span>`;
+                        }
+                    }
+                    // Jednotka
+                    if (unit) {
+                        const nm = _kcEsc(unit.name);
+                        const gray = unit.stunned ? 'grayscale(1) ' : '';
+                        const ring = unit.team === 'player' ? 'rgba(139,195,74,.85)' : 'rgba(255,90,90,.85)';
+                        let body = '';
+                        const spr = !hasStacked ? _kcUnitSprite(unit) : null;
+                        if (spr) {
+                            const sc = spr.scale || 1;
+                            const sz = Math.round(78 * sc), off = Math.round((100 - sz) / 2);
+                            body = `<div style="position:absolute;left:14%;top:62%;width:72%;height:24%;border-radius:50%;background:radial-gradient(ellipse, ${ring} 0%, transparent 70%);opacity:.55;pointer-events:none;"></div>
+                                <img src="${KC_IMG}${spr.src}.png" alt="${nm}" title="${nm}" draggable="false" style="position:absolute;left:${off}%;top:${off}%;width:${sz}%;height:${sz}%;object-fit:contain;transform:rotate(${_kcFacing(unit, cs)}deg);filter:${gray}drop-shadow(2px 3px 2px rgba(0,0,0,.7));pointer-events:none;">`;
+                        } else if (!hasStacked && unit.team === 'enemy' && unit.enemyId && typeof ENEMY_CUSTOM_ICONS !== 'undefined' && ENEMY_CUSTOM_ICONS[unit.enemyId]) {
+                            const fb = (unit.icon || '👾').replace(/'/g, '&#39;');
+                            body = `<img src="${ENEMY_CUSTOM_ICONS[unit.enemyId]}" alt="${fb}" title="${nm}" draggable="false" style="position:absolute;left:12%;top:12%;width:76%;height:76%;object-fit:cover;border-radius:50%;box-shadow:0 0 0 2px rgba(255,90,90,.75);filter:${gray}drop-shadow(0 0 3px rgba(255,80,80,.7)) drop-shadow(2px 3px 2px rgba(0,0,0,.7));pointer-events:none;" onerror="this.outerHTML='<span style=&quot;font-size:1.2rem;&quot;>${fb}</span>'">`;
+                        } else {
+                            body = `<span title="${nm}" style="position:relative;font-size:1.25rem;filter:${gray}drop-shadow(1px 2px 1px rgba(0,0,0,.8));">${hasStacked ? unitsHere.map(u => u.icon).join('') : unit.icon}</span>`;
+                        }
+                        inner += body;
+                        if (!hasStacked && unit.name) inner += `<span style="position:absolute;top:1px;left:0;right:0;font-size:.45rem;line-height:1;color:${unit.team === 'player' ? '#a5d66b' : '#ffaaaa'};text-align:center;font-weight:bold;text-shadow:0 0 2px #000,0 0 2px #000;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 1px;">${_kcEsc((unit.name || '').slice(0, 6))}</span>`;
+                        inner += `<div style="position:absolute;bottom:1px;left:8%;right:8%;height:3px;background:rgba(10,5,5,.85);border-radius:2px;overflow:hidden;pointer-events:none;"><div style="height:100%;width:${Math.max(0, Math.min(100, (unit.hp / unit.maxHp) * 100))}%;background:${unit.team === 'player' ? '#4caf50' : '#f44336'};"></div></div>`;
+                        if (hasStacked) inner += `<span style="position:absolute;top:-2px;right:-2px;font-size:.5rem;background:#ff9800;color:#000;border-radius:50%;padding:0 2px;font-weight:bold;">${unitsHere.length}</span>`;
+                        const st = (c, pos, t) => `<span style="position:absolute;${pos};font-size:.5rem;pointer-events:none;"${t ? ` title="${t}"` : ''}>${c}</span>`;
+                        if (unit.poisoned) inner += st('☠️', 'top:-2px;right:-2px');
+                        if (unit.bleeding) inner += st('🩸', 'top:-2px;left:-2px');
+                        if (unit.stunned) inner += `<span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:.7rem;pointer-events:none;">💫</span>`;
+                        if (unit.corroded) inner += st('🟢', 'bottom:-2px;right:-2px');
+                        if (unit.burning > 0 || unit.burnDamage > 0) inner += st('🔥', 'bottom:-2px;left:-2px');
+                        if (unit.blinded > 0) inner += st('👁️', 'top:-2px;left:50%;transform:translateX(-50%)');
+                        if (unit.immobilized > 0) inner += st('🦿', 'bottom:-2px;left:50%;transform:translateX(-50%)');
+                        if (unit.defending) inner += st('🛡️', 'bottom:5px;right:-2px');
+                        if (unit.confused > 0) inner += st('😵‍💫', 'top:5px;right:5px', 'Zmatený');
+                        if (unit.slowed > 0) inner += st('🐌', 'top:5px;left:5px', 'Zpomalený');
+                        if ((unit.isPlayer || unit.isCompanion) && window._warCryBuff && window._warCryBuff.rounds > 0) inner += st('📣', 'top:-4px;right:50%;transform:translateX(50%)', 'Válečný výkřik');
+                        if (unit.isPlayer && state.buffs?.frenzy && (state.buffs.frenzy.until || state.buffs.frenzy.expires || 0) > Date.now()) inner += st('💢', 'bottom:5px;left:5px', 'Šílenství');
+                    }
+
+                    html += `<div ${onClick} ${terrainTitle} style="aspect-ratio:1;position:relative;z-index:2;min-height:36px;display:flex;align-items:center;justify-content:center;overflow:visible;background:url('${KC_IMG}${floor}.png') center/cover;${canClick ? 'cursor:pointer;' : ''}">
+                        <div style="position:absolute;inset:0;pointer-events:none;${overlay}"></div>${inner}</div>`;
+                }
+            }
+            return html;
+        }
+        window.renderCombatGridKenney = renderCombatGridKenney;
+
         function renderCombatGrid() {
             const cs = window.combatState;
+            if (kenneyCombatEnabled()) { try { return renderCombatGridKenney(); } catch (e) { console.error('Kenney grid error, fallback:', e); } }
             let html = '';
             
             for (let y = 0; y < COMBAT_GRID.rows; y++) {
