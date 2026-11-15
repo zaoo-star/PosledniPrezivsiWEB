@@ -29934,6 +29934,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         window.showCompanionSynergies = showCompanionSynergies;
         
+        // [v6.5] Schopnosti z příběhů společníků (odměna za kapitoly v COMPANION_QUESTS)
+        const COMPANION_QUEST_SKILLS = {
+            tracking:       { name: 'Stopař', desc: '+3 DMG', effect: { damage: 3 } },
+            fury:           { name: 'Zuřivost', desc: '+5 DMG', effect: { damage: 5 } },
+            veteran:        { name: 'Veterán', desc: '+20 HP, +2 obrana', effect: { hp: 20, defense: 2 } },
+            trauma_surgeon: { name: 'Traumatolog', desc: '+15 HP, +1 obrana', effect: { hp: 15, defense: 1 } },
+            miracle_worker: { name: 'Zázračný léčitel', desc: '+25 HP, +2 obrana', effect: { hp: 25, defense: 2 } }
+        };
+        window.COMPANION_QUEST_SKILLS = COMPANION_QUEST_SKILLS;
+        
         function getCompanionStat(comp, stat) {
             const base = COMPANIONS.find(c => c.id === comp.id) || comp;
             
@@ -30032,6 +30042,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     });
                 });
             }
+            
+            // [v6.5] Schopnosti a trvalé bonusy z příběhů společníků (dřív se jen uložily a nic nedělaly)
+            if (Array.isArray(comp.unlockedSkills)) {
+                comp.unlockedSkills.forEach(id => { const e = COMPANION_QUEST_SKILLS[id]?.effect; if (e?.[stat]) value += e[stat]; });
+            }
+            if (comp.questStats?.[stat]) value += comp.questStats[stat];
             
             // 🤝 partyDamage - bonus damage všem společníkům z jiných companionů
             if (stat === 'damage') {
@@ -35192,16 +35208,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div class="quest-content" id="quest-story">
                     <div style="margin-bottom: 0.8rem; padding: 0.4rem; background: linear-gradient(90deg, #1a1a2e, #16213e); border-radius: 6px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem;">
-                            <span style="color: #ffd700;">📖 ${'Kapitola'} ${state.mainQuest?.chapter || 0}/4</span>
+                            <span style="color: #ffd700;">📖 ${'Kapitola'} ${state.mainQuest?.storyComplete ? 4 : (state.mainQuest?.chapter || 0)}/4</span>
                             <span style="color: #888;">${completedStoryCount}/${MAIN_QUESTS.length}</span>
                         </div>
                         <div style="background: #333; height: 5px; border-radius: 3px; overflow: hidden; margin-top: 0.4rem;">
-                            <div style="background: linear-gradient(90deg, #ffd700, #ff9800); height: 100%; width: ${(state.mainQuest?.chapter || 0) * 25}%;"></div>
+                            <div style="background: linear-gradient(90deg, #ffd700, #ff9800); height: 100%; width: ${(state.mainQuest?.storyComplete ? 4 : (state.mainQuest?.chapter || 0)) * 25}%;"></div>
                         </div>
                     </div>
                     
                     ${state.mainQuest?.storyComplete ? 
-                        '<div style="text-align: center; padding: 1.5rem; background: linear-gradient(135deg, #1a3a1a, #2a4a2a); border-radius: 8px;"><div style="font-size: 3rem;">🏆</div><h3 style="color: #ffd700; margin: 0.5rem 0;">' + ('PŘÍBĚH DOKONČEN!') + '</h3><p style="color: #8bc34a; font-size: 0.9rem;">' + ('Zachránil jsi lidstvo!') + '</p></div>'
+                        '<div style="text-align: center; padding: 1.5rem; background: linear-gradient(135deg, #1a3a1a, #2a4a2a); border-radius: 8px;"><div style="font-size: 3rem;">🏆</div><h3 style="color: #ffd700; margin: 0.5rem 0;">' + ('PŘÍBĚH DOKONČEN!') + '</h3><p style="color: #8bc34a; font-size: 0.9rem;">' + ({ hope: 'Předal jsi Genesis Koudymu — začala obnova.', dark: 'Předal jsi Genesis Korymu — svět čeká temnota.', neutral: 'Zničil jsi komponenty — svět zůstal svobodný.' }[state.storyKarma?.ending] || 'Hlavní příběh je za tebou.') + '</p></div>'
                     : quest ? 
                         (function() {
                             // Kontrola zda jsou všechny cíle splněné
@@ -43801,7 +43817,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 name: quest.name,
                                 location: quest.location || null,
                                 color: remaining < 5 * 60000 ? '#f44336' : '#ff9800',
-                                timer: `${minutes}m`,
+                                timer: minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`,
                                 urgent: remaining < 5 * 60000
                             });
                         }
@@ -44558,6 +44574,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // === NEPŘÁTELSKÉ ===
+            // [v6.5] Interakce časových úkolů (najdi matku, zdroj signálu, osvoboď rukojmí) — na JAKÉKOLI lokaci úkolu.
+            // Dřív jen u vyčištěných nepřátelských lokací → vesnice/továrna tlačítko nikdy neukázaly.
+            if (state.timedQuests) {
+                state.timedQuests.filter(tq => !tq.completed && !tq.failed).forEach(tq => {
+                    const quest = typeof TIMED_QUESTS !== 'undefined' ? TIMED_QUESTS.find(q => q.id === tq.id) : null;
+                    const questLocation = quest?.location || quest?.objectives?.filter(o => o.type === 'location').pop()?.target;
+                    if (quest && questLocation === location.id) {
+                        tq.objectives.forEach((obj, i) => {
+                            const questObj = quest.objectives[i];
+                            if (questObj.type === 'interact' && !obj.completed && tq.objectives.slice(0, i).every(o => o.completed)) {
+                                html += renderActionButton('🎯', questObj.text, `completeInteractObjective('${questObj.id}')`, '#ff9800');
+                            }
+                        });
+                    }
+                });
+            }
+            
             if (location.type === 'hostile' || (location.type === 'dungeon' && !DUNGEON_FLOORS[location.id])) {
                 // Zkontroluj zda lokace byla vyčištěná
                 const isCleared = state.clearedLocations?.includes(location.id);
@@ -44580,38 +44613,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     } else if (location.id === 'raider_camp') {
                         const searchCampText = 'Prohledat tábor';
                         html += renderActionButton('🔍', searchCampText, "showActionModal('explore')", 'var(--rust)');
-                        
-                        // Zkontroluj timed quests pro rescue_hostage
-                        const rescueQuest = state.timedQuests?.find(tq => 
-                            tq.id === 'rescue_hostage' && !tq.completed && !tq.failed &&
-                            tq.objectives.some(o => o.id === 'free_hostage' && !o.completed)
-                        );
-                        if (rescueQuest) {
-                            const freeHostageText = 'Osvobodit rukojmí';
-                            html += renderActionButton('🙏', freeHostageText, "completeInteractObjective('free_hostage')", '#4caf50');
-                        }
-                    }
-                    
-                    // Obecná kontrola timed questů s interact objectives
-                    if (state.timedQuests) {
-                        state.timedQuests.filter(tq => !tq.completed && !tq.failed).forEach(tq => {
-                            const quest = typeof TIMED_QUESTS !== 'undefined' ? TIMED_QUESTS.find(q => q.id === tq.id) : null;
-                            // [FIX AUDIT] Fallback na target z posledního location objective pokud quest.location chybí
-                            const questLocation = quest?.location || 
-                                quest?.objectives?.filter(o => o.type === 'location').pop()?.target;
-                            if (quest && questLocation === location.id) {
-                                tq.objectives.forEach((obj, i) => {
-                                    const questObj = quest.objectives[i];
-                                    if (questObj.type === 'interact' && !obj.completed) {
-                                        // Zkontroluj zda předchozí cíle jsou splněny
-                                        const prevComplete = tq.objectives.slice(0, i).every(o => o.completed);
-                                        if (prevComplete) {
-                                            html += renderActionButton('🎯', questObj.text, `completeInteractObjective('${questObj.id}')`, '#ff9800');
-                                        }
-                                    }
-                                });
-                            }
-                        });
+
                     }
                     
                     // Možnost znovu raidu (respawn) - s cooldownem
@@ -51701,6 +51703,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     if (!_chapter) return;
                     
                     _chapter.objectives.forEach((_obj, _idx) => {
+                        if (!_comp.activeQuest || _comp.activeQuest.id !== _chapter.id) return; // [v6.5] kapitola se mezitím dokončila
                         if (_obj.type !== 'item' || !_obj.target) return;
                         if (_comp.activeQuest.objectives[_idx]?.completed) return;
                         
@@ -54751,8 +54754,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     // Hledej stopy na této lokaci
                     Object.entries(quest.clueLocations).forEach(([clueId, clueLoc]) => {
                         if (clueLoc === loc.id && !dq.cluesFound.includes(clueId)) {
-                            // 40% šance najít stopu při průzkumu
-                            if (Math.random() < 0.4) {
+                            // 40% šance najít stopu při průzkumu — [v6.5] nejpozději na 2. pokus
+                            // (lokace jde prozkoumat jen 3× denně → dřív šlo stopu „minout“ a úkol se zasekl)
+                            dq.clueAttempts = dq.clueAttempts || {};
+                            dq.clueAttempts[clueId] = (dq.clueAttempts[clueId] || 0) + 1;
+                            if (Math.random() < 0.4 || dq.clueAttempts[clueId] >= 2) {
                                 findClue(questId, clueId);
                             }
                         }
@@ -56189,11 +56195,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             });
             
             addLog(`⏰ Nový časový úkol: ${quest.name}!`, '📋');
-            notifyWarning('Časový úkol!', `${quest.name} - ` + (`máš ${Math.floor(quest.timeLimit / 60000)} minut!`));
+            notifyWarning('Časový úkol!', `${quest.name} - ` + (quest.timeLimit >= 3600000 ? `máš ${Math.round(quest.timeLimit / 3600000)} h!` : `máš ${Math.floor(quest.timeLimit / 60000)} minut!`));
         }
         
         function updateTimedQuests() {
             if (!state.timedQuests) return;
+            // [v6.5] Cíl „získej předmět“ — dřív ho nic nevolalo (checkTimedQuestObjectives('item') neexistovalo)
+            try { if (state.timedQuests.some(tq => !tq.completed && !tq.failed)) checkTimedQuestObjectives('item'); } catch (e) {}
             
             const now = Date.now();
             state.timedQuests.forEach(tq => {
@@ -56327,9 +56335,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         obj.completed = true;
                         addLog(`✓ Cíl splněn: ${questObj.text}`, '📋');
                     }
-                    if (questObj.type === 'combat' && action === 'combat_victory') {
+                    // [v6.5] Boj se počítá jen po předchozích cílech (dřív stačil jakýkoli vyhraný boj kdekoli)
+                    const _prevDone = tq.objectives.slice(0, i).every(o => o.completed);
+                    const _qLoc = quest.objectives.slice(0, i).filter(o => o.type === 'location').pop()?.target;
+                    if (questObj.type === 'combat' && action === 'combat_victory' && _prevDone && (!_qLoc || target === _qLoc)) {
                         obj.completed = true;
                         addLog(`✓ Cíl splněn: ${questObj.text}`, '📋');
+                    }
+                    // [v6.5] Obrana proti hordě — boj spuštěný tlačítkem v detailu úkolu
+                    if (questObj.type === 'siege_combat' && action === 'combat_victory' && _prevDone && tq._siegeActive) {
+                        obj.completed = true;
+                        tq._siegeActive = false;
+                        addLog(`✓ Cíl splněn: ${questObj.text}`, '🛡️');
                     }
                     // Interact se splní automaticky po splnění předchozích cílů na správné lokaci
                     if (questObj.type === 'interact' && action === 'interact' && target === questObj.id) {
@@ -56570,6 +56587,64 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }).join('');
         }
         
+        // [v6.5] Akce pro cíle časových úkolů: hledání, test dovednosti, stavba, sběr zbraní, obrana
+        function doTimedQuestAction(questId, idx) {
+            const tq = state.timedQuests?.find(q => q.id === questId && !q.completed && !q.failed);
+            const quest = TIMED_QUESTS.find(q => q.id === questId);
+            if (!tq || !quest) return;
+            const obj = quest.objectives[idx], st = tq.objectives[idx];
+            if (!obj || !st || st.completed) return;
+            if (!tq.objectives.slice(0, idx).every(o => o.completed)) { notifyWarning('Nejdřív předchozí cíl', 'Splň cíle popořadě.'); return; }
+            // Kde se akce dělá: lokace úkolu (bomba v Obchodní stanici), jinak u hordy úkryt/osada
+            const _here = state.world?.currentLocation;
+            if (quest.location && _here !== quest.location) {
+                const _ln = WORLD_LOCATIONS.find(l => l.id === quest.location)?.name || quest.location;
+                notifyWarning('Jsi jinde', `Tohle musíš udělat na místě: ${_ln}.`); return;
+            }
+            if (!quest.location && (obj.type === 'build' || obj.type === 'siege_combat') && !(typeof isInSafeStorageZone === 'function' && isInSafeStorageZone())) {
+                notifyWarning('Jsi jinde', 'Osadu musíš bránit doma — vrať se do úkrytu.'); return;
+            }
+            const finish = (msg) => {
+                st.completed = true;
+                addLog(`✓ Cíl splněn: ${obj.text}`, '📋');
+                if (msg) notifySuccess('Cíl splněn!', msg);
+                if (tq.objectives.every(o => o.completed)) completeTimedQuest(tq.id);
+                else showTimedQuestDetail(questId);
+                try { saveGame(true); renderFull(); } catch (e) {}
+            };
+            if (obj.type === 'search') {
+                if ((state.status?.energy || 0) < 10) { notifyWarning('Jsi vyčerpaný', 'Hledání stojí 10 energie.'); return; }
+                state.status.energy -= 10;
+                finish('Po pečlivém hledání jsi to našel.');
+            } else if (obj.type === 'skill_check') {
+                const intVal = typeof getEffectiveAttr === 'function' ? getEffectiveAttr('int') : (state.char.attrs?.int || 5);
+                const hasTool = state.inv.some(i => i.type === 'tool' || i.id === 'repair_kit');
+                if (intVal >= 6 || hasTool) finish(intVal >= 6 ? 'Díky inteligenci jsi to zvládl.' : 'Nástroje ti pomohly.');
+                else notifyWarning('Nezvládneš to', `Potřebuješ INT 6+ (máš ${intVal}) nebo nějaký nástroj v batohu.`);
+            } else if (obj.type === 'build') {
+                const need = obj.resources || { wood: 50, metal: 30 };
+                const miss = Object.entries(need).filter(([r, a]) => (state.resources[r] || 0) < a);
+                if (miss.length) { notifyWarning('Chybí suroviny', miss.map(([r, a]) => `${r}: ${state.resources[r] || 0}/${a}`).join(', ')); return; }
+                Object.entries(need).forEach(([r, a]) => { state.resources[r] -= a; });
+                finish('Barikády stojí.');
+            } else if (obj.type === 'collect') {
+                const need = {}; (obj.items || []).forEach(t => need[t] = (need[t] || 0) + 1);
+                const have = (t) => state.inv.filter(i => i.type === t || i.id === t).reduce((s, i) => s + (i.type === 'ammo' ? 1 : (i.count || 1)), 0);
+                const miss = Object.entries(need).filter(([t, n]) => have(t) < n);
+                if (miss.length) { notifyWarning('Chybí výbava', miss.map(([t, n]) => `${t === 'weapon' ? 'zbraně' : t === 'ammo' ? 'munice' : t}: ${have(t)}/${n}`).join(', ')); return; }
+                finish('Osadníci jsou vyzbrojeni.');
+            } else if (obj.type === 'siege_combat') {
+                tq._siegeActive = true;
+                closeModal();
+                const pool = ['zombie', 'feral_ghoul', 'mutant_dog', 'raider'];
+                const base = pool.map(id => ENEMIES.find(e => e.id === id)).find(Boolean) || ENEMIES[0];
+                const horde = Array.from({ length: 4 }, () => JSON.parse(JSON.stringify(base)));
+                addLog('⚔️ Horda útočí!', '🧟');
+                startCombatWithGroup(horde, 'normal', true);
+            }
+        }
+        window.doTimedQuestAction = doTimedQuestAction;
+        
         function showTimedQuestDetail(questId) {
             const tq = state.timedQuests?.find(q => q.id === questId);
             const quest = TIMED_QUESTS.find(q => q.id === questId);
@@ -56579,9 +56654,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const minutes = Math.floor(remaining / 60000);
             const seconds = Math.floor((remaining % 60000) / 1000);
             const urgency = remaining < 10 * 60000 ? '#f44336' : remaining < 30 * 60000 ? '#ff9800' : '#4caf50';
+            const _timeTxt = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min` : `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            const _firstOpen = tq.objectives.findIndex(o => !o.completed);
             
             let objectivesHtml = quest.objectives.map((obj, i) => {
                 const done = tq.objectives[i]?.completed;
+                // [v6.5] Akce pro cíle, které hráč plní tlačítkem (dřív neexistovaly → úkol nešel splnit)
+                const _actLabels = { search: '🔍 Prohledat okolí', skill_check: '🔧 Zneškodnit', build: '🪵 Postavit (50 dřeva, 30 kovu)', collect: '🔫 Předat zbraně', siege_combat: '⚔️ Bránit osadu' };
+                const _actBtn = (!done && i === _firstOpen && _actLabels[obj.type] && !tq.completed && !tq.failed)
+                    ? `<button class="btn" onclick="doTimedQuestAction('${questId}', ${i})" style="width: 100%; margin-top: 0.4rem; background: #ff9800; font-size: 0.8rem; padding: 0.4rem;">${_actLabels[obj.type]}</button>` : '';
                 let locationInfo = '';
                 
                 if (obj.target) {
@@ -56597,6 +56678,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <span style="color: ${done ? '#4caf50' : '#ff9800'};">${done ? '✓' : '○'}</span>
                         ${obj.text}
                         ${locationInfo ? `<div style="font-size: 0.75rem; color: #64b5f6; margin-top: 0.2rem;">${locationInfo}</div>` : ''}
+                        ${_actBtn}
                     </div>
                 `;
             }).join('');
@@ -56604,7 +56686,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showModal(`${quest.icon} ${quest.name}`, `
                 <div style="text-align: center; margin-bottom: 1rem;">
                     <div style="font-size: 2.5rem; color: ${urgency}; font-family: monospace; ${remaining < 10 * 60000 ? 'animation: pulse 1s infinite;' : ''}">
-                        ⏰ ${minutes}:${seconds.toString().padStart(2, '0')}
+                        ⏰ ${_timeTxt}
                     </div>
                     <p style="color: #888;">${quest.description}</p>
                 </div>
@@ -57127,7 +57209,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
             if (!comp || !comp.activeQuest) return;
             
-            const questData = COMPANION_QUESTS[companionId];
+            const questData = COMPANION_QUESTS[comp.id] || COMPANION_QUESTS[companionId]; // [v6.5] i při volání s uniqueId
+            if (!questData) return;
             const chapter = questData.chapters.find(c => c.id === comp.activeQuest.id);
             if (!chapter) return;
             
@@ -57153,8 +57236,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     comp.unlockedSkills.push(chapter.reward.skill);
                 }
                 if (chapter.reward.stats) {
+                    // [v6.5] Do questStats (přičítá se v getCompanionStat). Dřív comp[stat] = 0 + val a
+                    // getCompanionStat bral Math.max(základ, comp[stat]) → bonus se většinou neprojevil.
+                    comp.questStats = comp.questStats || {};
                     Object.entries(chapter.reward.stats).forEach(([stat, val]) => {
-                        comp[stat] = (comp[stat] || 0) + val;
+                        comp.questStats[stat] = (comp.questStats[stat] || 0) + val;
                     });
                 }
             }
@@ -57170,7 +57256,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 6px;">
                     <p style="color: #4caf50; margin: 0;">
                         ${chapter.reward.bond ? `+${chapter.reward.bond} Pouto` : ''}
-                        ${chapter.reward.skill ? ` | 🆕 Nová schopnost: ${chapter.reward.skill === 'miracle_worker' ? 'Zázračný léčitel' : chapter.reward.skill}` : ''}
+                        ${chapter.reward.skill ? ` | 🆕 Nová schopnost: ${COMPANION_QUEST_SKILLS[chapter.reward.skill] ? COMPANION_QUEST_SKILLS[chapter.reward.skill].name + ' (' + COMPANION_QUEST_SKILLS[chapter.reward.skill].desc + ')' : chapter.reward.skill}` : ''}
+                        ${chapter.reward.stats ? ` | 📈 Trvale: ${Object.entries(chapter.reward.stats).map(([k, v]) => '+' + v + ' ' + ({ damage: 'DMG', defense: 'obrana', hp: 'HP' }[k] || k)).join(', ')}` : ''}
                     </p>
                 </div>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">💝 Skvělé!</button>
@@ -57721,6 +57808,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 let html = '<div style="max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
                 
                 const activeTimedQuests = state.timedQuests?.filter(q => !q.completed && !q.failed) || [];
+                // [v6.5] Jeden časový úkol → rovnou detail s akčními tlačítky
+                if (activeTimedQuests.length === 1) { showTimedQuestDetail(activeTimedQuests[0].id); return; }
                 
                 if (activeTimedQuests.length > 0) {
                     activeTimedQuests.forEach(tq => {
@@ -57733,7 +57822,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         const urgency = remaining < 5 * 60000 ? '#f44336' : remaining < 15 * 60000 ? '#ff9800' : '#4caf50';
                         
                         html += `
-                            <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; border-left: 3px solid ${urgency};">
+                            <div onclick="showTimedQuestDetail('${tq.id}')" style="cursor: pointer; background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; border-left: 3px solid ${urgency};">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <span style="font-size: 1.5rem;">${quest.icon}</span>
                                     <span style="color: ${urgency}; font-family: monospace; font-size: 1.2rem; font-weight: bold;">⏰ ${minutes}:${seconds.toString().padStart(2, '0')}</span>
@@ -66770,6 +66859,8 @@ function openFullscreenMap() {
             
             state.stats.itemsCrafted += bulkAmount;
             addDailyProgress('crafted', bulkAmount);
+            // [v6.5] Jídlo z Výroby (Pečené maso, Steak, Guláš…) se počítá i do denního úkolu „Kuchař“
+            if (recipe.category === 'food' || recipe.result?.type === 'consumable' && /meat|fish|steak|stew|food/.test(recipe.id || '')) addDailyProgress('cooked', bulkAmount);
             
             // [FIX] Explicitně přepočti váhu po craftu (renderFull je async)
             updateCarryWeight();
@@ -74909,6 +75000,45 @@ function openFullscreenMap() {
             `);
         }
         
+        // [v6.5] Seznam speciálních úkolů NPC (detektivní + časové) s přijetím
+        function showNPCSpecialQuests(npcId) {
+            const npc = FRIENDLY_NPCS.find(n => n.id === npcId);
+            if (!npc || !npc.specialQuests?.length) return;
+            const rows = npc.specialQuests.map(sqId => {
+                const det = DETECTIVE_QUESTS.find(q => q.id === sqId);
+                const tim = TIMED_QUESTS.find(q => q.id === sqId);
+                const q = det || tim;
+                if (!q) return '';
+                const icon = det ? '🔍' : '⏰';
+                const act = det ? state.detectiveQuests?.[sqId] : state.timedQuests?.find(t => t.id === sqId);
+                let status = '';
+                if (det && act?.solved) status = act.accusation && det.suspects.find(x => x.id === act.accusation)?.isGuilty ? '✓ vyřešeno' : '✗ uzavřeno';
+                else if (det && act) status = `🔄 aktivní — stopy ${act.cluesFound?.length || 0}/${det.requiredClues}`;
+                else if (tim && act?.completed) status = '✓ splněno';
+                else if (tim && act && !act.failed) status = '🔄 aktivní';
+                else if (tim && act?.failed) status = '✗ selhalo';
+                const reward = `🎁 ${q.reward?.money || 0} 💰${q.reward?.xp ? ', ' + q.reward.xp + ' XP' : ''}`;
+                const limit = q.timeLimit ? ` · ⏱️ ${Math.round(q.timeLimit / 3600000)} h` : '';
+                if (status) {
+                    const openFn = det ? `showDetectiveQuestStatus('${sqId}')` : `showTimedQuestDetail('${sqId}')`;
+                    const clickable = status.startsWith('🔄') ? `onclick="${openFn}" style="cursor: pointer; ` : 'style="opacity: 0.6; ';
+                    return `<div ${clickable}padding: 0.6rem; background: #1a1a1a; border-radius: 6px; margin-bottom: 0.4rem; border-left: 3px solid ${det ? '#9c27b0' : '#ff9800'};">
+                        <div>${icon} <b>${q.name}</b></div><div style="font-size: 0.75rem; color: #aaa;">${status}</div></div>`;
+                }
+                return `<button class="btn" onclick="closeModal(); ${det ? `startDetectiveQuest('${sqId}')` : `startTimedQuest('${sqId}'); showTimedQuestDetail('${sqId}')`}; try{saveGame(true); renderFull();}catch(e){}"
+                    style="width: 100%; margin-bottom: 0.4rem; background: ${det ? '#6a1b9a' : '#e65100'}; text-align: left; padding: 0.6rem;">
+                    <span style="font-size: 0.9rem;">${icon} ${q.name}</span>
+                    <div style="font-size: 0.75rem; color: #ddd; margin-top: 0.2rem; text-transform: none;">${q.description || ''}</div>
+                    <div style="font-size: 0.7rem; color: #ffcc80; margin-top: 0.2rem; text-transform: none;">${reward}${limit}</div>
+                </button>`;
+            }).join('');
+            showModal(`⭐ ${npc.name} — speciální úkoly`, `
+                <div style="max-height: 60vh; overflow-y: auto;">${rows}</div>
+                <button class="btn" onclick="closeModal(); showNPCDetail('${npcId}')" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
+            `);
+        }
+        window.showNPCSpecialQuests = showNPCSpecialQuests;
+        
         function showStoryNPC(npcId) {
             console.log('showStoryNPC called with:', npcId);
             const npc = FRIENDLY_NPCS.find(n => n.id === npcId);
@@ -75128,15 +75258,15 @@ function openFullscreenMap() {
             // === SPECIÁLNÍ QUESTY ===
             // Šerif Kowalski - Detektivní questy
             if (npc?.specialQuests?.includes(questId) && DETECTIVE_QUESTS.find(q => q.id === questId)) {
+                closeModal(); // [v6.5] nejdřív zavřít — jinak to zavřelo úvod případu
                 startDetectiveQuest(questId);
-                closeModal();
                 return;
             }
             
             // Posel Jin - Časové questy
             if (npc?.specialQuests?.includes(questId) && TIMED_QUESTS.find(q => q.id === questId)) {
-                startTimedQuest(questId);
                 closeModal();
+                startTimedQuest(questId);
                 return;
             }
             
@@ -75915,6 +76045,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     overlay.remove();
                     askNPCQuest(npcId);
                 }));
+                // [v6.5] Speciální úkoly (Šerif: detektivky, Jin: časové úkoly) — dřív nebyly z detailu NPC dostupné
+                if (npc.specialQuests && npc.specialQuests.length > 0) {
+                    btnContainer.appendChild(createBtn('⭐ SPECIÁLNÍ ÚKOLY', '#2a1a0a', () => {
+                        overlay.remove();
+                        showNPCSpecialQuests(npcId);
+                    }));
+                }
             } else {
                 // Mimo lokaci - ukaž info + jaké akce tam čekají
                 const npcLoc = WORLD_LOCATIONS.find(l => l.id === npc.location);
@@ -79647,6 +79784,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const success = rq.correct >= 2; // Potřeba aspoň 2 ze 3
             
             if (success) {
+                // [v6.5] Označ hádanky jako splněné — dřív se nabízely pořád dokola (farmení důvěry)
+                state.npcQuests = state.npcQuests || {};
+                const _rqPrev = state.npcQuests[npcId] || {};
+                const _rqDone = Array.isArray(_rqPrev.completed) ? _rqPrev.completed : [];
+                if (!_rqDone.includes('solve_riddle')) _rqDone.push('solve_riddle');
+                state.npcQuests[npcId] = Object.assign({}, _rqPrev, { completed: _rqDone });
                 // Úspěch - dej odměny
                 state.npcRelations = state.npcRelations || {};
                 state.npcRelations[npcId] = state.npcRelations[npcId] || { trust: 0, gifts: 0, quests: 0 };
@@ -79932,7 +80075,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Item odměna (podpora přímého ID i kategorie jako 'rare', 'legendary' atd.)
             let rewardItemGiven = null;
             if (quest.reward.item) {
-                let rewardItem = ITEMS.find(i => i.id === quest.reward.item);
+                // [v6.5] i questové předměty (Rodinná fotka, Starý plyšák, Prastarý artefakt) — dřív „nenalezeno“ → jen náhrada 200 💰
+                let rewardItem = ITEMS.find(i => i.id === quest.reward.item) || (typeof QUEST_ITEMS !== 'undefined' ? QUEST_ITEMS.find(i => i.id === quest.reward.item) : null);
                 // Pokud není přímý item, zkus kategorie
                 if (!rewardItem) {
                     const categoryItems = {
