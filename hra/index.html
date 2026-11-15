@@ -4580,7 +4580,7 @@
             }
             
             // Kontrola accessory (accessory se ukládá jako ID, ne jako reference)
-            if (item.type === 'accessory' && state.equippedAccessory === item.id) return true;
+            if (item.type === 'accessory' && isAccessoryEquipped(item.id)) return true;
             
             return false;
         }
@@ -7212,8 +7212,7 @@
             });
             
             // Boss loot accessory bonusy (bonus je objekt)
-            if (state.equippedAccessory) {
-                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr] && !_countedInSet(acc)) {
                     total += acc.bonus[attr];
                 }
@@ -7268,8 +7267,7 @@
                 }
             });
             // Boss loot accessory bonusy (bonus je objekt, ne string)
-            if (state.equippedAccessory) {
-                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr]) {
                     bonus += acc.bonus[attr];
                 }
@@ -18816,6 +18814,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             companions: [], // [{ id, hp, maxHp }]
             treasureLocation: null, // { q, r } - místo pokladu z mapy
             equippedAccessory: null, // ID nasazeného doplňku (prsten, amulet, atd.)
+            equippedAccessory2: null, // [v6.5] ID doplňku ve 2. slotu
             weaponCoating: null, // { effect: 'poison'/'fire', uses: 5 }
             combatBonuses: { // Dočasné bonusy
                 damageBonus: 0,
@@ -22624,7 +22623,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function isHolyRelicEquipped() {
             // Accessory je uloženo jako state.equippedAccessory (ID stringu)
-            return state.equippedAccessory === 'holy_relic';
+            return isAccessoryEquipped('holy_relic');
         }
         
         // Aplikuj prokletí na hráče
@@ -27443,11 +27442,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const bootsDef = boots ? boots.defense : 0;
             const paDef = powerArmor ? (powerArmor.stats?.defense || 80) : 0;
             const accDef = (() => {
-                if (!accessory) return 0;
                 let def = 0;
-                if (accessory.bonus === 'defense' && accessory.value) def += accessory.value;
-                if (typeof accessory.bonus === 'object' && accessory.bonus.end) def += Math.floor(accessory.bonus.end * 1);
-                if (accessory.defense) def += accessory.defense;
+                for (const a of getEquippedAccessoryItems()) { // [v6.5] oba sloty
+                    if (a.bonus === 'defense' && a.value) def += a.value;
+                    if (typeof a.bonus === 'object' && a.bonus.end) def += Math.floor(a.bonus.end * 1);
+                    if (a.defense) def += a.defense;
+                }
                 return def;
             })();
             const isMutant = state.char.classId === 'mutant';
@@ -27556,7 +27556,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${equipmentHtml}
                     ${accDef > 0 ? `
                         <div style="display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #333;">
-                            <span>${accessory.icon} ${accessory.name}</span>
+                            <span>${getEquippedAccessoryItems().map(a => a.icon + ' ' + a.name).join(', ')}</span>
                             <span style="color: #ffd700;">+${accDef}</span>
                         </div>
                     ` : ''}
@@ -27616,8 +27616,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const weaponCrit = weapon?.critChance ? Math.round(weapon.critChance * 100) : 0;
             
             // Accessory
-            const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
-            const accBonus = (accessory?.bonus === 'crit') ? accessory.value : 0;
+            const accessory = getEquippedAccessoryItems()[0] || null;
+            const accBonus = getEquippedAccessoryItems().reduce((sum, a) => sum + (a.bonus === 'crit' ? (a.value || 0) : 0), 0); // [v6.5] oba sloty
             
             // Skill tree
             const skillTreeCrit = Math.round(getSkillTreeBonus('critChance') * 100);
@@ -28357,28 +28357,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function showAccessoryModal() {
             // Najdi všechny accessory v inventáři
             const accessories = state.inv.filter(i => i.type === 'accessory');
-            const equipped = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
+            _syncAccessorySlot();
             
             let html = '<div style="max-height: 70vh; overflow-y: auto; -webkit-overflow-scrolling: touch;">';
             
-            // Aktuálně nasazený
-            html += '<h4 style="color: var(--toxic-green); margin-bottom: 0.5rem;">💍 ' + ('Nasazený doplněk') + '</h4>';
-            if (equipped) {
-                html += `
-                    <div style="background: linear-gradient(135deg, #2a2a1a, #1a1a0a); padding: 1rem; border-radius: 10px; border: 2px solid #ffd700; margin-bottom: 1rem; text-align: center;">
-                        <div style="font-size: 3rem;">${equipped.icon}</div>
-                        <div style="font-weight: bold; color: #ffd700; margin-top: 0.5rem;">${getItemName(equipped.id)}</div>
-                        <div style="color: #8bc34a; font-size: 0.9rem;">${equipped.desc || ''}</div>
-                        <button class="btn" onclick="unequipAccessory()" style="margin-top: 0.8rem; background: #555;">✗ ${'Sundat'}</button>
-                    </div>
-                `;
-            } else {
-                html += `
-                    <div style="background: #1a1a1a; padding: 1rem; border-radius: 10px; border: 2px dashed #444; margin-bottom: 1rem; text-align: center;">
+            // [v6.5] Dva sloty na doplňky
+            html += '<h4 style="color: var(--toxic-green); margin-bottom: 0.5rem;">💍 Nasazené doplňky (2 sloty)</h4>';
+            html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1rem;">';
+            [1, 2].forEach(slot => {
+                const id = slot === 1 ? state.equippedAccessory : state.equippedAccessory2;
+                const eq = id ? state.inv.find(i => i.id === id) : null;
+                if (eq) {
+                    html += `
+                    <div style="background: linear-gradient(135deg, #2a2a1a, #1a1a0a); padding: 0.7rem; border-radius: 10px; border: 2px solid #ffd700; text-align: center;">
+                        <div style="font-size: 0.6rem; color: #888;">SLOT ${slot}</div>
+                        <div style="font-size: 2.2rem;">${eq.icon}</div>
+                        <div style="font-weight: bold; color: #ffd700; font-size: 0.85rem;">${getItemName(eq.id)}</div>
+                        <div style="color: #8bc34a; font-size: 0.7rem;">${eq.desc || ''}</div>
+                        <button class="btn" onclick="unequipAccessory(${slot})" style="margin-top: 0.5rem; background: #555; font-size: 0.75rem; padding: 0.4rem 0.6rem;">✗ Sundat</button>
+                    </div>`;
+                } else {
+                    html += `
+                    <div style="background: #1a1a1a; padding: 0.7rem; border-radius: 10px; border: 2px dashed #444; text-align: center;">
+                        <div style="font-size: 0.6rem; color: #666;">SLOT ${slot}</div>
                         <div style="font-size: 2rem; color: #555;">💍</div>
-                        <div style="color: #666;">${'Žádný doplněk'}</div>
-                    </div>
-                `;
+                        <div style="color: #666; font-size: 0.8rem;">Prázdný</div>
+                    </div>`;
+                }
+            });
+            html += '</div>';
+            if (state.equippedAccessory && state.equippedAccessory2) {
+                html += '<p style="color: #888; font-size: 0.7rem; margin: -0.5rem 0 0.8rem; text-align: center;">Oba sloty plné — nový doplněk nahradí slot 2.</p>';
             }
             
             // Dostupné doplňky
@@ -28386,7 +28395,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (accessories.length > 0) {
                 html += '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.5rem;">';
                 accessories.forEach(acc => {
-                    const isEquipped = state.equippedAccessory === acc.id;
+                    const isEquipped = isAccessoryEquipped(acc.id);
                     html += `
                         <div onclick="${isEquipped ? '' : `equipAccessory('${acc.id}')`}" style="background: ${isEquipped ? '#1a2a1a' : '#2a2a2a'}; padding: 0.8rem; border-radius: 8px; text-align: center; cursor: ${isEquipped ? 'default' : 'pointer'}; border: 2px solid ${isEquipped ? '#8bc34a' : '#444'};">
                             <div style="font-size: 2rem;">${acc.icon}</div>
@@ -28658,7 +28667,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Kontrola jestli má něco nasazeného
-            const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
+            const accessory = getEquippedAccessoryItems()[0] || null;
             if (!state.equipped?.weapon && !state.equipped?.armor && !state.equipped?.helmet && 
                 !state.equipped?.gloves && !state.equipped?.boots && !accessory) {
                 notifyWarning('Nic k uložení', 'Nejdřív si něco nasaď!');
@@ -28745,7 +28754,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 gloves: state.equipped?.gloves ? {...state.equipped.gloves} : null,
                 boots: state.equipped?.boots ? {...state.equipped.boots} : null,
                 accessory: accessory ? {...accessory} : null,
-                accessoryId: state.equippedAccessory || null
+                accessoryId: state.equippedAccessory || null,
+                accessoryId2: state.equippedAccessory2 || null
             };
             
             state.loadouts.push(loadout);
@@ -28853,11 +28863,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (found) {
                     state.equippedAccessory = loadout.accessoryId;
                     equipped++;
+                    // [v6.5] druhý slot
+                    state.equippedAccessory2 = (loadout.accessoryId2 && loadout.accessoryId2 !== loadout.accessoryId && state.inv.some(i => i.id === loadout.accessoryId2)) ? loadout.accessoryId2 : null;
                 } else {
                     missing.push(loadout.accessory?.name || 'Doplněk');
                 }
             } else {
                 state.equippedAccessory = null;
+                state.equippedAccessory2 = null;
             }
             if (typeof _syncAccessorySlot === 'function') _syncAccessorySlot();
             
@@ -29316,7 +29329,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const item = state.inv[idx];
             if (!item) return;
             
-            const isEquipped = state.equippedAccessory === item.id;
+            const isEquipped = isAccessoryEquipped(item.id);
             const rarityColor = RARITY_COLORS[item.rarity] || '#888';
             const rarityName = { common: 'Běžný', uncommon: 'Neobvyklý', rare: 'Vzácný', epic: 'Epický', legendary: 'Legendární' }[item.rarity] || '';
             
@@ -29348,7 +29361,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem;">
                     ${!isEquipped 
                         ? `<button class="btn" onclick="closeModal(); equipAccessoryByIndex(${idx});" style="background: #4caf50;">✋ Nasadit</button>`
-                        : `<button class="btn" onclick="closeModal(); unequipAccessory();" style="background: #ff9800;">👋 Sundat</button>`
+                        : `<button class="btn" onclick="closeModal(); unequipAccessory(${state.equippedAccessory2 === item.id ? 2 : 1});" style="background: #ff9800;">👋 Sundat</button>`
                     }
                     ${!isEquipped ? `<button class="btn" onclick="recycleItem(${idx})" style="background: #795548;">♻️ Rozebrat na materiály</button>` : ''}
                     <button class="btn" onclick="dropItemByIndex(${idx})" style="background: #c62828;">🗑️ Zahodit</button>
@@ -29364,26 +29377,48 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             equipAccessory(accessory.id);
         }
         
-        // [v6.5] state.equipped.accessory vždy odpovídá state.equippedAccessory (jediný zdroj pravdy)
+        // [v6.5] Dva sloty na doplňky: state.equippedAccessory (slot 1) a state.equippedAccessory2 (slot 2).
+        // state.equipped.accessory/accessory2 jsou vždy jejich zrcadlo (čtou je sety, regen, hasEquippedSpecial…).
+        function getEquippedAccessoryItems() {
+            const out = [];
+            for (const id of [state?.equippedAccessory, state?.equippedAccessory2]) {
+                if (!id || out.some(a => a.id === id)) continue;
+                const it = (state.inv || []).find(i => i.id === id && i.type === 'accessory');
+                if (it) out.push(it);
+            }
+            return out;
+        }
+        window.getEquippedAccessoryItems = getEquippedAccessoryItems;
+        function isAccessoryEquipped(id) {
+            return !!id && (state.equippedAccessory === id || state.equippedAccessory2 === id);
+        }
+        window.isAccessoryEquipped = isAccessoryEquipped;
         function _syncAccessorySlot() {
             if (!state) return;
             state.equipped = state.equipped || {};
-            const acc = state.equippedAccessory ? (state.inv || []).find(i => i.id === state.equippedAccessory && i.type === 'accessory') : null;
-            if (state.equippedAccessory && !acc) state.equippedAccessory = null;
-            state.equipped.accessory = acc || null;
-            state.equipped.accessory2 = null;
+            const find = (id) => id ? (state.inv || []).find(i => i.id === id && i.type === 'accessory') : null;
+            let a1 = find(state.equippedAccessory), a2 = find(state.equippedAccessory2);
+            if (a2 && a1 && a2.id === a1.id) a2 = null;
+            if (!a1 && a2) { a1 = a2; a2 = null; } // posuň do slotu 1
+            state.equippedAccessory = a1 ? a1.id : null;
+            state.equippedAccessory2 = a2 ? a2.id : null;
+            state.equipped.accessory = a1 || null;
+            state.equipped.accessory2 = a2 || null;
         }
         window._syncAccessorySlot = _syncAccessorySlot;
-        // [v6.5] Po načtení hry sjednotit slot doplňku (staré savy měly equipped.accessory rozjeté s equippedAccessory)
+        // Po načtení hry sjednotit sloty (staré savy měly equipped.accessory rozjeté s equippedAccessory)
         setInterval(() => { try { if (state && state.confirmed) _syncAccessorySlot(); } catch (e) {} }, 5000);
-        function equipAccessory(accId) {
+        
+        function equipAccessory(accId, slot) {
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             const accessory = state.inv.find(i => i.id === accId && i.type === 'accessory');
             if (!accessory) return;
-            
-            state.equippedAccessory = accId;
-            // [v6.5] Jeden slot na doplněk (jak ukazuje UI). Dřív se state.equipped.accessory/accessory2
-            // rozjížděl s equippedAccessory a bonusy zůstávaly i po sundání.
+            if (isAccessoryEquipped(accId)) { showAccessoryModal(); return; }
+            // Volný slot má přednost; když jsou oba plné a slot není určen, vyměň slot 2
+            if (slot === 1) state.equippedAccessory = accId;
+            else if (slot === 2) state.equippedAccessory2 = accId;
+            else if (!state.equippedAccessory) state.equippedAccessory = accId;
+            else state.equippedAccessory2 = accId;
             _syncAccessorySlot();
             addLog('Nasazen doplněk: ' + accessory.name, accessory.icon);
             notifySuccess('Nasazeno!', accessory.name);
@@ -29391,11 +29426,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         
-        function unequipAccessory() {
-            if (!state.equippedAccessory) return;
-            
-            const accessory = state.inv.find(i => i.id === state.equippedAccessory);
-            state.equippedAccessory = null;
+        function unequipAccessory(slot) {
+            const id = slot === 2 ? state.equippedAccessory2 : state.equippedAccessory;
+            if (!id) return;
+            const accessory = state.inv.find(i => i.id === id);
+            if (slot === 2) state.equippedAccessory2 = null; else state.equippedAccessory = null;
             _syncAccessorySlot();
             addLog('Sundán doplněk: ' + (accessory?.name || '?'), '💍');
             showAccessoryModal();
@@ -31667,7 +31702,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         }
                     }
                 }
-                if (item.type === 'accessory' && state.equippedAccessory === item.id) {
+                if (item.type === 'accessory' && isAccessoryEquipped(item.id)) {
                     const totalAccInInv = state.inv.filter(i => i.id === item.id).reduce((sum, i) => sum + (i.count || 1), 0);
                     if (totalAccInInv <= 1) {
                         notifyWarning('Nelze vybavit', 'Tento doplněk máš na sobě! Nejdříve ho sundej.');
@@ -37007,8 +37042,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // state.equipped.accessory/accessory2 je starý systém, state.equippedAccessory je aktivní
             const accessoryItems = [state.equipped?.accessory, state.equipped?.accessory2].filter(a => a);
             // Přidej aktuální equippedAccessory (hráčův doplněk přes equippedAccessory ID)
-            if (state.equippedAccessory) {
-                const equippedAcc = state.inv?.find(i => i.id === state.equippedAccessory);
+            for (const equippedAcc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (equippedAcc && !accessoryItems.some(a => a.id === equippedAcc.id)) {
                     accessoryItems.push(equippedAcc);
                 }
@@ -40131,7 +40165,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                 const gloves = state.equipped?.gloves || null;
                                 const boots = state.equipped?.boots || null;
                                 const helmet = state.equipped?.helmet || null;
-                                const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
+                                const accessory = getEquippedAccessoryItems()[0] || null; // [v6.5] slot 1, druhý jako „+1“
                                 const powerArmor = state.equipped?.powerArmor || null;
                                 
                                 // POWER ARMOR - speciální zobrazení
@@ -40163,7 +40197,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                             </div>
                                             <div onclick="showAccessoryModal()" style="cursor: pointer; background: ${accessory ? 'linear-gradient(135deg, #2a2a1a, #1a1a0a)' : '#0a0a0a'}; border: 1px solid ${accessory ? '#ffd700' : 'var(--metal-light)'}; border-radius: 4px; padding: 0.3rem; text-align: center; min-height: 45px; display: flex; flex-direction: column; justify-content: center;">
                                                 <div style="font-size: 1.1rem;">${accessory ? renderIcon(accessory.icon, accessory.id) : '💍'}</div>
-                                                <div style="font-size: 0.45rem; color: ${accessory ? '#ffd700' : '#555'};">${accessory ? getItemName(accessory).substring(0, 5) : 'Doplněk'}</div>
+                                                <div style="font-size: 0.45rem; color: ${accessory ? '#ffd700' : '#555'};">${accessory ? getItemName(accessory).substring(0, 5) + (state.equippedAccessory2 ? ' +1' : '') : 'Doplněk'}</div>
                                             </div>
                                         </div>
                                         
@@ -40263,14 +40297,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                                 </div>
                                                 
                                                 <!-- DOPLNĚK - pravá strana -->
-                                                <div onclick="showAccessoryModal()" title="${accessory ? getItemName(accessory) : 'Doplněk - klikni pro výběr'}"
+                                                <div onclick="showAccessoryModal()" title="${accessory ? getEquippedAccessoryItems().map(a => getItemName(a)).join(' + ') : 'Doplněk - klikni pro výběr'}"
                                                     style="cursor: pointer; background: ${accessory ? 'radial-gradient(circle, rgba(255,215,0,0.15), transparent 70%)' : 'radial-gradient(circle, rgba(50,50,50,0.2), transparent 70%)'}; 
                                                     border: 2px solid ${accessory ? '#ffd700' : '#222'}; border-radius: 8px; 
                                                     width: 52px; height: 68px; display: flex; flex-direction: column; justify-content: center; align-items: center;
                                                     transition: all 0.2s; box-shadow: ${accessory ? '0 0 12px rgba(255,215,0,0.25)' : 'none'};"
                                                     onmouseover="this.style.transform='scale(1.08)'" onmouseout="this.style.transform='scale(1)'">
                                                     ${_equipSlotIcon(accessory, '💍', '2rem')}
-                                                    <div style="font-size: 0.45rem; color: ${accessory ? '#ffd700' : '#444'}; margin-top: 1px;">${accessory ? getItemName(accessory).substring(0, 7) : 'Doplněk'}</div>
+                                                    <div style="font-size: 0.45rem; color: ${accessory ? '#ffd700' : '#444'}; margin-top: 1px;">${accessory ? getItemName(accessory).substring(0, 7) + (state.equippedAccessory2 ? ' +1' : '') : 'Doplněk'}</div>
                                                 </div>
                                             </div>
                                             
@@ -46427,8 +46461,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 // Stříbrný prsten
-                if (state.equippedAccessory) {
-                    const acc = state.inv.find(i => i.id === state.equippedAccessory);
+                for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                     if (acc?.bonus === 'luck') {
                         activeBonuses.push({ icon: '💍', name: acc.name, desc: `+${acc.value}% šance na loot`, time: 'nasazeno' });
                     }
@@ -57278,8 +57311,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // 📿 Accessory XP bonus (Zlatý amulet apod.)
-            if (state.equippedAccessory) {
-                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const accItem of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (accItem && accItem.bonus === 'xp' && accItem.value > 0) {
                     finalAmount = Math.floor(finalAmount * (1 + accItem.value / 100));
                 }
@@ -95091,8 +95123,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     
                     // [FIX REVIEW] Accessory critDamage bonus (assassin_eye atd.)
-                    if (state.equippedAccessory) {
-                        const _accCD = state.inv.find(i => i.id === state.equippedAccessory);
+                    for (const _accCD of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                         if (_accCD?.bonus?.critDamage > 0) {
                             critMultiplier += _accCD.bonus.critDamage;
                         }
@@ -99309,8 +99340,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (cs.playerDefending) playerDef *= 2;
                 
                 // Accessory defense bonus (calculateDefense nezahrnuje)
-                if (state.equippedAccessory) {
-                    const acc = state.inv.find(i => i.id === state.equippedAccessory);
+                for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                     if (acc) {
                         if (acc.bonus === 'defense') playerDef += acc.value || 0;
                         if (typeof acc.bonus === 'object' && acc.bonus.end) playerDef += Math.floor(acc.bonus.end * 1);
@@ -99332,8 +99362,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     
                     // [FIX REVIEW] Accessory damageReduction (fortress_pendant atd.)
-                    if (state.equippedAccessory) {
-                        const _accDR = state.inv.find(i => i.id === state.equippedAccessory);
+                    for (const _accDR of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                         if (_accDR?.bonus?.damageReduction > 0) {
                             const _accReduction = Math.floor(enemyDmg * _accDR.bonus.damageReduction);
                             enemyDmg = Math.max(0, enemyDmg - _accReduction);
@@ -100482,8 +100511,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 // 📿 Accessory luck bonus (Stříbrný/Drahokamový prsten +10% šance na extra loot)
-                if (state.equippedAccessory) {
-                    const accLuck = state.inv.find(i => i.id === state.equippedAccessory);
+                for (const accLuck of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                     if (accLuck && accLuck.bonus === 'luck' && accLuck.value > 0 && Math.random() < (accLuck.value / 100)) {
                         if (enemyData.loot && enemyData.loot.length > 0) {
                             generateSingleLoot(enemyData.loot);
@@ -100914,8 +100942,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // 📿 Accessory HP bonus (např. mutant set +30 HP)
-            if (state.equippedAccessory) {
-                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const accItem of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (accItem?.bonus?.maxHp && !_isOwnSetPieceEquipped(accItem)) { // [v6.5] díl setu se počítá v set bonusu níže
                     maxHp += accItem.bonus.maxHp;
                 }
@@ -101381,8 +101408,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // 📿 Accessory defense bonus (Drahokamový přívěsek + boss loot)
-            if (state.equippedAccessory) {
-                const accItem = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const accItem of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (accItem) {
                     // Crafted accessories: bonus je string 'defense', value je číslo
                     if (accItem.bonus === 'defense' && accItem.value > 0) {
@@ -101483,8 +101509,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             
             // Accessory crit bonus
-            const accessory = state.equippedAccessory ? state.inv.find(i => i.id === state.equippedAccessory) : null;
-            if (accessory) {
+            for (const accessory of getEquippedAccessoryItems()) { // [v6.5] oba sloty
                 // Crafted: bonus === 'crit', value v procentech
                 if (accessory.bonus === 'crit' && accessory.value) {
                     crit += accessory.value / 100;
@@ -101626,8 +101651,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             bonus += (effectiveInt - 5) * 0.10;
             
             // Accessory bonus (zlatý amulet)
-            if (state.equippedAccessory) {
-                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (acc?.bonus === 'xp') {
                     bonus += (acc.value || 0) / 100;
                 }
@@ -101655,8 +101679,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             bonus += (effectivePerLoot - 5) * 0.05;
             
             // Accessory bonus (stříbrný prsten)
-            if (state.equippedAccessory) {
-                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (acc?.bonus === 'luck') {
                     bonus += (acc.value || 0) / 100;
                 }
@@ -101722,8 +101745,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             bonus += (state.char.attrs.agi - 5) * 0.02;
             
             // Accessory bonus (krystalový fokus)
-            if (state.equippedAccessory) {
-                const acc = state.inv.find(i => i.id === state.equippedAccessory);
+            for (const acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                 if (acc?.bonus === 'crit') {
                     bonus += (acc.value || 0) / 100;
                 }
@@ -102926,8 +102948,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     
                     // [FIX REVIEW] Accessory damageReduction (fortress_pendant atd.)
-                    if (state.equippedAccessory) {
-                        const _accDR2 = state.inv.find(i => i.id === state.equippedAccessory);
+                    for (const _accDR2 of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                         if (_accDR2?.bonus?.damageReduction > 0) {
                             const _accReduction2 = Math.floor(enemyDmg * _accDR2.bonus.damageReduction);
                             enemyDmg = Math.max(1, enemyDmg - _accReduction2);
@@ -107115,8 +107136,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 xpMult *= (1 + _intB);
                                 try { const _cb = getAllCompanionBonuses(); if (_cb.xpBonus > 0) xpMult *= (1 + _cb.xpBonus); } catch(e) {}
                                 if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > Date.now()) xpMult *= 1.25;
-                                if (state.equippedAccessory) {
-                                    const _acc = state.inv?.find(i => i.id === state.equippedAccessory);
+                                for (const _acc of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                                     if (_acc?.bonus === 'xp' && _acc.value > 0) xpMult *= (1 + _acc.value / 100);
                                 }
                                 try { const _nb2 = getNPCBonuses(); if (_nb2.xpBonus > 0) xpMult *= (1 + _nb2.xpBonus); } catch(e) {}
@@ -109447,6 +109467,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 });
             }
             if (state.equippedAccessory) equippedIds.add(state.equippedAccessory);
+            if (state.equippedAccessory2) equippedIds.add(state.equippedAccessory2);
             
             // Filtruj pouze věci co nejsou vybavené
             const losableIndices = [];
@@ -109462,7 +109483,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (item.cantSell && item.cantBuy) return; // [FIX] Neprodejné/nekoupitelné (legendary drops) nikdy
                 const itemKey = item._uniqueId || (item.id + '_' + (item.name || ''));
                 if (equippedIds.has(itemKey)) return; // Vybavené nikdy
-                if (item.id === state.equippedAccessory) return; // Doplněk nikdy
+                if (isAccessoryEquipped(item.id)) return; // Doplněk nikdy
                 losableIndices.push(idx);
             });
             
@@ -109757,8 +109778,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         };
                         
                         // Starý systém: state.equippedAccessory → lookup v inv
-                        if (state.equippedAccessory) {
-                            const accRegen = state.inv.find(i => i.id === state.equippedAccessory);
+                        for (const accRegen of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
                             if (accRegen && accRegen.bonus === 'hp_regen' && accRegen.value > 0) {
                                 accRegenTotal += accRegen.value;
                                 countedIds.add(accRegen.id);
@@ -165828,6 +165848,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             };
             state.equipped = { weapon: null, armor: null, helmet: null, gloves: null, boots: null };
             state.equippedAccessory = null;
+            state.equippedAccessory2 = null;
             state.status = { hunger: 100, thirst: 100, energy: 100, radiation: 0, mood: 100 };
             state.skills = {};
             state.skillTree = {};
