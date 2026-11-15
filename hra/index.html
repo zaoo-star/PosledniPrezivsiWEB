@@ -22174,6 +22174,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             if (document.getElementById('notificationBanner')) return;
+            // [v6.5] Ne na obrazovce tvorby postavy — počkej, až hráč hraje
+            if (!state.confirmed) { setTimeout(showNotificationPrompt, 30000); return; }
+            // [v6.5] Nový hráč s Průvodcem: neruš ho dotazem na notifikace, dokud nedokončí 1. kapitolu (stejné místo na obrazovce)
+            if (state.guide?.enabled && !state.guide?.chaptersDone?.[1]) {
+                setTimeout(showNotificationPrompt, 60000);
+                return;
+            }
             
             const banner = document.createElement('div');
             banner.id = 'notificationBanner';
@@ -42944,23 +42951,23 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Nabídka tutoriálu pro nové hráče
         function offerTutorial() {
-            showModal('🎓 Tutoriál', `
+            // [v6.5] Nový hráč dostane Průvodce přeživšího (úkoly krok za krokem). Stará 12-stránková
+            // příručka zůstává dostupná tlačítkem "Celá příručka".
+            if (typeof guideEnable === 'function') guideEnable(false);
+            showModal('📘 Průvodce přeživšího', `
                 <div style="text-align: center;">
-                    <div style="font-size: 4rem; margin-bottom: 1rem;">📚</div>
-                    <h3 style="color: #8bc34a;">Jsi tu nový?</h3>
-                    <p style="color: #888; margin: 1rem 0;">Chceš projít krátkým tutoriálem? Naučíš se základy přežití v pustině.</p>
-                    <div style="background: #1a1a1a; padding: 1rem; border-radius: 8px; margin: 1rem 0; text-align: left; font-size: 0.85rem;">
-                        <div style="color: #4CAF50;">✓ Jak fungují statistiky</div>
-                        <div style="color: #4CAF50;">✓ Jak používat inventář</div>
-                        <div style="color: #4CAF50;">✓ Jak cestovat po mapě</div>
-                        <div style="color: #4CAF50;">✓ Jak funguje boj</div>
-                        <div style="color: #4CAF50;">✓ Jak získat společníky</div>
-                        <div style="color: #4CAF50;">✓ Jak budovat osadu</div>
+                    <div style="font-size: 3.5rem; margin-bottom: 0.5rem;">📘</div>
+                    <h3 style="color: #8bc34a; margin: 0 0 0.5rem;">Vítej v pustině, přeživší!</h3>
+                    <p style="color: #ccc; margin: 0.5rem 0; font-size: 0.9rem; line-height: 1.45;">Nemusíš číst žádné dlouhé návody. Dole nad lištou uvidíš vždy <strong style="color:#fff;">jeden úkol</strong>. Hra sama pozná, až ho splníš, dá ti malou odměnu a ukáže další.</p>
+                    <div style="background: #141414; padding: 0.8rem; border-radius: 8px; margin: 0.8rem 0; text-align: left; font-size: 0.82rem; color:#aaa; line-height:1.6;">
+                        🎒 První kroky → ⚔️ Přežití → ⭐ Růst → 🏘️ Osada → 🗺️ Svět → 👥 Hráči → 🕳️ Propast<br>
+                        <span style="color:#777;">Další kapitoly se otevírají s levelem.</span>
                     </div>
+                    <p style="color: #888; font-size: 0.78rem;">Klepnutím na panel zobrazíš vysvětlení a tlačítko <em>Jdi tam</em>.</p>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                    <button class="btn" onclick="closeModal()" style="background: #333;">Přeskočit</button>
-                    <button class="btn" onclick="closeModal(); showTutorial(0);" style="background: #4CAF50;">Spustit tutoriál</button>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                    <button class="btn" onclick="closeModal(); showTutorial(0);" style="background: #333;">📖 Celá příručka</button>
+                    <button class="btn" onclick="closeModal(); setTimeout(() => { if (typeof guideTick === 'function') guideTick(); }, 300);" style="background: #4CAF50;">Jdeme na to!</button>
                 </div>
             `);
         }
@@ -107733,6 +107740,481 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 </div>
             `);
         }
+
+        // ============================================================
+        // 📘 PRŮVODCE PŘEŽIVŠÍHO (v6.5) — tutoriál krok za krokem
+        // Hráč dostává vždy JEDEN úkol, hra sama pozná splnění (podle stavu hry
+        // nebo podle akce), dá malou odměnu a vysvětlí další věc. Kapitoly se
+        // otevírají s levelem. Noví hráči ho mají zapnutý automaticky, stávající
+        // ho dostanou jen nabídnutý (ikonka 📘 nad lištou).
+        // ============================================================
+        const GUIDE_CHAPTERS = [
+            { id: 1, name: 'První kroky', icon: '🎒', minLevel: 1, reward: { money: 100, xp: 50 } },
+            { id: 2, name: 'Přežij v pustině', icon: '⚔️', minLevel: 1, reward: { money: 120, xp: 80, items: [['stimpack', 1]] } },
+            { id: 3, name: 'Rosteš', icon: '⭐', minLevel: 2, reward: { money: 150, xp: 120 } },
+            { id: 4, name: 'Vlastní osada', icon: '🏘️', minLevel: 5, reward: { money: 250, xp: 200 } },
+            { id: 5, name: 'Svět je velký', icon: '🗺️', minLevel: 8, reward: { money: 300, xp: 250 } },
+            { id: 6, name: 'Nejsi tu sám', icon: '👥', minLevel: 10, reward: { money: 400, xp: 300 } },
+            { id: 7, name: 'Výzvy pro silné', icon: '🕳️', minLevel: 15, reward: { money: 600, xp: 500 } }
+        ];
+
+        const _guideSkillPointsSpent = () => {
+            let n = 0;
+            try { Object.values(state.skillTree || {}).forEach(br => Object.values(br || {}).forEach(v => { n += (+v || 0); })); } catch (e) {}
+            return n;
+        };
+        const _gf = (k) => !!(state.guide?.flags?.[k]);
+
+        const GUIDE_STEPS = [
+            // === KAPITOLA 1: První kroky ===
+            { id: 'open_inv', ch: 1, title: 'Otevři Výbavu',
+              why: 'Ve Výbavě máš všechno, co neseš: zbraně, jídlo, léky i suroviny. Na předmět klepni a uvidíš, co s ním jde dělat.',
+              where: 'Spodní lišta → VÝBAVA', go: () => switchTab('inv'),
+              check: () => _gf('tab_inv'), reward: { money: 20 } },
+            { id: 'equip_weapon', ch: 1, title: 'Nasaď si zbraň',
+              why: 'Bez zbraně bojuješ holýma rukama. Ve Výbavě klepni na Sekeru a dej Nasadit. Lepší zbraně najdeš, koupíš nebo vyrobíš.',
+              where: 'VÝBAVA → klepni na zbraň → Nasadit', go: () => switchTab('inv'),
+              check: () => !!state.equipped?.weapon, reward: { xp: 20 } },
+            { id: 'eat_drink', ch: 1, title: 'Najez se nebo napij',
+              why: 'Hlad a žízeň pomalu klesají. Když dojdou na nulu, začneš ztrácet životy. Jídlo a vodu najdeš při průzkumu nebo koupíš.',
+              where: 'VÝBAVA → Jídlo nebo Voda → Použít', go: () => switchTab('inv'),
+              check: () => _gf('eat'), reward: { items: [['water', 1]] } },
+            { id: 'explore', ch: 1, title: 'Prozkoumej lokaci',
+              why: 'Průzkum je hlavní zdroj lootu a zkušeností. Na každé lokaci můžeš prohledávat jen několikrát denně a občas narazíš na nepřítele.',
+              where: 'MAPA → tlačítko Prozkoumat / Prohledat', go: () => switchTab('map'),
+              check: () => _gf('explore'), reward: { money: 30 } },
+            { id: 'travel', ch: 1, title: 'Vydej se na jinou lokaci',
+              why: 'Na mapě klepni na sousední lokaci a vyraž. Cesta trvá skutečný čas, cestou můžou přijít události. Čím dál od úkrytu, tím nebezpečněji (zelená → červená).',
+              where: 'MAPA → klepni na sousední lokaci → Cestovat', go: () => switchTab('map'),
+              check: () => (state.world?.visitedLocations?.length || 0) >= 2, reward: { xp: 30 } },
+
+            // === KAPITOLA 2: Přežij v pustině ===
+            { id: 'first_kill', ch: 2, title: 'Vyhraj první boj',
+              why: 'Boj je tahový: každý má 2 akce za kolo. Pohyb, útok, předmět nebo obrana. Střelné zbraně potřebují náboje, na blízko útočíš jen na sousední pole.',
+              where: 'Nepřítele potkáš při průzkumu nebo na cestě', go: () => switchTab('map'),
+              check: () => (state.stats?.kills || 0) >= 1, reward: { items: [['medkit', 1]] } },
+            { id: 'heal', ch: 2, title: 'Vyleči se',
+              why: 'Lékárnička, obvaz nebo stimpak vrátí životy a léčí i zranění (řezná rána, zlomenina…). V boji je dostaneš přes tlačítko ITEM, mimo boj ve Výbavě.',
+              where: 'VÝBAVA → Lékárnička → Použít (nebo v boji ITEM)', go: () => switchTab('inv'),
+              check: () => _gf('heal'), reward: { items: [['bandage', 2]] } },
+            { id: 'sleep', ch: 2, title: 'Vyspi se',
+              why: 'Energie klesá s každou akcí. Spacák ve Výbavě ti ji jednou za 24 h doplní. Unavený přeživší bojuje hůř.',
+              where: 'VÝBAVA → Spacák → Použít', go: () => switchTab('inv'),
+              check: () => (state.lastSleepTime || 0) > 0, reward: { xp: 25 } },
+
+            // === KAPITOLA 3: Rosteš (lvl 2) ===
+            { id: 'skill_point', ch: 3, title: 'Utrať bod schopností',
+              why: 'Každý level ti dá bod do stromu schopností (32 schopností v 5 větvích: boj, obrana, přežití, průzkum, výroba). Vyber, jakým přeživším chceš být.',
+              where: 'POSTAVA → Strom schopností', go: () => switchTab('char'),
+              check: () => _guideSkillPointsSpent() >= 1, reward: { xp: 50 } },
+            { id: 'craft', ch: 3, title: 'Vyrob první předmět',
+              why: 'Ze surovin (kov, šrot, chemikálie, látka…) vyrobíš náboje, léky, zbraně i zbroj. Suroviny sbíráš průzkumem a rozebíráním věcí.',
+              where: 'VÝROBA → vyber recept → Vyrobit', go: () => switchTab('craft'),
+              check: () => (state.stats?.itemsCrafted || 0) >= 1, reward: { resources: { metal: 10, scrap: 10 } } },
+            { id: 'companion', ch: 3, title: 'Získej společníka',
+              why: 'Společník bojuje po tvém boku, nese věci a má vlastní schopnosti. Krmením a péčí roste jeho loajalita a na 100 % tě jednou v boji zachrání.',
+              where: 'Potkáš je na cestách a při událostech (první bývá pes)', go: () => switchTab('map'),
+              check: () => (state.companions?.length || 0) >= 1, reward: { items: [['food', 2]] } },
+            { id: 'quest', ch: 3, title: 'Splň první úkol',
+              why: 'Úkoly dávají příběh, peníze a XP. Příběhové vedou světem, denní se každý den obnovují. Aktivní úkoly vidíš nad mapou.',
+              where: 'MAPA → úkoly nad mapou / postavy na lokacích', go: () => switchTab('map'),
+              check: () => (state.mainQuest?.completedQuests?.length || 0) >= 1 || (state.dailyQuests?.completed?.length || 0) >= 1, reward: { money: 60 } },
+
+            // === KAPITOLA 4: Vlastní osada (lvl 5) ===
+            { id: 'build', ch: 4, title: 'Postav budovu v osadě',
+              why: 'Osada je tvůj domov. Budovy vyrábějí jídlo, vodu a suroviny, chrání před nájezdy a odemykají služby (sklad, dílna, ošetřovna…).',
+              where: 'OSADA → Budovy → Postavit (musíš být doma v úkrytu)', go: () => switchTab('base'),
+              check: () => _gf('build'), reward: { resources: { metal: 20 } } },
+            { id: 'settler', ch: 4, title: 'Získej osadníka',
+              why: 'Osadníci pracují v budovách: kovář vylepšuje zbraně, zvěd varuje před nájezdy, strážci brání. Potřebují jídlo a vodu.',
+              where: 'OSADA → Osadníci (přicházejí i sami jako uprchlíci)', go: () => switchTab('base'),
+              check: () => (state.settlement?.settlers?.length || 0) >= 1, reward: { items: [['food', 3], ['water', 3]] } },
+
+            // === KAPITOLA 5: Svět je velký (lvl 8) ===
+            { id: 'factions', ch: 5, title: 'Poznej frakce',
+              why: 'Obchodníci, vojáci, vědci, mutanti i nájezdníci. Dobrá reputace otevírá jejich obchody a výhody, špatná ti přinese přepadení.',
+              where: 'POSTAVA → Frakce', go: () => { if (typeof showFactionsModal === 'function') showFactionsModal(); },
+              check: () => _gf('factions'), reward: { money: 80 } },
+            { id: 'dungeon', ch: 5, title: 'Vstup do dungeonu',
+              why: 'Dungeony mají několik pater a na konci bosse s lepším lootem. Vezmi si léky a náboje, mezi patry se dá odejít.',
+              where: 'MAPA → lokace s dungeonem → Vstoupit', go: () => switchTab('map'),
+              check: () => _gf('dungeon'), reward: { items: [['stimpack', 1]] } },
+
+            // === KAPITOLA 6: Nejsi tu sám (lvl 10) ===
+            { id: 'chat', ch: 6, title: 'Pozdrav ostatní v chatu',
+              why: 'Pustina je plná živých hráčů. V chatu se domluvíš na obchodu, raidu na World Bosse nebo vstupu do klanu.',
+              where: 'ONLINE → Chat', go: () => switchTab('multiplayer'),
+              check: () => (state.stats?.chatMessagesSent || 0) >= 1, reward: { money: 50 } },
+            { id: 'market', ch: 6, title: 'Podívej se na tržiště',
+              why: 'Na tržišti prodáváš a kupuješ od ostatních hráčů. Vzácné věci tu bývají levněji než u obchodníků.',
+              where: 'ONLINE → Tržiště', go: () => { if (typeof showMarketplace === 'function') showMarketplace(); },
+              check: () => _gf('market'), reward: { money: 80 } },
+
+            // === KAPITOLA 7: Výzvy pro silné (lvl 15+) ===
+            { id: 'abyss', ch: 7, title: 'Sestup do Propasti',
+              why: 'Nekonečný dungeon: každé patro je těžší a každé 5. patro hlídají bossové. Čím hlouběji, tím lepší loot a místo v žebříčku. Jeden sestup za 12 h.',
+              where: 'MAPA → Propast', go: () => switchTab('map'),
+              check: () => (state.abyss?.runs || 0) >= 1, reward: { xp: 150 } },
+            { id: 'pvp', ch: 7, minLevel: 20, title: 'Vyzvi hráče na souboj',
+              why: 'Od levelu 20 můžeš vyzvat ostatní na souboj cti. Výhry tě posunou v žebříčku. Před výzvou si doplň léky.',
+              where: 'ONLINE → PvP / profil hráče → Vyzvat', go: () => { if (typeof showPvPChallengePicker === 'function') showPvPChallengePicker(); },
+              check: () => _gf('pvp'), reward: { money: 200 } }
+        ];
+
+        function _guideStepMinLevel(step) {
+            const ch = GUIDE_CHAPTERS.find(c => c.id === step.ch);
+            return Math.max(step.minLevel || 0, ch?.minLevel || 1);
+        }
+        function _guideEnsure() {
+            if (!state.guide || typeof state.guide !== 'object') return null;
+            if (!state.guide.done || typeof state.guide.done !== 'object') state.guide.done = {};
+            if (!state.guide.flags || typeof state.guide.flags !== 'object') state.guide.flags = {};
+            if (!state.guide.chaptersDone || typeof state.guide.chaptersDone !== 'object') state.guide.chaptersDone = {};
+            return state.guide;
+        }
+        function _guideSafeCheck(step) { try { return !!step.check(); } catch (e) { return false; } }
+
+        // Aktuální krok = první nesplněný krok v dostupných kapitolách
+        function getGuideCurrentStep() {
+            const g = _guideEnsure(); if (!g) return null;
+            const lvl = state.char?.level || 1;
+            for (const s of GUIDE_STEPS) {
+                if (g.done[s.id]) continue;
+                if (lvl < _guideStepMinLevel(s)) return { locked: true, step: s, needLevel: _guideStepMinLevel(s) };
+                return { locked: false, step: s };
+            }
+            return null; // vše hotovo
+        }
+
+        function _guideRewardText(r) {
+            if (!r) return '';
+            const parts = [];
+            if (r.money) parts.push(`+${r.money} 💰`);
+            if (r.xp) parts.push(`+${r.xp} XP`);
+            (r.items || []).forEach(([id, n]) => { const d = ITEMS.find(i => i.id === id); parts.push(`${d?.icon || '📦'} ${d?.name || id}${n > 1 ? ' ×' + n : ''}`); });
+            Object.entries(r.resources || {}).forEach(([k, n]) => parts.push(`+${n} ${k}`));
+            return parts.join(', ');
+        }
+        function _guideGiveReward(r) {
+            if (!r) return;
+            try { if (r.money && typeof addMoney === 'function') addMoney(r.money); } catch (e) {}
+            try { if (r.xp && typeof addXP === 'function') addXP(r.xp); } catch (e) {}
+            (r.items || []).forEach(([id, n]) => {
+                try { const d = ITEMS.find(i => i.id === id); if (d) addItemToInventory(JSON.parse(JSON.stringify(d)), n, true); } catch (e) {}
+            });
+            Object.entries(r.resources || {}).forEach(([k, n]) => {
+                try { if (!state.resources) state.resources = {}; state.resources[k] = (state.resources[k] || 0) + n; } catch (e) {}
+            });
+        }
+
+        // Kontrola splnění — volá se pravidelně (každé 2 s) a po akcích
+        function guideTick() {
+            try {
+                _guideInstallHooks();
+                if (!state.confirmed || !state.char?.name) { _guideRenderBar(); return; }
+                const g = _guideEnsure();
+                if (!g || !g.enabled) { _guideRenderBar(); return; }
+                const lvl = state.char?.level || 1;
+                let changed = false;
+                const newlyDone = [];
+                for (const s of GUIDE_STEPS) {
+                    if (g.done[s.id]) continue;
+                    if (lvl < _guideStepMinLevel(s)) continue;
+                    if (_guideSafeCheck(s)) {
+                        g.done[s.id] = Date.now();
+                        _guideGiveReward(s.reward);
+                        newlyDone.push(s);
+                        changed = true;
+                    }
+                }
+                // Dokončené kapitoly
+                const chDone = [];
+                for (const ch of GUIDE_CHAPTERS) {
+                    if (g.chaptersDone[ch.id]) continue;
+                    const steps = GUIDE_STEPS.filter(s => s.ch === ch.id);
+                    if (steps.length && steps.every(s => g.done[s.id])) {
+                        g.chaptersDone[ch.id] = Date.now();
+                        _guideGiveReward(ch.reward);
+                        chDone.push(ch);
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    newlyDone.forEach((s, i) => setTimeout(() => {
+                        if (typeof notifySuccess === 'function') notifySuccess('📘 Splněno: ' + s.title, _guideRewardText(s.reward) || 'Výborně!');
+                    }, i * 900));
+                    if (chDone.length) setTimeout(() => _guideShowChapterDone(chDone[chDone.length - 1]), 1200 + newlyDone.length * 300);
+                    try { saveGame(true); } catch (e) {}
+                }
+                _guideRenderBar();
+            } catch (e) { console.warn('guideTick error:', e); }
+        }
+        window.guideTick = guideTick;
+
+        function _guideShowChapterDone(ch) {
+            if (document.getElementById('modal')?.classList.contains('show')) {
+                // Neruš rozehranou akci — jen notifikace
+                if (typeof notifySuccess === 'function') notifySuccess(`🏆 Kapitola dokončena: ${ch.name}`, _guideRewardText(ch.reward));
+                return;
+            }
+            const next = getGuideCurrentStep();
+            showModal(`🏆 Kapitola dokončena!`, `
+                <div style="text-align:center;">
+                    <div style="font-size:3rem;">${ch.icon}</div>
+                    <h3 style="color:#8bc34a;margin:0.3rem 0;">${ch.name}</h3>
+                    <div style="background:#1a2a1a;border:1px solid #4caf50;border-radius:8px;padding:0.6rem;margin:0.8rem 0;color:#ffd700;">🎁 ${_guideRewardText(ch.reward)}</div>
+                    ${next ? (next.locked
+                        ? `<p style="color:#aaa;font-size:0.85rem;">Další kapitola se otevře na <strong style="color:#ffd700;">levelu ${next.needLevel}</strong>. Do té doby hraj, jak chceš.</p>`
+                        : `<p style="color:#aaa;font-size:0.85rem;">Další úkol: <strong style="color:#fff;">${next.step.title}</strong></p>`)
+                        : `<p style="color:#8bc34a;">Prošel jsi celého průvodce. Teď už pustinu znáš!</p>`}
+                </div>
+                <button class="btn" onclick="closeModal()" style="width:100%;margin-top:0.5rem;background:#2e7d32;">Pokračovat</button>
+            `);
+        }
+
+        // === Detekce akcí (tenké obaly kolem herních funkcí) ===
+        function _guideFlag(k) {
+            try {
+                if (!state.guide || !state.guide.enabled) return;
+                _guideEnsure();
+                if (!state.guide.flags[k]) { state.guide.flags[k] = Date.now(); setTimeout(guideTick, 400); }
+            } catch (e) {}
+        }
+        const _GUIDE_HOOKS = {
+            switchTab: (args) => { if (args[0]) _guideFlag('tab_' + args[0]); },
+            exploreLocation: () => _guideFlag('explore'),
+            showFactionsModal: () => _guideFlag('factions'),
+            showMarketplace: () => _guideFlag('market'),
+            showPvPChallengePicker: () => _guideFlag('pvp'),
+            enterDungeon: () => { if (state.dungeon?.active) _guideFlag('dungeon'); },
+            confirmEnterDungeon: () => { if (state.dungeon?.active) _guideFlag('dungeon'); },
+            enterClanDungeon: () => { if (state.dungeon?.active) _guideFlag('dungeon'); },
+            sendPvPChallengeWithBet: () => _guideFlag('pvp'),
+            sendPvPRandomChallenge: () => _guideFlag('pvp')
+        };
+        function _guideCountItem(id) { return (state.inv || []).filter(i => i.id === id).reduce((s, i) => s + (i.count || 1), 0); }
+        function _guideInstallHooks() {
+            for (const [name, after] of Object.entries(_GUIDE_HOOKS)) {
+                const fn = window[name];
+                if (typeof fn !== 'function' || fn.__guideWrapped) continue;
+                const wrapped = function (...args) {
+                    const r = fn.apply(this, args);
+                    try { after(args); } catch (e) {}
+                    return r;
+                };
+                wrapped.__guideWrapped = true; wrapped.__guideOrig = fn;
+                window[name] = wrapped;
+            }
+            // Použití předmětu (mimo boj i v boji) — pozná jídlo/pití/léčení podle efektu
+            ['useItem', 'useItemInCombat'].forEach(name => {
+                const fn = window[name];
+                if (typeof fn !== 'function' || fn.__guideWrapped) return;
+                const wrapped = function (itemId, ...rest) {
+                    let eff = null, before = 0;
+                    try {
+                        const it = (state.inv || []).find(i => i.id === itemId);
+                        const def = it && (typeof findItemDef === 'function' ? findItemDef(it) : null);
+                        eff = it?.effect || def?.effect || null;
+                        before = _guideCountItem(itemId);
+                    } catch (e) {}
+                    const r = fn.call(this, itemId, ...rest);
+                    try {
+                        if (eff && _guideCountItem(itemId) < before) {
+                            if (eff === 'hunger' || eff === 'thirst' || eff === 'food' || eff === 'water') _guideFlag('eat');
+                            if (eff === 'health' || eff === 'heal_injury') _guideFlag('heal');
+                        }
+                    } catch (e) {}
+                    return r;
+                };
+                wrapped.__guideWrapped = true; wrapped.__guideOrig = fn;
+                window[name] = wrapped;
+            });
+            // Stavba budovy — úspěch = změnil se seznam budov / fronta stavby
+            const bfn = window.buildUnifiedBuilding;
+            if (typeof bfn === 'function' && !bfn.__guideWrapped) {
+                const sig = () => JSON.stringify([state.base || [], state.settlement?.buildings || [], state.buildQueue || [], state.settlement?.buildQueue || []]);
+                const wrapped = function (...args) {
+                    const b = sig(); const r = bfn.apply(this, args);
+                    try { if (sig() !== b) _guideFlag('build'); } catch (e) {}
+                    return r;
+                };
+                wrapped.__guideWrapped = true; wrapped.__guideOrig = bfn;
+                window.buildUnifiedBuilding = wrapped;
+            }
+        }
+
+        // === UI: panel nad spodní lištou ===
+        function _guideRenderBar() {
+            let bar = document.getElementById('guideBar');
+            const g = state.guide;
+            const modalOpen = document.getElementById('modal')?.classList.contains('show');
+            const inCombat = document.body.classList.contains('combat-fullscreen');
+            const playing = state.confirmed && state.char?.name;
+            // Kdo panel vidí: zapnutý průvodce, nebo stávající hráč, kterému ho nabízíme (malá ikonka)
+            const offerMode = playing && !g && (state.char?.level || 1) >= 1;
+            const show = playing && !modalOpen && !inCombat && (offerMode || (g && g.enabled));
+            if (!show) { if (bar) bar.style.display = 'none'; return; }
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'guideBar';
+                document.body.appendChild(bar);
+            }
+            // Pozice: těsně nad spodní navigací (výška lišty se liší podle telefonu)
+            const nav = document.getElementById('nav');
+            const navTop = nav ? nav.getBoundingClientRect().top : window.innerHeight - 70;
+            let bottom = Math.max(8, window.innerHeight - navTop + 6);
+            // Když je na obrazovce banner s dotazem na notifikace (stejné místo), posuň panel nad něj
+            const _nb = document.getElementById('notificationBanner');
+            if (_nb && _nb.getClientRects().length > 0 && getComputedStyle(_nb).display !== 'none') bottom = Math.max(bottom, window.innerHeight - _nb.getBoundingClientRect().top + 6);
+            const minimized = offerMode || g?.minimized;
+            const cur = g ? getGuideCurrentStep() : null;
+            if (g && g.enabled && !cur) { bar.style.display = 'none'; return; } // vše hotovo
+
+            const baseCss = `position:fixed;z-index:900;bottom:${bottom}px;font-family:inherit;`;
+            if (minimized) {
+                bar.style.cssText = baseCss + 'right:10px;width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,#1b3a1b,#0d1f0d);border:2px solid #4caf50;box-shadow:0 0 12px rgba(76,175,80,0.45);display:flex;align-items:center;justify-content:center;font-size:1.4rem;cursor:pointer;';
+                bar.innerHTML = '📘' + (cur && !cur.locked ? '<span style="position:absolute;top:-3px;right:-3px;width:12px;height:12px;border-radius:50%;background:#ffd700;border:2px solid #0d1f0d;"></span>' : '');
+                bar.onclick = () => offerMode ? showGuideOffer() : showGuideModal();
+                bar.title = offerMode ? 'Průvodce přeživšího' : 'Průvodce — aktuální úkol';
+                bar.style.display = 'flex';
+                return;
+            }
+            const ch = GUIDE_CHAPTERS.find(c => c.id === cur.step.ch);
+            const chSteps = GUIDE_STEPS.filter(s => s.ch === cur.step.ch);
+            const chDone = chSteps.filter(s => g.done[s.id]).length;
+            bar.style.cssText = baseCss + 'left:8px;right:8px;max-width:520px;margin:0 auto;background:rgba(10,20,10,0.985);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid #4caf50;border-radius:10px;box-shadow:0 -2px 14px rgba(0,0,0,0.6);display:flex;align-items:center;gap:0.5rem;padding:0.45rem 0.55rem;cursor:pointer;';
+            bar.onclick = (e) => { if (e.target?.dataset?.guideMin) return; showGuideModal(); };
+            bar.title = '';
+            bar.innerHTML = cur.locked
+                ? `<span style="font-size:1.3rem;">🔒</span>
+                   <div style="flex:1;min-width:0;"><div style="color:#8bc34a;font-size:0.68rem;letter-spacing:0.5px;">📘 PRŮVODCE</div>
+                   <div style="color:#ccc;font-size:0.82rem;">Další kapitola „${GUIDE_CHAPTERS.find(c => c.id === cur.step.ch)?.name}“ od levelu ${cur.needLevel}</div></div>
+                   <span data-guide-min="1" onclick="event.stopPropagation(); guideMinimize(true);" style="color:#777;font-size:1.1rem;padding:0.3rem 0.4rem;">✕</span>`
+                : `<span style="font-size:1.3rem;">${ch?.icon || '📘'}</span>
+                   <div style="flex:1;min-width:0;">
+                     <div style="color:#8bc34a;font-size:0.68rem;letter-spacing:0.5px;">📘 PRŮVODCE · ${ch?.name} ${chDone}/${chSteps.length}</div>
+                     <div style="color:#fff;font-size:0.9rem;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${cur.step.title}</div>
+                   </div>
+                   <span style="color:#4caf50;font-size:1.2rem;">›</span>
+                   <span data-guide-min="1" onclick="event.stopPropagation(); guideMinimize(true);" style="color:#777;font-size:1.1rem;padding:0.3rem 0.4rem;" title="Schovat">✕</span>`;
+            bar.style.display = 'flex';
+        }
+
+        function guideMinimize(v) {
+            if (!_guideEnsure()) return;
+            state.guide.minimized = !!v;
+            try { saveGame(true); } catch (e) {}
+            _guideRenderBar();
+            if (v && typeof notifyInfo === 'function') notifyInfo('📘 Průvodce schován', 'Ikonka 📘 vpravo dole ho kdykoli otevře.');
+        }
+        window.guideMinimize = guideMinimize;
+
+        function showGuideModal() {
+            const g = _guideEnsure();
+            if (!g) return showGuideOffer();
+            const cur = getGuideCurrentStep();
+            const lvl = state.char?.level || 1;
+            let html = '';
+            if (cur && !cur.locked) {
+                const s = cur.step;
+                html += `
+                <div style="background:linear-gradient(135deg,#132613,#0b160b);border:1px solid #4caf50;border-radius:10px;padding:0.8rem;margin-bottom:0.8rem;">
+                    <div style="color:#8bc34a;font-size:0.7rem;letter-spacing:1px;">AKTUÁLNÍ ÚKOL</div>
+                    <div style="color:#fff;font-size:1.15rem;font-weight:bold;margin:0.2rem 0 0.4rem;">${s.title}</div>
+                    <p style="color:#ccc;font-size:0.88rem;line-height:1.45;margin:0 0 0.5rem;">${s.why}</p>
+                    <div style="color:#ffd54f;font-size:0.82rem;">📍 ${s.where}</div>
+                    ${s.reward ? `<div style="color:#aaa;font-size:0.78rem;margin-top:0.3rem;">🎁 Odměna: ${_guideRewardText(s.reward)}</div>` : ''}
+                    <button class="btn" onclick="closeModal(); guideGo('${s.id}');" style="width:100%;margin-top:0.6rem;background:#2e7d32;">➡️ Jdi tam</button>
+                </div>`;
+            } else if (cur && cur.locked) {
+                html += `<div style="background:#1a1a1a;border:1px solid #444;border-radius:10px;padding:0.8rem;margin-bottom:0.8rem;text-align:center;color:#ccc;">🔒 Další kapitola se otevře na <strong style="color:#ffd700;">levelu ${cur.needLevel}</strong>.<br><span style="font-size:0.8rem;color:#888;">Mezitím průzkum, boje a úkoly ti levely přinesou.</span></div>`;
+            } else {
+                html += `<div style="text-align:center;color:#8bc34a;margin-bottom:0.8rem;">🏆 Průvodce je kompletně splněný!</div>`;
+            }
+            html += '<div style="display:flex;flex-direction:column;gap:0.35rem;max-height:42vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">';
+            GUIDE_CHAPTERS.forEach(ch => {
+                const steps = GUIDE_STEPS.filter(s => s.ch === ch.id);
+                const done = steps.filter(s => g.done[s.id]).length;
+                const locked = lvl < ch.minLevel;
+                html += `<div style="background:#141414;border:1px solid ${g.chaptersDone[ch.id] ? '#2e7d32' : '#2a2a2a'};border-radius:8px;padding:0.5rem 0.6rem;${locked ? 'opacity:0.55;' : ''}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="color:#ddd;font-weight:bold;font-size:0.88rem;">${ch.icon} ${ch.name}</span>
+                        <span style="color:${g.chaptersDone[ch.id] ? '#8bc34a' : '#888'};font-size:0.75rem;">${locked ? '🔒 lvl ' + ch.minLevel : done + '/' + steps.length}</span>
+                    </div>
+                    ${locked ? '' : steps.map(s => {
+                        const isDone = !!g.done[s.id];
+                        const isCur = cur && !cur.locked && cur.step.id === s.id;
+                        const lockedStep = lvl < _guideStepMinLevel(s);
+                        return `<div style="font-size:0.8rem;margin-top:0.2rem;color:${isDone ? '#6a9a6a' : isCur ? '#ffd54f' : '#999'};${isDone ? 'text-decoration:line-through;' : ''}">${isDone ? '✓' : isCur ? '▶' : lockedStep ? '🔒' : '○'} ${s.title}${lockedStep && !isDone ? ' (lvl ' + _guideStepMinLevel(s) + ')' : ''}</div>`;
+                    }).join('')}
+                </div>`;
+            });
+            html += '</div>';
+            html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-top:0.7rem;">
+                <button class="btn" onclick="closeModal(); guideMinimize(${g.minimized ? 'false' : 'true'});" style="background:#333;font-size:0.8rem;">${g.minimized ? '📌 Ukázat panel' : '🙈 Schovat panel'}</button>
+                <button class="btn" onclick="closeModal(); showTutorial(0);" style="background:#333;font-size:0.8rem;">📖 Celá příručka</button>
+            </div>
+            <div style="text-align:center;margin-top:0.5rem;"><span onclick="guideDisable()" style="color:#666;font-size:0.72rem;cursor:pointer;text-decoration:underline;">Vypnout průvodce</span></div>`;
+            showModal('📘 Průvodce přeživšího', html);
+        }
+        window.showGuideModal = showGuideModal;
+
+        function guideGo(stepId) {
+            const s = GUIDE_STEPS.find(x => x.id === stepId);
+            try { if (s?.go) s.go(); } catch (e) { console.warn('guideGo', e); }
+            setTimeout(_guideRenderBar, 300);
+        }
+        window.guideGo = guideGo;
+
+        // Zapnutí průvodce. silentCatchUp = stávající hráč: co už umí, se odškrtne BEZ odměny (nejde farmit)
+        function guideEnable(silentCatchUp) {
+            if (!state.guide || typeof state.guide !== 'object') state.guide = { enabled: true, done: {}, flags: {}, chaptersDone: {}, minimized: false, startedAt: Date.now() };
+            state.guide.enabled = true;
+            state.guide.minimized = false;
+            _guideEnsure();
+            if (silentCatchUp) {
+                state.guide.flags.tab_inv = state.guide.flags.tab_inv || Date.now(); // stávající hráč Výbavu zná
+                GUIDE_STEPS.forEach(s => { if (!state.guide.done[s.id] && _guideSafeCheck(s)) state.guide.done[s.id] = Date.now(); });
+                GUIDE_CHAPTERS.forEach(ch => {
+                    const steps = GUIDE_STEPS.filter(s => s.ch === ch.id);
+                    if (steps.every(s => state.guide.done[s.id])) state.guide.chaptersDone[ch.id] = state.guide.chaptersDone[ch.id] || Date.now();
+                });
+            }
+            try { saveGame(true); } catch (e) {}
+            _guideRenderBar();
+            setTimeout(guideTick, 300);
+        }
+        window.guideEnable = guideEnable;
+
+        function guideDisable() {
+            showModal('📘 Vypnout průvodce?', `
+                <p style="color:#ccc;text-align:center;">Panel s úkoly zmizí. Zapnout ho můžeš znovu v Nápovědě (📖) → Průvodce přeživšího.</p>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:1rem;">
+                    <button class="btn" onclick="showGuideModal()" style="background:#333;">Zpět</button>
+                    <button class="btn" onclick="if(state.guide){state.guide.enabled=false;} try{saveGame(true)}catch(e){} closeModal(); _guideRenderBar();" style="background:#8B0000;">Vypnout</button>
+                </div>`);
+        }
+        window.guideDisable = guideDisable;
+
+        // Nabídka pro stávající hráče (klik na ikonku 📘)
+        function showGuideOffer() {
+            showModal('📘 Průvodce přeživšího', `
+                <div style="text-align:center;">
+                    <div style="font-size:3rem;">📘</div>
+                    <p style="color:#ccc;font-size:0.9rem;line-height:1.45;">Nový průvodce tě krok za krokem provede vším, co hra umí: boj, výroba, společníci, osada, frakce, dungeony, tržiště i Propast. Za každý krok malá odměna.</p>
+                    <p style="color:#888;font-size:0.8rem;">Co už umíš, se ti rovnou odškrtne (bez odměny).</p>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.8rem;">
+                    <button class="btn" onclick="closeModal(); state.guide = { enabled: false, done: {}, flags: {}, chaptersDone: {}, minimized: true, declinedAt: Date.now() }; try{saveGame(true)}catch(e){} _guideRenderBar();" style="background:#333;">Ne, díky</button>
+                    <button class="btn" onclick="closeModal(); guideEnable(true); setTimeout(showGuideModal, 400);" style="background:#2e7d32;">Zapnout</button>
+                </div>`);
+        }
+        window.showGuideOffer = showGuideOffer;
+
+        // Pravidelná kontrola + přepočet pozice panelu
+        setInterval(guideTick, 2000);
+        window.addEventListener('resize', () => { try { _guideRenderBar(); } catch (e) {} });
+
         
         // === PRŮVODCE PŘEŽIVŠÍHO ===
         // Kontextový průvodce pro nové hráče — zobrazuje se na mapě dokud hráč nedosáhne level 5
@@ -127656,6 +128138,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 <div style="display: flex; gap: 3px; margin-bottom: 4px;">
                     <button class="btn wl-btn" onclick="showHallOfFame()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif"><span style="font-size:0.7rem;color:#ffd700">🏅 SÍŇ SLÁVY</span></button>
+                    <button class="btn wl-btn" onclick="(state.guide && state.guide.enabled) ? showGuideModal() : showGuideOffer()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:'Rajdhani',sans-serif;border:1px solid #1b3a1b"><span style="font-size:0.7rem;color:#8bc34a">📘 PRŮVODCE</span></button>
                     ${(typeof isAdmin === 'function' && isAdmin()) ? '<button class="btn wl-btn" onclick="showGameHelp()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:\'Rajdhani\',sans-serif;border:1px solid #1a3a4a"><span style="font-size:0.7rem;color:#4fc3f7">📖 NÁPOVĚDA 🔒</span></button>' : '<button class="btn wl-btn" onclick="showGameHelp()" style="flex:1;background:#0a0a0a;padding:0.3rem;font-family:\'Rajdhani\',sans-serif;border:1px solid #1a3a4a"><span style="font-size:0.7rem;color:#4fc3f7">📖 NÁPOVĚDA</span></button>'}
                 </div>
                 
@@ -142097,6 +142580,8 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             }
             
             let html = '<div style="padding: 0.5rem;">';
+            // [v6.5] Průvodce přeživšího — zapnutí/otevření
+            html += `<button class="btn" onclick="closeModal(); setTimeout(() => (state.guide && state.guide.enabled) ? showGuideModal() : (guideEnable(true), setTimeout(showGuideModal, 400)), 200);" style="width:100%;margin-bottom:0.8rem;background:linear-gradient(135deg,#2e7d32,#1b5e20);font-size:0.9rem;">📘 Průvodce přeživšího ${state.guide && state.guide.enabled ? '— otevřít' : '— zapnout'}</button>`;
             html += '<p style="color: #aaa; font-size: 0.85rem; text-align: center; margin-bottom: 1rem;">Klikni na kategorii pro rozbalení, pak na téma pro detaily.</p>';
             
             // Search box
