@@ -53037,6 +53037,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function render3DExploration() {
             const E = window._explore3D;
             if (!E || !E.ctx) return;
+            // 🔋 [v7.8] úspora baterie
+            if (document.hidden) return;
+            if (typeof paEcoMode === 'function' && paEcoMode() && E.player) {
+                const _p = E.player, _l = E._ecoLp;
+                const _mv = !_l || Math.abs(_p.x - _l.x) + Math.abs(_p.y - _l.y) > 0.0005 || _p.angle !== _l.a;
+                E._ecoLp = { x: _p.x, y: _p.y, a: _p.angle };
+                E._ecoN = ((E._ecoN || 0) + 1) % 3;
+                if (!_mv && E._ecoN) return;
+            }
             // 🆕 [v6.7] Pohled shora místo 3D (při chybě se jednorázově vrátí 3D)
             if (topDownExploreEnabled()) {
                 try { renderTopDownExplore(); return; }
@@ -97953,9 +97962,11 @@ body.pa-theme #paAsh{display:block}
 .kc-die{animation:kcDie 1.1s ease-in forwards}
 .kc-muzzle{position:absolute;width:40%;height:40%;object-fit:contain;pointer-events:none;z-index:5;animation:kcMuzzle .25s ease-out forwards}
 @media (prefers-reduced-motion: reduce){.kc-lunge,.kc-recoil,.kc-hurt,.kc-die,.kc-muzzle{animation:none !important}.kc-unit,.kc-smoke,.kc-flick,.kc-pulse,#paAsh i,body.pa-theme .wm-tile.wm-here{animation:none !important}#paAsh{display:none !important}}
+body.pa-eco .kc-unit,body.pa-eco .kc-smoke,body.pa-eco .kc-flick,body.pa-eco .kc-pulse,body.pa-eco #paAsh i,body.pa-eco .wm-tile.wm-here,body.pa-eco #statusBars,body.pa-eco [style*="bounce-arrow"]{animation:none !important}
+body.pa-eco #paAsh,body.pa-eco #dustLayer{display:none !important}
 #paOverlay{position:fixed;inset:0;pointer-events:none;z-index:9997;display:none}
 body.pa-theme #paOverlay{display:block}
-#paOverlay::before{content:'';position:absolute;inset:0;opacity:.18;mix-blend-mode:overlay;background:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+#paOverlay::before{content:'';position:absolute;inset:0;opacity:.06;background:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 #paOverlay::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.13) 0 1px,transparent 1px 3px),radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,.6) 100%)}
 `;
         function _paEmojiKey(s) { return (s || '').replace(/[️‍]/g, '').trim(); }
@@ -98001,9 +98012,42 @@ body.pa-theme #paOverlay{display:block}
             });
         }
         let _paObserver = null, _paPending = false;
+        // 🔋 [v7.8] Úsporný režim – vypne nekonečné animace a zpomalí kreslení průzkumu, když hráč stojí.
+        // Nastavení state.settings.batterySaver: 'auto' (výchozí) | 'on' | 'off'.
+        // Auto = zapnuto, když systém chce omezit pohyb, nebo telefon neběží na nabíječce
+        // (Battery API – Android/Chrome; kde není, např. iPhone, rozhoduje dotyková obrazovka).
+        window._paBattery = null;
+        try {
+            if (navigator.getBattery) navigator.getBattery().then(b => {
+                const upd = () => { window._paBattery = { level: b.level, charging: b.charging }; try { applyPostapoTheme(); } catch (e) {} };
+                upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd);
+            }).catch(() => {});
+        } catch (e) {}
+        function paEcoMode() {
+            const pref = (typeof state !== 'undefined' && state.settings && state.settings.batterySaver) || 'auto';
+            if (pref === 'on') return true;
+            if (pref === 'off') return false;
+            try { if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return true; } catch (e) {}
+            const bat = window._paBattery;
+            if (bat) return !bat.charging;
+            try { return !!(window.matchMedia && matchMedia('(pointer: coarse)').matches); } catch (e) { return false; }
+        }
+        window.paEcoMode = paEcoMode;
+        function toggleBatterySaver() {
+            if (!state.settings) state.settings = {};
+            const cur = state.settings.batterySaver || 'auto';
+            state.settings.batterySaver = cur === 'auto' ? 'on' : (cur === 'on' ? 'off' : 'auto');
+            try { applyPostapoTheme(); } catch (e) {}
+            try { saveGame(); } catch (e) {}
+            const lbl = { auto: 'AUTO (podle nabíječky)', on: 'ZAPNUTO', off: 'VYPNUTO' }[state.settings.batterySaver];
+            try { notifyInfo('🔋 Úspora baterie: ' + lbl, paEcoMode() ? 'Animace pozadí vypnuté' : 'Všechny efekty zapnuté'); } catch (e) {}
+            if (!window.combatState && typeof renderFull === 'function') renderFull();
+        }
+        window.toggleBatterySaver = toggleBatterySaver;
         function applyPostapoTheme() {
             const on = typeof kenneyCombatEnabled === 'function' && kenneyCombatEnabled();
             const body = document.body; if (!body) return;
+            body.classList.toggle('pa-eco', paEcoMode());
             if (on && !document.getElementById('paThemeCss')) {
                 const st = document.createElement('style'); st.id = 'paThemeCss'; st.textContent = PA_CSS; document.head.appendChild(st);
                 const ov = document.createElement('div'); ov.id = 'paOverlay'; body.appendChild(ov);
@@ -98021,7 +98065,8 @@ body.pa-theme #paOverlay{display:block}
             if (on && !_paObserver) {
                 _paObserver = new MutationObserver(() => {
                     if (_paPending) return; _paPending = true;
-                    requestAnimationFrame(() => { _paPending = false; try { _paDecorate(document); } catch (e) { console.warn('PA theme:', e); } });
+                    // [v7.8] úspora baterie: hra mění text každou sekundu → dekorace nejvýš 1× za 700 ms
+                    setTimeout(() => { _paPending = false; try { _paDecorate(document); } catch (e) { console.warn('PA theme:', e); } }, 700);
                 });
                 _paObserver.observe(body, { childList: true, subtree: true });
                 _paDecorate(document);
@@ -129494,6 +129539,12 @@ body.pa-theme #paOverlay{display:block}
                             <span>${state.settings?.disableCombatNotifs ? '🔇' : '⚔️'}</span>
                             <span style="font-size: 0.75rem; color: ${state.settings?.disableCombatNotifs ? '#9a8a4a' : '#8aa68a'};">COMBAT BUBLINY ${state.settings?.disableCombatNotifs ? '[VYPNUTO]' : '[ZAPNUTO]'}</span>
                         </button>
+                        
+                        <!-- 🔋 [v7.8] Úspora baterie -->
+                        ${(() => { const _bp = state.settings?.batterySaver || 'auto'; const _eco = typeof paEcoMode === 'function' && paEcoMode(); return `<button class="btn" onclick="toggleBatterySaver()" style="width: 100%; background: #0a0a0a; border: 1px solid ${_eco ? '#2a4a2a' : '#1a1a1a'}; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600;" title="Auto = šetří, když telefon není na nabíječce">
+                            <span>${_eco ? '🔋' : '⚡'}</span>
+                            <span style="font-size: 0.75rem; color: ${_eco ? '#8bc34a' : '#8aa68a'};">ÚSPORA BATERIE [${_bp === 'auto' ? 'AUTO – ' + (_eco ? 'šetří' : 'plné efekty') : (_bp === 'on' ? 'ZAPNUTO' : 'VYPNUTO')}]</span>
+                        </button>`; })()}
                         
                         <button class="btn" onclick="showBugReportModal()" style="width: 100%; background: #0a0a0a; border: 1px solid #1a1a1a; padding: 0.4rem 0.6rem; border-radius: 3px; display: flex; align-items: center; gap: 0.5rem; font-family: 'Rajdhani', sans-serif; font-weight: 600;">
                             <span>🐛</span>
@@ -179596,6 +179647,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
         
         // === FLOATING DUST PARTICLES ===
         const dustContainer = document.createElement('div');
+        dustContainer.id = 'dustLayer'; // [v7.8] eco režim ho skryje
         dustContainer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:4;overflow:hidden;';
         document.body.appendChild(dustContainer);
         
