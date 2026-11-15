@@ -862,6 +862,17 @@
         body.combat-fullscreen .modal-content > div:last-child {
             margin-bottom: max(0px, env(safe-area-inset-bottom, 1rem));
         }
+        /* [FIX v6.4.2] Android WebView (APK) hlásí safe-area-inset-bottom = 0 → tlačítka Item/Obrana
+           byla těsně u systémových tlačítek Androidu (hlášeno HLB: aplikace se omylem zavřela).
+           Na dotykových zařízeních vždy aspoň 2.2rem prostoru dole. */
+        @media (pointer: coarse) {
+            body.combat-fullscreen .modal-content {
+                padding-bottom: max(2.2rem, env(safe-area-inset-bottom, 0px)) !important;
+            }
+            body.combat-fullscreen .modal-content > div:last-child {
+                margin-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+            }
+        }
         /* Na větších obrazovkách zachovej modálový styl */
         @media (min-width: 900px) {
             body.combat-fullscreen .modal-content {
@@ -7895,6 +7906,10 @@
         
         function getRarityName(rarity) {
             return RARITY_NAMES_CS[rarity] || rarity;
+        }
+        // [FIX v6.4.2] Chyběla — detail zboží u cestovního obchodníka (showTravelTraderItemDetail) padal na ReferenceError
+        function getRarityColor(rarity) {
+            return RARITY_COLORS[rarity] || RARITY_COLORS.common;
         }
         
         // Zpětná kompatibilita
@@ -21311,7 +21326,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🎭 Set bonusy z equipment (radResist je v bodech, převeď na procenta: 40 bodů = 40%)
             try {
-                const setEffects = getClassSetEffects();
+                // [FIX v6.4.2] getClassSetEffects neexistuje → ReferenceError (tiše chycen) → radResist ze
+                // setů (Plynová maska mistra, Pouštní turban…) se NIKDY nepočítal. Správně getActiveSetEffects.
+                const setEffects = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : null;
                 if (setEffects?.radResist > 0) {
                     // radResist z equipment je v bodech (30, 40), převedeme na procenta
                     totalResist += setEffects.radResist / 100;
@@ -22146,6 +22163,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         function showNotificationPrompt() {
             if (localStorage.getItem('notificationPromptDismissed')) return;
+            // [FIX v6.4.2] Banner se nesmí ukázat přes bojová tlačítka (fixed bottom:80px) — počkej na konec boje
+            if (window.combatState || document.body.classList.contains('combat-fullscreen')) {
+                setTimeout(showNotificationPrompt, 15000);
+                return;
+            }
+            if (document.getElementById('notificationBanner')) return;
             
             const banner = document.createElement('div');
             banner.id = 'notificationBanner';
@@ -25057,7 +25080,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 if (toRemove > 0) {
                     // Odeber z inventáře
-                    removeItemsById('mutant_blood', toRemove);
+                    // [FIX v6.4.2] removeItemsById neexistovalo → ReferenceError PO odečtení z resources
+                    // → hráč přišel o krev a reputaci nedostal
+                    while (toRemove > 0) {
+                        const _bIt = state.inv.find(i => i.id === 'mutant_blood');
+                        if (!_bIt) break;
+                        const _take = Math.min(toRemove, _bIt.count || 1);
+                        removeItemFromInventory(_bIt, _take);
+                        toRemove -= _take;
+                    }
                 }
             }
             
@@ -25070,7 +25101,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Refresh modal
             closeModal();
-            setTimeout(() => showFactionDetail(factionId), 100);
+            // [FIX v6.4.2] showFactionDetail neexistuje → okno se po daru neobnovilo
+            setTimeout(() => showFactionInteraction(factionId), 100);
+            saveGame(true);
         }
         
         function openFactionShop(factionId) {
@@ -48070,6 +48103,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     }
                     
                     // Zpracuj event podle jeho typu
+                    // [FIX v6.4.2] Sjednoceno s hlavním switchem v triggerTravelEvent. Dřív tu byly typy, které
+                    // neexistují (merchant/mystery/… → ReferenceError) a chyběly skutečné typy z TRAVEL_EVENTS
+                    // (cache, choice, explore, rest, theft, sickness, trader, resource, exhaustion…) → po
+                    // restartu se místo uloženého eventu spustil náhodný loot/boj.
                     switch (savedEvent.type) {
                         case 'combat':
                             handleCombatEvent(event.dangerLevel);
@@ -48083,23 +48120,37 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         case 'trap':
                             handleTrapEvent();
                             break;
-                        case 'merchant':
-                            handleMerchantEvent();
+                        case 'exhaustion':
+                            handleExhaustionEvent();
                             break;
                         case 'companion':
                             handleCompanionEvent(savedEvent);
                             break;
-                        case 'mystery':
-                            handleMysteryEvent();
+                        case 'resource':
+                        case 'dirty_water':
+                        case 'food_scraps':
+                            handleResourceEvent(savedEvent);
                             break;
-                        case 'treasure':
-                            handleTreasureEvent();
+                        case 'choice':
+                            handleChoiceEvent(savedEvent);
                             break;
-                        case 'survivor':
-                            handleSurvivorEvent();
+                        case 'explore':
+                            handleExploreEvent(savedEvent);
                             break;
-                        case 'weather':
-                            handleWeatherEvent();
+                        case 'rest':
+                            handleRestEvent(savedEvent);
+                            break;
+                        case 'theft':
+                            handleTheftEvent();
+                            break;
+                        case 'sickness':
+                            handleSicknessEvent();
+                            break;
+                        case 'cache':
+                            handleCacheEvent(savedEvent);
+                            break;
+                        case 'trader':
+                            handleTraderEvent(savedEvent);
                             break;
                         default:
                             // Fallback - zobraz jako loot nebo combat
@@ -49290,7 +49341,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             checkDailyQuests();
         }
         
+        // [FIX v6.4.2] Obal: když při příchodu spadne JAKÁKOLI kontrola (quest/achievement/rádio…),
+        // dřív zůstala window._travelCompleting = true navždy → každá DALŠÍ cesta se nedokončila
+        // (hráč "cestoval" s časem 0, pomohl jen restart — hlášeno Cinky, Czipi).
         function checkTravelComplete() {
+            try {
+                _checkTravelCompleteImpl();
+            } catch (e) {
+                console.error('❌ checkTravelComplete chyba (cesta dokončena, úklid stavu):', e);
+            } finally {
+                // Cesta už byla označená jako dokončená (world.traveling=false) → vždy ukliď stav
+                if (window._travelCompleting && !state.world.traveling) {
+                    delete window._travelCompleting;
+                    if (state.map) { state.map.traveling = false; state.map.inBase = (state.world.currentLocation === 'shelter'); }
+                    if (state.world.travelTo === state.world.currentLocation) { state.world.travelTo = null; state.world.travelPath = null; }
+                    try { renderFull(); } catch (e2) {}
+                    try { saveGame(true); } catch (e3) {}
+                }
+            }
+        }
+        
+        function _checkTravelCompleteImpl() {
             if (!state.world.traveling) return;
             
             const now = Date.now();
@@ -51410,16 +51481,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${gridHtml}
                 </div>
                 
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;max-width:160px;margin:0 auto 0.4rem auto;">
+                <!-- [FIX v6.4.2] Větší šipky (46px) + odstup od tlačítek odchodu — hlášeno HLB: překlik na "Opustit" -->
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;max-width:190px;margin:0 auto 0.4rem auto;">
                     <div></div>
-                    <button onclick="dungeonExploreMove(0,-1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬆️</button>
+                    <button onclick="dungeonExploreMove(0,-1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬆️</button>
                     <div></div>
-                    <button onclick="dungeonExploreMove(-1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬅️</button>
-                    <button onclick="dungeonExploreMove(0,1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">⬇️</button>
-                    <button onclick="dungeonExploreMove(1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.9rem;">➡️</button>
+                    <button onclick="dungeonExploreMove(-1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬅️</button>
+                    <button onclick="dungeonExploreMove(0,1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬇️</button>
+                    <button onclick="dungeonExploreMove(1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">➡️</button>
                 </div>
                 
                 ${recentLoot ? `<div style="background:#0a0a0a;padding:0.2rem 0.4rem;border-radius:4px;margin-bottom:0.3rem;">${recentLoot}</div>` : ''}
+                <div style="height:1.4rem;"></div>
                 ${exitBtn}
                 <button onclick="confirmFleeExploration()" style="width:100%;background:#444;border:none;color:#aaa;padding:0.35rem;border-radius:4px;cursor:pointer;font-size:0.7rem;">🚪 Utéct (bez XP bonusu)</button>
             `);
@@ -55253,6 +55326,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         // === SYSTÉM NÁHODNÝCH EVENTŮ BĚHEM CESTY ===
         let scheduledEventTimeouts = [];
+        // [FIX v6.4.2] KRITICKÉ: travelEventTimeouts se používal při příchodu na lokaci, ale nikde nebyl
+        // deklarován → ReferenceError při KAŽDÉM dokončení cesty. Následek: zbytek příchodu se neprovedl
+        // (příjem z pozemku, XP, questy "navštiv lokaci", denní questy, achievementy, uložení) a pojistka
+        // _travelCompleting zůstala zamčená → DALŠÍ cesta se už nedokončila až do restartu hry
+        // (hlášeno Cinky, Czipi: "čas cesty zůstane na 0, musím restartovat").
+        let travelEventTimeouts = [];
         
         function clearScheduledEvents() {
             scheduledEventTimeouts.forEach(t => clearTimeout(t));
@@ -67659,8 +67738,10 @@ function openFullscreenMap() {
             // Zmenšeno scaling, aby raidy byly výzva, ne nefair
             const settlementHpMult = 1 + (settlementLevel - 1) * 0.10;  // bylo 0.15
             const settlementDmgMult = 1 + (settlementLevel - 1) * 0.07; // bylo 0.10
-            const playerHpMult = 1 + Math.floor(playerLevel / 10) * 0.10;  // bylo 0.15
-            const playerDmgMult = 1 + Math.floor(playerLevel / 10) * 0.05; // bylo 0.08
+            // [FIX v6.4.2] Level hráče škáluje už startCombatWithGroup (levelScaling) — tady by se
+            // započítal PODRUHÉ (hlášeno Štístko: nájezdníci mě zabili na 1 ránu). Zůstává jen škálování osadou.
+            const playerHpMult = 1;
+            const playerDmgMult = 1;
             const levelMultiplierHP = settlementHpMult * playerHpMult;
             const levelMultiplierDMG = settlementDmgMult * playerDmgMult;
             // [FIX v3.9.85] Drasticky snížen počet extra nepřátel
@@ -83586,7 +83667,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             state.settlementShop = null;
             generateSettlementShop();
             closeModal();
-            openSettlementShop();
+            // [FIX v6.4.2] openSettlementShop neexistuje (ReferenceError) → obchod se po refreshi neotevřel
+            tradeAtSettlement();
             notifySuccess('🔄 Obchod obnoven', 'Nový sortiment!');
         }
         
@@ -88076,7 +88158,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (combatType === 'dungeon') eliteChance = 0.15;
                     if ((state.time.days || 0) > 20) eliteChance += 0.10;
                     
-                    const isElite = Math.random() < eliteChance;
+                    // [FIX v6.4.2] Nájezd na osadu má pevné složení vlny → bez náhodných elit (2× HP, 1.5× DMG)
+                    const isElite = combatType !== 'settlement_raid' && Math.random() < eliteChance;
                     let eliteMultiplier = 1;
                     let elitePrefix = '';
                     let eliteIcon = e.icon;
@@ -95233,6 +95316,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return;
                 }
             }
+            // [FIX v6.4.2] overflowDamage se níže používal (skill Přemíra), ale nikde nebyl definován
+            // → ReferenceError při zabití nepřítele společníkem se skillem → útok spadl.
+            const overflowDamage = Math.max(0, cappedDamage - (target.hp || 0));
             target.hp = Math.max(0, target.hp - cappedDamage);
             
             // [FIX v4.0.1] Floating damage number + bubbles synchronizované s projektilem.
@@ -106829,7 +106915,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                     else if (_sAr?.special === 'rad_immune') totalRadResist += 0.5;
                                 }
                                 // Set bonusy
-                                try { const _se = typeof getClassSetEffects === 'function' ? getClassSetEffects() : null; if (_se?.radResist > 0) totalRadResist += _se.radResist / 100; } catch(e) {}
+                                try { const _se = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : null; /* [FIX v6.4.2] dřív neexistující getClassSetEffects */ if (_se?.radResist > 0) totalRadResist += _se.radResist / 100; } catch(e) {}
                                 // Frakce (Mutanti)
                                 try { const _fb = getFactionBonuses(); if (_fb.radResist > 0) totalRadResist += _fb.radResist; } catch(e) {}
                                 // Exotic bonus (Radiační talisman)
@@ -163668,8 +163754,11 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 }
                 
                 // Pokud jsem výherce, ukáž modal
+                // [FIX v6.4.2] prizeDesc byl definovaný jen uvnitř else výše → ReferenceError → catch uvolnil
+                // zámek autoDrawClaimed i po úspěšném losování (riziko druhého losování jiným klientem)
                 if (winner === getPlayerName()) {
-                    notifySuccess('🎉 VYHRÁL JSI TOMBOLU!', prizeDesc);
+                    const _myPrizeDesc = typeof getPrizeDescription === 'function' ? getPrizeDescription(tombola.prize) : '???';
+                    notifySuccess('🎉 VYHRÁL JSI TOMBOLU!', _myPrizeDesc);
                 }
                 
             } catch (e) {
