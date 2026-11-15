@@ -41517,7 +41517,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <span style="background: #1a2a1a; padding: 0.15rem 0.5rem; border-radius: 3px; border: 1px solid #3a4a3a; color: #8bc34a; font-size: 0.75rem; font-weight: bold;">LVL ${state.settlement.level}</span>
                                 <!-- 🆕 [v6.4.0] 3D procházka osadou -->
-                                <button onclick="show3DSettlement()" title="Procházka osadou ve 3D" style="background: linear-gradient(135deg,#3d2817,#5c3a1f); border: 1px solid #7a5430; padding: 0.2rem 0.5rem; border-radius: 4px; color: #e8b863; font-size: 0.75rem; font-weight: bold; cursor: pointer; font-family: monospace;">🎮 3D</button>
+                                <button onclick="show3DSettlement()" title="Procházka osadou ve 3D" style="background: linear-gradient(135deg,#3d2817,#5c3a1f); border: 1px solid #7a5430; padding: 0.2rem 0.5rem; border-radius: 4px; color: #e8b863; font-size: 0.75rem; font-weight: bold; cursor: pointer; font-family: monospace;">${(typeof kenneyCombatEnabled === 'function' && kenneyCombatEnabled()) ? '🗺️ Projít' : '🎮 3D'}</button>
                             </div>
                         </div>
                         <div style="margin-top: 0.5rem;">
@@ -51994,7 +51994,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const limitCheck = checkDailyActionLimit('explore3d', loc.id, 1); // 1× denně
                 if (limitCheck && !limitCheck.canDo) {
                     const hours = Math.ceil((limitCheck.resetIn || 0) / (1000 * 60 * 60));
-                    notifyWarning('Denní limit', `3D průzkum už dnes dělal. Reset za ${hours}h.`);
+                    notifyWarning('Denní limit', `Tuhle lokaci jsi dnes už prozkoumal. Reset za ${hours}h.`);
                     return;
                 }
             }
@@ -52379,6 +52379,234 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return enemies;
         }
         
+        // ============================================================
+        // 🆕 [v6.7] POHLED SHORA pro průzkum lokace i procházku osadou (Kenney CC0 grafika)
+        // Nahrazuje 3D raycaster (render3DExploration). 3D kód zůstává v souboru, jen se nepoužívá,
+        // když je zapnutá nová grafika (kenneyCombatEnabled – zatím admin, pak KENNEY_COMBAT_FOR_ALL).
+        // Herní logika (mapa, kolize, loot, nepřátelé, boj, východ) je SPOLEČNÁ – mění se jen vykreslení
+        // a ovládání (šipky = přímý pohyb nahoru/dolů/vlevo/vpravo místo otáčení).
+        // ============================================================
+        const KX_THEME = {
+            wasteland:  { floor: 'f_dirt1',  wall: 'w_ruin',  dark: 0.45 },
+            city:       { floor: 'f_conc1',  wall: 'w_ruin',  dark: 0.45 },
+            cave:       { floor: 'f_dirt2',  wall: 'w_rock',  dark: 0.86, torch: true },
+            bunker:     { floor: 'f_metal',  wall: 'w_ruin',  dark: 0.82, torch: true },
+            industrial: { floor: 'f_metal',  wall: 'w_rust',  dark: 0.55 },
+            slum:       { floor: 'f_dirt1',  wall: 'w_rust',  dark: 0.5 },
+            forest:     { floor: 'f_grass1', wall: 'w_hedge', dark: 0.45, bushes: true },
+            snow:       { floor: 'f_conc1',  wall: 'w_snow',  dark: 0.3 },
+            toxic:      { floor: 'f_grass2', wall: 'w_rust',  dark: 0.55, toxic: true }
+        };
+        const KX_LOOT_SPRITES = { '📦': 'o_crate1', '🗃️': 'o_crate3', '🪣': 'o_barrel', '🧰': 'o_crate2', '💼': 'o_crate4' };
+        const _kxCache = {};
+        function _kxImg(nameOrSrc) {
+            const src = nameOrSrc.indexOf('/') >= 0 ? nameOrSrc : KC_IMG + nameOrSrc + '.png';
+            let im = _kxCache[src];
+            if (!im) { im = new Image(); im.src = src; _kxCache[src] = im; }
+            return (im.complete && im.naturalWidth > 0) ? im : null;
+        }
+        function topDownExploreEnabled() {
+            const E = window._explore3D;
+            return !!(E && !E._kxFail && typeof kenneyCombatEnabled === 'function' && kenneyCombatEnabled());
+        }
+        window.topDownExploreEnabled = topDownExploreEnabled;
+
+        function _kxSprite(ctx, img, cx, cy, size, angle) {
+            const r = img.naturalWidth / img.naturalHeight;
+            const w = r >= 1 ? size : size * r, h = r >= 1 ? size / r : size;
+            ctx.save(); ctx.translate(cx, cy); if (angle) ctx.rotate(angle);
+            ctx.shadowColor = 'rgba(0,0,0,0.65)'; ctx.shadowBlur = 4; ctx.shadowOffsetX = 2; ctx.shadowOffsetY = 3;
+            ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+        function _kxCircleImg(ctx, img, cx, cy, d, ring) {
+            ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, d / 2, 0, Math.PI * 2); ctx.closePath();
+            ctx.fillStyle = '#111'; ctx.fill(); ctx.clip(); ctx.drawImage(img, cx - d / 2, cy - d / 2, d, d); ctx.restore();
+            ctx.beginPath(); ctx.arc(cx, cy, d / 2, 0, Math.PI * 2); ctx.lineWidth = 2; ctx.strokeStyle = ring; ctx.stroke();
+        }
+        function _kxEmoji(ctx, ch, cx, cy, px) {
+            ctx.save(); ctx.font = `${px}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 3;
+            ctx.fillText(ch, cx, cy); ctx.restore();
+        }
+        function _kxHash(s) { s = String(s || ''); let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+
+        function renderTopDownExplore() {
+            const E = window._explore3D;
+            const ctx = E.ctx, W = E.canvas.width, H = E.canvas.height;
+            const settle = E.mode === 'settlement';
+            const themeKey = settle ? null : (Object.keys(EXPLORE3D_THEMES).find(k => EXPLORE3D_THEMES[k] === E.theme) || 'wasteland');
+            const th = settle ? { floor: 'f_dirt1', path: 'f_conc1', wall: 'w_fence', dark: 0 } : (KX_THEME[themeKey] || KX_THEME.wasteland);
+            const TS = settle ? 58 : 64;
+            const N = E.size, mapPx = N * TS;
+            let camX = E.player.x * TS - W / 2, camY = E.player.y * TS - H / 2;
+            camX = mapPx <= W ? (mapPx - W) / 2 : Math.max(0, Math.min(mapPx - W, camX));
+            camY = mapPx <= H ? (mapPx - H) / 2 : Math.max(0, Math.min(mapPx - H, camY));
+            const sx = x => x * TS - camX, sy = y => y * TS - camY;
+            ctx.imageSmoothingEnabled = true;
+            ctx.fillStyle = '#050505'; ctx.fillRect(0, 0, W, H);
+            const x0 = Math.max(0, Math.floor(camX / TS)), x1 = Math.min(N - 1, Math.floor((camX + W) / TS));
+            const y0 = Math.max(0, Math.floor(camY / TS)), y1 = Math.min(N - 1, Math.floor((camY + H) / TS));
+            const vis = (x, y) => !E.visited || (E.visited[y] && E.visited[y][x]);
+            const isWall = c => c === 1 || c === 4;
+            const fImg = _kxImg(th.floor), pImg = th.path ? _kxImg(th.path) : null, wImg = _kxImg(th.wall);
+
+            // 1) Podlaha, cesty, východ
+            for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+                if (!vis(x, y)) continue;
+                const c = E.map[y][x];
+                const img = (c === 5 && pImg) ? pImg : fImg;
+                if (img) ctx.drawImage(img, sx(x), sy(y), TS + 0.5, TS + 0.5); else { ctx.fillStyle = '#3a2e22'; ctx.fillRect(sx(x), sy(y), TS + 0.5, TS + 0.5); }
+                if (th.toxic && ((x * 7 + y * 13) % 5 === 0)) { ctx.fillStyle = 'rgba(90,220,40,0.12)'; ctx.fillRect(sx(x), sy(y), TS, TS); }
+                if (c === 3) { const ex = _kxImg('x_exit'); if (ex) ctx.drawImage(ex, sx(x), sy(y), TS, TS); else _kxEmoji(ctx, '🚪', sx(x) + TS / 2, sy(y) + TS / 2, TS * 0.6); }
+            }
+            // 2) Stíny zdí (dojem výšky)
+            ctx.fillStyle = 'rgba(0,0,0,0.42)';
+            for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+                if (vis(x, y) && isWall(E.map[y][x])) ctx.fillRect(sx(x) + TS * 0.14, sy(y) + TS * 0.16, TS, TS);
+            }
+            // 3) Zdi a budovy
+            for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+                if (!vis(x, y)) continue;
+                const c = E.map[y][x], px = sx(x), py = sy(y);
+                if (c === 1) {
+                    if (wImg) ctx.drawImage(wImg, px, py, TS + 0.5, TS + 0.5); else { ctx.fillStyle = '#4a4038'; ctx.fillRect(px, py, TS, TS); }
+                    if (th.bushes) { const b = _kxImg((x + y) % 2 ? 'o_bush1' : 'o_bush2'); if (b) ctx.drawImage(b, px - TS * 0.08, py - TS * 0.08, TS * 1.16, TS * 1.16); }
+                } else if (c === 4) {
+                    const roof = _kxImg('b_roof');
+                    if (roof) ctx.drawImage(roof, px, py, TS, TS); else { ctx.fillStyle = '#6a4a30'; ctx.fillRect(px, py, TS, TS); }
+                    const b = E.buildingMap?.[x + ',' + y];
+                    const bsrc = b && typeof BUILDING_CUSTOM_ICONS !== 'undefined' ? BUILDING_CUSTOM_ICONS[b.id] : null;
+                    const bimg = bsrc ? _kxImg(bsrc) : null;
+                    if (bimg) _kxCircleImg(ctx, bimg, px + TS / 2, py + TS / 2, TS * 0.7, 'rgba(255,190,90,.9)');
+                    else _kxEmoji(ctx, b?.icon || '🏠', px + TS / 2, py + TS / 2, TS * 0.5);
+                    if (b?.name) {
+                        ctx.save(); ctx.font = `bold ${Math.round(TS * 0.19)}px sans-serif`; ctx.textAlign = 'center';
+                        const t = b.name.length > 11 ? b.name.slice(0, 10) + '…' : b.name; const tw = ctx.measureText(t).width + 6;
+                        ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(px + TS / 2 - tw / 2, py + TS - TS * 0.05, tw, TS * 0.25);
+                        ctx.fillStyle = '#ffd479'; ctx.fillText(t, px + TS / 2, py + TS + TS * 0.14); ctx.restore();
+                    }
+                }
+            }
+            // 4) Loot
+            for (const li of (E.lootItems || [])) {
+                if (li.collected || li.isBuilding) continue;
+                if (!vis(Math.floor(li.x), Math.floor(li.y))) continue;
+                const cx = sx(li.x), cy = sy(li.y), pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300);
+                const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, TS * 0.55);
+                g.addColorStop(0, `rgba(255,200,60,${0.35 + 0.25 * pulse})`); g.addColorStop(1, 'rgba(255,200,60,0)');
+                ctx.fillStyle = g; ctx.fillRect(cx - TS * 0.6, cy - TS * 0.6, TS * 1.2, TS * 1.2);
+                const img = _kxImg(KX_LOOT_SPRITES[li.icon] || 'o_crate1');
+                if (img) _kxSprite(ctx, img, cx, cy, TS * 0.62, ((_kxHash(li.x + ',' + li.y) % 4) - 1.5) * 0.15); else _kxEmoji(ctx, li.icon || '📦', cx, cy, TS * 0.5);
+            }
+            // 5) Kouř a oheň v osadě
+            for (const p of (E.particles || [])) for (const it of p.items) {
+                const a = 1 - it.life / it.maxLife, cx = sx(it.x) + it.z * TS * 0.6, cy = sy(it.y) - it.z * TS * 1.4, r = it.size * TS * (it.type === 'fire' ? 0.5 : 0.4 + it.life / it.maxLife * 0.5);
+                ctx.fillStyle = it.type === 'fire' ? `rgba(255,${120 + Math.floor(100 * a)},30,${0.65 * a})` : `rgba(110,105,100,${0.45 * a})`;
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+            }
+            // 6) Nepřátelé a osadníci
+            const pool = ['c_woman', 'c_brown', 'c_old', 'c_blue', 'c_soldier'];
+            const bubbles = [];
+            for (const en of (E.enemies || [])) {
+                if (!en.alive) continue;
+                // natočení podle pohybu
+                if (en._kxPx !== undefined && (Math.abs(en.x - en._kxPx) > 0.01 || Math.abs(en.y - en._kxPy) > 0.01)) en._kxAng = Math.atan2(en.y - en._kxPy, en.x - en._kxPx);
+                en._kxPx = en.x; en._kxPy = en.y;
+                if (en._kxAng === undefined) en._kxAng = (_kxHash(en.enemyId) % 4) * Math.PI / 2;
+                const ddx = en.x - E.player.x, ddy = en.y - E.player.y, dist = Math.sqrt(ddx * ddx + ddy * ddy);
+                if (!settle) {
+                    if (!vis(Math.floor(en.x), Math.floor(en.y))) continue;
+                    if (dist > 6.5 || !hasLineOfSight(E.player.x, E.player.y, en.x, en.y, E.map)) continue;
+                }
+                const cx = sx(en.x), cy = sy(en.y);
+                const ang = (en.chasing || en.spotted) && !settle ? Math.atan2(-ddy, -ddx) : en._kxAng;
+                let drawn = false;
+                if (en.isSettler) {
+                    const im = _kxImg(pool[_kxHash(en.enemyId) % pool.length] + '_hold');
+                    if (im) { ctx.fillStyle = 'rgba(139,195,74,.35)'; ctx.beginPath(); ctx.ellipse(cx, cy + TS * 0.05, TS * 0.32, TS * 0.26, 0, 0, Math.PI * 2); ctx.fill(); _kxSprite(ctx, im, cx, cy, TS * 0.7, ang); drawn = true; }
+                    if (en.activity) _kxEmoji(ctx, en.activity, cx + TS * 0.3, cy - TS * 0.3, TS * 0.28);
+                    if (en.bubble) bubbles.push({ cx, cy: cy - TS * 0.45, t: en.bubble });
+                } else {
+                    const ks = typeof _kcUnitSprite === 'function' ? _kcUnitSprite({ team: 'enemy', enemyId: en.enemyId, isRanged: false }) : null;
+                    const im = ks ? _kxImg(ks.src) : null;
+                    ctx.fillStyle = 'rgba(255,60,60,.35)'; ctx.beginPath(); ctx.ellipse(cx, cy + TS * 0.05, TS * 0.32, TS * 0.26, 0, 0, Math.PI * 2); ctx.fill();
+                    if (im) { _kxSprite(ctx, im, cx, cy, TS * 0.72 * (ks.scale || 1), ang); drawn = true; }
+                    else {
+                        const csrc = typeof ENEMY_CUSTOM_ICONS !== 'undefined' ? ENEMY_CUSTOM_ICONS[en.enemyId] : null;
+                        const ci = csrc ? _kxImg(csrc) : null;
+                        if (ci) { _kxCircleImg(ctx, ci, cx, cy, TS * 0.62, 'rgba(255,90,90,.9)'); drawn = true; }
+                    }
+                    if (en.spotted) _kxEmoji(ctx, '❗', cx + TS * 0.28, cy - TS * 0.32, TS * 0.26);
+                }
+                if (!drawn) _kxEmoji(ctx, en.icon || '👹', cx, cy, TS * 0.55);
+                ctx.save(); ctx.font = `bold ${Math.round(TS * 0.17)}px sans-serif`; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.85)';
+                ctx.fillStyle = en.isSettler ? '#a5d66b' : '#ff9a9a'; const nm = (en.name || '').slice(0, 12);
+                ctx.strokeText(nm, cx, cy + TS * 0.52); ctx.fillText(nm, cx, cy + TS * 0.52); ctx.restore();
+            }
+            // 7) Hráč
+            {
+                const cx = sx(E.player.x), cy = sy(E.player.y);
+                ctx.fillStyle = 'rgba(139,195,74,.45)'; ctx.beginPath(); ctx.ellipse(cx, cy + TS * 0.05, TS * 0.32, TS * 0.26, 0, 0, Math.PI * 2); ctx.fill();
+                const pi = _kxImg('c_survivor_gun');
+                if (pi) _kxSprite(ctx, pi, cx, cy, TS * 0.74, E.player.angle); else _kxEmoji(ctx, '🧍', cx, cy, TS * 0.6);
+            }
+            // 8) Tma + baterka (průzkum)
+            if (!settle && th.dark > 0) {
+                if (!E._kxDark || E._kxDark.width !== W || E._kxDark.height !== H) { E._kxDark = document.createElement('canvas'); E._kxDark.width = W; E._kxDark.height = H; }
+                const d = E._kxDark.getContext('2d'), cx = sx(E.player.x), cy = sy(E.player.y);
+                d.globalCompositeOperation = 'source-over'; d.clearRect(0, 0, W, H);
+                d.fillStyle = `rgba(4,3,2,${th.dark})`; d.fillRect(0, 0, W, H);
+                d.globalCompositeOperation = 'destination-out';
+                const rad = TS * (th.torch ? 1.8 : 3.6);
+                let g = d.createRadialGradient(cx, cy, TS * 0.3, cx, cy, rad);
+                g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+                d.fillStyle = g; d.beginPath(); d.arc(cx, cy, rad, 0, Math.PI * 2); d.fill();
+                if (th.torch) {
+                    const L = TS * 5.5, a = E.player.angle, spread = 0.5;
+                    g = d.createRadialGradient(cx, cy, TS * 0.5, cx, cy, L);
+                    g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(0.7, 'rgba(0,0,0,0.75)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+                    d.fillStyle = g; d.beginPath(); d.moveTo(cx, cy); d.arc(cx, cy, L, a - spread, a + spread); d.closePath(); d.fill();
+                }
+                ctx.drawImage(E._kxDark, 0, 0);
+                if (th.torch) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; const lg = ctx.createRadialGradient(cx, cy, 0, cx, cy, TS * 2.5); lg.addColorStop(0, 'rgba(255,200,120,0.10)'); lg.addColorStop(1, 'rgba(255,200,120,0)'); ctx.fillStyle = lg; ctx.fillRect(cx - TS * 3, cy - TS * 3, TS * 6, TS * 6); ctx.restore(); }
+            }
+            if (settle) { const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)'); ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H); }
+            // 9) Bubliny osadníků (nad tmou)
+            for (const b of bubbles) {
+                ctx.save(); ctx.font = `${Math.round(TS * 0.2)}px sans-serif`;
+                const words = b.t.split(' '); const lines = []; let line = '';
+                for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > TS * 3.2 && line) { lines.push(line); line = w; } else line = t; }
+                if (line) lines.push(line);
+                const lh = TS * 0.24, bw = Math.min(TS * 3.4, Math.max(...lines.map(l => ctx.measureText(l).width)) + 12), bh = lines.length * lh + 8;
+                let bx = Math.max(4, Math.min(W - bw - 4, b.cx - bw / 2)), by = Math.max(4, b.cy - bh - 8);
+                ctx.fillStyle = 'rgba(250,245,230,.95)'; ctx.strokeStyle = '#3a2a18'; ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.roundRect ? ctx.roundRect(bx, by, bw, bh, 6) : ctx.rect(bx, by, bw, bh); ctx.fill(); ctx.stroke();
+                ctx.fillStyle = '#222'; ctx.textAlign = 'center'; lines.forEach((l, i) => ctx.fillText(l, bx + bw / 2, by + 4 + lh * (i + 0.75)));
+                ctx.restore();
+            }
+            // 10) Červený záblesk při spatření nepřítele
+            if (E._alertFlashUntil && Date.now() < E._alertFlashUntil) {
+                const a = (E._alertFlashUntil - Date.now()) / 600 * 0.35;
+                ctx.fillStyle = `rgba(255,0,0,${a})`; ctx.fillRect(0, 0, W, H);
+            }
+            // 11) Minimapa (jen průzkum)
+            if (E.miniMapCtx && E.miniMap) {
+                const m = E.miniMapCtx, MW = E.miniMap.width, cs = MW / N;
+                m.clearRect(0, 0, MW, MW); m.fillStyle = 'rgba(0,0,0,0.85)'; m.fillRect(0, 0, MW, MW);
+                for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                    if (!vis(x, y)) continue; const c = E.map[y][x];
+                    m.fillStyle = c === 1 ? '#5a4a3a' : c === 3 ? '#4caf50' : '#2a2520'; m.fillRect(x * cs, y * cs, cs + 0.3, cs + 0.3);
+                }
+                m.fillStyle = '#ffc107';
+                for (const li of (E.lootItems || [])) if (!li.collected && vis(Math.floor(li.x), Math.floor(li.y))) m.fillRect(li.x * cs - 1.5, li.y * cs - 1.5, 3, 3);
+                m.fillStyle = '#f44336';
+                for (const en of (E.enemies || [])) if (en.alive && en.spotted) m.fillRect(en.x * cs - 1.5, en.y * cs - 1.5, 3, 3);
+                m.fillStyle = '#8bc34a'; m.beginPath(); m.arc(E.player.x * cs, E.player.y * cs, 2.5, 0, Math.PI * 2); m.fill();
+            }
+        }
+        window.renderTopDownExplore = renderTopDownExplore;
+
         // Update herní logiky
         function update3DExploration() {
             const E = window._explore3D;
@@ -52396,12 +52624,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const moveSpeed = 2.5;
             const turnSpeed = 2.8;
             
+            let dx = 0, dy = 0;
+            if (topDownExploreEnabled()) {
+                // 🆕 [v6.7] Pohled shora: šipky hýbou přímo (▲ nahoru, ◄ doleva…), postava se natočí po směru
+                const mx = (turnRight ? 1 : 0) - (turnLeft ? 1 : 0), my = (back ? 1 : 0) - (fwd ? 1 : 0);
+                if (mx || my) {
+                    const len = Math.sqrt(mx * mx + my * my);
+                    dx = mx / len * moveSpeed * dt; dy = my / len * moveSpeed * dt;
+                    E.player.angle = Math.atan2(my, mx);
+                }
+            } else {
             if (turnLeft) E.player.angle -= turnSpeed * dt;
             if (turnRight) E.player.angle += turnSpeed * dt;
-            
-            let dx = 0, dy = 0;
             if (fwd) { dx += Math.cos(E.player.angle) * moveSpeed * dt; dy += Math.sin(E.player.angle) * moveSpeed * dt; }
             if (back) { dx -= Math.cos(E.player.angle) * moveSpeed * dt; dy -= Math.sin(E.player.angle) * moveSpeed * dt; }
+            }
             
             // Collision detection (s buffer 0.25 aby player nezasahoval do zdi)
             // 🆕 [v6.4.0 SUPER OSADA] Building tiles (4) jsou solidní jako zdi
@@ -52692,6 +52929,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function render3DExploration() {
             const E = window._explore3D;
             if (!E || !E.ctx) return;
+            // 🆕 [v6.7] Pohled shora místo 3D (při chybě se jednorázově vrátí 3D)
+            if (topDownExploreEnabled()) {
+                try { renderTopDownExplore(); return; }
+                catch (err) { console.error('Pohled shora selhal, vracím 3D:', err); E._kxFail = true; }
+            }
             
             const ctx = E.ctx;
             const W = E.canvas.width;
