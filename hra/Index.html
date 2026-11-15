@@ -45167,6 +45167,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         html += renderActionButton('🛒', `Koupit za ${formatNumber(saleOffer.price)} 💰`, `buyLandFromPlayer('${location.id}', ${saleOffer.price})`, '#4CAF50');
                     }
                     
+                    // 🆕 [v7.4] Admin: uvolnit tento pozemek
+                    if (typeof isAdmin === 'function' && isAdmin()) {
+                        html += renderActionButton('🛠️', 'Admin: uvolnit pozemek', `adminReleaseLand('${location.id}')`, '#6d1b1b');
+                    }
+                    
                     // Tlačítka budov
                     if (landData.buildings && buildingCount > 0) {
                         Object.entries(landData.buildings).forEach(([bId, b]) => {
@@ -132818,6 +132823,85 @@ body.pa-theme #paOverlay{display:block}
         }
         window.createLandOffer = createLandOffer;
         
+        // ============================================================
+        // 🆕 [v7.4] ADMIN: uvolnění pozemků (jednoho / všech) s vrácením 50 % hodnoty majiteli
+        // Vrácení jde přes notifications/<hráč> (type admin_reward) – stejně jako admin odměny,
+        // hráč si peníze vyzvedne ve hře. Mažou se jen landOwnership/<lokace> (budovy, poplatky, nabídka).
+        // ============================================================
+        async function _adminReleaseLandCore(locationId, land) {
+            const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
+            const name = land?.customName || land?.locationName || loc?.name || locationId;
+            const refund = land?.owner ? Math.floor((calculateLandValue(land)?.total || LAND_CONFIG.purchasePrice) * 0.5) : 0;
+            await firebaseDB.ref(`landOwnership/${locationId}`).remove();
+            if (window.landOwnershipCache) delete window.landOwnershipCache[locationId];
+            if (window.landOffersCache) delete window.landOffersCache[locationId];
+            if (refund > 0) {
+                const reason = `Admin uvolnil tvůj pozemek ${name} – vráceno 50 % hodnoty`;
+                await firebaseDB.ref(`notifications/${land.owner}`).push({
+                    type: 'admin_reward', money: refund, xp: 0, ammo: null, item: null,
+                    reason, from: ADMIN_NICK, timestamp: Date.now(), claimed: false
+                });
+                await firebaseDB.ref(`chat/private/${land.owner}`).push({
+                    from: ADMIN_NICK, to: land.owner, timestamp: Date.now(), read: false,
+                    text: `🏗️ Tvůj pozemek ${name} byl uvolněn. Vráceno ${refund} 💰 – vyzvedni si je v oznámeních.`
+                });
+            }
+            await firebaseDB.ref('admin/rewardLog').push({
+                player: land?.owner || '(nikdo)', money: refund, xp: 0, ammo: null, item: null,
+                reason: `Uvolnění pozemku ${name} (${locationId})`, admin: ADMIN_NICK, timestamp: Date.now()
+            });
+            return { owner: land?.owner || null, refund, name };
+        }
+
+        async function adminReleaseLand(locationId) {
+            if (!(typeof isAdmin === 'function' && isAdmin())) { notifyWarning('Bez oprávnění', 'Jen admin.'); return; }
+            if (!multiplayerEnabled || !firebaseDB) { notifyWarning('Offline', 'Potřebuješ připojení k serveru.'); return; }
+            try {
+                const snap = await firebaseDB.ref(`landOwnership/${locationId}`).once('value');
+                const land = snap.val();
+                if (!land || !land.owner) { notifyWarning('Pozemek je volný', 'Tenhle pozemek nikdo nevlastní.'); return; }
+                const refund = Math.floor((calculateLandValue(land)?.total || LAND_CONFIG.purchasePrice) * 0.5);
+                if (!confirm(`Uvolnit pozemek hráče ${land.owner}?\n\nSmažou se i jeho budovy a nabídka k prodeji.\nHráč dostane zpět ${refund} 💰.\n\nAkce je nevratná.`)) return;
+                const r = await _adminReleaseLandCore(locationId, land);
+                notifySuccess('🏗️ Pozemek uvolněn', `${r.name}: ${r.owner} dostane ${r.refund} 💰`);
+                addLog(`🛠️ Admin: uvolněn pozemek ${r.name} (${r.owner}, vráceno ${r.refund} 💰)`, '🛠️');
+                window.landOwnershipCacheTime = 0;
+                if (typeof loadLandOwnership === 'function') loadLandOwnership();
+                closeModal(); renderFull();
+            } catch (e) {
+                console.error('adminReleaseLand error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se uvolnit pozemek: ' + e.message);
+            }
+        }
+        window.adminReleaseLand = adminReleaseLand;
+
+        async function adminReleaseAllLands() {
+            if (!(typeof isAdmin === 'function' && isAdmin())) { notifyWarning('Bez oprávnění', 'Jen admin.'); return; }
+            if (!multiplayerEnabled || !firebaseDB) { notifyWarning('Offline', 'Potřebuješ připojení k serveru.'); return; }
+            try {
+                const snap = await firebaseDB.ref('landOwnership').once('value');
+                const all = snap.val() || {};
+                const owned = Object.entries(all).filter(([, l]) => l && l.owner);
+                if (owned.length === 0) { notifyWarning('Nic k uvolnění', 'Žádný pozemek nemá majitele.'); return; }
+                const total = owned.reduce((sum, [, l]) => sum + Math.floor((calculateLandValue(l)?.total || LAND_CONFIG.purchasePrice) * 0.5), 0);
+                if (!confirm(`⚠️ Uvolnit VŠECHNY pozemky (${owned.length})?\n\nSmažou se i budovy a nabídky. Majitelé dostanou zpět celkem ${formatNumber(total)} 💰.`)) return;
+                if (!confirm('Opravdu? Akce je NEVRATNÁ.')) return;
+                let ok = 0, fail = 0;
+                for (const [locId, land] of owned) {
+                    try { await _adminReleaseLandCore(locId, land); ok++; } catch (e) { fail++; console.error('release', locId, e); }
+                }
+                notifySuccess('🏗️ Pozemky uvolněny', `Uvolněno ${ok} pozemků${fail ? `, ${fail} se nepovedlo` : ''}. Vráceno ${formatNumber(total)} 💰.`);
+                addLog(`🛠️ Admin: uvolněno ${ok} pozemků (vráceno ${formatNumber(total)} 💰)`, '🛠️');
+                window.landOwnershipCacheTime = 0;
+                if (typeof loadLandOwnership === 'function') loadLandOwnership();
+                renderFull();
+            } catch (e) {
+                console.error('adminReleaseAllLands error:', e);
+                notifyWarning('Chyba', 'Nepodařilo se uvolnit pozemky: ' + e.message);
+            }
+        }
+        window.adminReleaseAllLands = adminReleaseAllLands;
+
         // Prodat pozemek zpět systému (okamžitě)
         async function sellLandToSystem(locationId) {
             const land = getLandData(locationId);
@@ -168620,6 +168704,9 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     </button>
                     <button class="btn" onclick="adminResetTerritories()" style="background: linear-gradient(135deg, #d84315 0%, #6a1b00 100%); padding: 1rem;">
                         🏴 RESET ÚZEMÍ (klany zůstanou)
+                    </button>
+                    <button class="btn" onclick="adminReleaseAllLands()" style="background: linear-gradient(135deg, #8d6e63 0%, #3e2723 100%); padding: 1rem;">
+                        🏗️ UVOLNIT VŠECHNY POZEMKY (vrátí 50 % hodnoty)
                     </button>
                     <button class="btn" onclick="adminCleanupTerritories()" style="background: linear-gradient(135deg, #795548 0%, #4e342e 100%); padding: 0.8rem;">
                         🧹 Vyčistit stará territory data
