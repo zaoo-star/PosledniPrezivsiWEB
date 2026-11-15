@@ -51170,6 +51170,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (tile.type === 'wall') return;
             
             ds.px = nx; ds.py = ny; ds.steps++;
+            ds._face = Math.atan2(dy, dx); // [v7.2] natočení postavy v grafice shora
             revealExploreArea(nx, ny, 1);
             handleExploreTile(nx, ny, tile);
             
@@ -51564,6 +51565,61 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }, 3000);
         }
         
+        // 🆕 [v7.2] Grafika shora pro mřížkový průzkum lokace (startDungeonExploration)
+        function _kxDungeonTheme(ds) {
+            const t = typeof getExplore3DTheme === 'function' ? getExplore3DTheme(ds.loc) : null;
+            const key = t ? (Object.keys(EXPLORE3D_THEMES).find(k => EXPLORE3D_THEMES[k] === t) || 'wasteland') : 'wasteland';
+            return KX_THEME[key] || KX_THEME.wasteland;
+        }
+        const KX_DUNGEON_OBJ = { chest: 'p_crate', cabinet: 'p_crate_metal', barrel: 'p_barrel_rust', skeleton: 'o_bone', crate: 'o_crate1', bookshelf: 'o_plank', locker: 'p_crate_metal', desk: 'o_crate3' };
+        function _kxDungeonCell(tile, x, y, isP, canMove, cellPx, click, ds, th) {
+            const base = `width:${cellPx}px;height:${cellPx}px;position:relative;cursor:${canMove ? 'pointer' : 'default'};user-select:none;overflow:hidden;`;
+            if (!tile.explored) return `<div${click} style="${base}background:#050403;"></div>`;
+            const img = (n, size, rot, extra) => `<img src="${KC_IMG}${n}.png" alt="" draggable="false" style="position:absolute;left:${(100 - size) / 2}%;top:${(100 - size) / 2}%;width:${size}%;height:${size}%;object-fit:contain;pointer-events:none;transform:rotate(${rot || 0}deg);filter:drop-shadow(1px 2px 1px rgba(0,0,0,.6));${extra || ''}">`;
+            if (tile.type === 'wall') {
+                return `<div${click} style="${base}background:url('${KC_IMG}${th.wall}.png') center/cover;box-shadow:inset 0 0 0 1px rgba(0,0,0,.35);">${th.bushes ? img((x + y) % 2 ? 'o_bush1' : 'o_bush2', 110) : ''}</div>`;
+            }
+            const floor = _kcFloorAt(KC_FLOORS[th.fl] || KC_FLOORS.waste, x, y);
+            let inner = '';
+            if (tile.type === 'floor' || tile.type === 'corridor') {
+                const deb = _kcDebrisAt(x, y, th.fl === 'forest' || th.fl === 'swamp', 0.4);
+                if (deb) inner += `<img src="${KC_IMG}${deb.src}.png" alt="" draggable="false" style="position:absolute;left:${deb.x.toFixed(0)}%;top:${deb.y.toFixed(0)}%;width:${deb.size}%;height:${deb.size}%;object-fit:contain;pointer-events:none;transform:rotate(${deb.rot}deg);opacity:.9;">`;
+            }
+            let ring = '';
+            if (tile.type === 'start') inner += img('x_exit', 80, 0, 'opacity:.75;');
+            else if (tile.type === 'exit') { inner += img('x_exit', 92); ring = 'box-shadow:inset 0 0 0 2px #ffd700,inset 0 0 14px rgba(255,215,0,.45);'; }
+            else if (tile.type === 'trap') { if (tile.triggered) inner += img('o_mine', 60) + `<span style="position:absolute;right:1px;bottom:0;font-size:${Math.floor(cellPx * 0.3)}px;">⚠️</span>`; }
+            else if (tile.type === 'enemy') {
+                const ks = typeof _kcUnitSprite === 'function' ? _kcUnitSprite({ team: 'enemy', enemyId: tile.enemyId }) : null;
+                const csrc = typeof ENEMY_CUSTOM_ICONS !== 'undefined' ? ENEMY_CUSTOM_ICONS[tile.enemyId] : null;
+                const ang = Math.round(Math.atan2(ds.py - y, ds.px - x) * 180 / Math.PI);
+                inner += `<div style="position:absolute;left:14%;top:60%;width:72%;height:26%;border-radius:50%;background:radial-gradient(ellipse,rgba(255,60,60,.6),transparent 70%);"></div>`;
+                if (ks) inner += img(ks.src, 82 * (ks.scale || 1), ang);
+                else if (csrc) inner += `<img src="${csrc}" alt="" draggable="false" style="position:absolute;left:14%;top:14%;width:72%;height:72%;object-fit:cover;border-radius:50%;box-shadow:0 0 0 2px rgba(255,90,90,.8);pointer-events:none;">`;
+                else inner += `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:${Math.floor(cellPx * 0.55)}px;">${tile.icon || '👾'}</span>`;
+                ring = 'box-shadow:inset 0 0 0 1px rgba(244,67,54,.8);';
+            } else if (KX_DUNGEON_OBJ[tile.type]) {
+                const looted = tile.looted;
+                inner += img(KX_DUNGEON_OBJ[tile.type], tile.type === 'skeleton' ? 70 : 78, _kcPick([0, 90, 180, 270, 12, -15], x, y, 5), looted ? 'filter:grayscale(1) brightness(.45);' : '');
+                if (tile.type === 'skeleton') inner += `<span style="position:absolute;left:8%;top:6%;font-size:${Math.floor(cellPx * 0.32)}px;opacity:${looted ? .4 : .9};">💀</span>`;
+                if (!looted) ring = 'box-shadow:inset 0 0 12px rgba(255,200,60,.55);';
+            } else if (tile.icon && tile.type !== 'floor' && tile.type !== 'corridor') {
+                inner += `<span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:${Math.floor(cellPx * 0.5)}px;">${tile.icon}</span>`;
+            }
+            if (isP) {
+                const rot = Math.round(((ds._face ?? -Math.PI / 2) * 180) / Math.PI);
+                inner += `<div style="position:absolute;left:12%;top:58%;width:76%;height:28%;border-radius:50%;background:radial-gradient(ellipse,rgba(139,195,74,.7),transparent 70%);"></div>` + img('c_survivor_gun', 86, rot);
+                ring = 'box-shadow:inset 0 0 0 2px #8bc34a;';
+            }
+            // tma podle vzdálenosti od hráče
+            const dist = Math.max(Math.abs(x - ds.px), Math.abs(y - ds.py));
+            const dark = th.torch ? [0, 0.15, 0.45, 0.65, 0.78][Math.min(4, dist)] : [0, 0.05, 0.2, 0.35, 0.45][Math.min(4, dist)];
+            const shade = dark > 0 ? `<div style="position:absolute;inset:0;background:rgba(5,4,3,${dark});pointer-events:none;"></div>` : '';
+            const hint = canMove && !isP ? `<div style="position:absolute;inset:0;box-shadow:inset 0 0 0 1px rgba(255,212,121,.35);pointer-events:none;"></div>` : '';
+            return `<div${click} style="${base}background:url('${KC_IMG}${floor}.png') center/cover;${ring}">${inner}${shade}${hint}</div>`;
+        }
+        window._kxDungeonCell = _kxDungeonCell;
+
         function renderExploreDungeonUI() {
             if (!_dungeonExploreState) return;
             const ds = _dungeonExploreState;
@@ -51577,6 +51633,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const vy2 = Math.min(h, vy1 + viewSize);
             
             const cellPx = Math.floor(Math.min(window.innerWidth - 32, 340) / viewSize);
+            const _kxd = (typeof kenneyCombatEnabled === 'function' && kenneyCombatEnabled() && typeof _kxDungeonTheme === 'function') ? _kxDungeonTheme(ds) : null;
             
             let gridHtml = '';
             for (let y = vy1; y < vy2; y++) {
@@ -51605,6 +51662,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     const click = canMove ? ` onclick="dungeonExploreMove(${x-px},${y-py})"` : '';
                     const cur = canMove ? 'pointer' : 'default';
+                    // 🆕 [v7.2] Kenney grafika (stejná jako boj/průzkum shora)
+                    if (_kxd) {
+                        gridHtml += _kxDungeonCell(tile, x, y, isP, canMove, cellPx, click, ds, _kxd);
+                        continue;
+                    }
                     
                     gridHtml += `<div${click} style="width:${cellPx}px;height:${cellPx}px;background:${bg};display:flex;align-items:center;justify-content:center;font-size:${Math.floor(cellPx*0.5)}px;cursor:${cur};border:${border};border-radius:2px;user-select:none;">${content}</div>`;
                 }
@@ -51659,18 +51721,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     </div>
                 </div>
                 
-                <div style="display:grid;grid-template-columns:repeat(${vx2-vx1},${cellPx}px);gap:1px;justify-content:center;background:#000;border:2px solid #333;border-radius:6px;padding:2px;margin-bottom:0.4rem;">
+                <div style="display:grid;grid-template-columns:repeat(${vx2-vx1},${cellPx}px);gap:${_kxd ? 0 : 1}px;justify-content:center;background:#000;border:2px solid ${_kxd ? '#3a2614' : '#333'};border-radius:6px;padding:${_kxd ? 0 : 2}px;margin-bottom:0.4rem;${_kxd ? 'box-shadow:inset 0 0 30px #000,0 4px 14px rgba(0,0,0,.8);overflow:hidden;' : ''}">
                     ${gridHtml}
                 </div>
                 
                 <!-- [FIX v6.4.2] Větší šipky (46px) + odstup od tlačítek odchodu — hlášeno HLB: překlik na "Opustit" -->
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;max-width:190px;margin:0 auto 0.4rem auto;">
                     <div></div>
-                    <button onclick="dungeonExploreMove(0,-1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬆️</button>
+                    ${_kxd ? `<button onclick="dungeonExploreMove(0,-1)" class="btn" style="min-height:46px;padding:0.35rem;font-size:1.3rem;color:#ffd479;">▲</button>` : `<button onclick="dungeonExploreMove(0,-1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬆️</button>`}
                     <div></div>
-                    <button onclick="dungeonExploreMove(-1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬅️</button>
-                    <button onclick="dungeonExploreMove(0,1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬇️</button>
-                    <button onclick="dungeonExploreMove(1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">➡️</button>
+                    ${_kxd ? `<button onclick="dungeonExploreMove(-1,0)" class="btn" style="min-height:46px;padding:0.35rem;font-size:1.3rem;color:#ffd479;">◄</button>` : `<button onclick="dungeonExploreMove(-1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬅️</button>`}
+                    ${_kxd ? `<button onclick="dungeonExploreMove(0,1)" class="btn" style="min-height:46px;padding:0.35rem;font-size:1.3rem;color:#ffd479;">▼</button>` : `<button onclick="dungeonExploreMove(0,1)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">⬇️</button>`}
+                    ${_kxd ? `<button onclick="dungeonExploreMove(1,0)" class="btn" style="min-height:46px;padding:0.35rem;font-size:1.3rem;color:#ffd479;">►</button>` : `<button onclick="dungeonExploreMove(1,0)" style="background:#333;border:1px solid #555;color:#fff;padding:0.35rem;min-height:46px;border-radius:6px;cursor:pointer;font-size:1.1rem;">➡️</button>`}
                 </div>
                 
                 ${recentLoot ? `<div style="background:#0a0a0a;padding:0.2rem 0.4rem;border-radius:4px;margin-bottom:0.3rem;">${recentLoot}</div>` : ''}
