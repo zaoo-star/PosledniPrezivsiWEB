@@ -91402,6 +91402,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 void cells[idx].offsetWidth;
                 const cls = type === 'moved' ? 'combat-cell-moved' : type === 'hit' ? 'combat-cell-hit' : 'combat-cell-attacked';
                 cells[idx].classList.add(cls);
+                if (type === 'hit') { try { if (typeof _kcHurtAnim === 'function') _kcHurtAnim(x, y); } catch (e) {} }
             }
         }
         
@@ -91916,6 +91917,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             console.log(`🎯 combatAttackVisual: weapon="${weaponName}" ammo="${ammoType}" isRanged=${isRanged}`);
             
+            try { if (typeof _kcAttackAnim === 'function') _kcAttackAnim(unit, target, isRanged || weaponName.includes('granát') || weaponName.includes('molotov')); } catch (e) {}
             if (isRanged) {
                 // Ranged - vyber typ projektilu
                 let projType = 'bullet';
@@ -97937,7 +97939,17 @@ body.pa-theme .wm-tile.wm-here{animation:kcHerePulse 2s ease-in-out infinite !im
 #paAsh{position:fixed;inset:0;pointer-events:none;z-index:9996;overflow:hidden;display:none}
 body.pa-theme #paAsh{display:block}
 #paAsh i{position:absolute;top:0;width:3px;height:3px;border-radius:50%;background:rgba(210,195,170,.55);box-shadow:0 0 3px rgba(255,220,180,.3);animation:paAsh linear infinite}
-@media (prefers-reduced-motion: reduce){.kc-unit,.kc-smoke,.kc-flick,.kc-pulse,#paAsh i,body.pa-theme .wm-tile.wm-here{animation:none !important}#paAsh{display:none !important}}
+@keyframes kcLunge{0%{translate:0 0}40%{translate:var(--lx) var(--ly)}100%{translate:0 0}}
+@keyframes kcRecoil{0%{translate:0 0}25%{translate:var(--lx) var(--ly)}100%{translate:0 0}}
+@keyframes kcHurt{0%,100%{translate:0 0;filter:none}15%{translate:-7% 0;filter:brightness(1.8) sepia(1) hue-rotate(-40deg) saturate(5)}35%{translate:6% 0}55%{translate:-4% 0;filter:brightness(1.4) sepia(1) hue-rotate(-40deg) saturate(4)}75%{translate:2% 0}}
+@keyframes kcDie{0%{opacity:1;rotate:0deg;scale:1}35%{opacity:1;rotate:70deg;scale:.95}100%{opacity:0;rotate:95deg;scale:.55;translate:0 12%}}
+@keyframes kcMuzzle{0%{opacity:1;scale:.4}60%{opacity:.9;scale:1}100%{opacity:0;scale:1.2}}
+.kc-unit.kc-lunge{animation:kcLunge .36s ease-out}
+.kc-unit.kc-recoil{animation:kcRecoil .3s ease-out}
+.kc-unit.kc-hurt{animation:kcHurt .5s ease-out}
+.kc-die{animation:kcDie 1.1s ease-in forwards}
+.kc-muzzle{position:absolute;width:40%;height:40%;object-fit:contain;pointer-events:none;z-index:5;animation:kcMuzzle .25s ease-out forwards}
+@media (prefers-reduced-motion: reduce){.kc-lunge,.kc-recoil,.kc-hurt,.kc-die,.kc-muzzle{animation:none !important}.kc-unit,.kc-smoke,.kc-flick,.kc-pulse,#paAsh i,body.pa-theme .wm-tile.wm-here{animation:none !important}#paAsh{display:none !important}}
 #paOverlay{position:fixed;inset:0;pointer-events:none;z-index:9997;display:none}
 body.pa-theme #paOverlay{display:block}
 #paOverlay::before{content:'';position:absolute;inset:0;opacity:.18;mix-blend-mode:overlay;background:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
@@ -98145,6 +98157,12 @@ body.pa-theme #paOverlay{display:block}
                 const prev = window._kcHpSeen.get(u);
                 if (prev !== undefined && u.hp < prev.hp) cs._kcBlood.push({ x: prev.x, y: prev.y, big: !u.alive, s: (cs._kcBlood.length * 7) % 5 });
                 else if (prev !== undefined && prev.alive && !u.alive) cs._kcBlood.push({ x: prev.x, y: prev.y, big: true, s: 1 });
+                if (prev !== undefined && prev.alive && !u.alive) {
+                    const ks = _kcUnitSprite(u);
+                    const src = ks ? KC_IMG + ks.src + '.png' : (u.team === 'enemy' && typeof ENEMY_CUSTOM_ICONS !== 'undefined' ? ENEMY_CUSTOM_ICONS[u.enemyId] : null);
+                    if (!cs._kcDying) cs._kcDying = [];
+                    cs._kcDying.push({ x: prev.x, y: prev.y, src, icon: u.icon || '', round: !ks, t: Date.now() });
+                }
                 window._kcHpSeen.set(u, { hp: u.hp, alive: u.alive, x: u.x, y: u.y });
             }
             if (cs._kcBlood.length > 40) cs._kcBlood.splice(0, cs._kcBlood.length - 40);
@@ -98195,6 +98213,14 @@ body.pa-theme #paOverlay{display:block}
                     else if (terrain?.blocked) overlay = 'background: rgba(0,0,0,0.18);';
 
                     let inner = '';
+                    // umírající postava (dohraje animaci i při překreslení – záporné zpoždění)
+                    for (const dd of (cs._kcDying || [])) {
+                        const el = Date.now() - dd.t;
+                        if (dd.x !== x || dd.y !== y || el > 1100 || unit) continue;
+                        inner += dd.src
+                            ? `<img class="kc-die" src="${dd.src}" alt="" draggable="false" style="animation-delay:-${el}ms;position:absolute;left:12%;top:12%;width:76%;height:76%;object-fit:${dd.round ? 'cover' : 'contain'};${dd.round ? 'border-radius:50%;' : ''}pointer-events:none;z-index:3;">`
+                            : `<span class="kc-die" style="animation-delay:-${el}ms;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:1.2rem;pointer-events:none;z-index:3;">${dd.icon}</span>`;
+                    }
                     for (const bl of cs._kcBlood) if (bl.x === x && bl.y === y) inner += `<img src="${KC_IMG}${bl.big ? 'o_blood' : 'o_blood_drops'}.png" alt="" draggable="false" style="position:absolute;left:${bl.big ? 5 : 15}%;top:${bl.big ? 5 : 15}%;width:${bl.big ? 90 : 70}%;height:${bl.big ? 90 : 70}%;object-fit:contain;pointer-events:none;transform:rotate(${bl.s * 72}deg);opacity:.85;">`;
                     if (deb) inner += `<img src="${KC_IMG}${deb.src}.png" alt="" draggable="false" style="position:absolute;left:${deb.x.toFixed(0)}%;top:${deb.y.toFixed(0)}%;width:${deb.size}%;height:${deb.size}%;object-fit:contain;pointer-events:none;transform:rotate(${deb.rot}deg);opacity:.9;">`;
                     // Terén
@@ -98264,6 +98290,40 @@ body.pa-theme #paOverlay{display:block}
             return html;
         }
         window.renderCombatGridKenney = renderCombatGridKenney;
+
+        // [v7.6] Animace útoku / zásahu / smrti v Kenney mřížce (jen vizuál, logika boje beze změny)
+        function _kcCellEl(x, y) {
+            const g = document.getElementById('combatGridContainer');
+            if (!g) return null;
+            return g.querySelectorAll('[style*="aspect-ratio"]')[y * COMBAT_GRID.cols + x] || null;
+        }
+        function _kcAttackAnim(a, t, ranged) {
+            if (!kenneyCombatEnabled() || !a || !t) return;
+            const cell = _kcCellEl(a.x, a.y);
+            const img = cell && cell.querySelector('.kc-unit');
+            if (!img) return;
+            const dx = t.x - a.x, dy = t.y - a.y, len = Math.hypot(dx, dy) || 1;
+            const k = ranged ? -9 : 30;
+            img.style.setProperty('--lx', (dx / len * k).toFixed(1) + '%');
+            img.style.setProperty('--ly', (dy / len * k).toFixed(1) + '%');
+            img.classList.remove('kc-lunge', 'kc-recoil'); void img.offsetWidth;
+            img.classList.add(ranged ? 'kc-recoil' : 'kc-lunge');
+            setTimeout(() => img.classList.remove('kc-lunge', 'kc-recoil'), 420);
+            if (ranged) {
+                const f = document.createElement('img');
+                f.src = KC_IMG + 'p_boom1.png'; f.alt = ''; f.className = 'kc-muzzle';
+                f.style.left = (30 + dx / len * 34) + '%'; f.style.top = (30 + dy / len * 34) + '%';
+                cell.appendChild(f); setTimeout(() => f.remove(), 260);
+            }
+        }
+        function _kcHurtAnim(x, y) {
+            if (!kenneyCombatEnabled()) return;
+            const img = _kcCellEl(x, y)?.querySelector('.kc-unit');
+            if (!img) return;
+            img.classList.remove('kc-hurt'); void img.offsetWidth; img.classList.add('kc-hurt');
+            setTimeout(() => img.classList.remove('kc-hurt'), 520);
+        }
+        window._kcAttackAnim = _kcAttackAnim; window._kcHurtAnim = _kcHurtAnim;
 
         function renderCombatGrid() {
             const cs = window.combatState;
