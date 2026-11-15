@@ -50966,6 +50966,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             if (tile.type === 'trap' && !tile.triggered) {
                 tile.triggered = true; tile.icon = '⚠️';
+                // [FIX v6.4.2] Vnímání (PER) + companion trapAvoidance chrání i v průzkumu — dřív
+                // pasti v průzkumu PER úplně ignorovaly (hlášeno Štístko: PER 20 a pořád šlapu do pastí).
+                // Stejný vzorec jako na cestě: +10 % za bod PER nad 5, max 95 %.
+                try {
+                    const _per = state.char?.attrs?.per || 5;
+                    const _cb = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+                    const _dodge = Math.min(0.95, Math.max(0, (_per - 5) * 0.10) + (_cb.trapAvoidance || 0));
+                    if (Math.random() < _dodge) {
+                        ds.lootLog.push(`🎯 Všiml sis pasti a obešel ji (PER ${_per})`);
+                        notifyCombat('🎯 Past odhalena!', 'Tvá vnímavost tě zachránila!', 'success');
+                        renderExploreDungeonUI(); return;
+                    }
+                } catch (e) { console.warn('trap dodge error', e); }
                 const dmg = 5 + Math.floor(Math.random() * 10 * ds.danger);
                 state.char.hp = Math.max(1, (state.char.hp || state.char.maxHp) - dmg);
                 ds.lootLog.push(`⚠️ Past! -${dmg} HP`);
@@ -57780,7 +57793,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     effects: [
                         { name: 'Kritický zásah', formula: '+3% za bod nad 5', current: `+${Math.max(0, (totalValue - 5) * 3)}%` },
                         { name: 'Šance na loot', formula: '+2% za bod', current: `+${totalValue * 2}%` },
-                        { name: 'Detekce pastí', formula: '+5% za bod', current: `+${totalValue * 5}%` }
+                        { name: 'Detekce pastí', formula: '+10% za bod nad 5 (max 95%)', current: `${Math.min(95, Math.max(0, (totalValue - 5) * 10))}%` } // [FIX v6.4.2] shodně s handleTrapEvent
                     ],
                     desc: 'Vnímání určuje pozornost a smysly. Pomáhá najít lepší loot a kriticky zasáhnout.'
                 },
@@ -91412,6 +91425,52 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             cs.log.push(...systemEntries);
         }
         
+        // [FIX v6.4.2] Jednorázové přežití smrti v boji (1× za boj, 1 HP).
+        // Společník: MAX loajalita (comp.loyaltyMaxBonus) nebo skill s effect.undyingOnce.
+        // Hráč: skill tree perk undyingOnce. Vrací true, pokud byl cíl zachráněn.
+        function _tryUndyingSave(target, cs) {
+            try {
+                if (!target || !cs || target.hp > 0) return false;
+                if (target.isCompanion) {
+                    if (target._undyingUsed) return false;
+                    const comp = state.companions?.find(c => c.uniqueId === target.companionId || c.id === target.companionId);
+                    if (!comp) return false;
+                    let hasUndyingSkill = false;
+                    const tree = (typeof COMPANION_SKILL_TREES !== 'undefined') ? COMPANION_SKILL_TREES[comp.id] : null;
+                    if (tree?.trees && Array.isArray(comp.skills)) {
+                        hasUndyingSkill = comp.skills.some(sid =>
+                            Object.values(tree.trees).some(t => (t.skills || []).some(s => s.id === sid && s.effect?.undyingOnce))
+                        );
+                    }
+                    if (!comp.loyaltyMaxBonus && !hasUndyingSkill) return false;
+                    target._undyingUsed = true;
+                    target.hp = 1;
+                    target.alive = true;
+                    comp.hp = 1;
+                    if (hasUndyingSkill) {
+                        target._undyingBuff = 2;
+                        cs.log.push(`✨ ${target.name} ODMÍTÁ ZEMŘÍT! Přežil s 1 HP!`);
+                    } else {
+                        cs.log.push(`💖 ${target.name} se odmítá vzdát — věčná věrnost ho zachránila! (1 HP)`);
+                        if (typeof addLog === 'function') addLog(`💖 ${comp.name || 'Společník'} zachráněn maximální loajalitou (1× za boj)`, '💖');
+                    }
+                    return true;
+                }
+                if (target.isPlayer) {
+                    if (cs._playerUndyingUsed) return false;
+                    if (typeof getSkillTreeBonus !== 'function' || !(getSkillTreeBonus('undyingOnce') > 0)) return false;
+                    cs._playerUndyingUsed = true;
+                    target.hp = 1;
+                    target.alive = true;
+                    state.char.hp = 1;
+                    cs.log.push(`✨ ODMÍTÁŠ ZEMŘÍT! Přežíváš s 1 HP!`);
+                    return true;
+                }
+            } catch (e) { console.warn('⚠️ _tryUndyingSave error:', e); }
+            return false;
+        }
+        window._tryUndyingSave = _tryUndyingSave;
+
         function performCombatAttack(attacker, target) {
             const cs = window.combatState;
             if (!cs) return;
@@ -93177,6 +93236,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
+            // [FIX v6.4.2] "1× za boj přežije smrt" (MAX loajalita, skill Nesmrtelný/Neochvějný)
+            // se dřív kontrolovalo jen v playerAttackTarget na ÚTOČNÍKOVI — při zabití nepřítelem
+            // se nikdy nespustilo (hlášeno Štístko: společník se 100% loajalitou v boji umřel).
+            if (target.hp <= 0 && typeof _tryUndyingSave === 'function' && _tryUndyingSave(target, cs)) {
+                // zachráněn s 1 HP — níže se už nic neděje (hp = 1)
+            }
+
             if (target.hp <= 0) {
                 // Survivor: Last Stand - 25% šance přežít smrtelný úder
                 let lastStandChance = surviveChance;
@@ -95728,17 +95794,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 cs.log.push(`+${actualHeal} životů. [${unit.actionsLeft - 1} akce]`);
                 
                 // [FIX v6.2] Léčí i zranění (Stimpak léčí 'bruise', 'cut', atd.)
-                if (item.healsInjuries && item.healsInjuries.length > 0 && state.injuries) {
-                    const healedInjuries = [];
-                    state.injuries = state.injuries.filter(inj => {
-                        if (item.healsInjuries.includes(inj.type || inj.id)) {
-                            healedInjuries.push(inj.type || inj.id);
-                            return false;
-                        }
-                        return true;
-                    });
+                // [FIX v6.4.2] state.injuries je OBJEKT {active, immune, totalHealed}, ne pole —
+                // dřív state.injuries.filter() vyhodil TypeError AŽ PO přičtení HP, takže se
+                // nespotřeboval lék ani akce a hráč viděl "Chyba" (hlášeno HLB: 2 tahy + léčba zadarmo).
+                // Zranění má jen hráč → léčíme je jen když lék použije hráč.
+                if (unit.isPlayer && item.healsInjuries && item.healsInjuries.length > 0 && typeof healInjury === 'function') {
+                    if (typeof initInjuries === 'function') initInjuries();
+                    const activeIds = (state.injuries?.active || []).map(inj => inj.id);
+                    const healedInjuries = activeIds.filter(id => item.healsInjuries.includes(id) && healInjury(id));
                     if (healedInjuries.length > 0) {
-                        cs.log.push(`🩹 Vyléčeno: ${healedInjuries.join(', ')}`);
+                        const names = healedInjuries.map(id => (typeof INJURIES !== 'undefined' && INJURIES.find(x => x.id === id)?.name) || id);
+                        cs.log.push(`🩹 Vyléčeno: ${names.join(', ')}`);
                     }
                 }
                 
@@ -99336,9 +99402,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                 }
                 // healInjuries - Polní chirurgie: vyléčí zranění po boji
-                if (postCombatBonuses.healInjuries && state.injuries && state.injuries.length > 0) {
-                    const healedInjury = state.injuries.shift();
-                    addLog(`🏥 Společník vyléčil zranění: ${healedInjury.name || healedInjury.id}`, '🏥');
+                // [FIX v6.4.2] state.injuries je objekt {active: [...]} — dřív se nikdy nic nevyléčilo
+                if (postCombatBonuses.healInjuries && state.injuries?.active?.length > 0 && typeof healInjury === 'function') {
+                    const _hiId = state.injuries.active[0].id;
+                    if (healInjury(_hiId)) addLog(`🏥 Společník vyléčil zranění: ${(typeof INJURIES !== 'undefined' && INJURIES.find(x => x.id === _hiId)?.name) || _hiId}`, '🏥');
                 }
                 // cureDisease - Filosof: léčí nemoc
                 if (postCombatBonuses.cureDisease && state.diseases && state.diseases.length > 0) {
@@ -100308,10 +100375,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // === MEDIK - léčení po boji ===
             const _postCompBon = getAllCompanionBonuses();
             // healInjuries - medik léčí zranění po boji
-            if (_postCompBon.healInjuries && state.char.injuries && state.char.injuries.length > 0) {
-                const healedInjuries = [...state.char.injuries];
-                state.char.injuries = [];
-                addLog(`🩹 Medik vyléčil zranění: ${healedInjuries.map(i => i.name || i.id).join(', ')}`, '🩹');
+            // [FIX v6.4.2] zranění jsou v state.injuries.active (state.char.injuries neexistuje → nikdy nic nevyléčilo)
+            if (_postCompBon.healInjuries && state.injuries?.active?.length > 0 && typeof healInjury === 'function') {
+                const _ids = state.injuries.active.map(i => i.id);
+                const healedInjuries = _ids.filter(id => healInjury(id));
+                if (healedInjuries.length) addLog(`🩹 Medik vyléčil zranění: ${healedInjuries.map(id => (typeof INJURIES !== 'undefined' && INJURIES.find(x => x.id === id)?.name) || id).join(', ')}`, '🩹');
             }
             // cureDisease - filosof léčí nemoci po boji
             if (_postCompBon.cureDisease && state.diseases?.active?.length > 0) {
@@ -102265,9 +102333,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     // healPlayerAfterCombat - léčení hráče po boji (skill bonus)
                     // healInjuries - léčí zranění po boji
-                    if (compBonuses.healInjuries && state.char.injuries && state.char.injuries.length > 0) {
-                        const healedInjury = state.char.injuries.shift(); // Léčí první zranění
-                        log.innerHTML += `<div style="color: #4caf50;">🏥 Medik ošetřil zranění: ${healedInjury}</div>`;
+                    // [FIX v6.4.2] zranění jsou v state.injuries.active (state.char.injuries neexistuje)
+                    if (compBonuses.healInjuries && state.injuries?.active?.length > 0 && typeof healInjury === 'function') {
+                        const _hiId2 = state.injuries.active[0].id;
+                        if (healInjury(_hiId2)) log.innerHTML += `<div style="color: #4caf50;">🏥 Medik ošetřil zranění: ${(typeof INJURIES !== 'undefined' && INJURIES.find(x => x.id === _hiId2)?.name) || _hiId2}</div>`;
                     }
                     // cureDisease - léčí nemoci po boji
                     if (compBonuses.cureDisease && state.diseases && state.diseases.length > 0) {
