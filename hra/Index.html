@@ -33705,10 +33705,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Změň třídu
-            const oldClass = state.char.class;
+            // [v7.9 FIX] „Byl jsi: undefined“ – state.char.class se nepoužívá, třída je v classId
+            const oldClassId = state.char.classId;
+            if (oldClassId === 'mutant') return; // už je mutant – nic nepřičítat podruhé
+            const oldClass = (CLASSES[oldClassId] && CLASSES[oldClassId].name) || oldClassId || 'neznámé povolání';
+            // [v7.9 FIX] Odeber atributové bonusy staré třídy (jako changeClass) – dřív zůstávaly navíc
+            const _oldClsBon = CLASSES[oldClassId]?.bonuses;
+            if (_oldClsBon) Object.entries(_oldClsBon).forEach(([attr, bonus]) => {
+                if (state.char.attrs[attr] !== undefined) state.char.attrs[attr] = Math.max(1, state.char.attrs[attr] - bonus);
+            });
             state.char.class = 'mutant';
             state.char.classId = 'mutant';
-            
+
             // [BUG 2 FIX] Bonusy mutanta — opraveno: attrs místo state.char.str/end
             state.char.attrs.str = (state.char.attrs.str || 5) + 3;
             state.char.attrs.end = (state.char.attrs.end || 5) + 3;
@@ -54700,10 +54708,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             window._explore3D = null;
             closeModal();
             
-            // Vrátit do osady UI
-            if (typeof showSettlement === 'function') {
-                showSettlement();
-            }
+            // Vrátit do osady UI ([v7.9 FIX] showSettlement neexistuje → překresli aktuální záložku)
+            if (typeof renderFull === 'function') renderFull();
         }
         window.exit3DSettlement = exit3DSettlement;
         
@@ -57741,163 +57747,142 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             let finalAmount = amount;
             
             // 🆕 Pokud raw=true, přeskoč všechny bonusy a aplikuj přesný amount
-            if (isRaw) {
-                console.log(`📊 addXP RAW (no bonuses): ${amount} XP`);
-                // Skip přímo na totalXP update
-                const oldLevel = state.char.level || 1;
-                state.char.totalXP = (state.char.totalXP || 0) + finalAmount;
-                
-                // Recalc level z totalXP
-                if (typeof recalcLevelFromTotalXP === 'function') {
-                    recalcLevelFromTotalXP();
-                } else {
-                    // Fallback inline calc
-                    let newLevel = 1, xpRequired = 100, xpLeft = state.char.totalXP;
-                    while (xpLeft >= xpRequired) {
-                        xpLeft -= xpRequired;
-                        newLevel++;
-                        xpRequired = Math.floor(100 * Math.pow(1.5, newLevel - 1));
+            // [v7.9 FIX] raw (admin odměna, tombola) = přesné XP bez bonusů a bez anti-cheat stropu,
+            // ale level-up (body, HP, hláška) jde stejnou cestou jako běžné XP. Dřív volal neexistující
+            // recalcLevelFromTotalXP/onLevelUp → jiný vzorec levelu a žádné body.
+            if (isRaw) console.log(`📊 addXP RAW (no bonuses): ${amount} XP`);
+
+            if (!isRaw) {
+                // 📈 Level scaling bonus: +5% XP za každý level nad 5
+                // [BUG 7 FIX] Capped na +100% (level 25+) — předtím nekončeno (level 100 = +475%)
+                const playerLevel = state.char?.level || 1;
+                if (playerLevel > 5) {
+                    const levelXPBonus = Math.min(1.0, (playerLevel - 5) * 0.05); // max +100%
+                    finalAmount = Math.floor(finalAmount * (1 + levelXPBonus));
+                }
+            
+                // INT bonus (+10% za bod nad 5)
+                const intBonus = Math.max(0, ((state.char?.attrs?.int || 5) - 5) * 0.1);
+                finalAmount = Math.floor(finalAmount * (1 + intBonus));
+            
+                // [FIX v3.9.93] Skill: Učenec (xp_bonus) - +25% XP per level
+                if (typeof getSkillTreeBonus === 'function') {
+                    const xpBonus = getSkillTreeBonus('xpBonus');
+                    if (xpBonus > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + xpBonus));
                     }
-                    state.char.level = newLevel;
-                    state.char.xp = xpLeft;
-                    state.char.xpNeed = xpRequired;
                 }
-                
-                if ((state.char.level || 1) > oldLevel && typeof onLevelUp === 'function') {
-                    onLevelUp(oldLevel, state.char.level);
+                // Backwards compat
+                if (typeof getSkillLevel === 'function') {
+                    const oldEffLevel = getSkillLevel('efficient');
+                    if (oldEffLevel > 0 && !state._skillsMigrated) {
+                        finalAmount = Math.floor(finalAmount * (1 + 0.25 * oldEffLevel));
+                    }
                 }
-                return;
-            }
             
-            // 📈 Level scaling bonus: +5% XP za každý level nad 5
-            // [BUG 7 FIX] Capped na +100% (level 25+) — předtím nekončeno (level 100 = +475%)
-            const playerLevel = state.char?.level || 1;
-            if (playerLevel > 5) {
-                const levelXPBonus = Math.min(1.0, (playerLevel - 5) * 0.05); // max +100%
-                finalAmount = Math.floor(finalAmount * (1 + levelXPBonus));
-            }
-            
-            // INT bonus (+10% za bod nad 5)
-            const intBonus = Math.max(0, ((state.char?.attrs?.int || 5) - 5) * 0.1);
-            finalAmount = Math.floor(finalAmount * (1 + intBonus));
-            
-            // [FIX v3.9.93] Skill: Učenec (xp_bonus) - +25% XP per level
-            if (typeof getSkillTreeBonus === 'function') {
-                const xpBonus = getSkillTreeBonus('xpBonus');
-                if (xpBonus > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + xpBonus));
+                // Companion bonus
+                if (typeof getAllCompanionBonuses === 'function') {
+                    const compBonuses = getAllCompanionBonuses();
+                    if (compBonuses.xpBonus > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + compBonuses.xpBonus));
+                    }
                 }
-            }
-            // Backwards compat
-            if (typeof getSkillLevel === 'function') {
-                const oldEffLevel = getSkillLevel('efficient');
-                if (oldEffLevel > 0 && !state._skillsMigrated) {
-                    finalAmount = Math.floor(finalAmount * (1 + 0.25 * oldEffLevel));
+            
+                // 📟 Exotic bonus - Předválečná tech (+25% XP na 48h)
+                if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > Date.now()) {
+                    finalAmount = Math.floor(finalAmount * 1.25);
                 }
-            }
             
-            // Companion bonus
-            if (typeof getAllCompanionBonuses === 'function') {
-                const compBonuses = getAllCompanionBonuses();
-                if (compBonuses.xpBonus > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + compBonuses.xpBonus));
+                // 📿 Accessory XP bonus (Zlatý amulet apod.)
+                for (const accItem of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
+                    if (accItem && accItem.bonus === 'xp' && accItem.value > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + accItem.value / 100));
+                    }
                 }
-            }
             
-            // 📟 Exotic bonus - Předválečná tech (+25% XP na 48h)
-            if (state.exoticBonuses?.xpBoost && state.exoticBonuses.xpBoost > Date.now()) {
-                finalAmount = Math.floor(finalAmount * 1.25);
-            }
+                // 🆕 [v6.3.1 BUG FIX] DUPLIKACE odstraněna - xpBonus skill se aplikoval 2× (zde + výše L53766)
+                // Backwards compat: starý 'efficient' skill (= xp_bonus po migraci) — pouze pokud ne-migrovaný
+                // (Když je migrovaný, už se aplikoval výše, NEDUPLIKUJ)
+                // PŮVODNÍ KÓD (odstraněn):
+                //   if (typeof getSkillTreeBonus === 'function') {
+                //       const xpSkillBonus = getSkillTreeBonus('xpBonus'); ← duplikace L53766!
+                //       if (xpSkillBonus > 0) finalAmount = Math.floor(finalAmount * (1 + xpSkillBonus));
+                //   }
+                //   if (typeof getSkillLevel === 'function' && !state._skillsMigrated) {
+                //       const efficientLevel = getSkillLevel('efficient'); ← duplikace L53773!
+                //       if (efficientLevel > 0) finalAmount = Math.floor(finalAmount * (1 + 0.25 * efficientLevel));
+                //   }
             
-            // 📿 Accessory XP bonus (Zlatý amulet apod.)
-            for (const accItem of getEquippedAccessoryItems()) { // [v6.5] oba sloty doplňků
-                if (accItem && accItem.bonus === 'xp' && accItem.value > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + accItem.value / 100));
+                // 🎓 NPC XP bonus (Učitelka Věra + Knihovník Emil)
+                if (typeof getNPCBonuses === 'function') {
+                    const npcBon = getNPCBonuses();
+                    if (npcBon.xpBonus > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + npcBon.xpBonus));
+                    }
                 }
-            }
             
-            // 🆕 [v6.3.1 BUG FIX] DUPLIKACE odstraněna - xpBonus skill se aplikoval 2× (zde + výše L53766)
-            // Backwards compat: starý 'efficient' skill (= xp_bonus po migraci) — pouze pokud ne-migrovaný
-            // (Když je migrovaný, už se aplikoval výše, NEDUPLIKUJ)
-            // PŮVODNÍ KÓD (odstraněn):
-            //   if (typeof getSkillTreeBonus === 'function') {
-            //       const xpSkillBonus = getSkillTreeBonus('xpBonus'); ← duplikace L53766!
-            //       if (xpSkillBonus > 0) finalAmount = Math.floor(finalAmount * (1 + xpSkillBonus));
-            //   }
-            //   if (typeof getSkillLevel === 'function' && !state._skillsMigrated) {
-            //       const efficientLevel = getSkillLevel('efficient'); ← duplikace L53773!
-            //       if (efficientLevel > 0) finalAmount = Math.floor(finalAmount * (1 + 0.25 * efficientLevel));
-            //   }
-            
-            // 🎓 NPC XP bonus (Učitelka Věra + Knihovník Emil)
-            if (typeof getNPCBonuses === 'function') {
-                const npcBon = getNPCBonuses();
-                if (npcBon.xpBonus > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + npcBon.xpBonus));
+                // ✝️ holy: +10% XP
+                if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('holy')) {
+                    finalAmount = Math.floor(finalAmount * 1.10);
                 }
-            }
-            
-            // ✝️ holy: +10% XP
-            if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('holy')) {
-                finalAmount = Math.floor(finalAmount * 1.10);
-            }
-            // 🧠 [v6.5] freeman (Červené páčidlo): +10% XP — popis to sliboval, kód nic nedělal
-            if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('freeman')) {
-                finalAmount = Math.floor(finalAmount * 1.10);
-            }
-            
-            // 🔵 Frakční bonus - Koudyho naděje (+5% XP)
-            const factionBonus = getFactionBonus();
-            if (factionBonus.xp > 0) {
-                finalAmount = Math.floor(finalAmount * (1 + factionBonus.xp));
-            }
-            
-            // 🏛️ Politický XP bonus (rozhodnutí šéfa)
-            if (typeof getPoliticalXPBonus === 'function') {
-                const politicalXP = getPoliticalXPBonus();
-                if (politicalXP > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + politicalXP));
+                // 🧠 [v6.5] freeman (Červené páčidlo): +10% XP — popis to sliboval, kód nic nedělal
+                if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('freeman')) {
+                    finalAmount = Math.floor(finalAmount * 1.10);
                 }
-            }
             
-            // ⚔️ Klanový XP bonus (klanové budovy + base bonus)
-            if (typeof getClanBonuses === 'function') {
-                const clanBonus = getClanBonuses();
-                if (clanBonus.xp > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + clanBonus.xp));
+                // 🔵 Frakční bonus - Koudyho naděje (+5% XP)
+                const factionBonus = getFactionBonus();
+                if (factionBonus.xp > 0) {
+                    finalAmount = Math.floor(finalAmount * (1 + factionBonus.xp));
                 }
-            }
             
-            // 🏘️ Osada/base budovy XP bonus (Univerzita +20% apod.)
-            if (typeof getBuildingBonuses === 'function') {
-                const buildBonuses = getBuildingBonuses();
-                if (buildBonuses.xpBonus > 0) {
-                    finalAmount = Math.floor(finalAmount * (1 + buildBonuses.xpBonus));
+                // 🏛️ Politický XP bonus (rozhodnutí šéfa)
+                if (typeof getPoliticalXPBonus === 'function') {
+                    const politicalXP = getPoliticalXPBonus();
+                    if (politicalXP > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + politicalXP));
+                    }
                 }
-            }
             
-            // 🧠 Mood bonus/penalty
-            const mood = state.status?.mood || 50;
-            if (mood > 75) {
-                finalAmount = Math.floor(finalAmount * 1.10); // +10% XP
-            } else if (mood > 50) {
-                finalAmount = Math.floor(finalAmount * 1.05); // +5% XP
-            } else if (mood <= 10) {
-                finalAmount = Math.floor(finalAmount * 0.70); // -30% XP
-            } else if (mood <= 25) {
-                finalAmount = Math.floor(finalAmount * 0.85); // -15% XP
-            }
-            
-            // 🏰 Dungeon XP bonus z politického rozhodnutí
-            if (cachedPoliticalEffects?.decision_dungeonBonus && cachedPoliticalEffects.decision_dungeonBonus.until > Date.now()) {
-                if (state.dungeon?.active) {
-                    finalAmount = Math.floor(finalAmount * 1.25); // +25% XP v dungeonech
+                // ⚔️ Klanový XP bonus (klanové budovy + base bonus)
+                if (typeof getClanBonuses === 'function') {
+                    const clanBonus = getClanBonuses();
+                    if (clanBonus.xp > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + clanBonus.xp));
+                    }
                 }
-            }
             
-            // Max XP najednou (anti-cheat) - škáluje s levelem
-            const MAX_XP_PER_ACTION = 1000 + (playerLevel * 50);
-            finalAmount = Math.min(finalAmount, MAX_XP_PER_ACTION);
+                // 🏘️ Osada/base budovy XP bonus (Univerzita +20% apod.)
+                if (typeof getBuildingBonuses === 'function') {
+                    const buildBonuses = getBuildingBonuses();
+                    if (buildBonuses.xpBonus > 0) {
+                        finalAmount = Math.floor(finalAmount * (1 + buildBonuses.xpBonus));
+                    }
+                }
+            
+                // 🧠 Mood bonus/penalty
+                const mood = state.status?.mood || 50;
+                if (mood > 75) {
+                    finalAmount = Math.floor(finalAmount * 1.10); // +10% XP
+                } else if (mood > 50) {
+                    finalAmount = Math.floor(finalAmount * 1.05); // +5% XP
+                } else if (mood <= 10) {
+                    finalAmount = Math.floor(finalAmount * 0.70); // -30% XP
+                } else if (mood <= 25) {
+                    finalAmount = Math.floor(finalAmount * 0.85); // -15% XP
+                }
+            
+                // 🏰 Dungeon XP bonus z politického rozhodnutí
+                if (cachedPoliticalEffects?.decision_dungeonBonus && cachedPoliticalEffects.decision_dungeonBonus.until > Date.now()) {
+                    if (state.dungeon?.active) {
+                        finalAmount = Math.floor(finalAmount * 1.25); // +25% XP v dungeonech
+                    }
+                }
+            
+                // Max XP najednou (anti-cheat) - škáluje s levelem
+                const MAX_XP_PER_ACTION = 1000 + (playerLevel * 50);
+                finalAmount = Math.min(finalAmount, MAX_XP_PER_ACTION);
+            }
             
             // Kontrola max level
             if ((state.char.level || 1) >= GAME_CONSTANTS.MAX_LEVEL) {
@@ -66266,7 +66251,8 @@ function openFullscreenMap() {
                         if (sec.energy) resultDesc += ' ⚡+' + sec.energy;
                     }
                 } else if (recipe.result.type === 'tool') {
-                    resultDesc = recipe.result.desc || '🔧 ' + recipe.result.bonus;
+                    // [v7.9 FIX] nástroj bez desc i bonus (Spacák) ukazoval „🔧 undefined“
+                    resultDesc = recipe.result.desc || (recipe.result.bonus ? '🔧 ' + recipe.result.bonus : (recipe.result.effect === 'sleep' ? '😴 Spaní venku' : '🔧 Nástroj'));
                 } else if (recipe.result.type === 'throwable') {
                     const _existThrow = state.inv.filter(i => i.id === recipe.id).reduce((sum, i) => sum + (i.count || 1), 0);
                     resultDesc = (recipe.result.damage ? '💥 ' + recipe.result.damage + ' DMG' : '💨 ' + recipe.result.effect) + (_existThrow > 0 ? ' <span style="color:#64b5f6;">(' + _existThrow + ')</span>' : '');
@@ -78564,8 +78550,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         { name: 'Strážný', icon: '💂', hp: 60, maxHp: 60, damage: 12, defense: 8, alive: true, xp: 30 },
                         { name: 'Strážný', icon: '💂', hp: 50, maxHp: 50, damage: 10, defense: 6, alive: true, xp: 25 },
                     ];
-                    if (typeof startGridCombat === 'function') {
-                        startGridCombat(guards, { reason: 'Chycen při krádeži!' });
+                    // [v7.9 FIX] startGridCombat ve hře neexistuje → tlačítko „Bojovat“ boj nikdy nespustilo
+                    const _guardBase = (typeof ENEMIES !== 'undefined' && (ENEMIES.find(e => e.id === 'guard') || ENEMIES.find(e => e.id === 'soldier'))) || {}; // sprite/chování vojáka, staty strážných níž
+                    if (typeof startCombatWithGroup === 'function' && _guardBase.id) {
+                        startCombatWithGroup(guards.map(g => ({ ..._guardBase, ...g, loot: [] })), 'normal', true);
                     } else {
                         // Fallback: prostý damage
                         const dmg = 15 + Math.floor(Math.random() * 20);
@@ -129779,9 +129767,11 @@ body.pa-theme #paOverlay{display:block}
         
         // Automaticky odesílej skóre při level upu
         const originalAddXP = addXP;
-        addXP = function(amount) {
+        // [v7.9 FIX] předávej i options – jinak se {raw:true} (admin odměna, tombola) ztratilo
+        // a přesné XP prošlo bonusy + anti-cheat stropem (~1000 XP)
+        addXP = function(amount, options) {
             const oldLevel = state.char.level;
-            originalAddXP(amount);
+            originalAddXP(amount, options);
             if (state.char.level > oldLevel && multiplayerEnabled) {
                 setTimeout(submitScore, 1000);
             }
@@ -182337,7 +182327,8 @@ function applyTipReward(tip) {
             }
         }
         if (r.xp) {
-            if (typeof gainXP === 'function') gainXP(r.xp);
+            // [v7.9 FIX] gainXP ve hře neexistuje → XP se přičetlo bez přepočtu levelu a bodů
+            if (typeof addXP === 'function') addXP(r.xp);
             else state.char.totalXP = (state.char.totalXP || 0) + r.xp;
         }
         if (r.reputation) {
