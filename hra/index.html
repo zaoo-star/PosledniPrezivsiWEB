@@ -4605,6 +4605,11 @@
             return specials;
         }
         
+        // [v6.5] Snížení šance na náhodné souboje z výbavy (stealth oblek, kamufláž, tiché boty, dalekohled). Max -80 %.
+        function _getEquipEncounterReduction() {
+            try { return Math.min(0.8, Math.max(0, getArmorSpecialEffects().encounterReduction || 0)); } catch (e) { return 0; }
+        }
+        window._getEquipEncounterReduction = _getEquipEncounterReduction;
         function hasEquippedSpecial(special) {
             if (!state.equipped) return false;
             const slots = ['weapon', 'armor', 'helmet', 'gloves', 'boots', 'accessory', 'accessory2', 'ring'];
@@ -7192,10 +7197,16 @@
                 if (_mutB[attr]) total += _mutB[attr];
             }
             
+            // [v6.5] Díly setu vlastní třídy se počítají níže přes getActiveSetEffects() — tady je přeskoč,
+            // jinak se jejich bonus k atributu přičetl dvakrát (např. +3 VÝD z helmy setu dávalo +6).
+            let _setPieceIds = null;
+            try { if (typeof getEquippedSetPieces === 'function') _setPieceIds = new Set(getEquippedSetPieces().pieces.map(p => p.id)); } catch (e) {}
+            const _countedInSet = (it) => !!(it && _setPieceIds && _setPieceIds.has(it.id));
+            
             // Bonusy z vybaveného vybavení
             ['helmet', 'armor', 'weapon'].forEach(slot => {
                 const item = state.equipped?.[slot];
-                if (item?.bonus?.[attr]) {
+                if (item?.bonus?.[attr] && !_countedInSet(item)) {
                     total += item.bonus[attr];
                 }
             });
@@ -7203,7 +7214,7 @@
             // Boss loot accessory bonusy (bonus je objekt)
             if (state.equippedAccessory) {
                 const acc = state.inv.find(i => i.id === state.equippedAccessory);
-                if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr]) {
+                if (acc?.bonus && typeof acc.bonus === 'object' && acc.bonus[attr] && !_countedInSet(acc)) {
                     total += acc.bonus[attr];
                 }
             }
@@ -8853,7 +8864,7 @@
             // === ABYSS (PROPAST) ITEMS ===
             { id: 'abyss_crystal', name: 'Krystal Propasti', icon: '🔮', type: 'consumable', effect: 'permanent_defense', value: 5, weight: 1, price: 3000, rarity: 'legendary', cantBuy: true, usable: true, useAction: 'useAbyssCrystal', desc: 'Temný krystal z hlubin Propasti. Pulzuje nadpřirozenou energií. Použij pro TRVALE +5 max obrana! Drop z boss pater Propasti.' },
             { id: 'abyss_shard', name: 'Střep Temnoty', icon: '💎', type: 'consumable', effect: 'weapon_upgrade_shard', weight: 0.5, price: 1500, rarity: 'epic', cantBuy: true, desc: 'Fragment temnoty z Propasti. Použij na vybavenou zbraň → trvale +5 DMG. Nebo prodej za 1500 💰.' },
-            { id: 'abyss_elixir', name: 'Elixír Propasti', icon: '⚗️', type: 'consumable', effect: 'health', healsInjuries: ['bruise', 'cut', 'sprain', 'burn', 'concussion', 'exhaustion', 'fracture', 'broken_bone', 'infection'], value: 250, weight: 0.5, price: 2000, rarity: 'epic', cantBuy: true, desc: 'Temný elixír z hlubin Propasti. ❤️ +250 HP (2,5× víc než Super Stimpak) + vyléčí VŠECHNA zranění (modřiny, řezy, vyvrtnutí, popáleniny, otřes mozku, vyčerpání, zlomeniny, vážné fraktury, infekce). Mnohem vzácnější než stimpak.' },
+            { id: 'abyss_elixir', name: 'Elixír Propasti', icon: '⚗️', type: 'consumable', effect: 'health', healsInjuries: ['bruise', 'cut', 'sprain', 'burn', 'concussion', 'exhaustion', 'fracture'], cures: ['infection'], value: 250, weight: 0.5, price: 2000, rarity: 'epic', cantBuy: true, desc: 'Temný elixír z hlubin Propasti. ❤️ +250 HP (2,5× víc než Super Stimpak) + vyléčí VŠECHNA zranění (modřiny, řezy, vyvrtnutí, popáleniny, otřes mozku, vyčerpání, zlomeniny, vážné fraktury, infekce). Mnohem vzácnější než stimpak.' },
             { id: 'abyss_rune', name: 'Runa Propasti', icon: '🪬', type: 'consumable', effect: 'permanent_hp', value: 25, weight: 0.5, price: 5000, rarity: 'legendary', cantBuy: true, desc: 'Prastará runa. Použij pro TRVALE +25 max HP! Extrémně vzácný drop z hlubin Propasti (patro 30+).' },
             
             // === [v6.3] BLUEPRINTY pro legendární zbraně ===
@@ -14047,6 +14058,12 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 severity: 1
             }
         ];
+        // [v6.5] Syfilis a Svrab jsou nemoci (Růžová Oáza je přidává do state.diseases a hledá v DISEASES,
+        // lékárnička/antibiotika je mají v `cures`). V INJURIES byly omylem → nešly chytit ani vyléčit.
+        for (const _stdId of ['syphilis', 'crabs']) {
+            const _ix = INJURIES.findIndex(x => x.id === _stdId);
+            if (_ix >= 0) { const _e = INJURIES.splice(_ix, 1)[0]; if (!DISEASES.some(d => d.id === _stdId)) DISEASES.push(_e); }
+        }
         
         // === VOZIDLA ===
         // === KOMPANIONI ===
@@ -14869,7 +14886,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         
         // === ENCHANTMENTY ===
         const ENCHANTMENTS = [
-            { id: 'fire', name: 'Oheň', icon: '🔥', type: 'weapon', effect: { bonusDamage: 5, element: 'fire' }, desc: '+5 ohnivého poškození' },
+            { id: 'fire', name: 'Oheň', icon: '🔥', type: 'weapon', effect: { bonusDamage: 5, element: 'fire' }, desc: 'Zapálí cíl: 5 DMG/kolo (2 kola)' },
             { id: 'ice', name: 'Led', icon: '❄️', type: 'weapon', effect: { bonusDamage: 2, slow: 20 }, desc: '+2 damage, -20% rychlost nepřítele' },
             { id: 'poison', name: 'Jed', icon: '🧪', type: 'weapon', effect: { dot: 2, duration: 3 }, desc: '2 damage/kolo po 3 kola' },
             { id: 'lifesteal', name: 'Vysávání života', icon: '🧛', type: 'weapon', effect: { lifesteal: 0.03 }, desc: '3% damage se vrátí jako HP' },
@@ -21321,12 +21338,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 totalResist += reduction;
             }
             
-            // Kontrola plynové masky nebo hazmat obleku
-            const armor = state.equipped?.armor;
-            if (armor?.special === 'rad_resist') {
-                totalResist += 0.3; // +30%
-            } else if (armor?.special === 'rad_immune') {
-                totalResist += 0.5; // +50%
+            // Speciály výbavy proti radiaci — [v6.5] dřív jen brnění; helmy/rukavice (plynová maska,
+            // protirad. helma a rukavice) a mutantí kůže se nepočítaly, i když je přehled ukazoval.
+            {
+                const _radSpec = { rad_resist: 0.3, rad_immune: 0.5, mutant: 0.5, sandworm: 0.25 };
+                const _slots = ['armor', 'helmet', 'gloves', 'boots', 'accessory'];
+                for (const _sl of _slots) {
+                    const _it = state.equipped?.[_sl];
+                    if (_it && _radSpec[_it.special]) totalResist += _radSpec[_it.special];
+                }
             }
             
             // 🎭 Set bonusy z equipment (radResist je v bodech, převeď na procenta: 40 bodů = 40%)
@@ -23385,6 +23405,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             return { count: equippedPieces.length, pieces: equippedPieces };
         }
+        
+        // [v6.5] Je předmět nasazený díl setu vlastní třídy? (jeho bonusy už počítá getActiveSetEffects)
+        function _isOwnSetPieceEquipped(item) {
+            if (!item || !item.id) return false;
+            try { return getEquippedSetPieces().pieces.some(p => p.id === item.id); } catch (e) { return false; }
+        }
+        window._isOwnSetPieceEquipped = _isOwnSetPieceEquipped;
         
         // Získej aktivní set bonusy
         function getSetBonuses() {
@@ -27323,7 +27350,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         weapon.special === 'poison' ? '☠️ Jed 30%' :
                         weapon.special === 'bleed' ? '🩸 Krvácení 25%' :
                         weapon.special === 'stun' ? '💫 Omráčení 20%' :
-                        weapon.special === 'freeman' ? '🔧 Freeman' :
+                        weapon.special === 'freeman' ? '🧠 +10% XP' :
                         weapon.special === 'devastation' ? '💥 Devastace' :
                         weapon.special === 'burn' ? '🔥 Popáleniny 20%' :
                         weapon.special === 'plasma_burn' ? '💚 Plazma 25%' :
@@ -28156,7 +28183,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     equipped.special === 'night_stalker' ? '🌙 Noční lovec (+15% dmg v noci)' :
                     equipped.special === 'berserker' ? '💢 Berserk (+dmg pod 50% HP)' :
                     equipped.special === 'tank' ? '🛡️ Tank (+HP)' :
-                    equipped.special === 'freeman' ? '🔧 Freeman (crowbar bonus)' :
+                    equipped.special === 'freeman' ? '🧠 Freeman (+10% XP)' :
                     equipped.special === 'intimidate' ? '😱 Zastrašení' :
                     equipped.special === 'lifesteal' ? '🧛 Krádež života' :
                     equipped.special === 'fire' ? '🔥 Oheň' :
@@ -28166,7 +28193,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     equipped.special === 'armor_pierce' ? '🗡️ Průraz zbroje' :
                     equipped.special === 'critical' ? '💥 Kritický bonus' :
                     equipped.special === 'vampire' ? '🧛 Vampýr' :
-                    equipped.special === 'devastation' ? '💥 Devastace (2.5x crit DMG)' :
+                    equipped.special === 'devastation' ? '💥 Devastace (+50% krit. zranění)' :
                     equipped.special === 'burn' ? '🔥 Popáleniny (20%)' :
                     equipped.special === 'crit_immune' ? '🛡️ Imunita na crit' :
                     equipped.special === 'leviathan' ? '🐉 Leviatan (crit imunita, +20 DEF)' :
@@ -28832,6 +28859,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             } else {
                 state.equippedAccessory = null;
             }
+            if (typeof _syncAccessorySlot === 'function') _syncAccessorySlot();
             
             // Notifikace
             if (missing.length > 0) {
@@ -29336,24 +29364,27 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             equipAccessory(accessory.id);
         }
         
+        // [v6.5] state.equipped.accessory vždy odpovídá state.equippedAccessory (jediný zdroj pravdy)
+        function _syncAccessorySlot() {
+            if (!state) return;
+            state.equipped = state.equipped || {};
+            const acc = state.equippedAccessory ? (state.inv || []).find(i => i.id === state.equippedAccessory && i.type === 'accessory') : null;
+            if (state.equippedAccessory && !acc) state.equippedAccessory = null;
+            state.equipped.accessory = acc || null;
+            state.equipped.accessory2 = null;
+        }
+        window._syncAccessorySlot = _syncAccessorySlot;
+        // [v6.5] Po načtení hry sjednotit slot doplňku (staré savy měly equipped.accessory rozjeté s equippedAccessory)
+        setInterval(() => { try { if (state && state.confirmed) _syncAccessorySlot(); } catch (e) {} }, 5000);
         function equipAccessory(accId) {
             if (window.combatState?.units) { notifyWarning('⚔️ V boji!', 'Během boje nelze měnit vybavení!'); return; }
             const accessory = state.inv.find(i => i.id === accId && i.type === 'accessory');
             if (!accessory) return;
             
             state.equippedAccessory = accId;
-            // Sync do nového systému state.equipped (aby fungoval HP regen a stat check)
-            state.equipped = state.equipped || {};
-            if (!state.equipped.accessory) {
-                state.equipped.accessory = accessory;
-            } else if (state.equipped.accessory.id !== accId) {
-                // Slot 1 obsazen jiným - přesuň do slotu 2
-                if (!state.equipped.accessory2 || state.equipped.accessory2.id === accId) {
-                    state.equipped.accessory = accessory;
-                } else {
-                    state.equipped.accessory2 = accessory;
-                }
-            }
+            // [v6.5] Jeden slot na doplněk (jak ukazuje UI). Dřív se state.equipped.accessory/accessory2
+            // rozjížděl s equippedAccessory a bonusy zůstávaly i po sundání.
+            _syncAccessorySlot();
             addLog('Nasazen doplněk: ' + accessory.name, accessory.icon);
             notifySuccess('Nasazeno!', accessory.name);
             showAccessoryModal();
@@ -29365,6 +29396,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const accessory = state.inv.find(i => i.id === state.equippedAccessory);
             state.equippedAccessory = null;
+            _syncAccessorySlot();
             addLog('Sundán doplněk: ' + (accessory?.name || '?'), '💍');
             showAccessoryModal();
             renderFull();
@@ -36767,6 +36799,73 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             'treasure': { name: '💎 Poklad', effects: ['+50% kořist ze schránek', 'Detekce skrytých předmětů'], color: '#ffd700' },
             'wish': { name: '⭐ Přání', effects: ['1× denně: vyber libovolný buff na 30 minut'], color: '#e91e63' }
         };
+        // [v6.5] Jediný zdroj pravdy pro popisy speciálních efektů — odpovídá tomu, co kód opravdu dělá.
+        const SPECIAL_TRUE_TEXT = {
+            "poison": "☠️ 30% šance otrávit cíl",
+            "bleed": "🩸 25% šance na krvácení (3 DMG/kolo, 3 kola)",
+            "stun": "💫 20% šance omráčit cíl",
+            "fire": "🔥 35% šance zapálit cíl (6 DMG/kolo, 3 kola)",
+            "burn": "🔥 20% šance zapálit cíl (5 DMG/kolo, 2 kola)",
+            "armor_pierce": "🗡️ Probíjí zbroj: +50 % obrany cíle jako zranění navíc",
+            "energy": "⚡ Ignoruje 25 % obrany cíle, +30 % jeho obrany jako zranění navíc",
+            "plasma_burn": "💚 25% šance na plazmové popáleniny (6 DMG/kolo, 3 kola)",
+            "burst": "💥 Jednou za kolo dávka: 2–4 zásahy navíc (každý 40 % zranění)",
+            "splash": "💥 Výbuch zasáhne i nepřátele kolem cíle",
+            "chain_lightning": "⚡ Blesk může přeskočit na další nepřátele",
+            "freeze": "❄️ 25% šance zmrazit cíl",
+            "lifesteal": "🧛 15 % způsobeného zranění ti vrátí HP",
+            "devastation": "💥 Kritické zásahy +50 % zranění",
+            "evil_bane": "✝️ +30 % zranění proti mutantům, nemrtvým a démonům",
+            "silver": "🥈 +20 % zranění proti nemrtvým",
+            "silverhand": "🤘 15% šance na dvojitý zásah (+50 % zranění)",
+            "freeman": "🧠 +10 % XP ze všech akcí",
+            "block": "🛡️ +15 % šance na blok",
+            "block_bonus": "🛡️ +10 % šance na blok",
+            "dodge_bonus": "💨 +10 % úhyb",
+            "unarmed_bonus": "🥊 +5 zranění",
+            "grip": "✊ +2 zranění",
+            "bleed_punch": "🩸 +3 zranění, útok pěstí (bez zbraně): 25% krvácení",
+            "power_punch": "👊 +10 zranění",
+            "medic_bonus": "🩺 +20 % léčení",
+            "speed_bonus": "👟 +2 % rychlost cestování",
+            "stealth_move": "🤫 -20 % šance na náhodný souboj",
+            "run_bonus": "🏃 +15 % šance na útěk z boje",
+            "stomp": "🦶 +8 zranění",
+            "jump": "🦘 +25 % úhyb",
+            "warm_feet": "❄️ -15 % spotřeba energie při cestování",
+            "power_kick": "🦿 +10 obrana, +4 % rychlost cestování",
+            "combat_stance": "🥋 +5 % kritická šance",
+            "light_feet": "🦶 +1 % rychlost cestování",
+            "headshot_protect": "🪖 -25 % zranění z kritických zásahů",
+            "gas_filter": "😷 Imunita na otravu",
+            "night_vision": "🌙 +10 % zranění v noci (20–6 h)",
+            "nightvision": "🌙 +10 % zranění v noci (20–6 h)",
+            "crit_immune": "🛡️ Imunita na kritické zásahy",
+            "flash_protect": "💡 Imunita na omráčení",
+            "rad_resist": "☢️ -30 % radiace",
+            "rad_immune": "☢️ -50 % radiace",
+            "stealth": "🥷 -50 % šance na náhodný souboj, +15 % úhyb",
+            "berserker": "👹 +30 % obrany zbroje jako útok, -3 obrana",
+            "phoenix": "🔥 Jednou za boj přežiješ smrtelný zásah",
+            "titan": "🦾 +5 obrana, imunita na kritické zásahy",
+            "scout": "🏃 +15 % úhyb, +4 % rychlost cestování",
+            "medic": "🏥 +50 % léčení",
+            "mutant": "🧬 -50 % radiace, poloviční otrava",
+            "exo": "🦿 +10 % zranění, +50 % nosnost",
+            "nano": "🔬 +2 HP každé kolo v boji",
+            "intimidate": "💀 +2 zranění",
+            "scavenger": "🎒 +25 % kořist",
+            "camo": "🌿 -30 % šance na náhodný souboj",
+            "fireproof": "🔥 -70 % zranění od ohnivých nepřátel",
+            "insulated": "⚡ -70 % zranění od elektrických nepřátel",
+            "endurance": "🏃 -30 % spotřeba energie při cestování",
+            "agile": "🏃 +10 % úhyb",
+            "sturdy": "🦵 +2 obrana, -5 % přijatého zranění"
+        };
+        window.SPECIAL_TRUE_TEXT = SPECIAL_TRUE_TEXT;
+        for (const [_k, _t] of Object.entries(SPECIAL_TRUE_TEXT)) {
+            if (SPECIAL_EFFECT_DETAILS[_k]) SPECIAL_EFFECT_DETAILS[_k].effects = [_t.replace(/^\S+\s/, '')];
+        }
         
         // Funkce pro zobrazení detailu speciálního efektu
         function showSpecialEffectDetail(special) {
@@ -36846,7 +36945,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     case 'endurance': effects.energySaver += 0.3; break;
                     case 'block': effects.bonusBlock += 0.15; break;
                     case 'rad_resist': effects.radResist += 0.3; break;
-                    case 'rad_immune': effects.radResist += 1.0; break;
+                    case 'rad_immune': effects.radResist += 0.5; break; // [v6.5] sjednoceno s addRadiation a popisem (-50 %)
                     case 'crit_immune': effects.critImmune = true; break;
                     // World Boss armor efekty
                     case 'leviathan': effects.critImmune = true; effects.bonusDefense += 20; break;
@@ -43257,8 +43356,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const newSt = state.skillTree?.exploration?.stealth || 0;
             if (legSt > 0 && newSt === 0) sources.push({ icon: '📜', name: 'Legacy stealth Lv.' + legSt, value: '-' + (legSt * 15) + '%' });
             try {
-                const setFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-                if (setFx.encounterReduction > 0) sources.push({ icon: '🛡️', name: 'Set bonus výbavy', value: '-' + Math.round(setFx.encounterReduction * 100) + '%' });
+                const _eqEnc = typeof _getEquipEncounterReduction === 'function' ? _getEquipEncounterReduction() : 0;
+                if (_eqEnc > 0) sources.push({ icon: '🛡️', name: 'Výbava (stealth oblek, kamufláž, tiché boty, dalekohled)', value: '-' + Math.round(_eqEnc * 100) + '%' });
             } catch(e) {}
             try {
                 if (typeof hasEquippedSpecial === 'function') {
@@ -45155,16 +45254,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 _stealthSources.push('📜 Legacy stealth Lv.' + _legSt + ': -' + (_legSt * 15) + '%');
             }
             try {
-                const _setFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-                if (_setFx.encounterReduction > 0) {
-                    _totalArmorEnc = _setFx.encounterReduction;
-                    _stealthSources.push('🛡️ Set bonus: -' + Math.round(_setFx.encounterReduction * 100) + '%');
-                }
-            } catch(e) {}
-            try {
-                if (typeof hasEquippedSpecial === 'function') {
-                    if (hasEquippedSpecial('camo')) { _itemMult *= 0.7; _stealthSources.push('🥷 Camo plášť: ×0.7'); }
-                    if (hasEquippedSpecial('stealth_move')) { _itemMult *= 0.8; _stealthSources.push('👢 Tiché boty: ×0.8'); }
+                const _eqEnc = typeof _getEquipEncounterReduction === 'function' ? _getEquipEncounterReduction() : 0;
+                if (_eqEnc > 0) {
+                    _totalArmorEnc = _eqEnc;
+                    _stealthSources.push('🛡️ Výbava: -' + Math.round(_eqEnc * 100) + '%');
                 }
             } catch(e) {}
             
@@ -45718,14 +45811,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 html += '<button onclick="state.mapFilter = \'' + f.id + '\'; renderFull();" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (active ? '#1a2a1a' : '#111') + '; border: 1px solid ' + (active ? '#4caf50' : '#2a2a2a') + '; border-radius: 3px; color: ' + (active ? '#8bc34a' : '#555') + '; cursor: pointer;">' + f.icon + ' ' + f.label + '</button>';
             });
             // [v4.0.1] Klan filter s jasnějším popiskem - vysvětluje co dělá
-            html += '<button onclick="state.showClanTerritories = !state.showClanTerritories; saveGame(true); renderFull();" title="' + (_clanTerrOn ? 'Klikni pro zobrazení dobytých území klanů (default)' : 'Klikni pro skrytí dobytých území - mapa bude přehlednější, jen základny zůstanou') + '" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (_clanTerrOn ? '#2a1a1a' : '#1a2a1a') + '; border: 1px solid ' + (_clanTerrOn ? '#c62828' : '#4caf50') + '; border-radius: 3px; color: ' + (_clanTerrOn ? '#ff8a80' : '#8bc34a') + '; cursor: pointer; margin-left: auto;">⚔️ ' + (_clanTerrOn ? '👁️‍🗨️ Území skryto' : '👁️ Území vidět') + '</button>';
+            if (!(window.REMOVED_FEATURES && window.REMOVED_FEATURES.enabled)) html += '<button onclick="state.showClanTerritories = !state.showClanTerritories; saveGame(true); renderFull();" title="' + (_clanTerrOn ? 'Klikni pro zobrazení dobytých území klanů (default)' : 'Klikni pro skrytí dobytých území - mapa bude přehlednější, jen základny zůstanou') + '" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (_clanTerrOn ? '#2a1a1a' : '#1a2a1a') + '; border: 1px solid ' + (_clanTerrOn ? '#c62828' : '#4caf50') + '; border-radius: 3px; color: ' + (_clanTerrOn ? '#ff8a80' : '#8bc34a') + '; cursor: pointer; margin-left: auto;">⚔️ ' + (_clanTerrOn ? '👁️‍🗨️ Území skryto' : '👁️ Území vidět') + '</button>';
             
             // [NEW] Online hráči toggle — defaultně zapnuto
             const _onlinePlayersOn = state.hideOnlinePlayers !== true;  // Default: zobrazit
             html += '<button onclick="state.hideOnlinePlayers = !(state.hideOnlinePlayers===true); saveGame(true); renderFull();" title="' + (_onlinePlayersOn ? 'Klikni pro skrytí online hráčů na mapě' : 'Klikni pro zobrazení online hráčů na mapě (modré 👥 badges)') + '" style="padding: 0.15rem 0.4rem; font-size: 0.6rem; background: ' + (_onlinePlayersOn ? '#0d1a2a' : '#111') + '; border: 1px solid ' + (_onlinePlayersOn ? '#1976d2' : '#333') + '; border-radius: 3px; color: ' + (_onlinePlayersOn ? '#64b5f6' : '#666') + '; cursor: pointer;">👥 ' + (_onlinePlayersOn ? 'Hráči' : 'Hráči skrytí') + '</button>';
             html += '</div>';
             // Vysvětlovací řádek
-            html += '<div style="font-size: 0.6rem; color: #666; text-align: center; margin-top: 0.3rem; padding: 0 0.5rem; line-height: 1.3;">💡 Klanový filter ovládá zobrazení <strong style="color: #ce93d8;">dobytých území</strong> ostatních klanů. Klanové <strong style="color: #ffd700;">základny</strong> jsou vidět vždy.</div>';
+            if (!(window.REMOVED_FEATURES && window.REMOVED_FEATURES.enabled)) html += '<div style="font-size: 0.6rem; color: #666; text-align: center; margin-top: 0.3rem; padding: 0 0.5rem; line-height: 1.3;">💡 Klanový filter ovládá zobrazení <strong style="color: #ce93d8;">dobytých území</strong> ostatních klanů. Klanové <strong style="color: #ffd700;">základny</strong> jsou vidět vždy.</div>';
             
             // === LEGENDA MAPY ===
             html += '<details style="margin-top: 0.6rem; background: rgba(10,10,14,0.6); border-radius: 6px; border: 1px solid #2a2a2a; backdrop-filter: blur(3px);">';
@@ -45758,7 +45851,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // --- Speciální eventy ---
             html += '<div style="display:flex; gap:0.5rem; flex-wrap:wrap; padding-top:0.3rem; border-top:1px solid #1a1a1a;">';
-            html += '<span style="font-size:0.65rem;">⚔️<span style="color:#ffd700;font-size:0.6rem;">Klan</span></span>';
+            if (!(window.REMOVED_FEATURES && window.REMOVED_FEATURES.enabled)) html += '<span style="font-size:0.65rem;">⚔️<span style="color:#ffd700;font-size:0.6rem;">Klan</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#ff4444;">⚔️Válka</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#ffd700;">💎Poklad</span></span>';
             html += '<span style="font-size:0.65rem;"><span style="color:#f44336;">🐉Boss</span></span>';
@@ -55540,8 +55633,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // 🥷 Armor encounterReduction (stealth armor -50%, camo -30%, stealth_move -20%)
-            const armorSetFx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-            const armorEncounterRed = stealthOn ? (armorSetFx.encounterReduction || 0) : 0;
+            // [v6.5] Dřív se četlo z getActiveSetEffects(), který encounterReduction nikdy nemá → stealth oblek
+            // (-50%) a dalekohled (-15%) nedělaly nic. Zdroj je getArmorSpecialEffects() (vč. camo a stealth_move).
+            const armorEncounterRed = stealthOn ? _getEquipEncounterReduction() : 0;
             
             let enemyChance = Math.max(0.05, (0.5 - ambushReduction) * (1 - armorEncounterRed)); // Základní 50%, sníženo bonusy
             
@@ -55578,16 +55672,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // ========================================
             // 🎒 ITEM SPECIAL EFEKTY - CESTOVÁNÍ
             // ========================================
-            if (stealthOn && typeof hasEquippedSpecial === 'function') {
-                // 🥷 camo: -30% šance na náhodné souboje
-                if (hasEquippedSpecial('camo')) {
-                    enemyChance *= 0.7;
-                }
-                // 👢 stealth_move: -20% šance na přepadení
-                if (hasEquippedSpecial('stealth_move')) {
-                    enemyChance *= 0.8;
-                }
-            }
+            // [v6.5] camo a stealth_move jsou už v armorEncounterRed výše (dřív se násobily zvlášť)
             
             // Vynucený encounter na neprozkoumaném území NEBO šance na nepřítele
             if (forceEncounter || roll < enemyChance) {
@@ -57223,6 +57308,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // ✝️ holy: +10% XP
             if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('holy')) {
+                finalAmount = Math.floor(finalAmount * 1.10);
+            }
+            // 🧠 [v6.5] freeman (Červené páčidlo): +10% XP — popis to sliboval, kód nic nedělal
+            if (typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('freeman')) {
                 finalAmount = Math.floor(finalAmount * 1.10);
             }
             
@@ -61278,7 +61367,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'evil_bane': '✨ Zhouba zla: +140% damage proti bossům'
             };
             
-            const specialText = item.special ? (specialDescriptions[item.special] || `⭐ ${item.special}`) : '';
+            const specialText = item.special ? (SPECIAL_TRUE_TEXT[item.special] || specialDescriptions[item.special] || `⭐ ${item.special}`) : '';
             
             // Info o munici
             const itemData = ITEMS.find(i => i.id === item.id) || item;
@@ -62162,7 +62251,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'endurance': '🏃 -30% ztráta energie při cestování'
             };
             
-            const specialText = item.special ? (specialDescriptions[item.special] || `⭐ ${item.special}`) : '';
+            const specialText = item.special ? (SPECIAL_TRUE_TEXT[item.special] || specialDescriptions[item.special] || `⭐ ${item.special}`) : '';
             
             showModal(`${item.icon} ${item.name}`, `
                 <div style="text-align: center;">
@@ -65807,7 +65896,7 @@ function openFullscreenMap() {
                     'fireproof': '🔥 Imunita na oheň',
                     'insulated': '⚡ Imunita na elektřinu'
                 };
-                const specialText = recipe.result.special ? (specialDescriptions[recipe.result.special] || recipe.result.special) : '';
+                const specialText = recipe.result.special ? (SPECIAL_TRUE_TEXT[recipe.result.special] || specialDescriptions[recipe.result.special] || recipe.result.special) : '';
                 typeInfo = `<p style="color: #1976d2; font-size: 1.1rem;">🛡️ Zbroj - ${recipe.result.defense} DEF</p>`;
                 usageInfo = `
                     <p>📌 <strong>Použití:</strong> Vyber v inventáři → Vybavit</p>
@@ -92276,8 +92365,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // 🪬 RUNEWORD BONUSY (jen pro hráče a společníky)
             if (attacker.team === 'player' || attacker.isPlayer) {
                 const rwb = typeof getRunewordBonuses === 'function' ? getRunewordBonuses() : {};
-                // +% damage
-                if (rwb.damagePercent > 0) damage = Math.floor(damage * (1 + rwb.damagePercent / 100));
+                // +% damage — [v6.5] u hráče už je v calculateDamage(), tady jen pro společníky
+                if (rwb.damagePercent > 0 && !attacker.isPlayer) damage = Math.floor(damage * (1 + rwb.damagePercent / 100));
                 // Crit damage bonus
                 if (isCrit && rwb.critDamageBonus > 0) damage = Math.floor(damage * (1 + rwb.critDamageBonus));
                 // Berserk bonus (pod 30% HP)
@@ -92660,7 +92749,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const weapon = state.equipped?.weapon;
                 // [FIX] Posbírej lifesteal % ze všech zdrojů na zbrani (nativní bonus + enchant)
                 let _weaponLifestealPct = 0;
-                if (weapon?.bonus?.lifesteal > 0) {
+                if (weapon?.bonus?.lifesteal > 0 && !_isOwnSetPieceEquipped(weapon)) { // [v6.5] díl setu → už v setFxCombat.lifesteal
                     _weaponLifestealPct += weapon.bonus.lifesteal;
                 }
                 // [FIX] Enchantment 'lifesteal' (3% z udělaného DMG → HP) — předtím se vůbec nečetl
@@ -95080,7 +95169,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // 🎯 ITEM SPECIAL EFEKTY - ÚTOK
             // ========================================
             if (!isCompanion && typeof hasEquippedSpecial === 'function') {
-                const weapon = state.equipped?.weapon;
+                // [v6.5] Používá vnější `weapon` — při útoku bez munice je null (pěsti), takže se speciály
+                // střelné zbraně (plamen, plazma, dávka…) už nespouštějí. Dřív se tu weapon znovu deklaroval.
                 
                 // ⚔️ combat_stance: +5% crit chance (boots)
                 // (already applied in critChance above, but this is post-crit, so add bonus damage)
@@ -95096,25 +95186,20 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (cs.round === 1) cs.log.push(`Energetická čepel: -25% obrana nepřítele.`);
                 }
                 
-                // 👊 power_punch: +7 damage v boji zblízka
-                if (hasEquippedSpecial('power_punch')) {
-                    const dist = Math.max(Math.abs(unit.x - target.x), Math.abs(unit.y - target.y));
-                    if (dist <= 1) {
-                        damage += 7;
-                        if (cs.round === 1) cs.log.push(`👊 Silný úder: +7 DMG`);
+                // [v6.5] power_punch / stomp / unarmed_bonus se už započítávají v calculateDamage()
+                // (getArmorSpecialEffects().bonusDamage) — tady se přičítaly podruhé (Dupnutí reálně +16 místo +8).
+                
+                // 🪬 [v6.5] Runová slova — násobiče zranění (dřív jen v AI/auto útoku, v ručním útoku hráče chyběly)
+                if (typeof getRunewordBonuses === 'function') {
+                    const _rwm = getRunewordBonuses();
+                    if (isCrit && _rwm.critDamageBonus > 0) damage = Math.floor(damage * (1 + _rwm.critDamageBonus));
+                    if (_rwm.berserkBonus > 0 && state.char.hp < state.char.maxHp * 0.3) {
+                        damage = Math.floor(damage * (1 + _rwm.berserkBonus));
+                        cs.log.push(`Runa HNĚV: +${Math.round(_rwm.berserkBonus * 100)}% DMG!`);
                     }
+                    if (_rwm.bossDamage > 0 && (target.isBoss || target.isWorldBoss || target.isRaidBoss)) damage = Math.floor(damage * (1 + _rwm.bossDamage));
+                    if (_rwm.executeDamage > 0 && target.maxHp && target.hp < target.maxHp * 0.2) damage = Math.floor(damage * (1 + _rwm.executeDamage));
                 }
-                
-                // 🦶 stomp: +8 damage z bot
-                if (hasEquippedSpecial('stomp')) {
-                    damage += 8;
-                }
-                
-                // 🥊 unarmed_bonus: +4 damage beze zbraně
-                if (hasEquippedSpecial('unarmed_bonus') && !weapon) {
-                    damage += 4;
-                }
-                
                 // 💥 devastation: +50% kritický damage
                 if (isCrit && (weapon?.special === 'devastation' || hasEquippedSpecial('devastation'))) {
                     damage = Math.floor(damage * 1.5);
@@ -95173,6 +95258,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     cs.log.push(`Plazmové popáleniny! (6 životů/3 kol)`);
                 }
                 
+                // 🔥 [v6.5] fire (Plamenomet): v útoku hráče chyběl — fungoval jen u společníků
+                if (weapon?.special === 'fire' && Math.random() < 0.35) {
+                    target.burnDamage = Math.max(target.burnDamage || 0, 6);
+                    target.burnRounds = Math.max(target.burnRounds || 0, 3);
+                    cs.log.push(`🔥 ${target.name} hoří! (6 DMG/kolo, 3 kola)`);
+                }
                 // 🔥 burn: šance na zapálení
                 if (weapon?.special === 'burn' && Math.random() < 0.2) {
                     target.burnDamage = (target.burnDamage || 0) + 5;
@@ -95471,7 +95562,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (weaponEnch.effect.bonusDamage && weaponEnch.effect.element === 'fire') {
                         target.burnDamage = Math.max(target.burnDamage || 0, weaponEnch.effect.bonusDamage);
                         target.burnRounds = Math.max(target.burnRounds || 0, 2);
-                        if (cs.round <= 2) cs.log.push(`${isCompanion ? unit.name + ': ' : ''}Enchant Oheň: +${weaponEnch.effect.bonusDamage} fire DMG.`);
+                        if (cs.round <= 2) cs.log.push(`${isCompanion ? unit.name + ': ' : ''}🔥 Enchant Oheň: cíl hoří (${weaponEnch.effect.bonusDamage} DMG/kolo).`);
                     }
                     // ❄️ Led: bonus damage + zpomalení (snížený damage nepřítele)
                     if (weaponEnch.effect.slow) {
@@ -95485,7 +95576,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     }
                     // 🧛 Lifesteal: heal on hit
                     if (weaponEnch.effect.lifesteal > 0) {
-                        const lsHeal = Math.floor(finalDamage * weaponEnch.effect.lifesteal);
+                        // [v6.5] min. 1 HP — při 3 % se u běžných zásahů (pod 34 DMG) zaokrouhlilo na 0 a nic se nestalo
+                        const lsHeal = finalDamage > 0 ? Math.max(1, Math.floor(finalDamage * weaponEnch.effect.lifesteal)) : 0;
                         if (lsHeal > 0) {
                             unit.hp = Math.min(unit.maxHp, unit.hp + lsHeal);
                             if (!isCompanion) state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
@@ -95500,19 +95592,45 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 try {
                 const rwb = getRunewordBonuses();
                 // 🩸 Lifesteal
-                if (rwb.lifesteal > 0) {
-                    const lsHeal = Math.floor(cappedDamage * rwb.lifesteal);
+                if (rwb.lifesteal > 0 && state.char.hp < state.char.maxHp) {
+                    const lsHeal = Math.max(1, Math.floor(cappedDamage * rwb.lifesteal)); // [v6.5] min 1 (dřív 0 u běžných zásahů)
                     if (lsHeal > 0) {
                         unit.hp = Math.min(unit.maxHp, unit.hp + lsHeal);
                         state.char.hp = Math.min(state.char.maxHp, state.char.hp + lsHeal);
                         cs.log.push(`🩸 Runa KREV: +${lsHeal} HP`);
                     }
                 }
-                // 🔥 Burn
+                // 🔥 Burn (+ [v6.5] INFERNO: % HP/kolo a delší hoření — v útoku hráče chybělo)
                 if (rwb.burnChance > 0 && Math.random() < rwb.burnChance) {
                     target.burnDamage = Math.max(target.burnDamage || 0, rwb.burnDamage || 5);
-                    target.burnRounds = Math.max(target.burnRounds || 0, 2);
+                    target.burnRounds = Math.max(target.burnRounds || 0, rwb.burnRounds || 2);
+                    if (rwb.burnDamagePct) target.burnDamagePct = Math.max(target.burnDamagePct || 0, rwb.burnDamagePct);
                     cs.log.push(`🔥 Runa OHEŇ: nepřítel hoří!`);
+                }
+                // ☣️ [v6.5] APOK — jed (% HP/kolo)
+                if (rwb.poisonChance > 0 && Math.random() < rwb.poisonChance) {
+                    target.poisoned = Math.max(target.poisoned || 0, rwb.poisonStacks || 12);
+                    if (rwb.poisonedPct) target.poisonedPct = Math.max(target.poisonedPct || 0, rwb.poisonedPct);
+                    cs.log.push(`☣️ Runa APOK: ${target.name} otráven!`);
+                }
+                // 🩸 [v6.5] ZROUT — krvácení (% HP/kolo)
+                if (rwb.bleedChance > 0 && Math.random() < rwb.bleedChance) {
+                    target.bleeding = Math.max(target.bleeding || 0, rwb.bleedStacks || 8);
+                    if (rwb.bleedingPct) target.bleedingPct = Math.max(target.bleedingPct || 0, rwb.bleedingPct);
+                    cs.log.push(`🩸 Runa ZROUT: ${target.name} krvácí!`);
+                }
+                // 💥 [v6.5] ANIHIL — při kritu % max HP cíle, + šance odtrhnout % HP
+                if (rwb.executePct && isCrit && target.maxHp) {
+                    const execDmg = Math.max(1, Math.floor(target.maxHp * rwb.executePct));
+                    target.hp = Math.max(0, target.hp - execDmg);
+                    cs.log.push(`💥 Runa ANIHIL: -${execDmg} HP (${Math.round(rwb.executePct * 100)}% z max HP)`);
+                    if (target.hp <= 0) { target.alive = false; target.hp = 0; }
+                }
+                if (rwb.hpStripChance > 0 && target.hp > 0 && target.maxHp && Math.random() < rwb.hpStripChance) {
+                    const stripDmg = Math.max(1, Math.floor(target.maxHp * (rwb.hpStripPct || 0.04)));
+                    target.hp = Math.max(0, target.hp - stripDmg);
+                    cs.log.push(`💥 Runa ANIHIL odtrhla -${stripDmg} HP!`);
+                    if (target.hp <= 0) { target.alive = false; target.hp = 0; }
                 }
                 // ❄️ Freeze
                 if (rwb.freezeChance > 0 && Math.random() < rwb.freezeChance) {
@@ -95559,7 +95677,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             }
             if (!isCompanion && weapon?.special === 'bleed' && Math.random() < 0.25) {
                 target.bleeding = Math.max(target.bleeding || 0, 3);
-                cs.log.push(`Způsobil jsi krvácení.`);
+                target.bleedRounds = Math.max(target.bleedRounds || 0, 3); // [v6.5] bez toho krvácení nikdy neskončilo
+                cs.log.push(`Způsobil jsi krvácení. (3 DMG/kolo, 3 kola)`);
+            }
+            // 🩸 [v6.5] bleed_punch (Ostnaté rukavice): útok pěstí (bez zbraně) — 25% krvácení. Dřív jen popis.
+            if (!isCompanion && !weapon && state.equipped?.gloves?.special === 'bleed_punch' && Math.random() < 0.25) {
+                target.bleeding = Math.max(target.bleeding || 0, 3);
+                target.bleedRounds = Math.max(target.bleedRounds || 0, 3);
+                cs.log.push(`🩸 Ostnaté rukavice: ${target.name} krvácí! (3 DMG/kolo, 3 kola)`);
             }
             if (!isCompanion && weapon?.special === 'stun' && Math.random() < 0.2) {
                 target.stunned = true;
@@ -95653,6 +95778,12 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const armorPierce = Math.floor((target.defense || 0) * 0.30);
                 target.hp = Math.max(0, target.hp - armorPierce);
                 cs.log.push(`⚔️ Energie probíjí brnění: +${armorPierce} DMG`);
+            }
+            // 🗡️ [v6.5] armor_pierce (Gaussova puška) — v útoku hráče chyběl, fungoval jen u společníků
+            if (!isCompanion && weapon?.special === 'armor_pierce' && (finalDamage || damage) > 0 && (target.defense || 0) > 3) {
+                const apDmg = Math.floor((target.defense || 0) * 0.50);
+                target.hp = Math.max(0, target.hp - apDmg);
+                cs.log.push(`🗡️ Probíjivý úder: +${apDmg} DMG (ignoruje brnění)`);
             }
             
             if (target.hp <= 0) {
@@ -100785,7 +100916,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // 📿 Accessory HP bonus (např. mutant set +30 HP)
             if (state.equippedAccessory) {
                 const accItem = state.inv.find(i => i.id === state.equippedAccessory);
-                if (accItem?.bonus?.maxHp) {
+                if (accItem?.bonus?.maxHp && !_isOwnSetPieceEquipped(accItem)) { // [v6.5] díl setu se počítá v set bonusu níže
                     maxHp += accItem.bonus.maxHp;
                 }
             }
@@ -107025,14 +107156,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                                 if (_stealthOn) { try { const _stb = typeof getSkillTreeBonus === 'function' ? (getSkillTreeBonus('ambushReduction') || 0) : 0; _ambRed += _stb; } catch(e) {} }
                                 // Armor set encounterReduction
                                 let _armorEncRed = 0;
-                                if (_stealthOn) { try { const _setEnc = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {}; _armorEncRed = _setEnc.encounterReduction || 0; } catch(e) {} }
+                                if (_stealthOn) { try { _armorEncRed = typeof _getEquipEncounterReduction === 'function' ? _getEquipEncounterReduction() : 0; } catch(e) {} }
                                 // Formule: max(5%, (50% - ambRed) * (1 - armorEncRed))
                                 let encounterChance = Math.max(5, Math.round((0.5 - _ambRed) * (1 - _armorEncRed) * 100));
                                 // Item specials — camo a stealth_move (multiplicative, jen když stealth ON)
-                                if (_stealthOn) { try { if (typeof hasEquippedSpecial === 'function') {
-                                    if (hasEquippedSpecial('camo')) encounterChance = Math.round(encounterChance * 0.7);
-                                    if (hasEquippedSpecial('stealth_move')) encounterChance = Math.round(encounterChance * 0.8);
-                                } } catch(e) {} }
+                                // [v6.5] camo/stealth_move jsou už v _armorEncRed
                                 encounterChance = Math.max(5, encounterChance);
                                 if (!_stealthOn) { encounterReductions.push('⚠️ STEALTH VYPNUT — bonusy ignorovány'); }
                                 // Stalker class: 50% vyhnutí po setkání (info text)
@@ -118723,6 +118851,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // [NEW] Periodický check plánovaných raidů — reminder + start
             // Každých 30s zkontroluj jestli není nějaký raid blízko startu (5 min) nebo právě začíná
             const checkScheduledRaids = async () => {
+                if (typeof REMOVED_FEATURES !== 'undefined' && REMOVED_FEATURES.enabled) return; // [v6.5] bitvy a duely odstraněny
                 if (!multiplayerEnabled || !firebaseDB) return;
                 // [FIX v6.4.1] Místo tvrdého admin-zámku: admin vždy; ne-admin jen když admin
                 // odemkl PvP nebo klanové nájezdy přes systemLocks (čteno z cache listeneru níže).
@@ -127331,6 +127460,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         function closePvPResultAndShowArena() {
             document.getElementById('pvpResultOverlay')?.remove();
+            // [v6.5] Koloseum (duely) je zrušené → „Další“ otevře výběr klasické PvP výzvy
+            if (window.REMOVED_FEATURES && window.REMOVED_FEATURES.enabled && typeof showPvPChallengePicker === 'function') { showPvPChallengePicker(); return; }
             showPvPArena();
         }
         
@@ -128211,7 +128342,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 <!-- === SEKCE: Komunita (rozbalovací) === -->
                 <details style="margin-bottom: 0.4rem;">
                     <summary class="wl-btn wl-bullet wl-dirt" style="cursor: pointer; background: linear-gradient(180deg, #0d0d15 0%, #080810 100%); padding: 0.5rem 0.7rem; font-family: 'Rajdhani', sans-serif; font-weight: 600; font-size: 0.75rem; color: #7986cb; list-style: none; display: flex; align-items: center; gap: 0.4rem; ">
-                        <span>⚔️</span> KOMUNITA & POLITIKA
+                        <span>🤝</span> KOMUNITA
                         <span style="margin-left: auto; font-size: 0.6rem; color: #444;">▼</span>
                     </summary>
                     <div style="background: #080810; padding: 0.4rem; border-radius: 0 0 12px 12px; border: 1px solid #2a2a3a; border-top: none; display: grid; gap: 3px;">
@@ -133240,7 +133371,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
                 
                 // 5% daň do veřejné pokladny (minimálně 1 💰)
-                const tax = Math.max(1, Math.ceil(pending * LAND_CONFIG.dailyTaxRate));
+                // [v6.5] Šéf pustiny odstraněn → žádná daň z pozemků do veřejné kasy
+                const tax = (typeof REMOVED_FEATURES !== 'undefined' && REMOVED_FEATURES.enabled) ? 0 : Math.max(1, Math.ceil(pending * LAND_CONFIG.dailyTaxRate));
                 const netAmount = Math.max(0, pending - tax);
                 
                 // Přičti hráči
@@ -178036,7 +178168,221 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             window._scanScrollArrows = () => scanForScrollables(document.body);
         })();
 
-    </script>
+    
+
+        // ============================================================
+        // 🚫 v6.5 — ODSTRANĚNO ZE HRY: klany (vč. území, kasy, klanových dungeonů a základen),
+        // šéf pustiny, volby a politika, poker (Hold'em, sólo poker, poker kostky), naplánované
+        // klanové bitvy a duely 1v1. Rozhodnutí Zaoo (15. 11. 2026): "vypnout a schovat" —
+        // kód zůstává v souboru, ale nic z něj neběží a hráč se k tomu nedostane.
+        // Vrátit: nastav REMOVED_FEATURES.enabled = false (a odstraň tento blok).
+        // ============================================================
+        const REMOVED_FEATURES = { enabled: true };
+        window.REMOVED_FEATURES = REMOVED_FEATURES;
+        const _REMOVED_FN = ["_pokerBotAct", "_pokerBotLeave", "_pokerBotRejoin", "_pokerBotStrength", "_pokerRakeToTreasury", "_pokerSanitizeKey", "_pokerWritePayout", "_renderMayorPowersPanel", "_renderPickRaidPosition", "_renderScheduledRaidLobby", "_soloAdvanceStreet", "_soloAfterAction", "_soloApplyAction", "_soloCardHtml", "_soloCardsStr", "_soloDealerAct", "_soloDealerStrength", "_soloEndHand", "_soloLog", "_soloPay", "_soloRunout", "_soloShowdown", "_soloStreetBet", "abortPokerHandRefund", "acceptPvPDuel", "activateMayorEvent", "addClanActivity", "addMayorTitle", "addPokerDailyBuyIn", "addToMayorChronicle", "addToPublicTreasury", "adminAddTerritoryPoints", "adminAddVotes", "adminCancelImpeachment", "adminCancelWarZone", "adminChangeVote", "adminClanBanPlayer", "adminCleanupTerritories", "adminClearAllRaids", "adminClearClanChat", "adminConfirmTestRaid", "adminDebugTerritory", "adminDeclareElectionResults", "adminDeleteClanChatMsg", "adminEmergencyTerritoryWipe", "adminEndWarZone", "adminForceRaidVictory", "adminKickPokerPlayer", "adminManageClanChats", "adminModifyTreasury", "adminModifyTreasuryCustom", "adminPokerPlayerDetail", "adminRemoveMayor", "adminRemoveMayorPassword", "adminResetElection", "adminResetPoker", "adminResetPokerStats", "adminResetTerritories", "adminResetTreasury", "adminRetriggerRaidRewards", "adminSaveMayorPassword", "adminSendToClanChat", "adminSetMayor", "adminSetMayorDirect", "adminSetMayorPassword", "adminSetTreasuryDirect", "adminShiftElectionToTomorrow", "adminStartElectionCycle", "adminStartWarZone", "adminStopElectionCycle", "adminTestDeclareRaid", "adminTogglePoliticsLock", "adminTriggerTerritoryDailyReset", "adminTriggerTerritoryDailyResetConfirm", "adminUnbanFromClan", "adminViewClanChat", "adminVoteForCandidate", "adminWarZone", "advancePokerPhase", "applyMayorDecisions", "attackTerritoryGuard", "autoBootstrapElectionCycle", "autoEvaluateExpiredWarZone", "autoReconnectPokerTable", "buildClanBuilding", "canManageClan", "cancelScheduledRaid", "cancelTerritoryAndTravel", "cancelTerritoryCapture", "checkAndAwardMayorTitles", "checkAndShowWarZone", "checkAndUpdateTerritoryOwner", "checkAutoElectionEvaluation", "checkMayorTaxBan", "checkMayorTaxReminder", "checkWarZoneFight", "claimMayorIncome", "claimNeutralTerritory", "clanHealPlayer", "clanSmithyUpgrade", "clanStorageQtyChange", "clanVaultDeposit", "clanVaultWithdraw", "clearPokerBotHoleLocal", "clearPokerDeckLocal", "clearPokerMyHoleLocal", "clearRaidPosition", "closeCurrentMayorTerm", "collectMayorTaxIncome", "collectTerritoryTaxes", "completeClanRaid", "completeTerritoryCapture", "confirmBuildClanBuilding", "confirmClanBan", "confirmClanStorageTransfer", "confirmClanTavern", "confirmCreateClan", "confirmDeclarePvPDuel", "confirmDeclareRaid", "confirmJoinClan", "confirmKickClanMember", "confirmLeaveClan", "confirmMayorInvestment", "confirmMayorPriority", "confirmRaidPosition", "contributeToTerritory", "countRankInClan", "createPokerDeck", "createPokerTable", "createPokerTableWithBot", "declarePvPDuel", "declareScheduledRaid", "declinePvPDuel", "depositResourceToClanStorage", "depositToClanStorage", "disbandClan", "disbandClanConfirm", "doPokerShowdown", "donateToPublicTreasury", "editCandidateProgram", "endorseCandidate", "enterClanDungeon", "evaluatePokerDiceHand", "evaluatePokerHand", "executeImpeachment", "findNextActivePokerPlayer", "finishPokerRoll", "finishPvPRaidCombat", "finishWarZoneFight", "generateClanDungeonFloors", "getActivePoliticalEffects", "getAllClansForWar", "getAnonVoteId", "getCandidateEndorsements", "getClanData", "getClanRole", "getClanWarInfo", "getElectionPhase", "getMayorInvestments", "getMayorPriority", "getMayorPromiseProgress", "getMyClanTag", "getMyClans", "getPlayerMayorTitles", "getPokerBotHoleLocal", "getPokerDailyBuyIn", "getPokerDeckLocal", "getPokerMyHoleLocal", "getPublicTreasuryBalance", "getPublicTreasuryHTML", "getTreasuryStats", "handleMayorTaxOnLogin", "initMayorPromiseBaseline", "initMayorSystem", "initiatePvPRaidCombat", "isClanLeader", "isMayor", "isPlayerClanLeader", "joinClanRequest", "joinPokerTable", "joinScheduledRaid", "kickClanMember", "launchClanBuilding", "leaveClan", "leavePokerTable", "leaveScheduledRaid", "listenToClanChat", "loadClanData", "loadPoliticsHistory", "loadPublicTreasuryDisplay", "logTreasuryTransaction", "mayorDecide", "onTerritoryBattleEnd", "openPokerTable", "pickRaidPosition", "pokerAction", "pokerMinimize", "pokerRebuy", "processClanBuildQueue", "processDailyTax", "processFactionTerritoryIncome", "processMayorDailyIncome", "processMayorTaxExpiration", "processTerritoryCounting", "quickTerritoryCapture", "refreshPoliticalEffectsCache", "refreshTerritoryPoints", "removeFromPublicTreasury", "renderMayorTitles", "renderPokerDice", "renderPokerTable", "renderPvPRaidResult", "renderSoloPoker", "renderWarZoneInfo", "renderWarZoneMap", "requireMayorPassword", "resignAsMayor", "resolvePokerHand", "restoreTerritoryCapture", "rollPokerDice", "saveClanDungeonConfig", "saveClanSettings", "selectWarZoneLocation", "sendClanChatFromInput", "sendClanChatMessage", "setMayorPriority", "setPokerBotHoleLocal", "setPokerDeckLocal", "setPokerMyHoleLocal", "setupPokerHeartbeat", "setupPokerPlayerCountListener", "setupTerritoryRealTimeListener", "showAdminPolitics", "showAdminPoliticsDecisions", "showBotPokerPicker", "showCandidateProgram", "showClanActivityLog", "showClanBuildingFunding", "showClanBuildingPanel", "showClanDungeonEntry", "showClanDungeonRestFloor", "showClanManage", "showClanOverview", "showClanPanel", "showClanRaidModal", "showClanRanksInfo", "showClanRepair", "showClanSmithy", "showClanStorage", "showClanStorageQtyPicker", "showClanStorageResQtyPicker", "showClanVault", "showCreateClanModal", "showFactionHub", "showFactionSelection", "showImpeachmentPanel", "showMayorChronicle", "showMayorDecisionDetail", "showMayorHistory", "showMayorInvestmentsDialog", "showMayorPowersPanel", "showMayorPriorityDialog", "showPokerDice", "showPokerJoinDialog", "showPokerLeaderboard", "showPokerLobby", "showPoliticsPanel", "showPvPArena", "showPvPDuelLobby", "showPvPRaidCombat", "showScheduledRaidLobby", "showScheduledRaidsBoard", "showTerritoryActions", "showTerritoryMap", "showTreasuryDetails", "showWarZoneUI", "shufflePokerDeck", "soloPokerAction", "soloPokerBust", "soloPokerBuyIn", "soloPokerLeave", "soloPokerNewHand", "startClanRaid", "startClanRaidListener", "startMayorDemandListener", "startMayorInvestment", "startPokerDice", "startPokerHand", "startSoloPoker", "startTerritoryCapture", "startTerritoryListener", "startTerritoryProgressTick", "startWarZoneFight", "stopAllTerritoryListeners", "stopTerritoryListener", "stopTerritoryRefresh", "supportCandidate", "surrenderPvPRaid", "syncClanDungeonFloors", "toggleAdminPokerLock", "togglePokerHold", "trackMayorAction", "trackPokerLoss", "trackPokerWin", "updateCandidateProgram", "updateMayorUI", "updatePoliticsBtn", "updateTerritoryCapture", "updateTerritoryPointsDisplay", "useClanDungeonRestOption", "useClanTavern", "useMayorPower", "verifyMayorPassword", "voteForCandidate", "voteForImpeachment", "withdrawFromClanStorage"];
+        const _REMOVED_ASYNC = new Set(["_pokerBotAct", "_pokerBotLeave", "_pokerBotRejoin", "_pokerWritePayout", "_renderMayorPowersPanel", "_renderScheduledRaidLobby", "abortPokerHandRefund", "acceptPvPDuel", "activateMayorEvent", "addClanActivity", "addMayorTitle", "addToPublicTreasury", "adminAddTerritoryPoints", "adminAddVotes", "adminCancelImpeachment", "adminCancelWarZone", "adminChangeVote", "adminClanBanPlayer", "adminCleanupTerritories", "adminClearAllRaids", "adminClearClanChat", "adminConfirmTestRaid", "adminDebugTerritory", "adminDeclareElectionResults", "adminDeleteClanChatMsg", "adminEmergencyTerritoryWipe", "adminEndWarZone", "adminForceRaidVictory", "adminKickPokerPlayer", "adminManageClanChats", "adminModifyTreasury", "adminModifyTreasuryCustom", "adminPokerPlayerDetail", "adminRemoveMayor", "adminRemoveMayorPassword", "adminResetElection", "adminResetPokerStats", "adminResetTerritories", "adminResetTreasury", "adminRetriggerRaidRewards", "adminSaveMayorPassword", "adminSendToClanChat", "adminSetMayor", "adminSetMayorDirect", "adminSetMayorPassword", "adminSetTreasuryDirect", "adminShiftElectionToTomorrow", "adminStartElectionCycle", "adminStartWarZone", "adminStopElectionCycle", "adminTestDeclareRaid", "adminTogglePoliticsLock", "adminTriggerTerritoryDailyReset", "adminTriggerTerritoryDailyResetConfirm", "adminUnbanFromClan", "adminViewClanChat", "adminVoteForCandidate", "adminWarZone", "advancePokerPhase", "attackTerritoryGuard", "autoBootstrapElectionCycle", "autoEvaluateExpiredWarZone", "autoReconnectPokerTable", "buildClanBuilding", "cancelScheduledRaid", "cancelTerritoryAndTravel", "cancelTerritoryCapture", "checkAndAwardMayorTitles", "checkAndShowWarZone", "checkAndUpdateTerritoryOwner", "checkAutoElectionEvaluation", "checkMayorTaxBan", "checkMayorTaxReminder", "checkWarZoneFight", "claimMayorIncome", "claimNeutralTerritory", "clanHealPlayer", "clanVaultDeposit", "clanVaultWithdraw", "clearRaidPosition", "closeCurrentMayorTerm", "collectMayorTaxIncome", "collectTerritoryTaxes", "completeClanRaid", "completeTerritoryCapture", "confirmBuildClanBuilding", "confirmClanBan", "confirmCreateClan", "confirmDeclarePvPDuel", "confirmDeclareRaid", "confirmJoinClan", "confirmKickClanMember", "confirmLeaveClan", "confirmMayorInvestment", "confirmRaidPosition", "contributeToTerritory", "createPokerTable", "createPokerTableWithBot", "declarePvPDuel", "declareScheduledRaid", "declinePvPDuel", "depositResourceToClanStorage", "depositToClanStorage", "disbandClan", "disbandClanConfirm", "doPokerShowdown", "donateToPublicTreasury", "endorseCandidate", "enterClanDungeon", "executeImpeachment", "finishPvPRaidCombat", "finishWarZoneFight", "getActivePoliticalEffects", "getCandidateEndorsements", "getPlayerMayorTitles", "getPublicTreasuryBalance", "getTreasuryStats", "handleMayorTaxOnLogin", "initMayorPromiseBaseline", "initiatePvPRaidCombat", "joinClanRequest", "joinPokerTable", "joinScheduledRaid", "kickClanMember", "launchClanBuilding", "leaveClan", "leavePokerTable", "leaveScheduledRaid", "loadClanData", "loadPoliticsHistory", "loadPublicTreasuryDisplay", "logTreasuryTransaction", "mayorDecide", "onTerritoryBattleEnd", "pickRaidPosition", "pokerAction", "pokerRebuy", "processClanBuildQueue", "processDailyTax", "processFactionTerritoryIncome", "processMayorDailyIncome", "processMayorTaxExpiration", "processTerritoryCounting", "quickTerritoryCapture", "refreshPoliticalEffectsCache", "refreshTerritoryPoints", "removeFromPublicTreasury", "renderWarZoneInfo", "resignAsMayor", "resolvePokerHand", "restoreTerritoryCapture", "saveClanDungeonConfig", "saveClanSettings", "sendClanChatMessage", "showAdminPolitics", "showClanActivityLog", "showClanBuildingFunding", "showClanBuildingPanel", "showClanDungeonEntry", "showClanManage", "showClanOverview", "showClanPanel", "showClanRaidModal", "showClanRanksInfo", "showClanRepair", "showClanSmithy", "showClanStorage", "showClanVault", "showCreateClanModal", "showFactionHub", "showImpeachmentPanel", "showMayorHistory", "showMayorInvestmentsDialog", "showMayorPowersPanel", "showPokerJoinDialog", "showPokerLeaderboard", "showPokerLobby", "showPoliticsPanel", "showPvPArena", "showPvPDuelLobby", "showPvPRaidCombat", "showScheduledRaidLobby", "showScheduledRaidsBoard", "showTerritoryActions", "showTerritoryMap", "showTreasuryDetails", "showWarZoneUI", "startClanRaid", "startMayorInvestment", "startPokerHand", "startTerritoryCapture", "startWarZoneFight", "supportCandidate", "surrenderPvPRaid", "toggleAdminPokerLock", "trackMayorAction", "trackPokerLoss", "trackPokerWin", "updateCandidateProgram", "updateTerritoryCapture", "useClanDungeonRestOption", "useMayorPower", "verifyMayorPassword", "voteForCandidate", "voteForImpeachment", "withdrawFromClanStorage"]);
+        const _REMOVED_RET = {
+                getMyClanTag: () => (null),
+                getClanData: () => (null),
+                isMayor: () => (false),
+                isClanLeader: () => (false),
+                isPlayerClanLeader: () => (false),
+                canManageClan: () => (false),
+                getMyClans: () => ([]),
+                getClanRole: () => (null),
+                getElectionPhase: () => (null),
+                getActivePoliticalEffects: () => ({}),
+                countRankInClan: () => (0),
+                getAllClansForWar: () => ([]),
+                getClanWarInfo: () => (null),
+                getPokerDailyBuyIn: () => (0),
+                getCandidateEndorsements: () => ({}),
+                getPlayerMayorTitles: () => ([]),
+                getMayorInvestments: () => ({}),
+                getMayorPriority: () => (null),
+                getMayorPromiseProgress: () => (null),
+                getAnonVoteId: () => (null),
+                checkMayorTaxBan: () => ({ banned: false, minutesLeft: 0 }),
+                renderWarZoneInfo: () => (''),
+                generateClanDungeonFloors: () => ([]),
+                addToPublicTreasury: () => (true),
+                checkWarZoneFight: () => ({ ok: false }),
+                getPublicTreasuryHTML: () => (''),
+                getPublicTreasuryBalance: () => (0),
+                getTreasuryStats: () => ({})
+        };
+        (function _installRemovedFeatureStubs() {
+            if (!REMOVED_FEATURES.enabled) return;
+            _REMOVED_FN.forEach(name => {
+                if (typeof window[name] !== 'function' || window[name].__removed) return;
+                const retFn = _REMOVED_RET[name];
+                const isAsync = _REMOVED_ASYNC.has(name);
+                const stub = function () {
+                    const v = retFn ? retFn() : undefined;
+                    return isAsync ? Promise.resolve(v) : v;
+                };
+                stub.__removed = true;
+                window[name] = stub;
+            });
+            // Politické efekty a klanová data trvale prázdné → všechny bonusy/postihy neutrální
+            try { cachedPoliticalEffects = {}; } catch (e) {}
+            window.clanOwnershipCache = {};
+        })();
+
+        // Klanové základny (clan_land) pryč z mapy i z cest
+        (function _removeClanLands() {
+            if (!REMOVED_FEATURES.enabled) return;
+            try {
+                const clanIds = new Set(WORLD_LOCATIONS.filter(l => l.type === 'clan_land').map(l => l.id));
+                for (let i = WORLD_LOCATIONS.length - 1; i >= 0; i--) if (clanIds.has(WORLD_LOCATIONS[i].id)) WORLD_LOCATIONS.splice(i, 1);
+                if (typeof WORLD_PATHS !== 'undefined') {
+                    for (let i = WORLD_PATHS.length - 1; i >= 0; i--) {
+                        const p = WORLD_PATHS[i];
+                        if (clanIds.has(p.from) || clanIds.has(p.to)) WORLD_PATHS.splice(i, 1);
+                    }
+                }
+                window._removedClanLandIds = clanIds;
+            } catch (e) { console.warn('removeClanLands', e); }
+        })();
+
+        // Schovej každé tlačítko/odkaz, který by vedl na odstraněnou funkci (i v oknech vytvořených později)
+        const _REMOVED_RE = new RegExp('\\b(' + _REMOVED_FN.map(n => n.replace(/[$]/g, '\\$')).join('|') + ')\\s*\\(');
+        function _hideRemovedFeatureUI(root) {
+            if (!REMOVED_FEATURES.enabled || !root || !root.querySelectorAll) return;
+            const els = root.querySelectorAll('[onclick],[onchange]');
+            for (const el of els) {
+                const code = (el.getAttribute('onclick') || '') + (el.getAttribute('onchange') || '');
+                if (_REMOVED_RE.test(code) || code.includes('showClanTerritories')) el.style.display = 'none';
+            }
+            if (root.getAttribute && _REMOVED_RE.test((root.getAttribute('onclick') || ''))) root.style.display = 'none';
+            const pi = document.getElementById('politicsIcon'); if (pi) pi.style.display = 'none';
+        }
+        try {
+            const _rmObs = new MutationObserver(muts => {
+                for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) _hideRemovedFeatureUI(n);
+            });
+            const _startObs = () => { _rmObs.observe(document.body, { childList: true, subtree: true }); _hideRemovedFeatureUI(document.body); };
+            if (document.body) _startObs(); else document.addEventListener('DOMContentLoaded', _startObs);
+        } catch (e) { console.warn('removed-ui observer', e); }
+
+        // Nápověda: pryč témata o odstraněných věcech
+        (function _filterRemovedHelp() {
+            if (!REMOVED_FEATURES.enabled || typeof GAME_HELP_DATA === 'undefined') return;
+            // [v6.5] Názvy témat/kategorií o zrušených funkcích
+            const reTitle = /klan|clan|šéf pustiny|šéfa|starost|volb|politi|poker|duel|souboj cti|dobývání územ|territor|válečn|koloseum|kolosea/i;
+            // Řádky/odstavce v textu nápovědy, které mluví o zrušených funkcích
+            const reLine = /klan|clan|šéf\w* pustiny|\bstarost[auy]\b|\bvolby\b|\bvolbách\b|volební|politi|poker|duel|souboj cti|koloseum|kolosea|válečn\w* zón|dobyt\w* územ|dobývání|veřejn\w* kas/i;
+            const cleanText = (txt) => {
+                if (typeof txt !== 'string') return txt;
+                const paras = txt.split(/\n\n/);
+                const out = [];
+                for (const para of paras) {
+                    const lines = para.split('\n');
+                    const header = lines.find(l => l.trim()) || '';
+                    if (reLine.test(header)) continue;                 // celý odstavec o zrušené věci
+                    const kept = lines.filter(l => !reLine.test(l));    // jinak jen dotčené řádky
+                    if (kept.some(l => l.trim())) out.push(kept.join('\n'));
+                }
+                return out.join('\n\n');
+            };
+            try {
+                for (const [catId, cat] of Object.entries(GAME_HELP_DATA)) {
+                    const topics = Object.entries(cat.topics || {});
+                    const allRemoved = topics.length > 0 && topics.every(([tid, t]) => reTitle.test(tid) || reTitle.test(t.title || t.name || ''));
+                    if (catId === 'politics' || allRemoved) { delete GAME_HELP_DATA[catId]; continue; }
+                    if (cat.title) cat.title = cat.title.replace(/\s*[&,]\s*Klany/i, '');
+                    for (const [tid, t] of topics) {
+                        if (reTitle.test(tid) || reTitle.test(t.title || t.name || '')) { delete cat.topics[tid]; continue; }
+                        if (t.content) t.content = cleanText(t.content);
+                        if (t.text) t.text = cleanText(t.text);
+                    }
+                }
+            } catch (e) {}
+        })();
+
+        // Hráč stojí na zrušené klanové základně → domů do úkrytu. + vrácení peněz (poker, klanová kasa)
+        async function _removedFeaturesMaintenance() {
+            if (!REMOVED_FEATURES.enabled) return;
+            try {
+                if (state.confirmed && window._removedClanLandIds?.has(state.world?.currentLocation)) {
+                    state.world.currentLocation = 'shelter';
+                    state.world.traveling = false; if (state.map) state.map.traveling = false;
+                    try { renderFull(); } catch (e) {}
+                }
+                if (state.world?.traveling && window._removedClanLandIds?.has(state.world.travelTo)) {
+                    state.world.traveling = false; state.world.travelTo = null; if (state.map) state.map.traveling = false;
+                }
+            } catch (e) {}
+            try { await _removedFeaturesRefund(); } catch (e) { console.warn('refund', e); }
+        }
+        let _removedRefundRunning = false;
+        async function _removedFeaturesRefund() {
+            if (_removedRefundRunning) return;
+            _removedRefundRunning = true;
+            try { await _removedFeaturesRefundImpl(); } finally { _removedRefundRunning = false; }
+        }
+        async function _removedFeaturesRefundImpl() {
+            if (!state.confirmed || typeof multiplayerEnabled === 'undefined' || !multiplayerEnabled || !firebaseDB) return;
+            const me = getPlayerName && getPlayerName();
+            if (!me) return;
+            if (!state.removedRefunds) state.removedRefunds = {};
+            const R = state.removedRefunds;
+            const give = (amount, title, text) => {
+                if (!(amount > 0)) return;
+                if (typeof markLegitIncome === 'function') markLegitIncome();
+                state.money = (state.money || 0) + amount;
+                if (typeof notifySuccess === 'function') notifySuccess(title, text);
+                if (typeof addLog === 'function') addLog(`${title}: +${amount} 💰`, '💰');
+            };
+            // 1) Nevyzvednuté výplaty z pokeru (původní funkce zůstává zapnutá)
+            if (!R.pokerPayouts) {
+                try { if (typeof claimPokerPayouts === 'function') await claimPokerPayouts(); R.pokerPayouts = Date.now(); } catch (e) {}
+            }
+            // 2) Žetony u pokerových stolů → peníze zpět
+            if (!R.pokerSeats) {
+                const snap = await firebaseDB.ref('pokerTables').once('value');
+                const tables = snap.val() || {};
+                let total = 0;
+                for (const [tid, t] of Object.entries(tables)) {
+                    const p = t?.players?.[me];
+                    if (!p || p.isBot) continue;
+                    const amt = Math.max(0, Math.floor(p.chips || 0)) + Math.max(0, Math.floor(p.currentBet || p.bet || 0));
+                    await firebaseDB.ref(`pokerTables/${tid}/players/${me}`).remove();
+                    total += amt;
+                }
+                R.pokerSeats = Date.now();
+                give(total, '🃏 Poker zrušen', `Vrátili jsme ti žetony ze stolů: +${total} 💰`);
+                try { saveGame(true); } catch (e) {}
+            }
+            // 3) Klanová kasa → rovným dílem všem členům (každý si podíl vyzvedne sám při přihlášení)
+            if (!R.clanVault) {
+                const snap = await firebaseDB.ref('clans').once('value');
+                const clans = snap.val() || {};
+                const safe = me.replace(/[.#$\/\[\]]/g, '_');
+                for (const [tag, c] of Object.entries(clans)) {
+                    if (!c || typeof c !== 'object') continue;
+                    const keyName = (k, v) => (v && typeof v === 'object' && v.name) ? v.name : k;
+                    const names = new Set([c.leader,
+                        ...Object.entries(c.members || {}).map(([k, v]) => keyName(k, v)),
+                        ...Object.entries(c.officers || {}).map(([k, v]) => keyName(k, v))].filter(Boolean)
+                        .map(n => String(n).replace(/[.#$\/\[\]]/g, '_')));
+                    if (!names.has(safe)) continue;
+                    const refRef = firebaseDB.ref(`clans/${tag}/removalRefund`);
+                    await refRef.child('base').transaction(cur => (cur === null || cur === undefined) ? Math.max(0, Math.floor(c.vault || 0)) : undefined);
+                    await refRef.child('members').transaction(cur => (cur === null || cur === undefined) ? names.size : undefined);
+                    const info = (await refRef.once('value')).val() || {};
+                    const share = Math.floor((info.base || 0) / Math.max(1, info.members || 1));
+                    const claim = await refRef.child(`claimed/${safe}`).transaction(cur => (cur === null || cur === undefined) ? share : undefined);
+                    if (claim.committed) give(share, '🏴 Klany zrušeny', `Tvůj podíl z klanové kasy „${c.name || tag}“: +${share} 💰`);
+                }
+                R.clanVault = Date.now();
+                try { saveGame(true); } catch (e) {}
+            }
+        }
+        setInterval(() => { _removedFeaturesMaintenance(); }, 15000);
+        setTimeout(() => { _removedFeaturesMaintenance(); }, 8000);
+
+</script>
 <script>
 // 💥 POST-APOCALYPTIC DAMAGE OVERLAYS
 // Injected as real DOM elements to avoid ::before/::after conflicts
