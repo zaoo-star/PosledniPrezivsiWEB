@@ -11745,8 +11745,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             },
             'solve_riddle': { 
                 name: 'Vyřeš hádanku', 
-                desc: 'Odpověz správně na 3 otázky.', 
-                details: '🧩 Vrať se ke mně a vyber možnost "Zkusit hádanku". Dostaneš 3 otázky - odpověz správně na všechny! Špatná odpověď = konec pokusu.',
+                desc: 'Odpověz správně aspoň na 2 ze 3 hádanek.', 
+                details: '🧩 Po přijetí úkolu hned dostaneš 3 hádanky — musíš uhodnout aspoň 2. Když to nevyjde, můžeš to zkusit znovu.',
                 requirement: { riddles: 3 }, 
                 reward: { trust: 25, secret: true } 
             },
@@ -13630,7 +13630,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             { id: 'craft_items', name: 'Řemeslník', desc: 'Vyrob 2 věci', icon: '🔨', 
               target: 2, progressKey: 'crafted',
               check: () => (state.dailyQuests.progress?.crafted || 0) >= 2, 
-              reward: () => { state.settlement.resources.wood = (state.settlement?.resources?.wood || 0) + 10; state.settlement.resources.metal = (state.settlement?.resources?.metal || 0) + 5; } },
+              reward: () => { state.settlement = state.settlement || {}; state.settlement.resources = state.settlement.resources || {}; state.settlement.resources.wood = (state.settlement.resources.wood || 0) + 10; state.settlement.resources.metal = (state.settlement.resources.metal || 0) + 5; } },
             { id: 'cook_food', name: 'Kuchař', desc: 'Upeč/uvař 3 jídla', icon: '🍖', 
               target: 3, progressKey: 'cooked',
               check: () => (state.dailyQuests.progress?.cooked || 0) >= 3, 
@@ -15406,6 +15406,15 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // a okamžitě zavolá checkDailyQuests().
         // Tato funkce řeší problém, kdy 31 míst v kódu používalo `state.dailyQuests?.progress`
         // pattern, který selhal pokud progress objekt neexistoval (starý save, reset, atd.).
+        // [v7.20] Obecná karma — state.karma je objekt {kory, koudy, general}
+        function addGeneralKarma(n) {
+            n = Number(n) || 0;
+            if (!state.karma || typeof state.karma !== 'object') {
+                state.karma = { kory: 0, koudy: 0, general: typeof state.karma === 'number' ? state.karma : 0 };
+            }
+            state.karma.general = (state.karma.general || 0) + n;
+        }
+        window.addGeneralKarma = addGeneralKarma;
         function addDailyProgress(key, amount) {
             if (!key) return;
             const amt = amount || 1;
@@ -15902,7 +15911,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 ],
                 reward: { money: 250, xp: 300, reputation: { traders: 30 } },
                 failureConsequence: {
-                    text: 'VÝBUCH! Trading Post je zničen. Obchodníci evakuovali ale ztratili vše.',
+                    text: 'VÝBUCH! Obchodní stanice je poškozená a obchodníci to dávají za vinu tobě (reputace obchodníků −25).',
                     penalty: { reputation: { traders: -25 }, destroyLocation: 'trading_post_destroyed' }
                 }
             },
@@ -15919,7 +15928,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 ],
                 reward: { xp: 500, money: 150, achievement: 'horde_survivor' },
                 failureConsequence: {
-                    text: 'Horda zničila osadu. Musíš začít znovu...',
+                    text: 'Horda prorazila do osady: 2 osadníci padli, zásoby osady klesly o 30 % a morálka o 20.',
                     penalty: { destroyBuildings: 2, settlers: -2 }
                 }
             }
@@ -56515,7 +56524,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     rewards.push(`+${result.reward.xp} XP`);
                 }
                 if (result.reward.karma) {
-                    state.karma = (state.karma || 0) + result.reward.karma;
+                    addGeneralKarma(result.reward.karma);
                     rewards.push(`+${result.reward.karma} Karma`);
                 }
                 if (result.reward.items) {
@@ -56558,7 +56567,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     penalties.push(`${result.penalty.money} 💰`);
                 }
                 if (result.penalty.karma) {
-                    state.karma = (state.karma || 0) + result.penalty.karma;
+                    addGeneralKarma(result.penalty.karma);
                     penalties.push(`${result.penalty.karma} Karma`);
                 }
                 if (result.penalty.reputation) {
@@ -56625,6 +56634,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!quest) return;
             
             if (!state.timedQuests) state.timedQuests = [];
+            // [v7.20] stejný úkol nesmí běžet 2× (dvojitá odměna)
+            if (state.timedQuests.some(t => t.id === quest.id && !t.completed && !t.failed)) { notifyInfo ? notifyInfo('Úkol už běží', quest.name) : null; return; }
             
             state.timedQuests.push({
                 id: quest.id,
@@ -56671,7 +56682,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         state.factionReputation[faction] = (state.factionReputation[faction] || 0) + amt;
                     });
                 }
-                if (p.karma) state.karma = (state.karma || 0) + p.karma;
+                if (p.karma) addGeneralKarma(p.karma);
+                // [v7.20] záporní osadníci a poničená osada (horda) — dřív se nestalo nic, i když to text sliboval
+                if (p.settlers && p.settlers < 0 && Array.isArray(state.settlement?.settlers)) {
+                    for (let i = 0; i < -p.settlers && state.settlement.settlers.length > 0; i++) {
+                        const _gone = state.settlement.settlers.splice(Math.floor(Math.random() * state.settlement.settlers.length), 1)[0];
+                        addLog(`💀 ${_gone?.name || 'Osadník'} padl při útoku hordy.`, '🧟');
+                    }
+                }
+                if (p.destroyBuildings && state.settlement) {
+                    state.settlement.morale = Math.max(0, (state.settlement.morale || 0) - 20);
+                    const _r = state.settlement.resources || {};
+                    Object.keys(_r).forEach(k => { if (typeof _r[k] === 'number') _r[k] = Math.floor(_r[k] * 0.7); });
+                }
                 // settlers reward - přidá náhodné osadníky
                 if (p.settlers && p.settlers > 0) {
                     if (!state.settlement) state.settlement = {};
@@ -56934,7 +56957,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         obj.completed = true;
                         addLog(`💝 ${comp.name}: Cíl splněn!`, '📋');
                     }
-                    if (chapterObj.type === 'combat' && action === 'combat_victory') {
+                    // [v7.20] Boj se počítá jen na místě úkolu (lokace z předchozího cíle) — dřív stačil jakýkoli boj kdekoli
+                    const _cqLoc = chapter.objectives.slice(0, i).filter(o => o.type === 'location' || o.type === 'explore').pop()?.target;
+                    if (chapterObj.type === 'combat' && action === 'combat_victory' && (!_cqLoc || target === _cqLoc || currentLoc === _cqLoc)) {
                         obj.completed = true;
                         addLog(`💝 ${comp.name}: Cíl splněn!`, '📋');
                     }
@@ -57226,7 +57251,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'chemical_residue': '🧪 Chemické reziduum',
                 'lab_notes': '📒 Laboratorní zápisky',
                 'faction_symbol': '⚔️ Symbol frakce',
-                'poison_vial': '☠️ Lahvička jedu'
+                'poison_vial': '☠️ Lahvička jedu',
+                'torn_clothes': '👕 Potrhané šaty',
+                'blood_trail': '🩸 Krvavá stopa',
+                'revenge_letter': '✉️ Dopis o pomstě',
+                'family_photo': '🖼️ Rodinná fotka'
             };
             
             showModal('🔍 Stopa nalezena!', `
@@ -57279,6 +57308,21 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         if (!state.titles) state.titles = [];
                         state.titles.push(quest.reward.title);
                     }
+                    // [v7.20] karma a společník — dřív se nedaly (missing_child: vděčný rodič)
+                    if (typeof quest.reward.karma === 'number') addGeneralKarma(quest.reward.karma);
+                    if (quest.reward.companion && typeof addCompanionWithSwap === 'function') {
+                        const _pn = ['Jana', 'Tomáš', 'Lenka', 'Martin', 'Eva', 'Jakub'];
+                        addCompanionWithSwap({
+                            id: 'survivor', uniqueId: 'companion_' + Date.now(),
+                            name: _pn[Math.floor(Math.random() * _pn.length)], icon: '🧑', type: 'human',
+                            hp: 60 + Math.floor(Math.random() * 20), maxHp: 80,
+                            damage: 6 + Math.floor(Math.random() * 5), defense: 4 + Math.floor(Math.random() * 3),
+                            level: 1, xp: 0, skillPoints: 1, skills: [],
+                            equipped: { weapon: null, armor: null, helmet: null, gloves: null, boots: null },
+                            loyalty: 80, ability: 'Vděčný rodič', abilityDesc: 'Přidal se k tobě z vděčnosti za záchranu dítěte',
+                            canEquip: true, inCombat: true
+                        }, 'quest');
+                    }
                 }
                 
                 showModal('🎉 Případ vyřešen!', `
@@ -57289,6 +57333,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 6px; margin: 1rem 0;">
                             <p style="color: #4caf50;">Odměna: ${quest.reward.money || 0} 💰, ${quest.reward.xp || 0} XP</p>
                             ${quest.reward.title ? `<p style="color: #ffd700;">🏅 Nový titul: ${quest.reward.title}</p>` : ''}
+                            ${typeof quest.reward.karma === 'number' ? `<p style="color: #8bc34a;">☯️ Karma +${quest.reward.karma}</p>` : ''}
+                            ${quest.reward.companion ? `<p style="color: #4fc3f7;">🧑 Vděčný rodič se k tobě přidal jako společník</p>` : ''}
                         </div>
                         <button class="btn" onclick="closeModal()" style="width: 100%;">✓ Výborně!</button>
                     </div>
@@ -57296,6 +57342,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             } else {
                 // Špatné obvinění
                 addLog(`❌ Špatné obvinění! ${suspect.name} byl nevinný!`, '🔍');
+                // [v7.20] U případů s časovou penalizací („Ztratil jsi čas!“) vyšetřování pokračuje — dřív se případ uzavřel
+                const _keepOpen = !!quest.wrongAccusation?.penalty?.time;
+                if (_keepOpen) { dq.solved = false; dq.accusation = null; }
                 
                 if (quest.wrongAccusation?.penalty) {
                     const p = quest.wrongAccusation.penalty;
@@ -57305,7 +57354,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             state.factionReputation[faction] = (state.factionReputation[faction] || 0) + amt;
                         });
                     }
-                    if (p.karma) state.karma = (state.karma || 0) + p.karma;
+                    if (p.karma) addGeneralKarma(p.karma);
                 }
                 
                 showModal('❌ Špatné obvinění!', `
@@ -57313,7 +57362,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         <div style="font-size: 4rem;">😔</div>
                         <h3 style="color: #f44336;">${suspect.name} byl nevinný!</h3>
                         <p>${quest.wrongAccusation?.text || 'Obvinil jsi nevinného člověka.'}</p>
-                        <p style="color: #ff9800; margin-top: 1rem;">Skutečný pachatel unikl...</p>
+                        <p style="color: #ff9800; margin-top: 1rem;">${_keepOpen ? 'Pátrej dál a obviň správného podezřelého.' : 'Skutečný pachatel unikl...'}</p>
                         <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">😞 Pokračovat</button>
                     </div>
                 `);
@@ -57333,7 +57382,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'perfume_bottle': '🧴 Parfém',
                 'love_letter': '💌 Milostný dopis',
                 'debt_note': '📋 Dlužní úpis',
-                'brass_knuckles': '👊 Boxery'
+                'brass_knuckles': '👊 Boxery',
+                'child_toy': '🧸 Dětská hračka', 'footprints': '👣 Stopy', 'slaver_note': '📜 Zpráva otrokářů', 'cage_marks': '⛓️ Stopy po kleci',
+                'torn_clothes': '👕 Potrhané šaty', 'blood_trail': '🩸 Krvavá stopa', 'chemical_residue': '🧪 Chemické reziduum', 'lab_notes': '📒 Laboratorní zápisky',
+                'faction_symbol': '⚔️ Symbol frakce', 'poison_vial': '☠️ Lahvička jedu', 'revenge_letter': '✉️ Dopis o pomstě', 'family_photo': '🖼️ Rodinná fotka'
             };
             
             let cluesHtml = dq.cluesFound.length > 0 ? 
@@ -64493,6 +64545,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 if (npcBonuses.medicalTraining) {
                     healAmount = Math.floor(healAmount * 1.25);
                 }
+                // [v7.20] Lékařský výcvik z questu (rescue_patient) — +5 % za každý, max +15 %
+                const _medQ = Math.min(3, state.stats?.medicalTraining || 0);
+                if (_medQ > 0) healAmount = Math.floor(healAmount * (1 + 0.05 * _medQ));
                 
                 // 🏋️ END bonus: +2% efektivita léčení za bod Výdrže nad 5
                 const endHealBonus = Math.max(0, ((state.char?.attrs?.end || 5) - 5) * 0.02);
@@ -75357,7 +75412,7 @@ function openFullscreenMap() {
             
             // Karma bar
             const karmaBalance = karma.kory - karma.koudy;
-            const barPosition = 50 + (karmaBalance / 2);
+            const barPosition = Math.max(0, Math.min(100, 50 + (karmaBalance / 2)));
             
             showModal('⚖️ Projekt Genesis - Karma', `
                 <div style="text-align: center; margin-bottom: 1rem;">
@@ -80108,8 +80163,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
               correct: "Noc a den", 
               options: ["Noc a den", "Voda a led", "Srdce a duše"] },
             { question: "Čím víc z něj bereš, tím větší je. Co to je?",
-              correct: "Studna",
-              options: ["Studna", "Hora", "Moře"] },
+              correct: "Díra",
+              options: ["Díra", "Hora", "Moře"] },
             { question: "Co běží, ale nemá nohy?",
               correct: "Čas",
               options: ["Čas", "Kámen", "Hora"] }
@@ -80238,6 +80293,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (!state.secrets.includes('mysterious_prophecy')) {
                     state.secrets.push('mysterious_prophecy');
                 }
+                addXP(40); // [v7.20] stejně jako ostatní „tajemství“ z questů
                 
                 showModal('🔮 Quest splněn!', `
                     <div style="text-align: center;">
@@ -80253,7 +80309,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                             </p>
                         </div>
                         
-                        <p style="color: #8bc34a;">❤️ +25 důvěry</p>
+                        <p style="color: #8bc34a;">❤️ +25 důvěry · ⭐ +40 XP</p>
                         <p style="color: #ffd700;">🔓 Odemknuto: Proroctví</p>
                     </div>
                     <button class="btn" onclick="closeModal(); showNPCDetail('${npcId}')" style="width: 100%; margin-top: 1rem; background: #9c27b0;">
@@ -80434,21 +80490,21 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (quest.reward.karma_kory) {
                 state.karma = state.karma || { kory: 0, koudy: 0 };
                 state.karma.kory = (state.karma.kory || 0) + quest.reward.karma_kory;
+                // [v7.20] Karma z questů se dřív ukládala jen sem (nic to nečte) — příběh a ukazatel karmy čtou state.storyKarma
+                state.storyKarma = state.storyKarma || { kory: 0, koudy: 0, componentsGiven: { kory: 0, koudy: 0 }, ending: null };
+                state.storyKarma.kory = Math.max(-100, Math.min(100, (state.storyKarma.kory || 0) + quest.reward.karma_kory));
             }
             if (quest.reward.karma_koudy) {
                 state.karma = state.karma || { kory: 0, koudy: 0 };
                 state.karma.koudy = (state.karma.koudy || 0) + quest.reward.karma_koudy;
+                // [v7.20] Karma z questů se dřív ukládala jen sem (nic to nečte) — příběh a ukazatel karmy čtou state.storyKarma
+                state.storyKarma = state.storyKarma || { kory: 0, koudy: 0, componentsGiven: { kory: 0, koudy: 0 }, ending: null };
+                state.storyKarma.koudy = Math.max(-100, Math.min(100, (state.storyKarma.koudy || 0) + quest.reward.karma_koudy));
             }
             
             // [FIX] Obecná karma (help_refugees, protect_children)
             if (quest.reward.karma && typeof quest.reward.karma === 'number') {
-                if (typeof state.karma === 'number') {
-                    state.karma += quest.reward.karma;
-                } else if (typeof state.karma === 'object') {
-                    state.karma.general = (state.karma.general || 0) + quest.reward.karma;
-                } else {
-                    state.karma = quest.reward.karma;
-                }
+                addGeneralKarma(quest.reward.karma);
             }
             
             // [FIX] Companion reward (find_survivor)
@@ -80490,6 +80546,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.stats = state.stats || {};
                 state.stats.propheciesUnlocked = (state.stats.propheciesUnlocked || 0) + 1;
                 addLog('🔮 Získal jsi proroctví!', '🔮');
+                addXP(40);
             }
             
             // [FIX] Lore/Secret/Respect — tracking stat + XP bonus
@@ -80497,16 +80554,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 state.stats = state.stats || {};
                 state.stats.loreKnown = (state.stats.loreKnown || 0) + 1;
                 addLog('📜 Odhalil jsi kousek historie světa.', '📜');
+                addXP(40);
             }
             if (quest.reward.secret) {
                 state.stats = state.stats || {};
                 state.stats.secretsKnown = (state.stats.secretsKnown || 0) + 1;
                 addLog('🤫 Znáš další tajemství pustiny.', '🤫');
+                addXP(40);
             }
             if (quest.reward.respect) {
                 state.stats = state.stats || {};
                 state.stats.respectEarned = (state.stats.respectEarned || 0) + 1;
                 addLog('🎖️ Získal jsi respekt pustiny.', '🎖️');
+                addXP(40);
             }
             
             // Item odměna (podpora přímého ID i kategorie jako 'rare', 'legendary' atd.)
@@ -80581,6 +80641,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         ${rewardItemGiven ? `<div>🎁 ${rewardItemGiven.icon || '📦'} ${rewardItemGiven.name}</div>` : ''}
                         ${quest.reward.karma_kory ? `<div style="color: ${quest.reward.karma_kory > 0 ? '#ff5722' : '#4caf50'};">🔥 Karma Kory: ${quest.reward.karma_kory > 0 ? '+' : ''}${quest.reward.karma_kory}</div>` : ''}
                         ${quest.reward.karma_koudy ? `<div style="color: ${quest.reward.karma_koudy > 0 ? '#2196f3' : '#ff5722'};">🔬 Karma Koudy: ${quest.reward.karma_koudy > 0 ? '+' : ''}${quest.reward.karma_koudy}</div>` : ''}
+                        ${typeof quest.reward.karma === 'number' ? `<div style="color:#8bc34a;">☯️ Karma: +${quest.reward.karma}</div>` : ''}
+                        ${quest.reward.companion ? `<div style="color:#4fc3f7;">🧑 Nový společník se k tobě přidal</div>` : ''}
+                        ${quest.reward.medical_training ? `<div style="color:#81c784;">⚕️ Lékařský výcvik: +5 % k léčení</div>` : ''}
+                        ${quest.reward.prophecy ? `<div style="color:#ce93d8;">🔮 Proroctví (+40 XP)</div>` : ''}
+                        ${quest.reward.lore ? `<div style="color:#ffcc80;">📜 Kousek historie světa (+40 XP)</div>` : ''}
+                        ${quest.reward.secret ? `<div style="color:#b0bec5;">🤫 Tajemství pustiny (+40 XP)</div>` : ''}
+                        ${quest.reward.respect ? `<div style="color:#ffd54f;">🎖️ Respekt pustiny (+40 XP)</div>` : ''}
                     </div>
                     ${(() => {
                         const newTrust = state.npcRelations?.[npcId]?.trust || 0;
@@ -82595,9 +82662,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // Dej odměny
             if (quest.reward.money) addMoney(quest.reward.money);
             if (quest.reward.xp) addXP(quest.reward.xp);
-            if (quest.reward.prosperity) state.settlement.prosperity += quest.reward.prosperity;
+            if (quest.reward.prosperity) state.settlement.prosperity = (state.settlement.prosperity || 0) + quest.reward.prosperity;
             if (quest.reward.defense) state.settlement.defense = (state.settlement.defense || 0) + quest.reward.defense;
-            if (quest.reward.food) state.settlement.resources.food += quest.reward.food;
+            if (quest.reward.food) { state.settlement.resources = state.settlement.resources || {}; state.settlement.resources.food = (state.settlement.resources.food || 0) + quest.reward.food; }
             
             // Item odměny
             if (quest.reward.item) {
@@ -107154,8 +107221,10 @@ body.pa-theme #paOverlay{display:block}
             }
             
             // Migration: Add karma for NPC quests if missing
-            if (!state.karma) {
-                state.karma = { kory: 0, koudy: 0 };
+            if (!state.karma || typeof state.karma !== 'object') {
+                // [v7.20] oprava: karma se dřív na pár místech sčítala jako číslo → „[object Object]5“
+                const _g = typeof state.karma === 'number' ? state.karma : 0;
+                state.karma = { kory: 0, koudy: 0, general: _g };
             }
             
             // Migration: Fix duplicate bows/arrows bug (v58 fix)
@@ -131610,7 +131679,7 @@ body.pa-theme #paOverlay{display:block}
                     
                     // 🚫 Karma loss - uprchlíci odmítnuti
                     if (v.type === 'crisis_karma' && !v.processed) {
-                        state.karma = (state.karma || 0) - (v.karmaLoss || 5);
+                        addGeneralKarma(-(v.karmaLoss || 5));
                         addLog(`🚫 Komunita odmítla uprchlíky. Karma -${v.karmaLoss || 5}`, '🏛️');
                         saveGame();
                         notifyWarning('🚫 Karma klesá', v.message);
