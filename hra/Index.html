@@ -38224,6 +38224,31 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // === KARAVANA OBCHOD ===
+        // [v7.22] Jednotné ceny karavany (zobrazení = skutečnost)
+        // Sleva: z příjezdu karavany (přivolání 25 %, události 20–25 %), nejméně 10 %
+        function getCaravanDiscount() {
+            const vm = state.settlement?.visitingMerchant;
+            const here = (state.caravan?.active && Date.now() < state.caravan.until) || (vm && Date.now() < vm.until);
+            const d = (here && vm && typeof vm.discount === 'number') ? vm.discount : 0.10;
+            return Math.max(0.10, Math.min(0.5, d));
+        }
+        function getCaravanBuyPrice(item) {
+            return Math.floor(calculateItemPrice(item.price, item.rarity) * (1 - getCaravanDiscount()));
+        }
+        function getCaravanSellPrice(item) {
+            const itemData = ITEMS.find(i => i.id === item.id) || item;
+            const basePrice = itemData.price || item.price;
+            if (!basePrice) return 0;
+            const traderBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.25;
+            let p = Math.floor(basePrice * 0.20 * traderBonus);
+            if (item.durability !== undefined && item.maxDurability) { p = Math.floor(p * (item.durability / item.maxDurability)); if (p < 1) p = 1; }
+            if (state.char.gender === 'female') p = Math.floor(p * 1.1);
+            const cb = getAllCompanionBonuses();
+            if (cb.sellBonus > 0) p = Math.floor(p * (1 + cb.sellBonus));
+            return p;
+        }
+        window.getCaravanBuyPrice = getCaravanBuyPrice; window.getCaravanSellPrice = getCaravanSellPrice;
+
         function openCaravanShop() {
             // 🦠 KARANTÉNA - obchody zavřené
             if (typeof areShopsClosed === 'function') {
@@ -38301,8 +38326,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const renderCaravanItem = (item) => {
                 // Normální cena v obchodě (s markup + inflace)
                 const normalPrice = calculateItemPrice(item.price, item.rarity);
-                // Karavana má 10% slevu oproti normální ceně
-                const price = Math.floor(normalPrice * 0.9);
+                const price = getCaravanBuyPrice(item); // [v7.22] sleva podle karavany
                 const stock = state.caravanStock.items[item.id] || 0;
                 return `
                     <div style="background: #2a2a2a; padding: 0.5rem; margin: 0.3rem 0; border-radius: 5px; display: flex; align-items: center; justify-content: space-between;">
@@ -38342,24 +38366,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         // Najdi skutečný index v původním inventáři
                         const realIdx = state.inv.indexOf(item);
                         
-                        const itemData = ITEMS.find(i => i.id === item.id) || item;
-                        const basePrice = itemData.price || item.price;
-                        if (!basePrice) return;
-                        
-                        // Karavana kupuje vše - i poškozené, za upravenou cenu
-                        let sellPrice = Math.floor(basePrice * 0.20 * traderBonus);
-                        
-                        // Snížení ceny za poškození
-                        if (item.durability !== undefined && item.maxDurability) {
-                            const durabilityRatio = item.durability / item.maxDurability;
-                            sellPrice = Math.floor(sellPrice * durabilityRatio);
-                            if (sellPrice < 1) sellPrice = 1;
-                        }
-                        
-                        // Gender bonus
-                        if (state.char.gender === 'female') {
-                            sellPrice = Math.floor(sellPrice * 1.1);
-                        }
+                        const sellPrice = getCaravanSellPrice(item); // [v7.22]
+                        if (!sellPrice) return;
                         
                         const countText = item.count > 1 ? ` (${item.count}x)` : '';
                         const durabilityText = item.durability !== undefined ? 
@@ -38418,23 +38426,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         // Najdi skutečný index v baseItems
                         const realIdx = state.baseItems.indexOf(item);
                         
-                        const itemData = ITEMS.find(i => i.id === item.id) || item;
-                        const basePrice = itemData.price || item.price;
-                        if (!basePrice) return;
-                        
-                        let sellPrice = Math.floor(basePrice * 0.20 * traderBonus);
-                        
-                        // Snížení ceny za poškození
-                        if (item.durability !== undefined && item.maxDurability) {
-                            const durabilityRatio = item.durability / item.maxDurability;
-                            sellPrice = Math.floor(sellPrice * durabilityRatio);
-                            if (sellPrice < 1) sellPrice = 1;
-                        }
-                        
-                        // Gender bonus
-                        if (state.char.gender === 'female') {
-                            sellPrice = Math.floor(sellPrice * 1.1);
-                        }
+                        const sellPrice = getCaravanSellPrice(item); // [v7.22]
+                        if (!sellPrice) return;
                         
                         const countText = item.count > 1 ? ` (${item.count}x)` : '';
                         const durabilityText = item.durability !== undefined ? 
@@ -38633,32 +38626,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 return;
             }
             
-            const itemData = ITEMS.find(i => i.id === item.id) || item;
-            const basePrice = itemData.price || item.price;
-            if (!basePrice) {
+            // [v7.22] stejný výpočet jako v okně obchodu (dřív okno neukazovalo bonus společníka)
+            const sellPrice = getCaravanSellPrice(item);
+            if (!sellPrice) {
                 notifyWarning('Nelze prodat', 'Tento předmět nemá hodnotu');
                 return;
-            }
-            
-            const traderBonus = typeof getSettlementTradeBonus === 'function' ? getSettlementTradeBonus() : 1.25; // +25% ceny při prodeji karavanám
-            let sellPrice = Math.floor(basePrice * 0.20 * traderBonus);
-            
-            // Snížení ceny za poškození
-            if (item.durability !== undefined && item.maxDurability) {
-                const durabilityRatio = item.durability / item.maxDurability;
-                sellPrice = Math.floor(sellPrice * durabilityRatio);
-                if (sellPrice < 1) sellPrice = 1;
-            }
-            
-            // Gender bonus
-            if (state.char.gender === 'female') {
-                sellPrice = Math.floor(sellPrice * 1.1);
-            }
-            
-            // 🤝 Companion sellBonus (Obchodník - Prodat draze skill)
-            const compSellBonuses = getAllCompanionBonuses();
-            if (compSellBonuses.sellBonus > 0) {
-                sellPrice = Math.floor(sellPrice * (1 + compSellBonuses.sellBonus));
             }
             
             // === KONTROLA PENĚZ OBCHODU ===
@@ -38745,24 +38717,24 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             // Vypočítej cenu stejně jako v renderCaravanItem
-            const normalPrice = calculateItemPrice(item.price, item.rarity);
-            const price = Math.floor(normalPrice * 0.9); // Karavana má navíc 10% slevu
+            const price = getCaravanBuyPrice(item); // [v7.22] stejně jako v zobrazení
             
             if (getMoney() < price) {
                 notifyWarning('Nedostatek peněz!', 'Potřebuješ ' + price + ' 💰');
                 return;
             }
             
-            // Sniž zásoby karavany
-            state.caravanStock.items[itemId]--;
-            
-            // Zjisti jestli jsme v osadě
-            const inSettlement = state.currentTab === 'settlement' ||
-                                 (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until);
+            // [v7.22] Zásoby se ubírají až po zaplacení (dřív i když byl plný batoh → zboží zmizelo)
+            // Kam věc půjde, se řídí polohou hráče stejně jako v okně obchodu (dřív šlo všechno do skladu,
+            // protože každá karavana nastaví visitingMerchant — i ta potkaná na cestě)
+            const _loc = state.world?.currentLocation || '';
+            const inSettlement = state.currentTab === 'settlement' || _loc === 'shelter' || _loc === 'settlement';
             
             if (inSettlement) {
                 // V osadě - ukládej VŠECHNO do skladu osady
                 removeMoney(price);
+                state.caravanStock.items[itemId]--;
+                if (!state.settlement.resources) state.settlement.resources = {};
                 
                 if (item.type === 'resource') {
                     // Suroviny do settlement.resources
@@ -38796,6 +38768,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 removeMoney(price);
+                state.caravanStock.items[itemId]--;
                 // Označíme jako "z karavany"
                 const newItem = {
                     ...item,
@@ -59345,7 +59318,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Zjisti jestli má hráč slevu od karavany
             const merchantDiscount = (state.caravan?.active && Date.now() < state.caravan?.until) || 
-                                     (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until) ? 0.2 : 0;
+                                     (state.settlement?.visitingMerchant && Date.now() < state.settlement.visitingMerchant.until) ? 0.1 : 0; // [v7.22] skutečná sleva je 10 % (viz výpočet ceny)
             
             // Peníze obchodu
             const currentShopMoney = getShopMoney();
@@ -59381,7 +59354,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             document.getElementById('modalContent').innerHTML = `
                 <h2>🏪 ${shopTexts.title}</h2>
                 <p style="color: #888; font-style: italic; text-align: center; margin-bottom: 0.5rem; font-size: 0.85rem;">"${traderQuote}"</p>
-                ${merchantDiscount > 0 ? '<p style="background: var(--warning-yellow); color: #000; padding: 0.5rem; border-radius: 5px; text-align: center; margin-bottom: 1rem;">🐪 ' + shopTexts.discount + ': -20%!</p>' : ''}
+                ${merchantDiscount > 0 ? '<p style="background: var(--warning-yellow); color: #000; padding: 0.5rem; border-radius: 5px; text-align: center; margin-bottom: 1rem;">🐪 ' + shopTexts.discount + ': -10%!</p>' : ''}
                 <p style="text-align: center; font-size: 1.1rem; margin-bottom: 0.5rem;">
                     <strong>💰 ${getMoney()}</strong> | <strong>🎫 ${getCasinoTokens()}</strong>
                 </p>
@@ -62670,7 +62643,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 showModal('📡 Vysílačka', 'Karavana už je v oblasti!');
                 return;
             }
+            // [v7.22] Vysílačka se nespotřebuje → bez prodlevy šla karavana (a nové vzácné zboží) volat donekonečna
+            const _sigCd = 3 * 60 * 60 * 1000;
+            const _sigLeft = (state.caravan?.lastSignal || 0) + _sigCd - Date.now();
+            if (_sigLeft > 0) {
+                const _tm = Math.ceil(_sigLeft / 60000), _h = Math.floor(_tm / 60), _m = _tm % 60;
+                showModal('📡 Vysílačka', `Baterie vysílačky se dobíjí. Další signál za ${_h > 0 ? _h + ' h ' : ''}${_m} min.`);
+                return;
+            }
             activateCaravan(600000); // 10 minut
+            state.caravan.lastSignal = Date.now();
             closeModal();
             notifySuccess('📡 Signál odeslán!', 'Karavana dorazila!');
             addLog('Přivolal jsi karavanu vysílačkou!', '📡');
@@ -84045,10 +84027,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             html += '<div style="background: #1a1a1a; padding: 0.8rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem;">';
             html += '<p style="margin: 0 0 0.5rem 0;"><strong>⏰ ' + caravanTexts.autoSpawn + ':</strong> <span style="color: #ffd700;">20%</span> ' + caravanTexts.chanceEvery + ' 24 hodin</p>';
             html += '<p style="margin: 0 0 0.5rem 0;"><strong>🎲 ' + caravanTexts.randomEvent + ':</strong> <span style="color: #ffd700;">10%</span> ' + caravanTexts.chanceWhile + '</p>';
-            html += '<p style="margin: 0 0 0.5rem 0;"><strong>📡 ' + caravanTexts.radio + ':</strong> ' + caravanTexts.summonFor + ' 10 ' + caravanTexts.minutesWord + '</p>';
+            html += '<p style="margin: 0 0 0.5rem 0;"><strong>📡 ' + caravanTexts.radio + ':</strong> ' + caravanTexts.summonFor + ' 10 ' + caravanTexts.minutesWord + ' (jednou za 3 hodiny)</p>';
             html += '<p style="margin: 0 0 0.5rem 0;"><strong>💰 ' + caravanTexts.paid + ':</strong> ' + caravanTexts.summonFor + ' ' + caravanTexts.hour + '</p>';
             html += '<p style="margin: 0; border-top: 1px solid #333; padding-top: 0.5rem; color: #888;"><strong>' + caravanTexts.bonusChance + ':</strong></p>';
-            html += '<p style="margin: 0.3rem 0 0 0; font-size: 0.8rem;">🏹 Scout lvl 4: +10% | 📱 ' + caravanTexts.contactNetwork + ': +20% | 🏪 ' + caravanTexts.tradeStation + ': +15%</p>';
+            html += '<p style="margin: 0.3rem 0 0 0; font-size: 0.8rem;">🏹 Zvěd lvl 4+: +10 % | 📡 Kom. věž s proudem: ×1,5 | 🐪🏛️ Karavanní centrum: ×2 | 🤝 Společník obchodník (' + caravanTexts.contactNetwork + '): +8–30 %</p>';
             html += '</div>';
             
             // Bonusy od karavany
@@ -111459,15 +111441,11 @@ body.pa-theme #paOverlay{display:block}
                         caravanChance += 0.10;
                     }
                     
-                    // Bonus ze "Síť kontaktů" skillu (+20%)
-                    if (state.unlockedAbilities?.network) {
-                        caravanChance += 0.20;
-                    }
-                    
-                    // Bonus z budovy "Obchodní stanice" (+15%)
-                    if (state.settlement?.buildings?.includes('trading_post') || state.base?.includes('trading_post')) {
-                        caravanChance += 0.15;
-                    }
+                    // [v7.22] Budovy podle jejich popisu (dřív se hledala „Obchodní stanice“, což je lokace,
+                    // ne budova, a schopnost „network“, kterou nikdo nemohl mít — bonusy nikdy neplatily)
+                    const _hasComms = state.base?.includes('comms') || state.settlement?.buildings?.includes('comms');
+                    if (_hasComms && hasPower()) caravanChance *= 1.5;              // Komunikační věž: +50 % častěji
+                    if (state.settlement?.buildings?.includes('trade_caravan_hub')) caravanChance *= 2; // Karavanní centrum: 2× častěji
                     
                     // 🤝 Companion caravanChance (Obchodník - Síť kontaktů)
                     const caravanCompBonuses = getAllCompanionBonuses();
