@@ -45227,39 +45227,145 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 
                 // Vždy přidej možnost rozhlédnout se
-                html += renderActionButton('👀', 'Rozhlédnout se', `lookAround()`, '#555');
+                const _clueHere = state.lookAround?.clues?.[location.id];
+                if (_clueHere) {
+                    html += `<div style="background:#2a240d;padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;border:1px solid #ffd700;width:100%;text-align:center;color:#ffd700;font-size:0.8rem;">📜 Sem vede tvoje stopa (z místa ${escapeHtml(_clueHere.fromName || '')}) — rozhlédni se!</div>`;
+                }
+                html += renderActionButton(_clueHere ? '📜' : '👀', 'Rozhlédnout se', `lookAround()`, _clueHere ? '#b8860b' : '#555');
             }
             
             return html;
         }
         
         // Rozhlédnutí se na prázdné lokaci
+        // [v7.28] Už to není jen vtip: drobné nálezy, XP a stopy vedoucí ke skrýši na jiné prázdné lokaci.
+        //  - každá lokace jde prohledat jednou za LOOK_AROUND_CD (reálný čas), pak už jen hláška
+        //  - stopa = záznam v state.lookAround.clues[cílová lokace]; na cíli „Rozhlédnout se" skrýš 100% najde
+        const LOOK_AROUND_CD = 2 * 60 * 60 * 1000; // 2 h
+        const LOOK_AROUND_MAX_CLUES = 3;
+        function _lookState() {
+            if (!state.lookAround || typeof state.lookAround !== 'object') state.lookAround = {};
+            if (!state.lookAround.cd || typeof state.lookAround.cd !== 'object') state.lookAround.cd = {};
+            if (!state.lookAround.clues || typeof state.lookAround.clues !== 'object') state.lookAround.clues = {};
+            return state.lookAround;
+        }
+        function _lookLocName(id) { const l = WORLD_LOCATIONS.find(x => x.id === id); return l ? l.name : id; }
+        // Najde prázdnou lokaci 2–5 cest daleko (BFS po WORLD_PATHS), která ještě nemá stopu
+        function _lookPickClueTarget(fromId) {
+            const adj = {};
+            (WORLD_PATHS || []).forEach(p => { (adj[p.from] = adj[p.from] || []).push(p.to); (adj[p.to] = adj[p.to] || []).push(p.from); });
+            const dist = { [fromId]: 0 }, q = [fromId];
+            while (q.length) { const c = q.shift(); if (dist[c] >= 5) continue; for (const n of adj[c] || []) if (!(n in dist)) { dist[n] = dist[c] + 1; q.push(n); } }
+            const ls = _lookState();
+            const cands = WORLD_LOCATIONS.filter(l => l.type === 'empty' && l.id !== fromId && dist[l.id] >= 2 && !ls.clues[l.id]).map(l => l.id);
+            return cands.length ? cands[Math.floor(Math.random() * cands.length)] : null;
+        }
+        function _lookGiveItem(id, count) {
+            const def = getItemDef(id); if (!def) return false;
+            for (let i = 0; i < count; i++) addItemToInventory({ ...def }, 1, true);
+            return true;
+        }
         function lookAround() {
+            const locId = state.world?.currentLocation;
+            const ls = _lookState();
+            const now = Date.now();
+            const loc = WORLD_LOCATIONS.find(l => l.id === locId);
+            if (!loc || loc.type !== 'empty') return;
+
+            // 1) Stopa vede sem → skrýš
+            const clue = ls.clues[locId];
+            if (clue) {
+                delete ls.clues[locId];
+                ls.cd[locId] = now;
+                const res = ['metal', 'cloth', 'electronics', 'scrap', 'chemicals', 'rope'];
+                const got = [];
+                for (let i = 0; i < 3; i++) {
+                    const r = res[Math.floor(Math.random() * res.length)], a = 2 + Math.floor(Math.random() * 3);
+                    addResource(r, a, true); got.push(`+${a} ${(typeof RESOURCE_NAMES !== 'undefined' && RESOURCE_NAMES[r]) || r}`);
+                }
+                const money = 40 + Math.floor(Math.random() * 61);
+                addMoney(money); got.push(`+${money} 💰`);
+                const itemPick = ['medkit', 'food', 'water', 'bandage'][Math.floor(Math.random() * 4)];
+                if (_lookGiveItem(itemPick, 1)) got.push(`+1 ${getItemDef(itemPick)?.name || itemPick}`);
+                addXP(40);
+                state.stats = state.stats || {}; state.stats.lookAroundStashes = (state.stats.lookAroundStashes || 0) + 1;
+                addLog(`Podle stopy (${clue.fromName}) jsi našel skrýš: ${got.join(', ')}, +40 XP`, '📦');
+                showModal('📦 Skrýš ze stopy!', `<p>Náčrtek sedí — pod uvolněnou deskou je schovaná skrýš.</p>
+                    <p style="color:#8bc34a;line-height:1.6;">${got.join('<br>')}<br>+40 XP</p>
+                    <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;">✓ Beru</button>`);
+                try { saveGame(true); } catch (e) {} try { render(); } catch (e) {}
+                return;
+            }
+
+            // 2) Lokace už prohledaná
+            const last = ls.cd[locId] || 0;
+            if (now - last < LOOK_AROUND_CD) {
+                const mins = Math.ceil((LOOK_AROUND_CD - (now - last)) / 60000);
+                const msgs = ['Tady už jsi všechno obrátil vzhůru nohama.', 'Prázdnota zírá zpět. Mrkla první.', 'Rozhlédl ses. Litoval jsi. Pokračuješ.', 'Pořád to samé místo. Pořád nic.'];
+                const msg = msgs[Math.floor(Math.random() * msgs.length)] + ` (znovu za ${mins >= 60 ? Math.ceil(mins / 60) + ' h' : mins + ' min'})`;
+                addLog(msg, '👁️'); notifyInfo('Průzkum', msg);
+                return;
+            }
+            ls.cd[locId] = now;
+
+            const roll = Math.random();
+            // 3) Stopa (15 %)
+            if (roll < 0.15 && Object.keys(ls.clues).length < LOOK_AROUND_MAX_CLUES) {
+                const target = _lookPickClueTarget(locId);
+                if (target) {
+                    const dir = typeof getDirectionToLocation === 'function' ? getDirectionToLocation(target) : null;
+                    const tName = _lookLocName(target);
+                    const flavor = getRandomHumor('finds');
+                    ls.clues[target] = { from: locId, fromName: loc.name, ts: now };
+                    addXP(10);
+                    const dirTxt = dir?.direction ? ` (${dir.arrow || ''} ${dir.direction})` : '';
+                    addLog(`Stopa! ${flavor} Na rubu je náčrtek cesty k místu ${tName}${dirTxt}.`, '📜');
+                    showModal('📜 Našel jsi stopu', `<p style="color:#ccc;">${flavor}</p>
+                        <p>Na rubu je rukou kreslený náčrtek se značkou u místa <b style="color:#ffd700;">${tName}</b>${dirTxt}.</p>
+                        <p style="color:#8bc34a;">Dojdi tam a dej <b>Rozhlédnout se</b> — najdeš skrýš. +10 XP</p>
+                        <button class="btn" onclick="closeModal()" style="width:100%;margin-top:1rem;">✓ Zapamatuju si to</button>`);
+                    try { saveGame(true); } catch (e) {} try { render(); } catch (e) {}
+                    return;
+                }
+            }
+            // 4) Drobný nález (40 %)
+            if (roll < 0.55) {
+                let txt;
+                if (Math.random() < 0.6) {
+                    const res = ['wood', 'metal', 'stone', 'cloth', 'scrap', 'glass', 'herbs'];
+                    const r = res[Math.floor(Math.random() * res.length)], a = 1 + Math.floor(Math.random() * 2);
+                    addResource(r, a, true); txt = `+${a} ${(typeof RESOURCE_NAMES !== 'undefined' && RESOURCE_NAMES[r]) || r}`;
+                } else {
+                    const it = Math.random() < 0.5 ? 'food' : 'water';
+                    _lookGiveItem(it, 1); txt = `+1 ${getItemDef(it)?.name || it}`;
+                }
+                addXP(5);
+                const msg = `Mezi troskami jsi něco vyhrabal: ${txt}, +5 XP`;
+                addLog(msg, '🔎'); notifySuccess('Průzkum', msg);
+                try { saveGame(true); } catch (e) {} try { render(); } catch (e) {}
+                return;
+            }
+            // 5) Zvláštní nález – jen lore (10 %), malé XP
+            if (roll < 0.65) {
+                const finds = getRandomHumor('finds');
+                addXP(5);
+                addLog(finds + ' (+5 XP)', '💀'); notifyInfo('Zvláštní nález...', finds + ' (+5 XP)');
+                return;
+            }
+            // 6) Nic
             const messages = [
                 'Rozhlédneš se kolem... Nic zajímavého. Jako tvůj život.',
                 'Pusto a prázdno. Jen vítr, prach a existenciální prázdnota.',
                 'Ticho. Žádné známky života. Perfektní místo pro piknik!',
                 'Místo jako každé jiné v pustině. Depresivní.',
                 'Nic k vidění. Možná příště. Nebo nikdy.',
-                'Zdá se, že tu opravdu nic není. Překvapení!',
-                'Našel jsi... nic. Gratuluji.',
-                'Prázdnota zírá zpět. Mrkla první.',
-                'Rozhlédl ses. Litoval jsi. Pokračuješ.'
+                'Našel jsi... nic. Gratuluji.'
             ];
-            
-            // Občas přidej zvláštní nález
-            if (Math.random() < 0.15) {
-                const finds = getRandomHumor('finds');
-                addLog(finds, '💀');
-                notifyInfo('Zvláštní nález...', finds);
-                return;
-            }
-            
             const msg = messages[Math.floor(Math.random() * messages.length)];
-            addLog(msg, '👁️');
-            notifyInfo('Průzkum', msg);
+            addLog(msg, '👁️'); notifyInfo('Průzkum', msg);
         }
-        
+        window.lookAround = lookAround;
+
         // Přehled světa - 2D mapa
         // === SVĚTOVÉ STRANY - Helper funkce ===
         function getDirectionToLocation(targetLocationId) {
