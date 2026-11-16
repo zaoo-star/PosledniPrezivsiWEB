@@ -98002,6 +98002,64 @@ body.pa-theme #paOverlay{display:block}
                 if (el.offsetWidth >= 240 && el.offsetHeight >= 70) el.classList.add('pa-plate');
             });
         }
+        // 🪦 [v7.13] Windows 10 neumí emoji 13+ (🪦 🛖 🪨 🪙 …) → místo nich prázdný obdélník (např. 17 lokací na mapě).
+        // Při startu změříme, která emoji systém nevykreslí, a jen ta v textu nahradíme podobným starším.
+        // Zařízení, která je umí (telefony, Windows 11), se nemění.
+        const _EMOJI_FB = {
+            '🥷': '🗡️', '🫐': '🍇', '🪱': '🐛', '🪙': '💰', '🩴': '👡', '🪣': '🧺', '🪵': '🌲', '🪖': '⛑️',
+            '🪬': '🧿', '🪨': '⛰️', '🫘': '🥜', '🪚': '🔨', '🪴': '🌱', '🫂': '🤝', '🪤': '🐀', '🪪': '💳',
+            '🛖': '🏚️', '🪦': '⚰️', '🦫': '🦦', '🪸': '💎', '🪟': '🖼️', '🪢': '🧵', '🫳': '✋', '🪷': '🌸',
+            '🪡': '🧵', '🪲': '🐞', '🫣': '🙈', '🪄': '✨', '🫨': '😵', '🪼': '🦑', '🪽': '🕊️', '🫎': '🦌'
+        };
+        let _emojiBadRe = null;
+        (function _detectBadEmoji() {
+            try {
+                const cv = document.createElement('canvas'); cv.width = cv.height = 32;
+                const x = cv.getContext('2d', { willReadFrequently: true });
+                if (!x) return;
+                const sig = e => {
+                    x.clearRect(0, 0, 32, 32);
+                    x.font = '24px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji","Segoe UI Symbol",sans-serif';
+                    x.textBaseline = 'top'; x.fillStyle = '#000'; x.fillText(e, 2, 2);
+                    const d = x.getImageData(0, 0, 32, 32).data; let h = '';
+                    for (let i = 3; i < d.length; i += 12) h += d[i] > 100 ? '1' : '0';
+                    return h;
+                };
+                const tofu = sig('\u{1FAE8}'); // emoji 15 – na starých systémech „obdélník“
+                if (sig('😀') === tofu || sig('\u{1FAEC}') !== tofu) return; // nejde spolehlivě poznat (2 nepodporovaná musí vypadat stejně) → nic neměň
+                const bad = Object.keys(_EMOJI_FB).filter(e => sig(e) === tofu);
+                // náhrada nesmí být taky nepodporovaná
+                bad.forEach(e => { if (sig(_EMOJI_FB[e].replace(/️/g, '')) === tofu) _EMOJI_FB[e] = '❔'; });
+                if (bad.length) {
+                    _emojiBadRe = new RegExp(bad.join('|'), 'gu');
+                    console.log('🪦 Emoji fallback pro starší systém:', bad.join(' '));
+                }
+            } catch (e) { /* bez náhrady */ }
+        })();
+        function _emojiFixDom(root) {
+            if (!_emojiBadRe || !document.body) return;
+            const w = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, {
+                acceptNode: n => { _emojiBadRe.lastIndex = 0; return _emojiBadRe.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP; }
+            });
+            const nodes = []; let n; while ((n = w.nextNode())) nodes.push(n);
+            nodes.forEach(t => { t.nodeValue = t.nodeValue.replace(_emojiBadRe, m => _EMOJI_FB[m] || m); });
+        }
+        window._emojiFixDom = _emojiFixDom;
+        if (_emojiBadRe) {
+            const _efStart = () => {
+                _emojiFixDom();
+                // jen nově přidané uzly (celá stránka ~45 ms, hra mění obsah každou sekundu)
+                new MutationObserver(recs => {
+                    try {
+                        for (const r of recs) for (const nd of r.addedNodes) {
+                            if (nd.nodeType === 3) { _emojiBadRe.lastIndex = 0; if (_emojiBadRe.test(nd.nodeValue)) nd.nodeValue = nd.nodeValue.replace(_emojiBadRe, m => _EMOJI_FB[m] || m); }
+                            else if (nd.nodeType === 1) { _emojiBadRe.lastIndex = 0; if (_emojiBadRe.test(nd.textContent || '')) _emojiFixDom(nd); }
+                        }
+                    } catch (e) {}
+                }).observe(document.body, { childList: true, subtree: true });
+            };
+            if (document.body) _efStart(); else document.addEventListener('DOMContentLoaded', _efStart);
+        }
         let _paObserver = null, _paPending = false;
         // 🔋 [v7.8] Úsporný režim – vypne nekonečné animace a zpomalí kreslení průzkumu, když hráč stojí.
         // Nastavení state.settings.batterySaver: 'auto' (výchozí) | 'on' | 'off'.
