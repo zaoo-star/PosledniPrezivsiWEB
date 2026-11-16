@@ -19525,24 +19525,19 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function getSkillLevel(skillId) {
             // [UNIFIKOVÁNO] Sčítá úrovně ze starého state.skills i nového state.skillTree
             // Pro hráče v přechodu mezi systémy - funguje bez ohledu na to, kde má body
-            let total = 0;
-            
-            // Starý SKILLS systém
-            if (state.skills && state.skills[skillId]) {
-                total += state.skills[skillId];
-            }
-            
-            // Nový SKILL_TREE systém
+            // [v7.33] Bere VYŠŠÍ z obou systémů, ne součet. Migrace kopíruje staré úrovně do stromu a state.skills
+            // nechává → součet dával migrovaným hráčům dvojnásobné úrovně (např. Železný žaludek 3 → 6).
+            let oldLvl = 0, treeLvl = 0;
+            if (state.skills && state.skills[skillId]) oldLvl = state.skills[skillId] || 0;
             if (state.skillTree) {
                 for (const branchId of Object.keys(state.skillTree)) {
                     if (state.skillTree[branchId]?.[skillId]) {
-                        total += state.skillTree[branchId][skillId];
+                        treeLvl = state.skillTree[branchId][skillId];
                         break; // Stejný skillId v jiné větvi = nemá se stát, vem jen první
                     }
                 }
             }
-            
-            return total;
+            return Math.max(oldLvl, treeLvl);
         }
         
         // Automatické konzumování když hráč umírá (pokud má perk)
@@ -21703,7 +21698,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             // Backwards compat: starý SKILLS systém
             if (typeof getSkillLevel === 'function') {
-                const oldRadLevel = getSkillLevel('rad_resistance');
+                const oldRadLevel = state.skills?.rad_resistance || 0; // [v7.33] jen starý systém (getSkillLevel zahrnuje i strom → dvojí započtení)
                 if (oldRadLevel > 0 && !state._skillsMigrated) {
                     totalResist += 0.30 * oldRadLevel;
                     totalResist = Math.min(totalResist, 0.9);
@@ -47918,7 +47913,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const agiBonus = Math.max(0, (state.char?.attrs?.agi || 5) - 5) * 0.02;
             if (agiBonus > 0) travelBonus -= agiBonus;
             // Pathfinder skill
-            const pathfinderLevel = state.skillTree?.exploration?.pathfinder || state.skills?.['pathfinder'] || 0;
+            // [v7.33] Průzkumník (pathfinder) je už v getSkillTreeBonus('travelSpeed') níže → dřív se odečítal 2× (−30 % místo −15 %)
+            const pathfinderLevel = state.skillTree?.exploration?.pathfinder ? 0 : (state.skills?.['pathfinder'] || 0);
             if (pathfinderLevel > 0) travelBonus -= pathfinderLevel * 0.03;
             // Fast travel skill
             const fastTravelLevel = state.skillTree?.exploration?.fast_travel || state.skillTree?.survival?.fast_travel || state.skills?.['fast_travel'] || 0;
@@ -58037,7 +58033,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 }
                 // Backwards compat
                 if (typeof getSkillLevel === 'function') {
-                    const oldEffLevel = getSkillLevel('efficient');
+                    const oldEffLevel = state.skills?.efficient || 0; // [v7.33] jen starý systém – v novém stromu je Efektivita úspora jídla, ne XP
                     if (oldEffLevel > 0 && !state._skillsMigrated) {
                         finalAmount = Math.floor(finalAmount * (1 + 0.25 * oldEffLevel));
                     }
@@ -66404,24 +66400,31 @@ function openFullscreenMap() {
         window.hasWorkshopAccess = hasWorkshopAccess;
         
         // Helper pro renderování crafting receptů
+        // [v7.33] Jediný výpočet slevy na suroviny při výrobě – používá výroba, seznam receptů i detail.
+        // Dřív seznam/detail nepočítaly skill Kutil (a detail ani set Mistr řemesla) → ukazovaly jinou cenu, než se strhla.
+        function getCraftCostMultiplier() {
+            let m = 1.0;
+            if (hasClassPassive('craftCostReduction')) {
+                const fx = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
+                m = fx.masterCrafter ? 0.25 : 0.50;
+            }
+            const cb = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
+            if (cb.craftCostReduction > 0) m *= (1 - cb.craftCostReduction);
+            const tk = typeof getSkillTreeBonus === 'function' ? getSkillTreeBonus('craftCostReduction') : 0;
+            if (tk > 0) m *= (1 - tk);
+            const ib = Math.max(0, Math.min(0.9, (state.char?.attrs?.int || 5) * 0.03));
+            m *= (1 - ib);
+            return Math.max(0.05, m);
+        }
+        window.getCraftCostMultiplier = getCraftCostMultiplier;
+
         function renderCraftingRecipes() {
             const hasWorkshop = hasWorkshopAccess();
             const isTraveling = state.map.traveling;
             const hasLegendarySmith = getSkillLevel('legendary_smith') > 0;
             
-            // Engineer bonus (Fix: respektuje masterCrafter set bonus = -75%)
             const isEngineer = hasClassPassive('craftCostReduction');
-            let engineerReduction = 1.0;
-            if (isEngineer) {
-                const _setFxCraft = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
-                engineerReduction = _setFxCraft.masterCrafter ? 0.25 : 0.50; // 75% nebo 50% sleva
-            }
-            // INT bonus: -3% materiálů za bod Inteligence (i v zobrazení)
-            const _intCraftDisp = (state.char?.attrs?.int || 5) * 0.03;
-            engineerReduction = engineerReduction * (1 - _intCraftDisp);
-            // [v6.4.1] Floor jako v craftItem — bez něj se při 100% slevách zobrazovala cena 0
-            // a maxCrafts (dělení nulou) se rozbil → šlo vyrábět jen po jednom (hlášeno OwerLord)
-            engineerReduction = Math.max(0.05, engineerReduction);
+            const engineerReduction = getCraftCostMultiplier(); // [v7.33] stejně jako craftItem
             
             // Companion bonusy (jednou, ne v každém filter callu)
             const craftCompBonuses = getAllCompanionBonuses();
@@ -66620,17 +66623,7 @@ function openFullscreenMap() {
             const recipe = CRAFTING.find(r => r.id === recipeId);
             if (!recipe) return;
             
-            // Engineer class = 50% reduction, Technik companion skill = další redukce
-            let engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
-            const companionBonuses = getAllCompanionBonuses();
-            if (companionBonuses.craftCostReduction > 0) {
-                engineerReduction = engineerReduction * (1 - companionBonuses.craftCostReduction);
-            }
-            // INT bonus: -3% materiálů za bod Inteligence
-            const _intCraftDetail = (state.char?.attrs?.int || 5) * 0.03;
-            engineerReduction = engineerReduction * (1 - _intCraftDetail);
-            // [v6.4.1] Floor jako v craftItem (viz výše) — jinak cena 0 a NaN maxCrafts
-            engineerReduction = Math.max(0.05, engineerReduction);
+            const engineerReduction = getCraftCostMultiplier(); // [v7.33] stejně jako craftItem
             
             // Check if can craft - portable věci nepotřebují dílnu
             const needsWorkshop = recipe.portable !== true;
@@ -67256,22 +67249,7 @@ function openFullscreenMap() {
                 return;
             }
             
-            // Engineer bonus - 50% méně surovin + technik companion bonus
-            let engineerReduction = hasClassPassive('craftCostReduction') ? 0.5 : 1.0;
-            const companionBonuses = getAllCompanionBonuses();
-            if (companionBonuses.craftCostReduction > 0) {
-                engineerReduction = engineerReduction * (1 - companionBonuses.craftCostReduction);
-            }
-            // [FIX AUDIT] Tinkerer skill (-10% cena craftingu per level, max 5 = -50%)
-            const tinkererBonus = typeof getSkillTreeBonus === 'function' ? getSkillTreeBonus('craftCostReduction') : 0;
-            if (tinkererBonus > 0) {
-                engineerReduction = engineerReduction * (1 - tinkererBonus);
-            }
-            // INT bonus: -3% materiálů za bod Inteligence (max 90% snížení)
-            const intCraftBonus = Math.max(0, Math.min(0.9, (state.char?.attrs?.int || 5) * 0.03));
-            engineerReduction = engineerReduction * (1 - intCraftBonus);
-            // Cap reduction — nelze vyrábět za 0 surovin
-            engineerReduction = Math.max(0.05, engineerReduction);
+            const engineerReduction = getCraftCostMultiplier(); // [v7.33] sdílený výpočet (třída, set, parťák, Kutil, INT)
             
             // Portable = pouze inventář, Dílna = inventář + sklad osady
             const useSettlement = needsWorkshop;
@@ -93040,7 +93018,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } else {
                 defense = target.defense;
             }
-            if (target.isPlayer && playerDefenseEffects.defense > 0) {
+            // [v7.33] Tvrdá kůže (skill defense) je už v calculateDefense() → dřív se přičítala podruhé
+            if (target.isPlayer && typeof calculateDefense !== 'function' && playerDefenseEffects.defense > 0) {
                 defense += playerDefenseEffects.defense;
             }
             
@@ -94394,6 +94373,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // se nikdy nespustilo (hlášeno Štístko: společník se 100% loajalitou v boji umřel).
             if (target.hp <= 0 && typeof _tryUndyingSave === 'function' && _tryUndyingSave(target, cs)) {
                 // zachráněn s 1 HP — níže se už nic neděje (hp = 1)
+                if (target.isPlayer && target.hp > 0) state.char.hp = target.hp; // [v7.33] sync se stavem hráče
             }
 
             if (target.hp <= 0) {
@@ -94412,6 +94392,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 
                 if (lastStandChance > 0 && Math.random() < lastStandChance) {
                     target.hp = 1;
+                    // [v7.33] state.char.hp se zapsal (0) už před touto kontrolou → srovnat, jinak hráč „přežije“ jen v UI boje
+                    if (target.isPlayer) state.char.hp = 1;
                     if (target.isPlayer && state.char.classId === 'survivor') {
                         cs.log.push(`Poslední vzdor! Přežil jsi s 1 životem.`);
                     } else {
@@ -95845,10 +95827,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // Hráčův damage bonus ze skillů (power_strike atd.)
-            if (!isCompanion && playerSkillEffects.damageBonus > 0) {
-                damage = Math.floor(damage * (1 + playerSkillEffects.damageBonus));
-            }
+            // [v7.33] Silný úder (damageBonus) je už v calculateDamage() → tady se dřív násobil podruhé
+
             
             // Berserk bonus - víc damage při nízkém HP
             if (!isCompanion && playerSkillEffects.berserkerBonus > 0) {
@@ -95884,10 +95864,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             // === SET BONUSY - CRIT ===
             const setEffects = typeof getActiveSetEffects === 'function' ? getActiveSetEffects() : {};
             if (!isCompanion) {
-                // Piece bonusy crit
-                baseCritChance += setEffects.critChance || 0;
-                // Set (2) bonus - extra crit (raider)
-                baseCritChance += setEffects.extraCritChance || 0;
+                // [v7.33] setEffects.critChance a extraCritChance už jsou v calculateCritChance() → nepřičítat znovu
                 // Ambush - první útok v boji má +100% crit (stalker)
                 if (setEffects.ambush && cs.round === 1 && !window.ambushUsed) {
                     baseCritChance += 1.0; // +100%
@@ -95929,7 +95906,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            let critChance = baseCritChance + (isCompanion ? (companionSkillEffects.critChance || 0) : (playerSkillEffects.critChance || 0));
+            // [v7.33] Skill Kritický zásah je už v calculateCritChance() (getSkillTreeBonus) → hráči se nepřičítá podruhé
+            let critChance = baseCritChance + (isCompanion ? (companionSkillEffects.critChance || 0) : 0);
             
             // 🥾 combat_stance: +5% crit z bot
             if (!isCompanion && typeof hasEquippedSpecial === 'function' && hasEquippedSpecial('combat_stance')) {
@@ -101704,7 +101682,7 @@ body.pa-theme #paOverlay{display:block}
             }
             // Backwards compat ze starého systému (loot_quality value)
             if (typeof getSkillLevel === 'function') {
-                const oldLuckyLevel = getSkillLevel('lucky');
+                const oldLuckyLevel = state.skills?.lucky || 0; // [v7.33] jen starý systém
                 if (oldLuckyLevel > 0 && !state._skillsMigrated) {
                     skillRareBonus += 0.05 * oldLuckyLevel; // 5% per level
                 }
@@ -101761,7 +101739,7 @@ body.pa-theme #paOverlay{display:block}
                 }
                 // Backwards compat - starý SKILLS scavenger
                 if (typeof getSkillLevel === 'function' && !state._skillsMigrated) {
-                    const oldScavLevel = getSkillLevel('scavenger');
+                    const oldScavLevel = state.skills?.scavenger || 0; // [v7.33] jen starý systém
                     if (oldScavLevel > 0) {
                         noDropChance = Math.max(0.10, noDropChance - 0.15 * oldScavLevel);
                     }
@@ -103845,10 +103823,8 @@ body.pa-theme #paOverlay{display:block}
                         durabilityLoss = 0; // Skill zabránil opotřebení
                     }
                     
-                    // Legendary smith skill - 50% šance ušetřit opotřebení
-                    if (durabilityLoss > 0 && getSkillLevel('legendary_smith') > 0 && Math.random() < 0.50) {
-                        durabilityLoss = 0;
-                    } else if (durabilityLoss > 0 && compBonuses.durabilityBonus > 0) {
+                    // [v7.33] Legendární kovář je už v durabilityBonus výše (50 %) → dřív se házelo 2× (= 75 % místo 50 %)
+                    if (durabilityLoss > 0 && compBonuses.durabilityBonus > 0) {
                         // S durabilityBonus 0.05 je šance 5% že se zbraň neopotřebí
                         if (Math.random() < compBonuses.durabilityBonus) {
                             durabilityLoss = 0; // Technik zabránil opotřebení
@@ -108742,7 +108718,7 @@ body.pa-theme #paOverlay{display:block}
                                 // Regeneration skill (+1 HP/min per level)
                                 try { const _rsl = typeof getSkillLevel === 'function' ? (getSkillLevel('regeneration') || 0) : 0; hpRegenPerMin += _rsl; } catch(e) {}
                                 // Survivor skill (legacy only - nový ekvivalent je regeneration ze skillTree)
-                                const _survLvl = state.skills?.['survivor'] || 0;
+                                const _survLvl = state._skillsMigrated ? 0 : (state.skills?.['survivor'] || 0);
                                 if (_survLvl > 0) hpRegenPerMin += _survLvl;
                                 const hpRegen = Math.round(hpRegenPerMin * 10) / 10;
                                 
@@ -111244,7 +111220,8 @@ body.pa-theme #paOverlay{display:block}
                     }
                     
                     // 💚 Skill: Regenerace (defense tree) - +1 HP/min per level
-                    const regenSkillLevel = getSkillLevel('regeneration');
+                    // [v7.33] Regenerace se aplikuje JEN přes getSkillTreeBonus('regenPerMin') níže (dřív 3× = +15 HP/min na lvl 5)
+                    const regenSkillLevel = 0;
                     if (regenSkillLevel > 0 && state.char.hp < state.char.maxHp) {
                         const regenAmount = regenSkillLevel; // +1 HP/min per level
                         state.char.hp = Math.min(state.char.maxHp, state.char.hp + regenAmount);
@@ -112151,8 +112128,8 @@ body.pa-theme #paOverlay{display:block}
                     
                     // [FIX v3.9.93] Skilly: Survivor + Regenerace (+1 HP/min per level) mimo base
                     if (!window.combatState && state.char.hp < state.char.maxHp) {
-                        const survivorLvlOut = (typeof getSkillLevel === 'function') ? getSkillLevel('survivor') : (state.skills?.['survivor'] || 0);
-                        const regenLvlOut = (typeof getSkillLevel === 'function') ? getSkillLevel('regeneration') : 0;
+                        const survivorLvlOut = state._skillsMigrated ? 0 : (state.skills?.['survivor'] || 0); // [v7.33] po migraci je to Regenerace ve stromu
+                        const regenLvlOut = 0; // [v7.33] Regenerace jen přes regenPerMin (jinak se počítala vícekrát)
                         const totalRegenOut = survivorLvlOut * 1 + regenLvlOut * 1;
                         if (totalRegenOut > 0) {
                             if (!state._survivorHpAccumOut) state._survivorHpAccumOut = 0;
@@ -112247,8 +112224,8 @@ body.pa-theme #paOverlay{display:block}
                     // Survivor skill passive regen + Skill Tree regenerace
                     // [SLOUČENO] Starý 'survivor' a nový 'regeneration' jsou stejné (+1 HP/min)
                     if (!window.combatState) {
-                        const survivorLevel = (typeof getSkillLevel === 'function') ? getSkillLevel('survivor') : (state.skills?.['survivor'] || 0);
-                        const regenerationLevel = (typeof getSkillLevel === 'function') ? getSkillLevel('regeneration') : 0;
+                        const survivorLevel = state._skillsMigrated ? 0 : (state.skills?.['survivor'] || 0); // [v7.33] po migraci je to Regenerace ve stromu
+                        const regenerationLevel = 0; // [v7.33] Regenerace jen přes regenPerMin (jinak se počítala vícekrát)
                         let totalRegenPerMin = survivorLevel * 1 + regenerationLevel * 1; // 1 HP/min per level (každý systém)
                         // [NEW v6.0] Politika - vojenský režim → -50% HP regen
                         if (cachedPoliticalEffects?.decision_regenPenalty && cachedPoliticalEffects.decision_regenPenalty.until > Date.now()) {
