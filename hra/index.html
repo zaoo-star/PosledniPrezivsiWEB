@@ -10527,6 +10527,14 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 ]
             }
         };
+        // [v7.23b] Úroveň pro dungeony, které ji neměly — odvozená z jejich obtížnosti (DUNGEON_SCALING),
+        // stejně jako u stávajících (1.30→6, 1.40→8, 1.45→9, 1.65→12, 1.75→15, 2.0→19). Bez úrovně měly
+        // vždy plné odměny bez ohledu na level hráče, zatímco Starý sklep apod. odměny snižoval.
+        Object.entries({ bear_cave: 6, cave_stalactite: 7, collapsed_tunnel: 7, prison: 7, radar_station: 8, ice_cave: 8,
+            oil_refinery: 8, office_tower: 8, barracks: 8, university: 9, subway_hub: 9, ammo_depot: 9,
+            fortress: 12, military_airfield: 14, biolab: 14, secret_factory: 14, arctic_base: 15,
+            ai_complex: 19, fusion_reactor: 19, cyber_lab: 19, crashed_satellite: 19, quantum_lab: 20, titan_forge: 25
+        }).forEach(([id, lvl]) => { if (DUNGEON_FLOORS[id] && !DUNGEON_FLOORS[id].level) DUNGEON_FLOORS[id].level = lvl; });
         
         // Dungeon bossové
         const DUNGEON_BOSSES = {
@@ -17116,6 +17124,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             { id: 'cl_northwest_citadel', name: 'Poslední bašta', icon: '🛡️', type: 'explore', zone: 'deadly', x: -9, y: 2,
               desc: 'Poslední velká citadela na severozápadě. Obsazení znamená dominanci nad celou severní pustinou.', enemies: ['soldier', 'robot', 'turret', 'elite_robot'], dangerLevel: 5 }
         ];
+        // [v7.23b] 84 lokací nemělo dangerLevel → hra je brala jako nejbezpečnější (1): menší a slabší průzkumný
+        // dungeon, nikdy legendární runy apod. Doplněno podle zóny stejně, jak ji mají ostatní lokace
+        // (safe 1, medium 2, danger 4, deadly 5).
+        WORLD_LOCATIONS.forEach(l => { if (l.dangerLevel === undefined) l.dangerLevel = ({ safe: 1, medium: 2, danger: 4, deadly: 5 })[l.zone] || 1; });
         
         // =====================================================
         // === 🏗️ KONFIGURACE POZEMKŮ ===
@@ -17519,11 +17531,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (toLoad <= 0) return false;
             
             // Odeber náboje z inventáře
+            let _loaded = 0;
             for (let i = 0; i < toLoad; i++) {
                 if (!consumeAmmo(weapon.ammoType, 1)) break;
                 unit.magazine = (unit.magazine || 0) + 1;
+                _loaded++;
             }
-            return true;
+            return _loaded > 0; // [v7.23b] „Přebito +0“ dřív sebralo akci
         }
         
         // Zjisti jestli zbraň má zásobník
@@ -69987,6 +70001,9 @@ function openFullscreenMap() {
                             const bonusItem = ITEMS.find(i => i.id === lootEntry.id);
                             if (bonusItem && canAddItem(bonusItem, lootEntry.count || 1)) {
                                 addItemToInventory(bonusItem, lootEntry.count || 1, true);
+                            } else if (bonusItem) {
+                                // [v7.23b] plný batoh → na zem (dřív se tiše ztratilo)
+                                for (let _k = 0; _k < (lootEntry.count || 1); _k++) addToGroundLoot({ ...bonusItem });
                             }
                         }
                         return;
@@ -70095,6 +70112,7 @@ function openFullscreenMap() {
                         if (item) {
                             const count = item.type === 'ammo' ? (2 + Math.floor(Math.random() * 3)) : 1;
                             if (canAddItem(item, count)) { addItemToInventory(item, count, true); }
+                            else { addToGroundLoot({ ...item, count }); } // [v7.23b] dřív se tiše ztratilo
                         }
                     }
                     // Specific weapon types by name (laser, rifle, shotgun, pistol)
@@ -94490,7 +94508,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const _wpn = unit.isCompanion ? unit.equipped?.weapon : state.equipped?.weapon;
                     const _isRanged = !!_wpn?.ammoType;
                     console.error('⚠️ ŽÁDNÉ CÍLE!', unit.name, 'weapon:', _wpn?.name, 'enemies:', _enemies.length);
-                    if (_enemies.length > 0) {
+                    const _nearest = _enemies.reduce((m, e) => Math.min(m, Math.max(Math.abs(e.x - unit.x), Math.abs(e.y - unit.y))), 99);
+                    const _magEmpty = _isRanged && !unit.isCompanion && typeof weaponHasMagazine === 'function' && weaponHasMagazine(_wpn) && (unit.magazine || 0) <= 0;
+                    if (_enemies.length > 0 && _magEmpty && _nearest > 1) {
+                        cs.log.push(`🔄 Zásobník je prázdný — přebij tlačítkem 🔄 Přebít, nebo se přibliž (nejbližší ${_nearest} polí).`);
+                        cs.selectedAction = 'move';
+                        calculateValidMoves(unit);
+                    } else if (_enemies.length > 0 && !_isRanged && _nearest > 1) {
+                        // [v7.23b] Zbraň na blízko a nikdo vedle → rovnou pohyb (dřív „nouzový režim“ označil
+                        // jako cíle i nepřátele přes celou mapu, klik na ně pak jen hlásil „mimo dosah“)
+                        cs.log.push(`🚶 Nikdo na dosah (nejbližší ${_nearest} polí) — přesuň se k nepříteli.`);
+                        cs.selectedAction = 'move';
+                        calculateValidMoves(unit);
+                    } else if (_enemies.length > 0) {
                         // Nouzový režim - přidej všechny nepřátele jako cíle
                         _enemies.forEach(e => { e._combatDist = Math.max(Math.abs(e.x - unit.x), Math.abs(e.y - unit.y)); cs.validTargets.push(e); });
                         cs.log.push('⚠️ Nouzový režim: útok na všechny nepřátele.');
@@ -95392,6 +95422,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         // [FIX] Prázdný zásobník → MELEE útok (ne konec tahu!)
                         // Odstraň weapon bonus — útočí holýma rukama
                         cs.log.push(`🔄 Zásobník prázdný — melee útok!`);
+                        // [v7.23b] Úder zblízka jen na sousední pole — dřív se „praštilo“ i na 6 polí daleko
+                        const _mDist = Math.max(Math.abs(target.x - unit.x), Math.abs(target.y - unit.y));
+                        if (_mDist > 1) {
+                            cs.log.pop();
+                            cs.log.push(`🔄 Zásobník prázdný — cíl je ${_mDist} polí daleko. Přebij, nebo se přibliž.`);
+                            notifyWarning('Prázdný zásobník', `Cíl je ${_mDist} polí daleko. Přebij zbraň, nebo se přibliž na úder zblízka.`);
+                            cs._actionInProgress = false; cs.selectedAction = null; cs.validTargets = [];
+                            renderHeroesCombatUI();
+                            return;
+                        }
                         weapon = null; // Vynuluj zbraň pro tento útok = pěsti
                     } else {
                         unit.magazine = (unit.magazine || 0) - 1;
@@ -95402,6 +95442,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Zbraně bez zásobníku (luk, fuel...) — přímá spotřeba z inventáře
                     if (!consumeAmmo(weapon.ammoType, 1)) {
                         cs.log.push(`Munice došla — melee útok!`);
+                        // [v7.23b] Úder zblízka jen na sousední pole — dřív se „praštilo“ i na 6 polí daleko
+                        const _mDist = Math.max(Math.abs(target.x - unit.x), Math.abs(target.y - unit.y));
+                        if (_mDist > 1) {
+                            cs.log.pop();
+                            cs.log.push(`🔄 Munice došla — cíl je ${_mDist} polí daleko. Přebij, nebo se přibliž.`);
+                            notifyWarning('Došla munice', `Cíl je ${_mDist} polí daleko. Přebij zbraň, nebo se přibliž na úder zblízka.`);
+                            cs._actionInProgress = false; cs.selectedAction = null; cs.validTargets = [];
+                            renderHeroesCombatUI();
+                            return;
+                        }
                         weapon = null; // Fallback na pěsti
                     } else {
                         console.log(`🏹 Direct ammo consume: ${weapon.name} ammoType=${weapon.ammoType}`);
