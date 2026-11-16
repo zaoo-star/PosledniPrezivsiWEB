@@ -98011,6 +98011,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // Zapíná se stejně jako nová grafika (kenneyCombatEnabled → admin / KENNEY_COMBAT_FOR_ALL).
         // Vlastní PNG předmětů (ITEM_CUSTOM_ICONS apod.) se NEMĚNÍ – nahrazují se jen emoji v tlačítkách a v horní liště.
         // Ikony: game-icons.net (CC BY 3.0, viz img/ui/LICENSE.txt). Fonty: OFL / Apache 2.0 (fonts/).
+        // [v7.26] Lidské postavy: Riley Gombart (CC BY 3.0), zombie: Riley Gombart (CC0), země: ambientCG + Poly Haven (CC0) – viz img/kenney/LICENSE.txt.
         // ============================================================
         const PA_EMOJI_ICONS = {
             '🚪': 'exit-door', '📦': 'cardboard-box', '🏘': 'village', '👥': 'three-friends', '📻': 'walkie-talkie', '⚗': 'round-potion',
@@ -98304,6 +98305,13 @@ body.pa-theme #paOverlay{display:block}
             settle:   { a: ['g_dirt1', 'g_sand1', 'g_sand3'], b: ['g_sand2', 'g_dirt2'], mix: 0.4 },
             snow:     { a: ['f_conc1'], b: ['g_conc2'], mix: 0.3 }
         };
+        // [v7.26] Realistické souvislé textury (CC0: ambientCG, Poly Haven) — a = hlavní, b = skvrny
+        const KC_GROUND = {
+            waste: { a: 'gt_dirt', b: 'gt_asphalt' }, city: { a: 'gt_asphalt', b: 'gt_concrete' },
+            military: { a: 'gt_concrete', b: 'gt_dirt' }, cave: { a: 'gt_gravel', b: 'gt_rock' },
+            forest: { a: 'gt_grass', b: 'gt_dirt' }, swamp: { a: 'gt_rock', b: 'gt_gravel' },
+            settle: { a: 'gt_dirt', b: 'gt_gravel' }
+        };
         const KC_DEBRIS = ['d_crack1', 'd_crack2', 'd_crack3', 'd_pebbles', 'd_pebbles', 'o_bricks', 'o_debris', 'o_debris2', 'o_shards', 'o_sticks', 'o_rock1', 'p_oil_s', 'p_tires', 'p_twigs', 'p_tracks'];
         const KC_DEBRIS_NATURE = ['d_pebbles', 'o_sticks', 'o_leaves', 'o_bush2', 'd_crack2', 'o_rock2'];
         function _kcFloorAt(spec, x, y) {
@@ -98431,6 +98439,26 @@ body.pa-theme #paOverlay{display:block}
                     if (terrain && terrain.type === 'deep_water') floor = 'f_water';
                     const deb = (!terrain || terrain.type === 'empty') ? _kcDebrisAt(x, y, biome === 'forest' || biome === 'swamp', 0.55) : null;
 
+                    // [v7.26] Souvislá realistická zem: textura běží přes 3 políčka, druhý materiál jako měkká skvrna
+                    const _gt = KC_GROUND[biome];
+                    let _gtBg, _gtPatch = '';
+                    if (_gt && floor !== 'f_water') {
+                        const _S = 3, _bx = (x % _S) / (_S - 1) * 100, _by = (y % _S) / (_S - 1) * 100;
+                        const _pos = `${_bx}% ${_by}% / ${_S * 100}% ${_S * 100}% repeat`;
+                        _gtBg = `background:url('${KC_IMG}${_gt.a}.jpg') ${_pos}`;
+                        // Okraje skvrny mizí jen směrem k sousedům z hlavního materiálu → skvrny se slévají do fleků
+                        const _isB = (xx, yy) => xx >= 0 && yy >= 0 && xx < COMBAT_GRID.cols && yy < COMBAT_GRID.rows && (floors.b || []).includes(_kcFloorAt(floors, xx, yy));
+                        const _fade = [];
+                        if (!_isB(x - 1, y)) _fade.push('linear-gradient(to right,transparent,#000 45%)');
+                        if (!_isB(x + 1, y)) _fade.push('linear-gradient(to left,transparent,#000 45%)');
+                        if (!_isB(x, y - 1)) _fade.push('linear-gradient(to bottom,transparent,#000 45%)');
+                        if (!_isB(x, y + 1)) _fade.push('linear-gradient(to top,transparent,#000 45%)');
+                        const _gtMask = _fade.length ? _fade.join(',') : 'linear-gradient(#000,#000)';
+                        if ((floors.b || []).includes(floor)) _gtPatch = `<div style="position:absolute;inset:0;pointer-events:none;z-index:0;background:url('${KC_IMG}${_gt.b}.jpg') ${_pos};-webkit-mask-image:${_gtMask};mask-image:${_gtMask};-webkit-mask-composite:source-in;mask-composite:intersect;"></div>`;
+                    } else {
+                        _gtBg = `background:url('${KC_IMG}${floor}.png') center/cover`;
+                    }
+
                     // Barevné orámování efektu terénu (stejné barvy jako dřív)
                     let tBorder = '';
                     if (terrain && terrain.type !== 'empty' && !terrain.blocked) {
@@ -98452,7 +98480,7 @@ body.pa-theme #paOverlay{display:block}
                     else if (tBorder) overlay = `box-shadow: inset 0 0 0 1px ${tBorder}; background: ${tBorder}22;`;
                     else if (terrain?.blocked) overlay = 'background: rgba(0,0,0,0.18);';
 
-                    let inner = '';
+                    let inner = _gtPatch;
                     // umírající postava (dohraje animaci i při překreslení – záporné zpoždění)
                     for (const dd of (cs._kcDying || [])) {
                         const el = Date.now() - dd.t;
@@ -98521,7 +98549,7 @@ body.pa-theme #paOverlay{display:block}
                         if (unit.isPlayer && state.buffs?.frenzy && (state.buffs.frenzy.until || state.buffs.frenzy.expires || 0) > Date.now()) inner += st('💢', 'bottom:5px;left:5px', 'Šílenství');
                     }
 
-                    html += `<div ${onClick} ${terrainTitle} style="aspect-ratio:1;position:relative;z-index:2;min-height:36px;display:flex;align-items:center;justify-content:center;overflow:visible;background:url('${KC_IMG}${floor}.png') center/cover;box-shadow:inset 0 0 0 0.5px rgba(30,18,8,.35);${canClick ? 'cursor:pointer;' : ''}">
+                    html += `<div ${onClick} ${terrainTitle} style="aspect-ratio:1;position:relative;z-index:2;min-height:36px;display:flex;align-items:center;justify-content:center;overflow:visible;${_gtBg};box-shadow:inset 0 0 0 0.5px rgba(0,0,0,.28);${canClick ? 'cursor:pointer;' : ''}">
                         ${weather ? `<div style="position:absolute;inset:0;pointer-events:none;background:${weather};"></div>` : ''}<div style="position:absolute;inset:0;pointer-events:none;${overlay}"></div>${inner}</div>`;
                 }
             }
