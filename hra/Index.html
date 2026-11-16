@@ -8205,6 +8205,18 @@
             // 'barracks': 'img/barracks.png',
         };
         
+        // [v7.27] Ikona budovy ve stylu UI (bronzové ikony z game-icons, img/ui/i_b_<id>.png); fallback = emoji
+        const BUILDING_UI_ICONS = new Set(['bed','firepit','garden','water','workshop','storage','well','farmland','infirmary','kitchen','wall','tower','market','barracks','forge','training','armory','tavern','chapel','generator','solar','windmill_power','purifier','hydrofarm','comms','bunker','reactor','medbay','cryo','turret','university','monument','ammo_factory','foundry','weapon_workshop','trade_caravan_hub','industrial_complex','war_room']);
+        function buildingIconHtml(building, size) {
+            const id = typeof building === 'string' ? building : building?.id;
+            const def = typeof building === 'object' && building ? building : (typeof BUILDINGS !== 'undefined' ? BUILDINGS.find(b => b.id === id) : null);
+            const emoji = (def?.icon && !String(def.icon).includes('<')) ? def.icon : '🏠';
+            const s = size || '1.4em';
+            if (!BUILDING_UI_ICONS.has(id)) return `<span style="font-size:${s};line-height:1;">${emoji}</span>`;
+            return `<img src="img/ui/i_b_${id}.png" alt="${emoji}" style="width:${s};height:${s};vertical-align:middle;object-fit:contain;" onerror="this.outerHTML=this.alt">`;
+        }
+        window.buildingIconHtml = buildingIconHtml;
+
         // Helper: vrátí <img> nebo emoji pro nepřítele
         function enemyIcon(enemyId, fallbackEmoji, size = '4rem') {
             const imgPath = ENEMY_CUSTOM_ICONS[enemyId];
@@ -52511,6 +52523,32 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (!im) { im = new Image(); im.src = src; _kxCache[src] = im; }
             return (im.complete && im.naturalWidth > 0) ? im : null;
         }
+        // [v7.27] Souvislá realistická zem i v průzkumu/osadě: vykreslí se JEDNOU pro celou mapu (šetří baterku),
+        // pak se jen kopírují výřezy. Druhý materiál = rozmazané fleky (stejně jako v boji, KC_GROUND).
+        function _kxGround(E, th) {
+            const spec = KC_GROUND?.[th.fl], fl = KC_FLOORS?.[th.fl];
+            if (!spec || !fl || !E?.map) return null;
+            const key = th.fl + '|' + E.size;
+            if (E._kxGround && E._kxGroundKey === key && E._kxGroundMap === E.map) return E._kxGround;
+            const A = _kxImg(KC_IMG + spec.a + '.jpg'), B = _kxImg(KC_IMG + spec.b + '.jpg');
+            if (!A || !B) return null; // ještě se načítá → zatím staré dlaždice
+            const CS = 64, N = E.size, W = N * CS;
+            const pat = (ctx, img) => { const p = ctx.createPattern(img, 'repeat'); const k = (3 * CS) / img.width; if (p.setTransform) p.setTransform(new DOMMatrix([k, 0, 0, k, 0, 0])); return p; };
+            const g = document.createElement('canvas'); g.width = g.height = W;
+            const gc = g.getContext('2d'); gc.fillStyle = pat(gc, A); gc.fillRect(0, 0, W, W);
+            const m = document.createElement('canvas'); m.width = m.height = W;
+            const mc = m.getContext('2d'); mc.filter = `blur(${Math.round(CS * 0.32)}px)`; mc.fillStyle = '#000';
+            // V osadě jsou cesty (pole 5) vyšlapaný štěrk = druhý materiál; jinde fleky podle KC_FLOORS
+            const _pathB = th.fl === 'settle';
+            for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+                const isB = _pathB ? E.map[y]?.[x] === 5 : (fl.b || []).includes(_kcFloorAt(fl, x, y));
+                if (isB) mc.fillRect(x * CS, y * CS, CS, CS);
+            }
+            mc.filter = 'none'; mc.globalCompositeOperation = 'source-in'; mc.fillStyle = pat(mc, B); mc.fillRect(0, 0, W, W);
+            gc.drawImage(m, 0, 0);
+            E._kxGround = { canvas: g, cs: CS }; E._kxGroundKey = key; E._kxGroundMap = E.map;
+            return E._kxGround;
+        }
         function topDownExploreEnabled() {
             const E = window._explore3D;
             return !!(E && !E._kxFail && typeof kenneyCombatEnabled === 'function' && kenneyCombatEnabled());
@@ -52567,13 +52605,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const vis = (x, y) => !E.visited || (E.visited[y] && E.visited[y][x]);
             const isWall = c => c === 1 || c === 4;
             const fImg = _kxImg(th.floor), pImg = th.path ? _kxImg(th.path) : null, wImg = _kxImg(th.wall);
+            const _gnd = _kxGround(E, th);
+            const _drawGround = (x, y) => { if (!_gnd) return false; const c = _gnd.cs; ctx.drawImage(_gnd.canvas, x * c, y * c, c, c, sx(x), sy(y), TS + 0.5, TS + 0.5); return true; };
 
             // 1) Podlaha, cesty, východ
             for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
                 if (!vis(x, y)) continue;
                 const c = E.map[y][x];
                 const img = (c === 5 && pImg) ? pImg : (th.fl ? (_kxImg(_kcFloorAt(KC_FLOORS[th.fl], x, y)) || fImg) : fImg);
-                if (img) ctx.drawImage(img, sx(x), sy(y), TS + 0.5, TS + 0.5); else { ctx.fillStyle = '#3a2e22'; ctx.fillRect(sx(x), sy(y), TS + 0.5, TS + 0.5); }
+                if ((c === 5 && pImg && !_gnd) || !_drawGround(x, y)) {
+                    if (img) ctx.drawImage(img, sx(x), sy(y), TS + 0.5, TS + 0.5); else { ctx.fillStyle = '#3a2e22'; ctx.fillRect(sx(x), sy(y), TS + 0.5, TS + 0.5); }
+                }
                 if (c === 0 || c === 5) {
                     const deb = _kcDebrisAt(x, y, th.fl === 'forest' || th.fl === 'swamp', c === 5 ? 0.25 : 0.5);
                     const di = deb ? _kxImg(deb.src) : null;
@@ -52601,19 +52643,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const junkList = !settle && inner && ['waste', 'city'].includes(th.fl) ? ['p_car1', 'p_car2', 'p_car3', 'p_car4', 'p_car5', 'p_car6', 'p_tank1', 'p_tank2', 'p_hedgehog', 'p_rock_big', 'p_sandbag', 'p_barrel_rust', 'p_crate_metal'] : null;
                     const junk = junkList && _kcPick([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], x, y, 41) < 4 ? _kxImg(_kcPick(junkList, x, y, 43)) : null;
                     if (junk) {
-                        const fl2 = _kxImg(_kcFloorAt(KC_FLOORS[th.fl], x, y)); if (fl2) ctx.drawImage(fl2, px, py, TS + 0.5, TS + 0.5);
+                        if (!_drawGround(x, y)) { const fl2 = _kxImg(_kcFloorAt(KC_FLOORS[th.fl], x, y)); if (fl2) ctx.drawImage(fl2, px, py, TS + 0.5, TS + 0.5); }
                         _kxSprite(ctx, junk, px + TS / 2, py + TS / 2, TS * 1.05, _kcPick([0, 1.57, 3.14, 4.71, 0.3, -0.25], x, y, 47));
                         continue;
                     }
                     if (wImg) ctx.drawImage(wImg, px, py, TS + 0.5, TS + 0.5); else { ctx.fillStyle = '#4a4038'; ctx.fillRect(px, py, TS, TS); }
                     if (th.bushes) { const b = _kxImg((x + y) % 2 ? 'o_bush1' : 'o_bush2'); if (b) ctx.drawImage(b, px - TS * 0.08, py - TS * 0.08, TS * 1.16, TS * 1.16); }
                 } else if (c === 4) {
-                    const roof = _kxImg('b_roof');
-                    if (roof) ctx.drawImage(roof, px, py, TS, TS); else { ctx.fillStyle = '#6a4a30'; ctx.fillRect(px, py, TS, TS); }
+                    // [v7.27] Realistická střecha (plech / beton / asfalt) se stínem + bronzová ikona budovy
                     const b = E.buildingMap?.[x + ',' + y];
+                    const roof = _kxImg(_kcPick(['r_tin', 'r_tin2', 'r_conc', 'r_tar'], x, y, 53)) || _kxImg('b_roof');
+                    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(px + TS * 0.12, py + TS * 0.14, TS * 0.9, TS * 0.9);
+                    if (roof) ctx.drawImage(roof, px + TS * 0.04, py + TS * 0.04, TS * 0.92, TS * 0.92); else { ctx.fillStyle = '#6a4a30'; ctx.fillRect(px, py, TS, TS); }
+                    const uiIc = b && BUILDING_UI_ICONS.has(b.id) ? _kxImg('img/ui/i_b_' + b.id + '.png') : null;
                     const bsrc = b && typeof BUILDING_CUSTOM_ICONS !== 'undefined' ? BUILDING_CUSTOM_ICONS[b.id] : null;
-                    const bimg = bsrc ? _kxImg(bsrc) : null;
-                    if (bimg) _kxCircleImg(ctx, bimg, px + TS / 2, py + TS / 2, TS * 0.7, 'rgba(255,190,90,.9)');
+                    const bimg = !uiIc && bsrc ? _kxImg(bsrc) : null;
+                    if (uiIc) {
+                        ctx.fillStyle = 'rgba(10,8,6,0.62)'; ctx.beginPath(); ctx.arc(px + TS / 2, py + TS / 2, TS * 0.27, 0, Math.PI * 2); ctx.fill();
+                        ctx.drawImage(uiIc, px + TS / 2 - TS * 0.22, py + TS / 2 - TS * 0.22, TS * 0.44, TS * 0.44);
+                    } else if (bimg) _kxCircleImg(ctx, bimg, px + TS / 2, py + TS / 2, TS * 0.7, 'rgba(255,190,90,.9)');
                     else _kxEmoji(ctx, b?.icon || '🏠', px + TS / 2, py + TS / 2, TS * 0.5);
                     if (b?.name) {
                         ctx.save(); ctx.font = `bold ${Math.round(TS * 0.19)}px sans-serif`; ctx.textAlign = 'center';
@@ -54879,7 +54927,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             overlay.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100;background:rgba(15,15,15,0.97);border:2px solid #7a5430;border-radius:8px;padding:1rem;min-width:260px;max-width:90%;max-height:80%;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,0.8);';
             overlay.innerHTML = `
                 <div style="text-align:center;margin-bottom:0.6rem;">
-                    <div style="font-size:2.5rem;">${building.icon || '🏠'}</div>
+                    <div style="font-size:2.5rem;">${buildingIconHtml(building, '3rem')}</div>
                     <div style="color:#fff;font-weight:bold;font-size:1.05rem;margin-top:0.3rem;">${building.name}</div>
                     <div style="display:flex;justify-content:center;gap:0.6rem;font-size:0.7rem;margin-top:0.2rem;">
                         ${catLabel ? `<span style="color:#aaa;">${catLabel}</span>` : ''}
@@ -81333,7 +81381,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const timeDisplay = buildTime >= 60 ? Math.round(buildTime / 60 * 10) / 10 + ' hodin' : buildTime + ' min';
             showModal('🔨 Stavba zahájena!',
                 `<div style="text-align: center;">` +
-                `<div style="font-size: 3rem;">${building.icon}</div>` +
+                `<div style="font-size: 3rem;">${buildingIconHtml(building, '4rem')}</div>` +
                 `<h3>${building.name}</h3>` +
                 `<p style="color: #ff9800;">⏱️ ${'Doba stavby'}: ${timeDisplay}</p>` +
                 (complication ? `<div style="background:#2a1a0a;border:1px solid #c62828;border-radius:4px;padding:0.5rem;margin:0.5rem 0;"><p style="color:#f44336;margin:0;">⚠️ Komplikace! Stavitel narazil na problém — stavba potrvá déle a spotřebovala víc materiálu.</p></div>` : '') +
@@ -81438,7 +81486,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             
             showModal('🏗️ Zbourat budovu?', `
                 <div style="text-align: center;">
-                    <div style="font-size: 3rem; margin-bottom: 1rem;">${building.icon}</div>
+                    <div style="font-size: 3rem; margin-bottom: 1rem;">${buildingIconHtml(building, '4rem')}</div>
                     <h3 style="color: #f44336; margin-bottom: 0.5rem;">${building.name}</h3>
                     <p style="color: #888;">Opravdu chceš zbourat tuto budovu?</p>
                     <p style="color: #888; font-size: 0.85rem;">Tato akce je nevratná!</p>
@@ -85085,7 +85133,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     const canBuild = canAfford && levelOk && canBuildLocation && !isBuilding;
                     
                     html += '<div style="background: ' + (hasBuilding ? (hasPowerForIt ? '#1a2a1a' : '#2a1a1a') : (isBuilding ? '#2a2a1a' : '#1a1a1a')) + '; padding: 0.6rem; border-radius: 6px; text-align: center; border: 1px solid ' + (hasBuilding ? (hasPowerForIt ? '#4a7c4a' : '#7c4a4a') : (isBuilding ? '#ff9800' : '#333')) + ';">';
-                    html += '<div style="font-size: 1.5rem;">' + building.icon + '</div>';
+                    html += '<div style="height: 3rem; display: flex; align-items: center; justify-content: center;">' + buildingIconHtml(building, '2.8rem') + '</div>';
                     html += '<div style="font-size: 0.8rem; font-weight: bold;">' + getBuildingName(building.id) + '</div>';
                     html += '<div style="font-size: 0.65rem; color: #666;">' + getBuildingDesc(building.id) + '</div>';
                     
@@ -87705,7 +87753,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const isWorking = hasIt && hasFuel;
                 
                 html += '<div style="background: ' + (hasIt ? (isWorking ? '#1a2a1a' : '#2a1a1a') : '#1a1a1a') + '; padding: 0.8rem; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; border: 1px solid ' + (hasIt ? (isWorking ? '#4a7c4a' : '#7c4a4a') : '#333') + ';">';
-                html += '<div><span style="font-size: 1.2rem;">' + building.icon + '</span> <strong>' + building.name + '</strong> <span style="color: ' + (isWorking ? '#8bc34a' : '#666') + ';">' + (isWorking ? '+' : '⚠️ ') + building.production.power + ' ⚡</span>';
+                html += '<div><span style="font-size: 1.2rem;">' + buildingIconHtml(building, '1.4rem') + '</span> <strong>' + building.name + '</strong> <span style="color: ' + (isWorking ? '#8bc34a' : '#666') + ';">' + (isWorking ? '+' : '⚠️ ') + building.production.power + ' ⚡</span>';
                 if (needsFuel) {
                     html += ' <span style="color: ' + (hasFuel ? '#ff9800' : '#c62828') + '; font-size: 0.8rem;">(-' + building.consumption.fuel + ' ⛽' + (hasFuel ? '' : ' CHYBÍ!') + ')</span>';
                 }
@@ -87729,7 +87777,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const working = hasIt && hasPower();
                 html += '<div style="background: ' + (hasIt ? (working ? '#1a2a1a' : '#2a1a1a') : '#1a1a1a') + '; padding: 0.8rem; border-radius: 6px; border: 1px solid ' + (hasIt ? (working ? '#4a7c4a' : '#7c4a4a') : '#333') + ';">';
                 html += '<div style="display: flex; justify-content: space-between; align-items: center;">';
-                html += '<div><span style="font-size: 1.2rem;">' + building.icon + '</span> <strong>' + building.name + '</strong> <span style="color: #c62828;">-' + building.requiresPower + ' ⚡</span>';
+                html += '<div><span style="font-size: 1.2rem;">' + buildingIconHtml(building, '1.4rem') + '</span> <strong>' + building.name + '</strong> <span style="color: #c62828;">-' + building.requiresPower + ' ⚡</span>';
                 html += '<div style="font-size: 0.75rem; color: #888;">' + building.desc + '</div>';
                 html += '</div>';
                 if (hasIt) {
