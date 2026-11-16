@@ -12284,9 +12284,9 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
         const SETTLEMENT_SPECIALIZATIONS = [
             { id: 'military', name: 'Vojenská pevnost', nameEn: 'Military Fortress', icon: '⚔️', bonus: { defense: 50, guardBonus: 25 }, requirement: { guards: 3, barracks: true }, desc: '+50 obrana, strážci +25%', descEn: '+50 defense, guards +25%' },
             { id: 'trading', name: 'Obchodní centrum', nameEn: 'Trading Hub', icon: '💰', bonus: { tradeBonus: 0.25, income: 50 }, requirement: { traders: 2, market: true }, desc: '+25% ceny, +50 peněz/den', descEn: '+25% prices, +50 money/day' },
-            { id: 'farming', name: 'Zemědělská osada', nameEn: 'Farming Settlement', icon: '🌾', bonus: { foodBonus: 100, waterBonus: 50 }, requirement: { farmers: 3, farmland: true }, desc: 'Dvojnásobná produkce jídla', descEn: 'Double food production' },
+            { id: 'farming', name: 'Zemědělská osada', nameEn: 'Farming Settlement', icon: '🌾', bonus: { foodBonus: 100, waterBonus: 50 }, requirement: { farmers: 3, farmland: true }, desc: 'Dvojnásobná produkce jídla, +50 vody/den', descEn: 'Double food production, +50 water/day' },
             { id: 'medical', name: 'Léčitelské středisko', nameEn: 'Medical Center', icon: '🏥', bonus: { healing: 20, diseaseResist: 0.8 }, requirement: { medics: 1, infirmary: true }, desc: '+20 HP/den, -80% nemoci', descEn: '+20 HP/day, -80% disease' },
-            { id: 'industrial', name: 'Průmyslová zóna', nameEn: 'Industrial Zone', icon: '🏭', bonus: { productionBonus: 2 }, requirement: { builders: 1, workshop: true, forge: true }, desc: 'Dvojnásobná produkce surovin', descEn: 'Double resource production' }
+            { id: 'industrial', name: 'Průmyslová zóna', nameEn: 'Industrial Zone', icon: '🏭', bonus: { productionBonus: 2 }, requirement: { builders: 1, workshop: true, forge: true }, desc: 'Dvojnásobná výroba surovin z budov', descEn: 'Double resource production from buildingsuction' }
         ];
         
         // === MISE OD OSADNÍKŮ ===
@@ -80678,15 +80678,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     if (building.requiresPower && calculatePowerBalance() < 0) return;
                     if (building.production.food) food += building.production.food;
                     if (building.production.water) water += building.production.water;
-                    // 🆕 [v6.3] Rozšířená produkce surovin (Industrial Complex apod.)
-                    if (state.settlement?.resources) {
-                        const sr = state.settlement.resources;
-                        ['metal','fuel','copper','stone','wood','electronics','cloth','herbs','gunpowder','scrap','glass'].forEach(res => {
-                            if (building.production[res]) {
-                                sr[res] = (sr[res] || 0) + building.production[res];
-                            }
-                        });
-                    }
+                    // [v7.15 FIX] Tady se dřív suroviny (kov, palivo…) PŘIČÍTALY do skladu při každém zobrazení osady
+                    // (6× za vykreslení) – výpočet pro UI nesmí měnit stav. Suroviny přidává jen updateSettlementDaily.
                 }
             });
             
@@ -80702,13 +80695,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const levelData = skillData?.levels[settlerLevel - 1];
                 const effect = levelData?.effect || {};
                 
-                // Jídlo (farmář, nosič vody s bonusem, lovec)
-                if (effect.food) {
+                // Jídlo – [v7.15] stejně jako updateSettlementDaily: jen farmář, farmland +2, zemědělská spec. ×2
+                if (type.id === 'farmer' && effect.food) {
                     let bonus = effect.food;
-                    // Farmland bonus pro farmáře
-                    if (type.id === 'farmer' && state.settlement.buildings.includes('farmland')) {
-                        bonus += 2;
-                    }
+                    if (state.settlement.buildings.includes('farmland')) bonus += 2;
                     food += bonus;
                 }
                 
@@ -80717,11 +80707,23 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     food += effect.meat;
                 }
                 
-                // Voda
-                if (effect.water) {
+                // Voda (+ jídlo nosiče od 3. úrovně)
+                if (type.id === 'water_carrier' && effect.water) {
                     water += effect.water;
                 }
+                if (type.id === 'water_carrier' && effect.food) {
+                    food += effect.food;
+                }
             });
+            
+            // [v7.15] Pasti na zvěř a bonus specializace – denní výpočet je počítá, UI dřív ne
+            const _traps = state.inv?.filter(i => i.bonus === 'food') || [];
+            if (_traps.length > 0) food += Math.min(_traps.length, 2) * 2;
+            if (state.settlement.specialization && typeof SETTLEMENT_SPECIALIZATIONS !== 'undefined') {
+                const _spec = SETTLEMENT_SPECIALIZATIONS.find(s => s.id === state.settlement.specialization);
+                if (_spec?.bonus?.foodBonus) food = food * 2; // zemědělská: dvojnásobná výroba jídla
+                if (_spec?.bonus?.waterBonus) water += _spec.bonus.waterBonus;
+            }
             
             return { food, water };
         }
@@ -80752,8 +80754,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     food += levelData.consumption.food || 0;
                     water += levelData.consumption.water || 0;
                 } else {
-                    food += type.consumption?.food || 1;
-                    water += type.consumption?.water || 1;
+                    food += type.consumption?.food ?? 1;   // [v7.15] ?? – spotřeba 0 (nosič vody) nebyla 1
+                    water += type.consumption?.water ?? 1;
                 }
             });
             return {food, water};
@@ -81737,7 +81739,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (settler.type === 'farmer' && effect.food) {
                     let food = effect.food;
                     if (state.settlement.buildings?.includes('farmland')) food += 2;
-                    if (state.settlement.specialization === 'farming') food = Math.floor(food * 2);
+                    // [v7.15 FIX] bez ×2 specializace – ta je v denním výpočtu; tady jen bonus z osobnosti a morálky
                     food = Math.floor(food * workMultiplier);
                     // Bonus z osobnosti a morálky jde navíc ke skladu
                     const bonusFood = food - (effect.food + (state.settlement.buildings?.includes('farmland') ? 2 : 0));
@@ -81868,8 +81870,14 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             prodReport.water += 2;
             
             // Base production from buildings - vše jde do skladu osady
+            // [v7.15 FIX] Budovy na elektřinu (čistička, hydrofarma, průmysl. komplex) bez proudu nevyrábí – UI to tak ukazuje
+            const _powerOk = typeof calculatePowerBalance === 'function' ? calculatePowerBalance() >= 0 : true;
             BUILDINGS.forEach(b => {
                 if (state.base.includes(b.id) || state.settlement.buildings.includes(b.id)) {
+                    if (b.requiresPower && !_powerOk) {
+                        prodReport.items.push({ name: '⚡ ' + b.name, value: 'bez proudu – nevyrábí' });
+                        return;
+                    }
                     if (b.production) {
                         if (b.production.food) {
                             foodProd += b.production.food;
@@ -81937,8 +81945,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (settler.type === 'farmer' && effect.food) {
                     let settlerFood = effect.food;
                     if (state.settlement.buildings?.includes('farmland')) settlerFood += 2;
-                    if (state.settlement.specialization === 'farming') settlerFood = Math.floor(settlerFood * 2);
-                    foodProd += settlerFood;
+                    foodProd += settlerFood; // [v7.15] zemědělská spec. teď zdvojuje celou výrobu jídla níže
                     prodReport.food += settlerFood;
                 }
                 // Lovec (maso = jídlo)
@@ -81950,6 +81957,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (settler.type === 'water_carrier' && effect.water) {
                     waterProd += effect.water;
                     prodReport.water += effect.water;
+                }
+                // [v7.15 FIX] Nosič vody od 3. úrovně má v popisu i jídlo (+1 až +3) – dřív se nepočítalo (jen farmář)
+                if (settler.type === 'water_carrier' && effect.food) {
+                    foodProd += effect.food;
+                    prodReport.food += effect.food;
                 }
                 
                 // Medic healing podle úrovně - POUZE KDYŽ JE HRÁČ V OSADĚ
@@ -82015,6 +82027,19 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             });
             
+            // [v7.15 FIX] Generátor (a další budovy se spotřebou paliva) palivo opravdu spotřebuje – dřív se nikdy neodečetlo
+            BUILDINGS.forEach(b => {
+                if (!b.consumption?.fuel) return;
+                if (!(state.base.includes(b.id) || state.settlement.buildings.includes(b.id))) return;
+                const _f = state.settlement.resources.fuel || 0;
+                if (_f >= b.consumption.fuel) {
+                    state.settlement.resources.fuel = _f - b.consumption.fuel;
+                    prodReport.resources.fuel = (prodReport.resources.fuel || 0) - b.consumption.fuel;
+                } else {
+                    addLog(`⛽ ${b.name} nemá palivo – nevyrábí elektřinu!`, '⚠️');
+                }
+            });
+            
             // Calculate consumption
             const consumption = calculateSettlementConsumption();
             
@@ -82022,9 +82047,9 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             if (state.settlement.specialization) {
                 const activeSpec = SETTLEMENT_SPECIALIZATIONS.find(s => s.id === state.settlement.specialization);
                 if (activeSpec?.bonus) {
-                    // Zemědělská: +100% produkce jídla (flat bonus), +50 vody
+                    // Zemědělská: [v7.15 FIX] dvojnásobná výroba jídla (dřív farmáři ×2 A NAVÍC +100 jídla natvrdo), +50 vody
                     if (activeSpec.bonus.foodBonus) {
-                        const farmBonus = activeSpec.bonus.foodBonus;
+                        const farmBonus = foodProd; // ×2 = přičti ještě jednou celou dosavadní výrobu
                         foodProd += farmBonus;
                         prodReport.food += farmBonus;
                     }
@@ -82118,7 +82143,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const deadSettlers = [];
             let generalDeathRemoved = false;
             state.settlement.settlers = state.settlement.settlers.filter(settler => {
-                if ((settler.hp || 100) <= 0 && !generalDeathRemoved) {
+                if ((settler.hp ?? 100) <= 0 && !generalDeathRemoved) { // [v7.15] ?? – HP 0 bylo bráno jako 100
                     const type = SETTLER_TYPES.find(t => t.id === settler.type);
                     addLog(`💀 ${settler.name} (${type?.name || settler.type}) zemřel na zranění!`, '🏘️');
                     notifyWarning('💀 Osadník zemřel!', `${settler.name} (${type?.name}) zemřel na zranění!`);
@@ -82130,7 +82155,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     return false;
                 }
                 // Ostatní s HP <= 0 dostanou 1 HP
-                if ((settler.hp || 100) <= 0) settler.hp = 1;
+                if ((settler.hp ?? 100) <= 0) settler.hp = 1;
                 return true;
             });
             
@@ -82279,83 +82304,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // === ÚDRŽBA BUDOV ===
-            let totalMaintenance = 0;
-            const allBuildings = [...(state.base || []), ...(state.settlement?.buildings || [])];
-            const maintenanceReport = [];
-            
-            allBuildings.forEach(buildingId => {
-                const building = BUILDINGS.find(b => b.id === buildingId);
-                if (building && building.maintenance > 0) {
-                    totalMaintenance += building.maintenance;
-                    maintenanceReport.push({ name: building.name, cost: building.maintenance });
-                }
-            });
-            
-            // Stavitel snižuje údržbu podle úrovně
-            const builders = state.settlement?.settlers?.filter(s => s.type === 'builder') || [];
-            let maintenanceDiscount = 0;
-            builders.forEach(builder => {
-                const level = builder.skillLevel || 1;
-                // Sleva: 5%, 10%, 15%, 20%, 25%
-                maintenanceDiscount += 0.05 * level;
-            });
-            maintenanceDiscount = Math.min(0.5, maintenanceDiscount); // Max 50% sleva
-            
-            const finalMaintenance = Math.floor(totalMaintenance * (1 - maintenanceDiscount));
-            
-            if (finalMaintenance > 0) {
-                if (getMoney() >= finalMaintenance) {
-                    removeMoney(finalMaintenance);
-                    addLog(`🔧 Údržba budov: -${finalMaintenance} 💰${maintenanceDiscount > 0 ? ` (sleva ${Math.round(maintenanceDiscount * 100)}%)` : ''}`, '🔧');
-                } else {
-                    // Nedostatek peněz - náhodná budova se poškodí
-                    const damageable = allBuildings.filter(id => {
-                        const b = BUILDINGS.find(bd => bd.id === id);
-                        return b && b.maintenance > 0;
-                    });
-                    if (damageable.length > 0) {
-                        const damaged = damageable[Math.floor(Math.random() * damageable.length)];
-                        const damagedBuilding = BUILDINGS.find(b => b.id === damaged);
-                        // Odstraň budovu
-                        if (state.base.includes(damaged)) {
-                            state.base = state.base.filter(id => id !== damaged);
-                        }
-                        if (state.settlement?.buildings?.includes(damaged)) {
-                            state.settlement.buildings = state.settlement.buildings.filter(id => id !== damaged);
-                        }
-                        state.settlement.morale = Math.max(0, state.settlement.morale - 10);
-                        addLog(`⚠️ ${damagedBuilding?.name || damaged} se rozpadla kvůli chybějící údržbě!`, '⚠️');
-                        SoundSystem.play('error');
-                    }
-                }
-            }
+            // [v7.15 FIX] Údržba budov se tu strhávala PODRUHÉ (už ji zaplatil processSettlementFinances na začátku dne)
+            // – sleva od stavitelů a rozpad budovy při nezaplacení jsou teď v calculateDailyMaintenance / processSettlementFinances.
             
             // Kontrola level upu
             checkSettlementLevelUp();
             
             // Trading specialization income je už v calculateDailyIncome()
             
-            // === PASIVNÍ PŘÍJEM Z OBCHODNÍKŮ ===
-            const traders = state.settlement.settlers.filter(s => s.type === 'trader_s');
-            if (traders.length > 0) {
-                let totalTraderIncome = 0;
-                traders.forEach(trader => {
-                    const level = trader.skillLevel || 1;
-                    // Příjem podle úrovně: 10, 20, 35, 55, 80 peněz/den
-                    const incomeByLevel = [10, 20, 35, 55, 80];
-                    const income = incomeByLevel[level - 1] || 10;
-                    totalTraderIncome += income;
-                });
-                
-                // Bonus za tržiště
-                if (state.settlement.buildings.includes('market')) {
-                    totalTraderIncome = Math.floor(totalTraderIncome * 1.25); // +25%
-                }
-                
-                addMoney(totalTraderIncome);
-                addLog(`💰 Obchodníci vydělali ${totalTraderIncome} peněz!`, '💰');
-            }
+            // [v7.15 FIX] Obchodníci dostávali příjem dvakrát (tady 10–80 💰 navíc ke calculateDailyIncome).
+            // Zůstává jen příjem z calculateDailyIncome – ten hráč vidí v přehledu financí.
             
             // Check for random settlement events
             checkSettlementEvents();
@@ -85700,6 +85658,13 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             });
             
+            // [v7.15] Stavitel snižuje údržbu budov (5 % za úroveň, max 50 %) – dřív jen ve druhém, zdvojeném strhávání
+            const _builders = state.settlement?.settlers?.filter(s => s.type === 'builder') || [];
+            let _disc = 0;
+            _builders.forEach(b => { _disc += 0.05 * (b.skillLevel || 1); });
+            _disc = Math.min(0.5, _disc);
+            if (_disc > 0) total = Math.floor(total * (1 - _disc));
+            
             // Živobytí osadníků: 1💰 za každého osadníka denně
             const settlerCount = state.settlement?.settlers?.length || 0;
             total += settlerCount * 1;
@@ -86659,6 +86624,17 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     state.money = 0;
                     state.settlement.prosperity = Math.max(0, state.settlement.prosperity - 10);
                     addLog(`⚠️ Nelze zaplatit údržbu! -${unpaid} nezaplaceno. Prosperita -10`, '⚠️');
+                    // [v7.15] přesunuto z dřívějšího druhého strhávání: jedna budova s údržbou se rozpadne
+                    const _all = [...(state.base || []), ...(state.settlement?.buildings || [])];
+                    const _dmg = _all.filter(id => (BUILDINGS.find(bd => bd.id === id)?.maintenance || 0) > 0);
+                    if (_dmg.length > 0 && (state.settlement?.level || 1) >= 2) {
+                        const _d = _dmg[Math.floor(Math.random() * _dmg.length)];
+                        const _db = BUILDINGS.find(b => b.id === _d);
+                        if (state.base?.includes(_d)) state.base = state.base.filter(id => id !== _d);
+                        if (state.settlement?.buildings?.includes(_d)) state.settlement.buildings = state.settlement.buildings.filter(id => id !== _d);
+                        state.settlement.morale = Math.max(0, (state.settlement.morale || 0) - 10);
+                        addLog(`⚠️ ${_db?.name || _d} se rozpadla kvůli chybějící údržbě!`, '⚠️');
+                    }
                     
                     showNotification('Bankrot!', 'Nelze zaplatit údržbu budov!', 'error');
                 }
@@ -140772,12 +140748,12 @@ Při velkých vlnách (4-5) se vyplatí osobně bránit s vybavením a společn�
   - Stack s budovou tržiště (+20%) → až +45%
 
 <strong>🌾 ZEMĚDĚLSKÁ OSADA (farming)</strong>
-• <strong>Bonus:</strong> Dvojnásobná produkce jídla
+• <strong>Bonus:</strong> Dvojnásobná produkce jídla, +50 vody/den
 • <strong>Požadavky:</strong> 3 farmáři + budova Pole (farmland)
 • <strong>Pro koho:</strong> hráči s velkou osadou (hodně osadníků = hodně food spotřeba)
 • <strong>Jak to funguje:</strong>
-  - Každý farmář produkuje <strong>×2 food</strong>
-  - Stack s budovou pole (farmáři +50%) - oba bonusy se počítají
+  - Celá denní výroba jídla osady (farmáři, lovci, budovy, pasti…) <strong>×2</strong>
+  - Pole (farmland) dává farmářům +2 jídla ještě před zdvojením
   - Příklad: Farmář L5 (12 food) + farmland (+2 = 14) ×2 = <strong>28 food/den z 1 farmáře</strong>
 
 <strong>🏥 LÉČITELSKÉ STŘEDISKO (medical)</strong>
@@ -140791,13 +140767,12 @@ Při velkých vlnách (4-5) se vyplatí osobně bránit s vybavením a společn�
   - Medic léčí: base × 1.5 (např. L5 medik 18 HP/den → 27 HP/den)
 
 <strong>🏭 PRŮMYSLOVÁ ZÓNA (industrial)</strong>
-• <strong>Bonus:</strong> Dvojnásobná produkce surovin
+• <strong>Bonus:</strong> Dvojnásobná výroba surovin z budov
 • <strong>Požadavky:</strong> 1 stavitel + budova Dílna + budova Kovárna
 • <strong>Pro koho:</strong> craftéři, lidé co potřebují hodně materiálů
 • <strong>Jak to funguje:</strong>
-  - Všechny suroviny od osadníků (sběrač, dřevorubec atd.) ×2
-  - Příklad: Sběrač L6 (10-15 surovin) → <strong>20-30/den</strong>
-  - Dřevorubec L5 (10 dřeva) → <strong>20 dřeva/den</strong>
+  - Suroviny vyráběné budovami ×2 (např. Průmyslový komplex: +5 kovu, +5 paliva → <strong>+10/+10 za den</strong>)
+  - Osadníci (sběrač, dřevorubec…) nosí stejně jako bez specializace
 
 <strong>🔄 ZMĚNA SPECIALIZACE</strong>
 • Aktivuj jinou kdykoliv (pokud splňuješ požadavky)
