@@ -52403,6 +52403,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 E.exitReached = true;
                 add3DLog(`🚪 Opouštíš trosky s bonusem...`);
                 setTimeout(() => exit3DExploration(true), 300);
+            } else if (E.fx) {
+                E.fx.cur = 'out'; if (E.fx.exitBack) { E.player.x = E.fx.exitBack.x; E.player.y = E.fx.exitBack.y; const n = fxNearestFree(E.fx.scenes.out, E.player.x, E.player.y); if (n && !fxCellFree(E.fx.scenes.out, E.player.x, E.player.y)) { E.player.x = (n.x + .5) * FX_NAV; E.player.y = (n.y + .5) * FX_NAV; } }
+                E.fx.portalCd = Date.now() + 1500; E.running = true; E.lastTick = Date.now();
+                if (!document.getElementById('explore3DCanvas') || !document.getElementById('modal')?.classList.contains('show')) fxOpenUI(true);
+                setTimeout(() => add3DLog('⏪ Zůstáváš – prohledej zbytek budov.'), 250);
             } else {
                 // Zůstává - resume hry + postrč hráče zpět z exit tile (aby nepokrokoval znovu na něj)
                 E.running = true;
@@ -52505,6 +52510,679 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             renderFull();
         }
         window.ccRenderCreate = ccRenderCreate; window.ccPickGender = ccPickGender; window.ccPickClass = ccPickClass; window.ccRollAttrs = ccRollAttrs;
+
+        // ============================================================
+        // 🧭 [v7.46] VOLNÝ PRŮZKUM – plynulý pohyb (klepni kam jít), 4 prostředí,
+        // budovy se vstupem dovnitř, patra a sklepy. Herní logika (kostky, boj,
+        // kořist, odměna, Průvodce) je sdílená se starým průzkumem.
+        // Svět je v jednotkách „políček“ (1 j = 64 px sprite), ale pohyb i kolize jsou spojité.
+        // ============================================================
+        const FX_ENABLED = true;
+        const FX_BIOMES = {
+            ruins: { name: 'Ruiny', ground: 'gt_concrete', road: 'gt_asphalt', wall: 'w_ruin', roofs: ['r_conc', 'r_tar'], floors: ['f_conc1', 'f_wood'],
+                props: ['p_car1', 'p_car2', 'p_car3', 'p_car4', 'p_car5', 'p_car6', 'p_barrel_rust', 'p_tires', 'p_rock_big', 'p_rock_big2', 'p_barricade', 'p_sandbag'],
+                decals: ['d_crack1', 'd_crack2', 'd_crack3', 'o_debris', 'o_debris2', 'o_glass', 'o_shards', 'o_scorch', 'o_bricks', 'o_slab', 'o_blood_drops'],
+                inside: ['o_crate1', 'o_crate2', 'o_crate3', 'o_debris', 'o_plank', 'o_bricks', 'o_barrel', 'p_tires'], light: 5.2 },
+            forest: { name: 'Les', ground: 'gt_grass', road: 'gt_dirt', wall: 'w_ruin', roofs: ['r_tar', 'r_tin2'], floors: ['f_wood', 'f_dirt1'],
+                props: ['p_tree', 'p_tree', 'p_tree_s', 'p_tree_s', 'p_tree_dead', 'p_tree_dead_s', 'p_rock_big', 'p_rock_big2', 'p_tent'],
+                decals: ['o_bush1', 'o_bush2', 'o_bush_dry', 'o_leaves', 'o_sticks', 'o_plant', 'o_rock1', 'o_rock2', 'd_pebbles', 'o_mud'],
+                inside: ['o_crate1', 'o_plank', 'o_sticks', 'o_barrel', 'o_crate4', 'p_twigs'], light: 5.6 },
+            industrial: { name: 'Továrna', ground: 'gt_gravel', road: 'gt_concrete', wall: 'w_rust', roofs: ['r_tin', 'r_tin2'], floors: ['f_metal', 'f_conc1'],
+                props: ['p_tank1', 'p_tank2', 'p_tank3', 'p_barrel_toxic', 'p_barrel_black', 'p_barrel_red', 'p_crate_metal', 'p_crate', 'p_tires', 'p_hedgehog', 'p_wire'],
+                decals: ['p_oil', 'p_oil_s', 'o_wire', 'o_toxic', 'd_crack2', 'o_scorch', 'o_debris2', 'o_glass'],
+                inside: ['p_crate_metal', 'p_crate', 'p_barrel_black', 'p_barrel_toxic', 'o_wire', 'o_crate3', 'p_tires'], light: 5.0 },
+            village: { name: 'Vesnice', ground: 'gt_grass', road: 'gt_dirt', wall: 'w_ruin', roofs: ['r_tar', 'r_tin'], floors: ['f_wood', 'f_dirt2'],
+                props: ['p_tree_s', 'p_tree', 'p_tree_dead_s', 'p_crate', 'p_tires', 'p_barrel_rust', 'p_rock_big'],
+                decals: ['o_bush1', 'o_bush2', 'o_plant', 'o_leaves', 'o_plank', 'o_sticks', 'o_mud', 'd_pebbles'],
+                inside: ['o_crate1', 'o_crate4', 'o_plank', 'o_barrel', 'o_sticks', 'p_twigs'], light: 5.6 }
+        };
+        function fxBiome(loc) {
+            const th = (typeof getExplore3DTheme === 'function' ? getExplore3DTheme(loc) : null);
+            const key = Object.keys(EXPLORE3D_THEMES || {}).find(k => EXPLORE3D_THEMES[k] === th) || 'wasteland';
+            const nm = ((loc?.name || '') + ' ' + (loc?.id || '')).toLowerCase();
+            if (/farm|statek|vesn|mlýn|mlyn|mill|ves\b|chalup|stodol|sad|vinic|pole|church|kostel|cemetery|hřbitov|kaple/.test(nm)) return 'village';
+            if (/cabin|chata|hájov|mountain|pass\b|průsmyk|hora|údolí|valley|river|řek|creek|potok|lake/.test(nm)) return 'forest';
+            if (['industrial', 'bunker', 'cave'].includes(key) || /továr|tovar|sklad|elektr|depo|garáž|garaz|fabri|plant/.test(nm)) return 'industrial';
+            if (['forest', 'toxic', 'snow'].includes(key) || /les|park|hájek|háj|jezer|rybn|louk/.test(nm)) return 'forest';
+            return 'ruins';
+        }
+        const _fxR = (a, b) => a + Math.random() * (b - a);
+        const _fxRi = (a, b) => Math.floor(_fxR(a, b + 1));
+        const _fxPick = a => a[Math.floor(Math.random() * a.length)];
+
+        // ---------- GENEROVÁNÍ ----------
+        function fxNewScene(id, kind, w, h, extra) {
+            return Object.assign({ id, kind, w, h, walls: [], props: [], decals: [], portals: [], blocks: [], roads: [], rooms: [], seen: null, title: '' }, extra || {});
+        }
+        function fxFree(sc, x, y, r) {
+            if (x < r + 0.6 || y < r + 0.6 || x > sc.w - r - 0.6 || y > sc.h - r - 0.6) return false;
+            for (const w of sc.walls) if (x > w.x - r && x < w.x + w.w + r && y > w.y - r && y < w.y + w.h + r) return false;
+            for (const b of sc.blocks) if (x > b.x - r && x < b.x + b.w + r && y > b.y - r && y < b.y + b.h + r) return false;
+            for (const p of sc.props) if (p.solid && Math.hypot(p.x - x, p.y - y) < p.r + r) return false;
+            for (const p of sc.portals) if (Math.hypot(p.x - x, p.y - y) < 0.9 + r) return false;
+            return true;
+        }
+        function fxSpot(sc, r, tries, pred) {
+            for (let i = 0; i < (tries || 200); i++) {
+                const x = _fxR(1, sc.w - 1), y = _fxR(1, sc.h - 1);
+                if (fxFree(sc, x, y, r) && (!pred || pred(x, y))) return { x, y };
+            }
+            return null;
+        }
+        // Budova zvenku: pevný půdorys (blok) se střechou, dveře = portál dovnitř
+        function fxGenOutdoor(E, B, loc) {
+            const W = 34, H = 34;
+            const sc = fxNewScene('out', 'out', W, H, { ground: B.ground, title: 'Venku', light: B.light });
+            // cesty
+            const roadY = _fxR(12, 22), roadX = _fxR(10, 24);
+            sc.roads.push({ x: 0, y: roadY - 1.4, w: W, h: 2.8 });
+            if (E.biome !== 'forest') sc.roads.push({ x: roadX - 1.4, y: 0, w: 2.8, h: H });
+            else sc.roads.push({ x: roadX - 1, y: roadY, w: 2, h: H - roadY });
+            // budovy
+            const nB = E.biome === 'forest' ? 2 : E.biome === 'industrial' ? 3 : _fxRi(3, 5);
+            const placed = [];
+            for (let i = 0, guard = 0; i < nB && guard < 200; guard++) {
+                const big = E.biome === 'industrial' && i === 0;
+                const bw = big ? _fxRi(9, 12) : _fxRi(5, 8), bh = big ? _fxRi(7, 9) : _fxRi(4, 6);
+                const bx = _fxR(2, W - bw - 2), by = _fxR(2, H - bh - 2);
+                const box = { x: bx, y: by, w: bw, h: bh };
+                const overlap = (a, b, m) => a.x < b.x + b.w + m && a.x + a.w + m > b.x && a.y < b.y + b.h + m && a.y + a.h + m > b.y;
+                if (placed.some(p => overlap(p, box, 3))) continue;
+                if (sc.roads.some(r => overlap(r, box, 1.2))) continue;
+                if (bx < 7 && Math.abs(by + bh / 2 - roadY) < bh / 2 + 3) continue; // start hráče
+                placed.push(box);
+                // dveře na straně blíž k cestě
+                const cx = bx + bw / 2, cy = by + bh / 2;
+                const side = Math.abs(cy - roadY) < Math.abs(cx - roadX) || E.biome === 'forest' ? (cy < roadY ? 'S' : 'N') : (cx < roadX ? 'E' : 'W');
+                const door = side === 'S' ? { x: cx, y: by + bh + 0.55 } : side === 'N' ? { x: cx, y: by - 0.55 } : side === 'E' ? { x: bx + bw + 0.55, y: cy } : { x: bx - 0.55, y: cy };
+                const floors = E.biome === 'forest' ? 1 : (Math.random() < 0.55 ? 2 : 1);
+                const cellar = Math.random() < (E.biome === 'industrial' ? 0.7 : 0.5);
+                const b = { id: 'b' + i, x: bx, y: by, w: bw, h: bh, roof: _fxPick(B.roofs), side, door, floors, cellar, name: fxBuildingName(E.biome, big, i) };
+                E.fx.buildings.push(b);
+                sc.blocks.push({ x: bx, y: by, w: bw, h: bh, b });
+                sc.portals.push({ x: door.x, y: door.y, to: b.id + '_0', icon: '🚪', label: 'Vstoupit: ' + b.name, kind: 'door', side });
+                i++;
+            }
+            // východ – konec cesty na okraji
+            const ex = Math.random() < 0.5 ? { x: W - 1.2, y: roadY } : { x: roadX, y: 1.2 };
+            if (E.biome === 'forest') { ex.x = W - 1.2; ex.y = roadY; }
+            sc.portals.push({ x: ex.x, y: ex.y, to: 'EXIT', icon: '🚪', label: 'Východ', kind: 'exit' });
+            // ploty/živé ploty ve vesnici
+            if (E.biome === 'village') E.fx.buildings.forEach(b => {
+                if (Math.random() < 0.6) {
+                    const fy = b.y + b.h + 2.4, x0 = b.x - 1, x1 = b.x + b.w + 1;
+                    for (let x = x0; x < x1; x += 1) if (Math.abs(x + 0.5 - b.door.x) > 1.4) sc.walls.push({ x, y: fy, w: 1, h: 0.35, img: Math.random() < 0.3 ? 'w_hedge' : 'w_fence', low: true });
+                }
+            });
+            // velké překážky
+            const nP = E.biome === 'forest' ? 46 : 18;
+            for (let i = 0; i < nP; i++) {
+                const img = _fxPick(B.props);
+                const big = /tank|car|tree\b|tree$|tent/.test(img) || img === 'p_tree' || img === 'p_tent';
+                const r = /p_tree$|p_tent|tank1|tank3/.test(img) ? 0.95 : /car|tank|tree/.test(img) ? 0.7 : 0.4;
+                const onRoad = /car/.test(img);
+                const p = fxSpot(sc, r, 120, (x, y) => (onRoad ? sc.roads.some(rd => x > rd.x && x < rd.x + rd.w && y > rd.y && y < rd.y + rd.h) : !sc.roads.some(rd => x > rd.x - r && x < rd.x + rd.w + r && y > rd.y - r && y < rd.y + rd.h + r)) && Math.hypot(x - 2.2, y - roadY) > 3);
+                if (!p) continue;
+                const s = /p_tree$|p_tent/.test(img) ? _fxR(2.2, 2.8) : /tree/.test(img) ? _fxR(1.3, 1.7) : /car/.test(img) ? 2.1 : /tank/.test(img) ? _fxR(1.8, 2.4) : /rock_big/.test(img) ? 1.3 : 0.9;
+                sc.props.push({ x: p.x, y: p.y, img, s, r, rot: /car/.test(img) ? (Math.random() < .5 ? 0 : Math.PI / 2) + _fxR(-.3, .3) : _fxR(0, 6.28), solid: true, tall: /tree|tent|tank/.test(img) });
+            }
+            for (let i = 0; i < 70; i++) sc.decals.push({ x: _fxR(0, W), y: _fxR(0, H), img: _fxPick(B.decals), s: _fxR(0.6, 1.2), rot: _fxR(0, 6.28) });
+            E.fx.start = { x: 2.2, y: roadY };
+            sc.blocks = sc.blocks.filter(bl => !(bl.x < 6 && Math.abs(bl.y + bl.h / 2 - roadY) < bl.h / 2 + 3));
+            return sc;
+        }
+        function fxBuildingName(biome, big, i) {
+            const n = { ruins: ['Rozbitý dům', 'Bývalý obchod', 'Panelák', 'Kancelář', 'Garáž'], forest: ['Hájovna', 'Lovecká chata', 'Srub'], industrial: ['Výrobní hala', 'Sklad', 'Dílna', 'Kotelna'], village: ['Statek', 'Chalupa', 'Stodola', 'Kůlna', 'Hospoda'] }[biome];
+            return big ? 'Výrobní hala' : n[i % n.length];
+        }
+        // Interiér: obvodové zdi + příčky s průchody, nábytek, dveře ven / schody / poklop do sklepa
+        function fxGenInterior(E, B, b, level) {
+            const W = Math.round(b.w * 2 + 2), H = Math.round(b.h * 2 + 2);
+            const id = b.id + '_' + level;
+            const cellar = level === -1;
+            const t = cellar ? 'Sklep' : level === 0 ? 'Přízemí' : level + '. patro';
+            const sc = fxNewScene(id, 'in', W, H, { floor: cellar ? 'f_dirt2' : _fxPick(B.floors), title: b.name + ' – ' + t, light: cellar ? 3.2 : 4.4, dark: cellar ? 0.9 : 0.72, wallImg: cellar ? 'w_rock' : B.wall, bid: b.id });
+            const T = 0.5, wall = (x, y, w, h) => sc.walls.push({ x, y, w, h, img: sc.wallImg });
+            // obvod (dveře ven dole uprostřed v přízemí)
+            const doorW = 1.6, dx0 = W / 2 - doorW / 2;
+            wall(0, 0, W, T); wall(0, 0, T, H); wall(W - T, 0, T, H);
+            if (level === 0) { wall(0, H - T, dx0, T); wall(dx0 + doorW, H - T, W - dx0 - doorW, T); }
+            else wall(0, H - T, W, T);
+            // příčky – svislá + 1–2 vodorovné s průchody
+            const gap = 2.1; sc.gaps = [];
+            const vx = Math.round(_fxR(W * 0.38, W * 0.62));
+            const gy = _fxR(1.5, H - 1.5 - gap);
+            wall(vx, T, T, gy - T); wall(vx, gy + gap, T, H - T - gy - gap); sc.gaps.push({ x: vx + T / 2, y: gy + gap / 2 });
+            const hy1 = Math.round(_fxR(H * 0.35, H * 0.6)), gx1 = _fxR(1, Math.max(1.1, vx - gap - 0.4));
+            if (vx > 5) { wall(T, hy1, gx1 - T, T); wall(gx1 + gap, hy1, vx - gx1 - gap, T); sc.gaps.push({ x: gx1 + gap / 2, y: hy1 + T / 2 }); }
+            if (Math.random() < 0.7 && W - vx > 5) { const hy2 = Math.round(_fxR(H * 0.35, H * 0.6)), gx2 = _fxR(vx + 1.2, W - gap - 1); wall(vx + T, hy2, gx2 - vx - T, T); wall(gx2 + gap, hy2, W - T - gx2 - gap, T); sc.gaps.push({ x: gx2 + gap / 2, y: hy2 + T / 2 }); }
+            // trhliny ve zdech (ruiny) jsou jen dekorace
+            for (let i = 0; i < 18; i++) sc.decals.push({ x: _fxR(1, W - 1), y: _fxR(1, H - 1), img: _fxPick(cellar ? ['o_mud', 'd_pebbles', 'o_bone', 'o_debris'] : ['d_crack1', 'd_crack2', 'o_debris', 'o_glass', 'o_plank', 'o_shards', 'o_blood_drops']), s: _fxR(0.5, 1), rot: _fxR(0, 6.28) });
+            // portály
+            if (level === 0) sc.portals.push({ x: W / 2, y: H - 0.55, to: 'out', icon: '🚪', label: 'Ven', kind: 'door', back: b.id });
+            if (level === 0 && b.floors > 1) { const p = fxSpot(sc, 0.5, 200, (x, y) => y < H / 2); if (p) sc.portals.push({ x: p.x, y: p.y, to: b.id + '_1', icon: '🪜', label: 'Nahoru do patra', kind: 'stairs' }); }
+            if (level === 0 && b.cellar) { const p = fxSpot(sc, 0.5, 200, (x, y) => !sc.portals.some(q => Math.hypot(q.x - x, q.y - y) < 4)); if (p) sc.portals.push({ x: p.x, y: p.y, to: b.id + '_-1', icon: '🕳️', label: 'Poklop do sklepa', kind: 'hatch' }); }
+            if (level === 1) { const p = fxSpot(sc, 0.5, 200); if (p) sc.portals.push({ x: p.x, y: p.y, to: b.id + '_0', icon: '🪜', label: 'Dolů do přízemí', kind: 'stairs' }); }
+            if (level === -1) { const p = fxSpot(sc, 0.5, 200); if (p) sc.portals.push({ x: p.x, y: p.y, to: b.id + '_0', icon: '🪜', label: 'Nahoru z sklepa', kind: 'stairs' }); }
+            // propadlá podlaha v patře (neprůchozí díra)
+            if (level === 1 && Math.random() < 0.6) { const p = fxSpot(sc, 1.3, 120); if (p) sc.blocks.push({ x: p.x - 1, y: p.y - 0.8, w: 2, h: 1.6, hole: true }); }
+            // nábytek
+            const nF = Math.round(W * H / 14);
+            for (let i = 0; i < nF; i++) {
+                const img = _fxPick(cellar ? ['o_barrel', 'o_crate1', 'o_crate3', 'p_barrel_rust', 'o_bricks', 'o_plank'] : B.inside);
+                const p = fxSpot(sc, 0.42, 60, (x, y) => sc.walls.some(w => x > w.x - 1.1 && x < w.x + w.w + 1.1 && y > w.y - 1.1 && y < w.y + w.h + 1.1) && !sc.gaps.some(g => Math.hypot(g.x - x, g.y - y) < 2) && !sc.portals.some(q => Math.hypot(q.x - x, q.y - y) < 1.8) && Math.hypot(W / 2 - x, H - 1 - y) > 2.2);
+                if (p) sc.props.push({ x: p.x, y: p.y, img, s: 0.9, r: 0.38, rot: _fxR(-0.4, 0.4), solid: true });
+            }
+            return sc;
+        }
+        function fxPlaceContent(E, loc) {
+            const dl = loc.dangerLevel || 1;
+            const scenes = Object.values(E.fx.scenes);
+            const variants = ['📦', '🗃️', '🪣', '🧰', '💼'];
+            const addLoot = (sc, n, lockedBias) => {
+                for (let i = 0; i < n; i++) {
+                    const p = fxSpot(sc, 0.45, 300, (x, y) => fxReachable(sc, x, y) && (sc.kind !== 'out' || Math.hypot(x - E.fx.start.x, y - E.fx.start.y) > 5));
+                    if (!p) continue;
+                    let icon = _fxPick(variants); if (lockedBias && Math.random() < lockedBias) icon = Math.random() < .5 ? '🗃️' : '🧰';
+                    E.lootItems.push({ x: p.x, y: p.y, icon, collected: false, locked: icon === '🗃️' || icon === '🧰', scene: sc.id });
+                }
+            };
+            scenes.forEach(sc => addLoot(sc, sc.kind === 'out' ? _fxRi(2, 3) : sc.id.endsWith('_-1') ? _fxRi(2, 3) : _fxRi(1, 2), sc.id.endsWith('_-1') ? 0.6 : 0));
+            E.lootRemaining = E.lootItems.length;
+            // nepřátelé
+            const pool = loc.enemies || [];
+            const nE = pool.length ? Math.min(7, 2 + Math.floor(dl / 2) + Math.floor(E.fx.buildings.length / 2)) : 0;
+            for (let i = 0; i < nE; i++) {
+                const sc = i < 2 ? E.fx.scenes.out : _fxPick(scenes);
+                const p = fxSpot(sc, 0.4, 300, (x, y) => fxReachable(sc, x, y) && (sc.kind !== 'out' || Math.hypot(x - E.fx.start.x, y - E.fx.start.y) > 9));
+                if (!p) continue;
+                const enemyId = _fxPick(pool), def = ENEMIES.find(e => e.id === enemyId); if (!def) continue;
+                E.enemies.push({ x: p.x, y: p.y, hx: p.x, hy: p.y, enemyId, name: def.name, icon: def.icon || '👹', alive: true, spotted: false, chasing: false, scene: sc.id, lastMoveTime: Date.now() + Math.random() * 3000, path: null, ang: _fxR(0, 6.28) });
+            }
+            // pasti
+            const nT = 1 + Math.floor(dl / 2) + (E.fx.buildings.length > 2 ? 1 : 0);
+            for (let i = 0; i < nT; i++) {
+                const sc = _fxPick(scenes);
+                const p = fxSpot(sc, 0.4, 300, (x, y) => fxReachable(sc, x, y) && (sc.kind !== 'out' || Math.hypot(x - E.fx.start.x, y - E.fx.start.y) > 6));
+                if (p) E.traps.push({ x: p.x - 0.5, y: p.y - 0.5, revealed: false, done: false, scene: sc.id });
+            }
+        }
+
+
+        function fxEntry(E, sc) {
+            if (sc.id === 'out') return E.fx.start;
+            const d = sc.portals.find(p => p.to === 'out') || sc.portals[0];
+            const n = d ? fxNearestFree(sc, d.x, d.y - (d.to === 'out' ? 1.2 : 0)) : null;
+            return n ? { x: (n.x + 0.5) * FX_NAV, y: (n.y + 0.5) * FX_NAV } : { x: sc.w / 2, y: sc.h / 2 };
+        }
+        function fxFlood(sc, from) {
+            const n = fxNav(sc), s = fxNearestFree(sc, from.x, from.y), reach = new Uint8Array(n.cw * n.ch);
+            if (!s) return reach;
+            const q = [s.y * n.cw + s.x]; reach[q[0]] = 1;
+            while (q.length) { const k = q.pop(), x = k % n.cw, y = (k / n.cw) | 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= n.cw || ny >= n.ch) continue; const nk = ny * n.cw + nx; if (n.g[nk] && !reach[nk]) { reach[nk] = 1; q.push(nk); } } }
+            return reach;
+        }
+        function fxReachable(sc, x, y) {
+            if (!sc.reach) return true; const n = fxNav(sc), c = fxNearestFree(sc, x, y); return !!(c && sc.reach[c.y * n.cw + c.x]);
+        }
+        // Zajisti, že se ze vstupu dá dojít ke každému portálu (případně odklidí nábytek/rekvizity)
+        function fxEnsureReach(E, sc) {
+            for (let it = 0; it < 40; it++) {
+                sc.nav = null; const entry = fxEntry(E, sc); sc.reach = fxFlood(sc, entry);
+                const bad = sc.portals.filter(p => !fxReachable(sc, p.x, p.y));
+                if (!bad.length) return true;
+                const tgt = bad[0];
+                // odklid nejbližší rekvizitu k nedosažitelnému cíli
+                let bi = -1, bd = 1e9; sc.props.forEach((p, i) => { const d = Math.hypot(p.x - tgt.x, p.y - tgt.y); if (p.solid && d < bd) { bd = d; bi = i; } });
+                if (bi >= 0 && bd < 12) sc.props.splice(bi, 1);
+                else { // přesuň portál na dosažitelné místo
+                    const sp = fxSpot(sc, 0.5, 300, (x, y) => fxReachable(sc, x, y)); if (sp) { tgt.x = sp.x; tgt.y = sp.y; } else return false;
+                }
+            }
+            return false;
+        }
+        // ---------- NAVIGACE (mřížka 0,5 j + A*) ----------
+        const FX_NAV = 0.5, FX_PR = 0.3;
+        function fxNav(sc) {
+            if (sc.nav) return sc.nav;
+            const cw = Math.ceil(sc.w / FX_NAV), ch = Math.ceil(sc.h / FX_NAV), g = new Uint8Array(cw * ch);
+            for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+                const wx = (x + 0.5) * FX_NAV, wy = (y + 0.5) * FX_NAV;
+                let free = wx > 0.35 && wy > 0.35 && wx < sc.w - 0.35 && wy < sc.h - 0.35;
+                if (free) for (const w of sc.walls) if (wx > w.x - FX_PR && wx < w.x + w.w + FX_PR && wy > w.y - FX_PR && wy < w.y + w.h + FX_PR) { free = false; break; }
+                if (free) for (const b of sc.blocks) if (wx > b.x - FX_PR && wx < b.x + b.w + FX_PR && wy > b.y - FX_PR && wy < b.y + b.h + FX_PR) { free = false; break; }
+                if (free) for (const p of sc.props) if (p.solid && Math.hypot(p.x - wx, p.y - wy) < p.r + FX_PR) { free = false; break; }
+                g[y * cw + x] = free ? 1 : 0;
+            }
+            sc.nav = { cw, ch, g };
+            return sc.nav;
+        }
+        function fxCellFree(sc, wx, wy) { const n = fxNav(sc), x = Math.floor(wx / FX_NAV), y = Math.floor(wy / FX_NAV); return x >= 0 && y >= 0 && x < n.cw && y < n.ch && n.g[y * n.cw + x] === 1; }
+        function fxNearestFree(sc, wx, wy) {
+            const n = fxNav(sc), cx = Math.floor(wx / FX_NAV), cy = Math.floor(wy / FX_NAV);
+            for (let r = 0; r < 8; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+                if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                const x = cx + dx, y = cy + dy; if (x >= 0 && y >= 0 && x < n.cw && y < n.ch && n.g[y * n.cw + x]) return { x, y };
+            }
+            return null;
+        }
+        function fxPath(sc, fx, fy, tx, ty) {
+            const n = fxNav(sc), s = fxNearestFree(sc, fx, fy), t = fxNearestFree(sc, tx, ty);
+            if (!s || !t) return null;
+            const key = (x, y) => y * n.cw + x, sk = key(s.x, s.y), tk = key(t.x, t.y);
+            const gS = new Float32Array(n.cw * n.ch).fill(1e9), from = new Int32Array(n.cw * n.ch).fill(-1), closed = new Uint8Array(n.cw * n.ch);
+            const open = [[0, sk]]; gS[sk] = 0;
+            const h = k => Math.hypot((k % n.cw) - t.x, Math.floor(k / n.cw) - t.y);
+            const D = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.414], [1, -1, 1.414], [-1, 1, 1.414], [-1, -1, 1.414]];
+            let it = 0;
+            while (open.length && it++ < 9000) {
+                let bi = 0; for (let i = 1; i < open.length; i++) if (open[i][0] < open[bi][0]) bi = i;
+                const [, k] = open.splice(bi, 1)[0]; if (closed[k]) continue; closed[k] = 1;
+                if (k === tk) break;
+                const x = k % n.cw, y = Math.floor(k / n.cw);
+                for (const [dx, dy, c] of D) {
+                    const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= n.cw || ny >= n.ch) continue;
+                    const nk = key(nx, ny); if (!n.g[nk] || closed[nk]) continue;
+                    if (dx && dy && (!n.g[key(x + dx, y)] || !n.g[key(x, y + dy)])) continue;
+                    const ng = gS[k] + c; if (ng < gS[nk]) { gS[nk] = ng; from[nk] = k; open.push([ng + h(nk), nk]); }
+                }
+            }
+            if (from[tk] === -1 && tk !== sk) return null;
+            const pts = []; for (let k = tk; k !== -1 && k !== sk; k = from[k]) pts.push({ x: ((k % n.cw) + 0.5) * FX_NAV, y: (Math.floor(k / n.cw) + 0.5) * FX_NAV });
+            pts.reverse();
+            // vyhlazení: přeskoč body, na které je přímý průchod
+            const out = []; let cur = { x: fx, y: fy };
+            for (let i = 0; i < pts.length; i++) {
+                let j = i; while (j + 1 < pts.length && fxClear(sc, cur.x, cur.y, pts[j + 1].x, pts[j + 1].y)) j++;
+                out.push(pts[j]); cur = pts[j]; i = j;
+            }
+            return out;
+        }
+        function fxClear(sc, x0, y0, x1, y1) {
+            const d = Math.hypot(x1 - x0, y1 - y0), st = Math.max(1, Math.ceil(d / 0.2));
+            for (let i = 1; i <= st; i++) if (!fxCellFree(sc, x0 + (x1 - x0) * i / st, y0 + (y1 - y0) * i / st)) return false;
+            return true;
+        }
+        // přímá viditelnost (zdi a budovy stíní, nábytek ne)
+        function fxLOS(sc, x0, y0, x1, y1) {
+            const d = Math.hypot(x1 - x0, y1 - y0), st = Math.max(1, Math.ceil(d / 0.25));
+            for (let i = 1; i < st; i++) {
+                const x = x0 + (x1 - x0) * i / st, y = y0 + (y1 - y0) * i / st;
+                for (const w of sc.walls) if (!w.low && x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h) return false;
+                for (const b of sc.blocks) if (!b.hole && x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return false;
+            }
+            return true;
+        }
+
+        // ---------- START ----------
+        function fxStart(loc) {
+            const biome = fxBiome(loc), B = FX_BIOMES[biome];
+            const E = window._explore3D = {
+                fx: { scenes: {}, buildings: [], cur: 'out', biome, start: null, fade: 0 },
+                biome, player: { x: 2, y: 2, angle: -Math.PI / 2 }, loot: [], lootItems: [], lootRemaining: 0, exitReached: false,
+                running: true, canvas: null, ctx: null, keys: {}, touchControls: { fwd: false, back: false, left: false, right: false },
+                lastTick: Date.now(), tickInterval: null, locationId: loc.id, theme: getExplore3DTheme(loc), enemies: [], traps: [], inCombat: false, killedEnemies: [],
+                visited: [[true]], size: 1, map: [[0]]
+            };
+            const out = fxGenOutdoor(E, B, loc); E.fx.scenes.out = out;
+            E.fx.buildings.forEach(b => {
+                E.fx.scenes[b.id + '_0'] = fxGenInterior(E, B, b, 0);
+                if (b.floors > 1) E.fx.scenes[b.id + '_1'] = fxGenInterior(E, B, b, 1);
+                if (b.cellar) E.fx.scenes[b.id + '_-1'] = fxGenInterior(E, B, b, -1);
+            });
+            Object.values(E.fx.scenes).forEach(sc => fxEnsureReach(E, sc));
+            fxPlaceContent(E, loc);
+            E.player.x = E.fx.start.x; E.player.y = E.fx.start.y;
+            fxOpenUI(false);
+            add3DLog(`Jsi u místa ${loc.name} (${B.name}). Klepni kamkoli a postava tam dojde.`);
+            add3DLog('Budovy mají dveře 🚪 – uvnitř bývá patro 🪜 nebo sklep 🕳️.');
+        }
+        function fxScene(E) { return E.fx.scenes[E.fx.cur]; }
+        function fxOpenUI(reopen) {
+            const E = window._explore3D; if (!E || !E.fx) return;
+            const loc = WORLD_LOCATIONS.find(l => l.id === E.locationId) || {};
+            const B = FX_BIOMES[E.biome];
+            const html = `
+                <div id="explore3DWrapper" style="background:#000;border-radius:6px;overflow:hidden">
+                    <div style="padding:.3rem .5rem">
+                        <div style="color:#ffa726;font-weight:bold;font-size:.95rem">${loc.icon || '🏚️'} ${loc.name || ''} — <span id="fxArea">${fxScene(E).title}</span></div>
+                        <div id="exploreStatus" style="color:#9a8a70;font-size:.72rem">🧭 ${B.name} · klepni kam jít</div>
+                    </div>
+                    <div style="position:relative;background:#000;overflow:hidden">
+                        <canvas id="explore3DCanvas" width="412" height="520" style="width:100%;display:block;touch-action:none"></canvas>
+                        <canvas id="exploreMiniMap" width="120" height="120" style="position:absolute;top:6px;right:6px;width:96px;height:96px;border:2px solid #5a4a30;border-radius:8px;background:rgba(0,0,0,.6)"></canvas>
+                        <div id="fxPrompt" style="position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 180px);transform:translateX(-50%);display:none;z-index:4"></div>
+                    </div>
+                    <div id="explore3DStats" style="display:flex;gap:.3rem;padding:.3rem">
+                        <div style="flex:1;border:1px solid #6a2020;border-radius:14px;padding:.2rem .5rem;color:#fff">❤️ <b id="hp3DVal">${state.char.hp}</b><span style="color:#999">/${state.char.maxHp}</span></div>
+                        <div style="flex:1;border:1px solid #6a5020;border-radius:14px;padding:.2rem .5rem;color:#fff">🍞 <b id="hunger3DVal">0</b></div>
+                        <div style="flex:1;border:1px solid #20406a;border-radius:14px;padding:.2rem .5rem;color:#fff">💧 <b id="thirst3DVal">0</b></div>
+                    </div>
+                    <div id="exploreLog" style="height:70px;overflow-y:auto;font-family:monospace;font-size:.7rem;color:#9ccc65;padding:.3rem .5rem"></div>
+                    <div><button class="btn" onclick="exit3DExploration(false)" style="width:100%;background:#4a1515;border:1px solid #7a2a2a">✕ Opustit (bez odměny)</button></div>
+                </div>`;
+            showModal('🧭 Průzkum', html);
+            setTimeout(() => {
+                E.canvas = document.getElementById('explore3DCanvas'); if (!E.canvas) return;
+                E.ctx = E.canvas.getContext('2d'); E.miniMap = document.getElementById('exploreMiniMap'); E.miniMapCtx = E.miniMap.getContext('2d');
+                const tap = ev => {
+                    ev.preventDefault();
+                    const pt = ev.changedTouches ? ev.changedTouches[0] : ev;
+                    const r = E.canvas.getBoundingClientRect();
+                    fxTap((pt.clientX - r.left) * E.canvas.width / r.width, (pt.clientY - r.top) * E.canvas.height / r.height);
+                };
+                E.canvas.addEventListener('touchstart', tap, { passive: false });
+                E.canvas.addEventListener('mousedown', tap);
+                E._keyDown = e => { E.keys[e.key.toLowerCase()] = true; };
+                E._keyUp = e => { E.keys[e.key.toLowerCase()] = false; };
+                window.addEventListener('keydown', E._keyDown); window.addEventListener('keyup', E._keyUp);
+                if (E.tickInterval) clearInterval(E.tickInterval);
+                E.lastTick = Date.now(); E.running = true; E.inCombat = false;
+                E.tickInterval = setInterval(() => {
+                    if (window._explore3D !== E) { clearInterval(E.tickInterval); return; }
+                    if (E.running) fxUpdate(E);
+                    fxRender(E);
+                    if (++E._st > 30) { E._st = 0; updateExploreStatus(); }
+                }, 33);
+                E._st = 0; updateExploreStatus();
+                if (reopen) add3DLog('Vrátil ses do průzkumu.');
+            }, 80);
+        }
+        window.fxOpenUI = fxOpenUI;
+
+        // ---------- OVLÁDÁNÍ ----------
+        function fxTap(cx, cy) {
+            const E = window._explore3D; if (!E || !E.fx || !E.running || E._diceBusy || E.inCombat) return;
+            const sc = fxScene(E), U = E.fx.U || 50;
+            const wx = E.fx.camX + (cx - E.canvas.width / 2) / U, wy = E.fx.camY + (cy - E.canvas.height / 2) / U;
+            // cíl: portál / kořist / nepřítel pod prstem
+            let target = null;
+            for (const p of sc.portals) if (Math.hypot(p.x - wx, p.y - wy) < 0.9) target = { kind: 'portal', p };
+            if (!target) for (const li of E.lootItems) if (li.scene === sc.id && !li.collected && Math.hypot(li.x - wx, li.y - wy) < 0.8) target = { kind: 'loot', li };
+            if (!target) for (const en of E.enemies) if (en.scene === sc.id && en.alive && Math.hypot(en.x - wx, en.y - wy) < 0.8) target = { kind: 'enemy', en };
+            const tx = target?.p?.x ?? target?.li?.x ?? target?.en?.x ?? wx, ty = target?.p?.y ?? target?.li?.y ?? target?.en?.y ?? wy;
+            const path = fxPath(sc, E.player.x, E.player.y, tx, ty);
+            if (!path || !path.length) { E.fx.marker = { x: wx, y: wy, t: Date.now(), bad: true }; return; }
+            E.fx.path = path; E.fx.target = target; E.fx.marker = { x: tx, y: ty, t: Date.now() };
+        }
+
+        // ---------- AKTUALIZACE ----------
+        function fxUpdate(E) {
+            const now = Date.now(), dt = Math.min((now - E.lastTick) / 1000, 0.1); E.lastTick = now;
+            const sc = fxScene(E), P = E.player;
+            if (E.fx.fade > 0) { E.fx.fade = Math.max(0, E.fx.fade - dt * 3); }
+            // klávesnice (PC)
+            const kx = (E.keys['d'] || E.keys['arrowright'] ? 1 : 0) - (E.keys['a'] || E.keys['arrowleft'] ? 1 : 0);
+            const ky = (E.keys['s'] || E.keys['arrowdown'] ? 1 : 0) - (E.keys['w'] || E.keys['arrowup'] ? 1 : 0);
+            let moving = false;
+            if (kx || ky) {
+                E.fx.path = null; const l = Math.hypot(kx, ky), sp = 3.2 * dt;
+                const nx = P.x + kx / l * sp, ny = P.y + ky / l * sp;
+                if (fxCellFree(sc, nx, P.y)) P.x = nx; if (fxCellFree(sc, P.x, ny)) P.y = ny;
+                P.angle = Math.atan2(ky, kx); moving = true;
+            } else if (E.fx.path && E.fx.path.length) {
+                const t = E.fx.path[0], dx = t.x - P.x, dy = t.y - P.y, d = Math.hypot(dx, dy), sp = 3.4 * dt;
+                if (d <= sp) { P.x = t.x; P.y = t.y; E.fx.path.shift(); }
+                else { P.x += dx / d * sp; P.y += dy / d * sp; }
+                P.angle = Math.atan2(dy, dx); moving = true;
+            }
+            E.fx.moving = moving;
+            // odkrývání
+            if (!sc.seen) sc.seen = new Uint8Array(Math.ceil(sc.w) * Math.ceil(sc.h));
+            if (!E.fx._seenT || now - E.fx._seenT > 180) {
+                E.fx._seenT = now; const R = sc.light || 5, cw = Math.ceil(sc.w);
+                for (let y = Math.max(0, Math.floor(P.y - R)); y < Math.min(Math.ceil(sc.h), Math.ceil(P.y + R)); y++)
+                    for (let x = Math.max(0, Math.floor(P.x - R)); x < Math.min(cw, Math.ceil(P.x + R)); x++) {
+                        if (sc.seen[y * cw + x]) continue;
+                        if (Math.hypot(x + 0.5 - P.x, y + 0.5 - P.y) < R && fxLOS(sc, P.x, P.y, x + 0.5, y + 0.5)) sc.seen[y * cw + x] = 1;
+                    }
+            }
+            // pasti (jen v aktuální scéně)
+            if (!E._diceBusy && !E.inCombat) for (const tr of E.traps) {
+                if (tr.done || tr.scene !== sc.id) continue;
+                const d = Math.hypot(tr.x + 0.5 - P.x, tr.y + 0.5 - P.y);
+                if (!tr.revealed && d < 1.15) { E.fx.path = null; exploreDiceTrap(E, tr); return; }
+                if (tr.revealed && d < 0.45) { tr.done = true; _exploreHurt(E, 0.08 + 0.03 * _exploreDanger(E), 'Šlápl jsi na past'); }
+            }
+            // kořist
+            for (const li of E.lootItems) {
+                if (li.collected || li.scene !== sc.id) continue;
+                if (Math.hypot(li.x - P.x, li.y - P.y) < 0.6) {
+                    if (li.locked) { if (!E._diceBusy && now > (li._askAfter || 0)) { li._askAfter = now + 999999; E.fx.path = null; exploreDiceChest(E, li); return; } continue; }
+                    li.collected = true; E.lootRemaining--; E.loot.push({});
+                    add3DLog(`${li.icon} Sebral jsi ${li.icon === '📦' ? 'bednu' : li.icon === '🪣' ? 'kbelík' : li.icon === '💼' ? 'kufřík' : 'truhlu'}.`);
+                    E.fx.pops = (E.fx.pops || []).concat([{ x: li.x, y: li.y, t: now, txt: '+' }]);
+                }
+            }
+            // portály
+            for (const p of sc.portals) {
+                const d = Math.hypot(p.x - P.x, p.y - P.y);
+                if (d < 0.75 && now > (E.fx.portalCd || 0)) {
+                    const wanted = E.fx.target?.kind === 'portal' && E.fx.target.p === p;
+                    if (!wanted && !(kx || ky)) continue;
+                    E.fx.path = null; E.fx.target = null;
+                    if (p.to === 'EXIT') { fxAskExit(E, p); return; }
+                    fxGoScene(E, p); return;
+                }
+            }
+            // nepřátelé
+            for (const en of E.enemies) {
+                if (!en.alive || en.scene !== sc.id) continue;
+                const dx = P.x - en.x, dy = P.y - en.y, d = Math.hypot(dx, dy);
+                const los = d < 7 && fxLOS(sc, en.x, en.y, P.x, P.y);
+                if (!en.spotted && d < 5 && los) {
+                    en.spotted = true; E._alertFlashUntil = now + 600; add3DLog(`⚠️ Vidíš ${en.icon} ${en.name}!`);
+                    if (!en._diceMet && !E._diceBusy && !E.inCombat && !E._pendingEnemy) { en._diceMet = true; E.fx.path = null; exploreDiceEnemy(E, en); return; }
+                }
+                if (en.spotted && !en.ignored && los && d < 8) en.chasing = true; else if (d > 10 || !los) en.chasing = false;
+                let tx, ty, sp;
+                if (en.chasing) { tx = P.x; ty = P.y; sp = 2.3; }
+                else {
+                    if (!en.wp || Math.hypot(en.wp.x - en.x, en.wp.y - en.y) < 0.2 || now > (en.wpT || 0)) {
+                        const a = _fxR(0, 6.28), r = _fxR(1, 3.5), cand = { x: en.hx + Math.cos(a) * r, y: en.hy + Math.sin(a) * r };
+                        en.wp = fxCellFree(sc, cand.x, cand.y) && fxClear(sc, en.x, en.y, cand.x, cand.y) ? cand : { x: en.x, y: en.y };
+                        en.wpT = now + _fxR(2500, 5000);
+                    }
+                    tx = en.wp.x; ty = en.wp.y; sp = 0.9;
+                }
+                const ex = tx - en.x, ey = ty - en.y, ed = Math.hypot(ex, ey);
+                if (ed > 0.05) {
+                    const st = Math.min(ed, sp * dt), nx = en.x + ex / ed * st, ny = en.y + ey / ed * st;
+                    if (fxCellFree(sc, nx, en.y)) en.x = nx; if (fxCellFree(sc, en.x, ny)) en.y = ny;
+                    en.ang = Math.atan2(ey, ex);
+                }
+                if (d < 0.75 && !E.inCombat && !E._pendingEnemy && !en.ignored && !E._diceBusy) {
+                    E.inCombat = true; E.running = false; E.fx.path = null;
+                    add3DLog(`⚔️ ${en.icon} ${en.name} po tobě skočil!`);
+                    setTimeout(() => start3DCombat(en), 400); return;
+                }
+            }
+            // nápověda u portálu
+            const near = sc.portals.find(p => Math.hypot(p.x - P.x, p.y - P.y) < 2.2);
+            const pr = document.getElementById('fxPrompt');
+            if (pr) {
+                if (near && !(E.fx.target?.kind === 'portal')) {
+                    const key = sc.portals.indexOf(near);
+                    if (pr.dataset.k !== String(key)) { pr.dataset.k = key; pr.innerHTML = `<button class="btn" onclick="fxUsePortal(${key})" style="padding:.5rem .9rem;border-radius:20px;background:rgba(40,28,14,.92);border:1px solid #e0a84a;color:#ffe2a8;font-weight:bold;box-shadow:0 4px 12px #000">${near.icon} ${near.label}</button>`; }
+                    pr.style.display = 'block';
+                } else { pr.style.display = 'none'; pr.dataset.k = ''; }
+            }
+        }
+        function fxUsePortal(i) {
+            const E = window._explore3D; if (!E || !E.fx || !E.running) return;
+            const sc = fxScene(E), p = sc.portals[i]; if (!p) return;
+            const path = fxPath(sc, E.player.x, E.player.y, p.x, p.y);
+            E.fx.path = path || []; E.fx.target = { kind: 'portal', p };
+            if (!path || !path.length) { E.player.x = p.x; E.player.y = p.y; }
+        }
+        window.fxUsePortal = fxUsePortal;
+        function fxGoScene(E, p) {
+            const from = E.fx.cur;
+            let to = p.to;
+            const target = E.fx.scenes[to]; if (!target) return;
+            E.fx.cur = to; E.fx.fade = 1; E.fx.portalCd = Date.now() + 900;
+            // kam se postavit v nové scéně
+            let spot = null;
+            if (to === 'out') { const b = E.fx.buildings.find(b => b.id === p.back); const dp = target.portals.find(q => q.to === b.id + '_0'); if (dp) { const o = { S: [0, 1.1], N: [0, -1.1], E: [1.1, 0], W: [-1.1, 0] }[dp.side] || [0, 1.1]; spot = { x: dp.x + o[0], y: dp.y + o[1] }; } }
+            else {
+                const back = target.portals.find(q => q.to === from || (from === 'out' && q.to === 'out'));
+                if (back) { spot = { x: back.x, y: back.y - (back.kind === 'door' ? 1.2 : 0) }; if (back.kind !== 'door') { const n = fxNearestFree(target, back.x + 1.1, back.y); if (n) spot = { x: (n.x + 0.5) * FX_NAV, y: (n.y + 0.5) * FX_NAV }; } }
+            }
+            if (!spot || !fxCellFree(target, spot.x, spot.y)) { const n = fxNearestFree(target, spot?.x ?? target.w / 2, spot?.y ?? target.h / 2); spot = n ? { x: (n.x + 0.5) * FX_NAV, y: (n.y + 0.5) * FX_NAV } : { x: target.w / 2, y: target.h / 2 }; }
+            E.player.x = spot.x; E.player.y = spot.y; E.fx.path = null; E.fx.target = null; E.fx.camX = null;
+            const a = document.getElementById('fxArea'); if (a) a.textContent = target.title;
+            add3DLog(to === 'out' ? '🌤️ Vyšel jsi ven.' : p.kind === 'hatch' ? '🕳️ Slezl jsi do sklepa. Je tu tma…' : p.kind === 'stairs' ? `🪜 ${target.title}` : `🚪 Vstoupil jsi: ${target.title}`);
+        }
+        function fxAskExit(E, p) {
+            if (E._exitConfirmPending) return;
+            E._exitConfirmPending = true; E.running = false; E.fx.exitBack = { x: p.x - (p.x > E.fx.scenes.out.w - 3 ? 1.6 : 0), y: p.y + (p.y < 3 ? 1.6 : 0) };
+            showModal('🚪 Východ', `<div style="text-align:center;margin-bottom:.8rem"><div style="font-size:3.5rem">🚪</div><div style="color:#4caf50;font-weight:bold">Našel jsi cestu ven!</div></div>
+                <div style="background:#0a1a0a;border:1px solid #2a4a2a;border-radius:6px;padding:.6rem;margin-bottom:.5rem;font-size:.78rem;color:#aaa">📦 Sebráno: ${E.loot.length} · 💀 Zabito: ${E.killedEnemies.length} · 🏚️ Budov: ${E.fx.buildings.length}</div>
+                <div style="background:#1a1a0a;border:1px solid #5a4a1a;border-radius:6px;padding:.5rem;margin-bottom:.5rem;font-size:.72rem;color:#ffa726">💡 Ještě se můžeš vrátit – v budovách, patrech a sklepech může být další kořist.</div>
+                <div style="display:flex;gap:.4rem"><button class="btn" onclick="closeModal(); confirm3DExit(true);" style="flex:1;background:#1b5e20;border:1px solid #2e7d32;padding:.6rem">✅ Odejít s bonusem</button>
+                <button class="btn" onclick="closeModal(); confirm3DExit(false);" style="flex:1;background:#5a3a15;border:1px solid #7a5a25;padding:.6rem">⏪ Zůstat</button></div>`);
+        }
+
+        // ---------- VYKRESLENÍ ----------
+        const _fxPat = {};
+        function fxPattern(ctx, name, U, scaleUnits) {
+            const im = _kxImg(name.indexOf('gt_') === 0 ? 'img/kenney/' + name + '.jpg' : name); if (!im) return null;
+            const k = name + '|' + ctx.canvas.width; let p = _fxPat[k];
+            if (!p) { p = ctx.createPattern(im, 'repeat'); _fxPat[k] = p; }
+            try { p.setTransform(new DOMMatrix().scaleSelf(U * scaleUnits / im.naturalWidth)); } catch (e) {}
+            return p;
+        }
+        function fxRender(E) {
+            const ctx = E.ctx, cv = E.canvas; if (!ctx || !cv) return;
+            const W = cv.width, H = cv.height, sc = fxScene(E), P = E.player, t = Date.now() / 1000;
+            const U = E.fx.U = Math.max(34, Math.min(80, Math.min(W, H) / 8.2));
+            // kamera plynule za hráčem, omezená okraji scény
+            const half = (v, s) => s / 2 / U >= v / 2 ? v / 2 : null;
+            let cx = P.x, cy = P.y;
+            const hx = W / 2 / U, hy = H / 2 / U;
+            // hráč je vždy uprostřed (trochu výš, ať ho nezakrývá log dole)
+            cy = cy + (H * 0.08) / U;
+            if (E.fx.camX == null) { E.fx.camX = cx; E.fx.camY = cy; } else { E.fx.camX += (cx - E.fx.camX) * 0.18; E.fx.camY += (cy - E.fx.camY) * 0.18; }
+            const ox = W / 2 - E.fx.camX * U, oy = H / 2 - E.fx.camY * U;
+            const X = x => ox + x * U, Y = y => oy + y * U;
+            ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#050403'; ctx.fillRect(0, 0, W, H);
+            ctx.save(); ctx.translate(ox, oy);
+            // zem
+            if (sc.kind === 'out') {
+                const g = fxPattern(ctx, sc.ground, U, 6); ctx.fillStyle = g || '#3a3326'; ctx.fillRect(0, 0, sc.w * U, sc.h * U);
+                const B = FX_BIOMES[E.biome], rp = fxPattern(ctx, B.road, U, 5);
+                for (const r of sc.roads) { ctx.fillStyle = rp || '#2a2a2a'; ctx.fillRect(r.x * U, r.y * U, r.w * U, r.h * U); ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(r.x * U, r.y * U, r.w * U, 3); ctx.fillRect(r.x * U, (r.y + r.h) * U - 3, r.w * U, 3); }
+            } else {
+                const f = fxPattern(ctx, sc.floor, U, 1); ctx.fillStyle = f || '#3a2e22'; ctx.fillRect(0, 0, sc.w * U, sc.h * U);
+            }
+            ctx.restore();
+            const vis = (x, y, m) => X(x) > -m * U && X(x) < W + m * U && Y(y) > -m * U && Y(y) < H + m * U;
+            for (const d of sc.decals) { if (!vis(d.x, d.y, 1)) continue; const im = _kxImg(d.img); if (im) { ctx.globalAlpha = 0.85; _kxSprite(ctx, im, X(d.x), Y(d.y), U * d.s, d.rot); ctx.globalAlpha = 1; } }
+            // díry v podlaze
+            for (const b of sc.blocks) if (b.hole) { ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(X(b.x + b.w / 2), Y(b.y + b.h / 2), b.w / 2 * U, b.h / 2 * U, 0, 0, 6.29); ctx.fill(); ctx.strokeStyle = '#4a3a28'; ctx.lineWidth = 3; ctx.stroke(); }
+            // pasti
+            for (const tr of E.traps) { if (tr.scene !== sc.id || (!tr.revealed && !tr.done)) continue; const im = _kxImg(tr.done ? 'o_snare' : 'o_mine'); if (im) _kxSprite(ctx, im, X(tr.x + 0.5), Y(tr.y + 0.5), U * 0.7, 0); else _kxEmoji(ctx, tr.done ? '✖️' : '⚠️', X(tr.x + .5), Y(tr.y + .5), U * .45); }
+            // portály
+            for (const p of sc.portals) {
+                if (!vis(p.x, p.y, 1)) continue;
+                const pulse = 0.55 + Math.sin(t * 3) * 0.25;
+                ctx.fillStyle = p.kind === 'exit' ? `rgba(76,175,80,${pulse * 0.45})` : `rgba(255,190,90,${pulse * 0.35})`;
+                ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), U * 0.62, 0, 6.29); ctx.fill();
+                if (p.kind === 'exit') { const im = _kxImg('x_exit'); if (im) ctx.drawImage(im, X(p.x) - U * .45, Y(p.y) - U * .45, U * .9, U * .9); else _kxEmoji(ctx, '🚪', X(p.x), Y(p.y), U * .55); }
+                else if (p.kind === 'hatch') { ctx.fillStyle = '#120c06'; ctx.fillRect(X(p.x) - U * .38, Y(p.y) - U * .38, U * .76, U * .76); ctx.strokeStyle = '#7a5a30'; ctx.lineWidth = 3; ctx.strokeRect(X(p.x) - U * .38, Y(p.y) - U * .38, U * .76, U * .76); _kxEmoji(ctx, '🕳️', X(p.x), Y(p.y), U * .4); }
+                else if (p.kind === 'stairs') { for (let i = 0; i < 4; i++) { ctx.fillStyle = i % 2 ? '#6a4a2a' : '#8a6a3a'; ctx.fillRect(X(p.x) - U * .4, Y(p.y) - U * .4 + i * U * .2, U * .8, U * .2); } _kxEmoji(ctx, '🪜', X(p.x), Y(p.y), U * .38); }
+                else if (sc.kind === 'in') { ctx.fillStyle = '#1a120a'; ctx.fillRect(X(p.x) - U * .8, Y(p.y) - U * .1, U * 1.6, U * .7); }
+            }
+            // kořist
+            for (const li of E.lootItems) { if (li.collected || li.scene !== sc.id || !vis(li.x, li.y, 1)) continue; const im = _kxImg(KX_LOOT_SPRITES[li.icon] || 'o_crate1'); const bob = Math.sin(t * 2.5 + li.x) * 0.03; ctx.fillStyle = 'rgba(255,215,90,.18)'; ctx.beginPath(); ctx.arc(X(li.x), Y(li.y), U * .5, 0, 6.29); ctx.fill(); if (im) _kxSprite(ctx, im, X(li.x), Y(li.y), U * (0.8 + bob), 0); else _kxEmoji(ctx, li.icon, X(li.x), Y(li.y), U * .5); if (li.locked) _kxEmoji(ctx, '🔒', X(li.x) + U * .28, Y(li.y) - U * .28, U * .26); }
+            // nízké rekvizity (ne stromy) + nepřátelé + hráč, seřazené podle Y
+            const ents = [];
+            for (const p of sc.props) if (vis(p.x, p.y, 2)) ents.push({ y: p.y + (p.tall ? 0.6 : 0), draw: () => { const im = _kxImg(p.img); ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(X(p.x) + U * .08, Y(p.y) + U * .1, U * p.r * 1.05, U * p.r * .8, 0, 0, 6.29); ctx.fill(); if (im) _kxSprite(ctx, im, X(p.x), Y(p.y), U * p.s, p.rot); } });
+            for (const en of E.enemies) {
+                if (!en.alive || en.scene !== sc.id || !vis(en.x, en.y, 1)) continue;
+                ents.push({ y: en.y, draw: () => {
+                    const ks = typeof _kcUnitSprite === 'function' ? _kcUnitSprite({ team: 'enemy', enemyId: en.enemyId, isRanged: false }) : null; const im = ks ? _kxImg(ks.src) : null;
+                    ctx.fillStyle = en.chasing ? 'rgba(255,60,60,.35)' : 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(X(en.x), Y(en.y) + U * .05, U * .34, U * .27, 0, 0, 6.29); ctx.fill();
+                    if (im) _kxSprite(ctx, im, X(en.x), Y(en.y), U * 0.75 * (ks.scale || 1), en.ang || 0); else _kxEmoji(ctx, en.icon, X(en.x), Y(en.y), U * .55);
+                    if (en.spotted) _kxEmoji(ctx, en.chasing ? '❗' : '👁️', X(en.x) + U * .3, Y(en.y) - U * .35, U * .3);
+                } });
+            }
+            ents.push({ y: P.y, draw: () => {
+                ctx.fillStyle = 'rgba(139,195,74,.35)'; ctx.beginPath(); ctx.ellipse(X(P.x), Y(P.y) + U * .05, U * .33, U * .26, 0, 0, 6.29); ctx.fill();
+                const pi = _kxImg('c_survivor_gun'); const sw = E.fx.moving ? Math.sin(t * 15) * 0.06 : 0;
+                if (pi) _kxSprite(ctx, pi, X(P.x), Y(P.y), U * 0.76, P.angle + sw); else _kxEmoji(ctx, '🧍', X(P.x), Y(P.y), U * .6);
+            } });
+            ents.sort((a, b) => a.y - b.y).forEach(e => e.draw());
+            // zdi (s horní hranou pro dojem výšky)
+            for (const w of sc.walls) {
+                if (!vis(w.x + w.w / 2, w.y + w.h / 2, Math.max(w.w, w.h))) continue;
+                const p = fxPattern(ctx, w.img || sc.wallImg || 'w_ruin', U, 1);
+                ctx.save(); ctx.translate(ox, oy); ctx.fillStyle = p || '#4a4038'; ctx.fillRect(w.x * U, w.y * U, w.w * U, w.h * U); ctx.restore();
+                if (!w.low) { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(X(w.x), Y(w.y + w.h), w.w * U, U * .12); ctx.fillStyle = 'rgba(255,230,190,.12)'; ctx.fillRect(X(w.x), Y(w.y), w.w * U, 3); }
+            }
+            // budovy zvenku: stín, střecha, okraj, dveře, název
+            for (const bl of sc.blocks) {
+                const b = bl.b; if (!b || !vis(b.x + b.w / 2, b.y + b.h / 2, Math.max(b.w, b.h))) continue;
+                ctx.fillStyle = 'rgba(0,0,0,.38)'; ctx.fillRect(X(b.x) + U * .25, Y(b.y) + U * .3, b.w * U, b.h * U);
+                const wp = fxPattern(ctx, FX_BIOMES[E.biome].wall, U, 1); ctx.save(); ctx.translate(ox, oy); ctx.fillStyle = wp || '#4a4038'; ctx.fillRect(b.x * U, b.y * U, b.w * U, b.h * U); ctx.restore();
+                const rp = fxPattern(ctx, b.roof, U, 2.2); ctx.save(); ctx.translate(ox, oy); ctx.fillStyle = rp || '#6a4a30'; ctx.fillRect((b.x + .3) * U, (b.y + .3) * U, (b.w - .6) * U, (b.h - .6) * U); ctx.restore();
+                ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 2; ctx.strokeRect(X(b.x + .3), Y(b.y + .3), (b.w - .6) * U, (b.h - .6) * U);
+                ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(X(b.x + b.w / 2) - 1, Y(b.y + .3), 2, (b.h - .6) * U);
+                const d = b.door, dw = U * 1.1, dh = U * .5;
+                ctx.fillStyle = '#140d06'; if (b.side === 'S' || b.side === 'N') ctx.fillRect(X(d.x) - dw / 2, Y(b.side === 'S' ? b.y + b.h - .25 : b.y - .25), dw, dh); else ctx.fillRect(X(b.side === 'E' ? b.x + b.w - .25 : b.x - .25), Y(d.y) - dw / 2, dh, dw);
+                ctx.font = `bold ${Math.round(U * .3)}px 'PA Oswald',sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillStyle = 'rgba(0,0,0,.6)'; const tw = ctx.measureText(b.name).width + U * .4; ctx.fillRect(X(b.x + b.w / 2) - tw / 2, Y(b.y + b.h / 2) - U * .25, tw, U * .5);
+                ctx.fillStyle = '#ffe2a8'; ctx.fillText(b.name, X(b.x + b.w / 2), Y(b.y + b.h / 2));
+                const extra = (b.floors > 1 ? '🪜' : '') + (b.cellar ? '🕳️' : '');
+                if (extra) _kxEmoji(ctx, extra, X(b.x + b.w / 2), Y(b.y + b.h / 2) + U * .5, U * .3);
+            }
+            // vysoké věci (koruny stromů) přes hráče
+            // značka cíle
+            const mk = E.fx.marker; if (mk && Date.now() - mk.t < 700) { const a = 1 - (Date.now() - mk.t) / 700; ctx.strokeStyle = mk.bad ? `rgba(255,80,80,${a})` : `rgba(255,220,120,${a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(X(mk.x), Y(mk.y), U * (0.2 + (1 - a) * 0.4), 0, 6.29); ctx.stroke(); }
+            if (E.fx.path && E.fx.path.length) { ctx.strokeStyle = 'rgba(255,220,120,.35)'; ctx.setLineDash([6, 8]); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(P.x), Y(P.y)); E.fx.path.forEach(q => ctx.lineTo(X(q.x), Y(q.y))); ctx.stroke(); ctx.setLineDash([]); }
+            // tma + mlha (neprozkoumané = černé, mimo světlo = šero)
+            if (!E.fx.dark || E.fx.dark.width !== W || E.fx.dark.height !== H) { E.fx.dark = document.createElement('canvas'); E.fx.dark.width = W; E.fx.dark.height = H; }
+            const dc = E.fx.dark.getContext('2d'); dc.globalCompositeOperation = 'source-over'; dc.clearRect(0, 0, W, H);
+            const cw = Math.ceil(sc.w), dim = sc.kind === 'out' ? 0.42 : (sc.dark || 0.7);
+            dc.fillStyle = `rgba(0,0,0,${dim})`; dc.fillRect(0, 0, W, H);
+            if (sc.seen) {
+                const chh = Math.ceil(sc.h);
+                if (!sc._mask) { sc._mask = document.createElement('canvas'); sc._mask.width = cw + 2; sc._mask.height = chh + 2; sc._maskN = -1; }
+                let n = 0; for (let i = 0; i < sc.seen.length; i++) n += sc.seen[i];
+                if (n !== sc._maskN) {
+                    sc._maskN = n; const mc = sc._mask.getContext('2d'), id = mc.createImageData(cw + 2, chh + 2);
+                    for (let y = 0; y < chh + 2; y++) for (let x = 0; x < cw + 2; x++) { const sx = x - 1, sy = y - 1; const seen = sx >= 0 && sy >= 0 && sx < cw && sy < chh && sc.seen[sy * cw + sx]; id.data[(y * (cw + 2) + x) * 4 + 3] = seen ? 0 : 255; }
+                    mc.putImageData(id, 0, 0);
+                }
+                dc.imageSmoothingEnabled = true; dc.imageSmoothingQuality = 'high';
+                dc.drawImage(sc._mask, X(-1.5), Y(-1.5), (cw + 2) * U, (chh + 2) * U);
+                dc.fillStyle = '#000'; const L = X(-1), T = Y(-1), Rr = X(sc.w + 1), Bt = Y(sc.h + 1);
+                if (L > 0) dc.fillRect(0, 0, L, H); if (Rr < W) dc.fillRect(Rr, 0, W - Rr, H); if (T > 0) dc.fillRect(0, 0, W, T); if (Bt < H) dc.fillRect(0, Bt, W, H - Bt);
+            }
+            dc.globalCompositeOperation = 'destination-out';
+            const R = (sc.light || 5) * U * (1 + Math.sin(t * 7) * (sc.kind === 'in' ? 0.012 : 0));
+            const gr = dc.createRadialGradient(X(P.x), Y(P.y), R * 0.15, X(P.x), Y(P.y), R);
+            gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.65, 'rgba(0,0,0,.85)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+            dc.fillStyle = gr; dc.beginPath(); dc.arc(X(P.x), Y(P.y), R, 0, 6.29); dc.fill();
+            ctx.drawImage(E.fx.dark, 0, 0);
+            if (sc.kind === 'in') { ctx.fillStyle = 'rgba(255,170,80,.05)'; ctx.fillRect(0, 0, W, H); }
+            if (E._alertFlashUntil && Date.now() < E._alertFlashUntil) { ctx.fillStyle = 'rgba(255,0,0,.18)'; ctx.fillRect(0, 0, W, H); }
+            if (E.fx.fade > 0) { ctx.fillStyle = `rgba(0,0,0,${E.fx.fade})`; ctx.fillRect(0, 0, W, H); }
+            // +kořist vyskakovací text
+            if (E.fx.pops) { E.fx.pops = E.fx.pops.filter(p => Date.now() - p.t < 900); E.fx.pops.forEach(p => { const a = (Date.now() - p.t) / 900; ctx.globalAlpha = 1 - a; _kxEmoji(ctx, '✨', X(p.x), Y(p.y) - a * U, U * .5); ctx.globalAlpha = 1; }); }
+            fxMini(E, sc);
+        }
+        function fxMini(E, sc) {
+            const m = E.miniMapCtx; if (!m) return; const MW = m.canvas.width, MH = m.canvas.height;
+            const k = Math.min(MW / sc.w, MH / sc.h), ox = (MW - sc.w * k) / 2, oy = (MH - sc.h * k) / 2, cw = Math.ceil(sc.w);
+            m.clearRect(0, 0, MW, MH); m.fillStyle = 'rgba(0,0,0,.75)'; m.fillRect(0, 0, MW, MH);
+            if (sc.seen) { m.fillStyle = sc.kind === 'out' ? '#4a4232' : '#3a2e22'; for (let y = 0; y < Math.ceil(sc.h); y++) for (let x = 0; x < cw; x++) if (sc.seen[y * cw + x]) m.fillRect(ox + x * k, oy + y * k, k + .5, k + .5); }
+            m.fillStyle = '#8a7a60'; for (const w of sc.walls) m.fillRect(ox + w.x * k, oy + w.y * k, Math.max(1, w.w * k), Math.max(1, w.h * k));
+            m.fillStyle = '#6a5038'; for (const b of sc.blocks) if (b.b) m.fillRect(ox + b.x * k, oy + b.y * k, b.w * k, b.h * k);
+            for (const p of sc.portals) { m.fillStyle = p.kind === 'exit' ? '#4caf50' : '#ffb74d'; m.fillRect(ox + p.x * k - 2, oy + p.y * k - 2, 4, 4); }
+            m.fillStyle = '#9cff57'; m.beginPath(); m.arc(ox + E.player.x * k, oy + E.player.y * k, 3, 0, 6.29); m.fill();
+        }
+
         // [v7.39] Volba průzkumu: rychlé prohledání nebo projití trosek
         function exploreChooser(locId, canSearch) {
             const card = (onc, icon, t, d, c) => `<button class="btn" onclick="${onc}" style="display:flex;align-items:center;gap:.7rem;width:100%;text-align:left;padding:.75rem;margin-bottom:.5rem;background:linear-gradient(180deg,#2a2016,#17110b);border:1px solid ${c};border-radius:10px"><span style="font-size:2rem">${icon}</span><span><b style="display:block;color:#f2c97a;font-size:.95rem;letter-spacing:.4px">${t}</b><small style="color:#b5a88f;font-size:.72rem;line-height:1.3">${d}</small></span></button>`;
@@ -52623,6 +53301,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🆕 [v6.4.0] Setup combat hook (jednou per session)
             setupExplore3DCombatHook();
+            // [v7.46] Nový volný průzkum (klepni kam jít, budovy, patra, sklepy)
+            if (typeof FX_ENABLED !== 'undefined' && FX_ENABLED) { fxStart(loc); return; }
             
             // ====== STAV HRY 3D ======
             const E = window._explore3D = {
@@ -54706,7 +55386,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const settlersCount = (state.settlement?.settlers || []).length;
                     status.innerHTML = `🏠 ${builtCount} budov | 👥 ${settlersCount} osadníků | Choď a sleduj!`;
                 } else {
-                    status.innerHTML = `🏚️ Prozkoumej trosky | 🚪 najdi východ`;
+                    status.innerHTML = E.fx ? `🧭 ${FX_BIOMES[E.biome].name} · 📦 ${E.loot.length} · klepni kam jít` : `🏚️ Prozkoumej trosky | 🚪 najdi východ`;
                 }
             }
             // 🆕 [v6.4.0] Aktualizuj HP/hunger/thirst
@@ -54718,8 +55398,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 hpEl.textContent = hp;
                 hpEl.style.color = hp < 30 ? '#f44336' : hp < 60 ? '#ffa726' : '#fff';
             }
-            if (hungerEl) hungerEl.textContent = state.char?.hunger || 0;
-            if (thirstEl) thirstEl.textContent = state.char?.thirst || 0;
+            if (hungerEl) hungerEl.textContent = Math.round(state.status?.hunger ?? state.char?.hunger ?? 0);
+            if (thirstEl) thirstEl.textContent = Math.round(state.status?.thirst ?? state.char?.thirst ?? 0);
         }
         
         // 🆕 [v6.4.0] Spustí boj během 3D explore, po výhře vrátí do 3D
@@ -54836,6 +55516,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Znovu otevřít 3D modal po boji
         function reopen3DExploration() {
+            if (window._explore3D?.fx) { fxOpenUI(true); return; }
             const E = window._explore3D;
             if (!E) {
                 console.warn('⚠️ reopen3DExploration: state je null, nemůžu otevřít');
