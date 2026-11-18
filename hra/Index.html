@@ -7606,6 +7606,10 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
                 const _attrVal = _setFxAttr[attr];
                 if (_attrVal && _attrVal > 0) total += _attrVal;
             }
+            // [v7.50] Zranění (otřes mozku) zhoršuje vnímání
+            if (attr === 'per' && typeof getInjuryModifiers === 'function') {
+                try { const pm = getInjuryModifiers().perceptionMod || 1; if (pm < 1) total = Math.max(1, Math.round(total * pm)); } catch (e) {}
+            }
             
             return total;
         }
@@ -23357,6 +23361,25 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // Pokus o nakažení nemocí
+
+        // [v7.50] Výdrž pro každou výbavu (dřív ji dostaly jen věci v batohu při načtení hry,
+        // takže startovní zbraně nové postavy se nikdy neopotřebovaly a nešly opravit)
+        function _ensureGearDurability(item) {
+            if (!item || !['weapon', 'armor', 'helmet', 'gloves', 'boots'].includes(item.type) || item.durability !== undefined) return;
+            const baseDur = item.rarity === 'legendary' ? 200 : item.rarity === 'epic' ? 150 : item.rarity === 'rare' ? 120 : item.rarity === 'uncommon' ? 80 : 50;
+            item.maxDurability = baseDur; item.durability = baseDur;
+        }
+        function _ensureAllGearDurability() {
+            try { ['weapon', 'armor', 'helmet', 'boots', 'gloves'].forEach(sl => _ensureGearDurability(state.equipped?.[sl])); (state.inv || []).forEach(_ensureGearDurability); } catch (e) {}
+        }
+        // [v7.50] Přepočet max HP po změně nemocí/kleteb (HP nepřeteče přes nové maximum)
+        function _healthRecalcMaxHp() {
+            try {
+                if (typeof calculateMaxHp !== 'function' || !state.char) return;
+                const m = calculateMaxHp();
+                if (m && m !== state.char.maxHp) { state.char.maxHp = m; if (state.char.hp > m) state.char.hp = m; }
+            } catch (e) {}
+        }
         function tryInfectDisease(diseaseId, customChance = null) {
             initDiseases();
             
@@ -23409,6 +23432,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 
                 addLog(`🦠 Chytil jsi ${disease.name}!`, disease.icon);
                 notifyWarning('Nemoc!', `${disease.icon} ${disease.name}: ${disease.desc}`);
+                _healthRecalcMaxHp();
                 
                 return true;
             }
@@ -23430,6 +23454,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // Dočasná imunita po vyléčení (48 hodin)
             addDiseaseImmunity(diseaseId, 48 * 60 * 60 * 1000);
             
+            _healthRecalcMaxHp();
             if (disease) {
                 addLog(`✅ Vyléčil ses z: ${disease.name} (imunita 48h)`, '💊');
                 notifySuccess('Vyléčen!', `${disease.icon} ${disease.name} byla vyléčena (imunita 48h)`);
@@ -23617,7 +23642,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Zkažené jídlo (pokud by takový systém byl)
             if (itemId === 'spoiled_food' || itemId === 'rotten_meat') {
-                tryInfectDisease('food_poisoning', 0.4); // Sníženo z 0.6
+                tryInfectDisease('food_poisoning', 2.5); // [v7.50] po globálním snížení ×0,2 = 50 %
             }
         }
         
@@ -23652,15 +23677,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         
                         const currentHpPercent = state.char.hp / state.char.maxHp;
                         if (currentHpPercent > 0.15) { // Neklesne pod 15% HP
-                            console.log(`🦠 Disease HP drain: ${disease.name} -${disease.effects.hpDrain} HP`);
-                            state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.15), state.char.hp - disease.effects.hpDrain);
-                            addLog(`${disease.icon} ${disease.name} ti ubližuje... (-${disease.effects.hpDrain} HP)`, '💔');
+                            const _dr = Math.max(disease.effects.hpDrain, Math.round(state.char.maxHp * 0.02 * disease.effects.hpDrain));
+                            state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.15), state.char.hp - _dr);
+                            addLog(`${disease.icon} ${disease.name} ti ubližuje... (-${_dr} HP)`, '💔');
                         }
                     }
                 }
                 
                 return true; // Ponech v poli
             });
+            _healthRecalcMaxHp();
+            _ensureAllGearDurability();
         }
         
         // Získání celkových modifikátorů z nemocí
@@ -24640,9 +24667,9 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         
                         const currentHpPercent = state.char.hp / state.char.maxHp;
                         if (currentHpPercent > 0.15) { // Neklesne pod 15% HP
-                            console.log(`🩹 Injury HP drain: ${injury.name} -${injury.effects.hpDrain} HP`);
-                            state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.15), state.char.hp - injury.effects.hpDrain);
-                            addLog(`${injury.icon} ${injury.name} krvácí... (-${injury.effects.hpDrain} HP)`, '💔');
+                            const _dr = Math.max(injury.effects.hpDrain, Math.round(state.char.maxHp * 0.02 * injury.effects.hpDrain));
+                            state.char.hp = Math.max(Math.floor(state.char.maxHp * 0.15), state.char.hp - _dr);
+                            addLog(`${injury.icon} ${injury.name} krvácí... (-${_dr} HP)`, '💔');
                         }
                     }
                 }
@@ -29505,6 +29532,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // Nelze nasadit rozbitou věc (durability 0)
             const checkItem = state.inv.find(i => i.id === itemId && (i.type === slotType || i.type === 'power_armor'));
+            if (typeof _ensureGearDurability === 'function') _ensureGearDurability(checkItem);
             // [v7.49] Požadavek na level
             { const _def = checkItem ? (ITEMS.find(i => i.id === checkItem.id) || checkItem) : null; const _rq = _def ? itemReqLevel({ ...(_def), ...checkItem }) : 1;
               if (_rq > (state.char?.level || 1)) { notifyWarning('🎚️ Vyšší level', `${checkItem.name} můžeš nasadit až od levelu ${_rq} (máš ${state.char?.level || 1}).`); return; } }
@@ -83447,6 +83475,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         
         // === SYSTÉM KAZENÍ JÍDLA ===
         // Syrové jídlo se kazí po určitém počtu dní
+        // [v7.50] Zkažené jídlo – nezmizí, ale zůstane v batohu. V nouzi se dá sníst (riziko otravy).
+        if (!ITEMS.find(i => i.id === 'spoiled_food')) ITEMS.push({ id: 'spoiled_food', name: 'Zkažené jídlo', icon: '🤢', type: 'consumable', effect: 'hunger', value: 8, weight: 0.3, price: 1, rarity: 'common', desc: 'Páchne to. Zasytí jen trochu a nejspíš ti bude zle.' });
         const PERISHABLE_FOOD = {
             // Syrové - krátká trvanlivost
             'raw_meat': { days: 2, name: 'Syrové maso', icon: '🥩' },
@@ -83554,6 +83584,11 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 if (PERISHABLE_FOOD[item.id] && (item.count || 1) <= 0) return false;
                 return true;
             });
+            // [v7.50] Co se zkazilo, nezmizí – přibude jako Zkažené jídlo
+            if (spoiledItems.length) {
+                const nSp = spoiledItems.reduce((a, t) => a + (parseInt((t.match(/(\d+)x/) || [])[1]) || 1), 0);
+                try { const def = ITEMS.find(i => i.id === 'spoiled_food'); if (def && nSp > 0) addItemToInventory({ ...def }, nSp); } catch (e) {}
+            }
             
             // Notifikace pokud se něco zkazilo
             if (spoiledItems.length > 0) {
@@ -95185,28 +95220,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            // === [FIX v3.9.60] ARMOR DEGRADATION - chybělo v novém hex combatu ===
-            // Brnění se opotřebovává když hráč dostane damage (jen pro hráče)
-            if (target.isPlayer && finalDamage > 0 && typeof hasClassPassive === 'function' && !hasClassPassive('noDurabilityLoss')) {
-                try {
-                    const degradeSlots = ['armor', 'helmet', 'gloves', 'boots'];
-                    degradeSlots.forEach(slot => {
-                        const piece = state.equipped?.[slot];
-                        if (piece && piece.durability !== undefined && piece.durability > 0) {
-                            // Brnění 2 dur/hit, ostatní 1 dur/hit
-                            const durLoss = slot === 'armor' ? 2 : 1;
-                            piece.durability = Math.max(0, piece.durability - durLoss);
-                            if (piece.durability === 0) {
-                                cs.log.push(`💔 ${piece.icon || '🛡️'} ${piece.name} se rozpadlo!`);
-                                if (!state.inv.some(i => i === piece)) state.inv.push({...piece});
-                                state.equipped[slot] = null;
-                            } else if (piece.durability <= 20 && piece.durability % 5 === 0) {
-                                cs.log.push(`⚠️ ${piece.name}: ${piece.durability}/${piece.maxDurability}`);
-                            }
-                        }
-                    });
-                } catch (e) { console.warn('⚠️ Armor degradation error:', e); }
-            }
+            // [v7.50] Duplicitní opotřebení zbroje odstraněno – řeší ho blok „OPOTŘEBENÍ VYBAVENÍ PŘI ZÁSAHU HRÁČE“ níže
             
             // [NEW] COMPANION BONUS: Vampír (lifesteal)
             if ((attacker.isPlayer || attacker.team === 'player') && finalDamage > 0 && !target.isPlayer) {
@@ -95951,7 +95965,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 ];
                 slots.forEach(slot => {
                     const eq = state.equipped?.[slot.key];
-                    if (eq && eq.durability !== undefined && eq.durability > 0) {
+                    // [v7.50] Postupné opotřebení: zbroj 50 % šance, ostatní 35 % šance na −1 za zásah
+                    cs._wear = cs._wear || {};
+                    if (eq && eq.durability !== undefined && eq.durability > 0 && (cs._wear[slot.key] || 0) < 8 && Math.random() < (slot.key === 'armor' ? 0.5 : 0.35)) {
+                        cs._wear[slot.key] = (cs._wear[slot.key] || 0) + 1; // [v7.50] max 8 bodů za jeden boj
                         eq.durability = Math.max(0, eq.durability - slot.loss);
                         if (eq.durability === 0) {
                             cs.log.push(`💔 ${eq.name} se rozpadlo! (stále v inventáři)`);
@@ -98454,7 +98471,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // Engineer class passive - žádné opotřebení
                 if (!hasClassPassive('noDurabilityLoss')) {
                     const compBonuses = typeof getAllCompanionBonuses === 'function' ? getAllCompanionBonuses() : {};
-                    let durLoss = 1; // 1 durability za útok v taktickém boji
+                    let durLoss = Math.random() < 0.4 ? 1 : 0; // [v7.50] 40 % šance na −1 za útok (dřív každý útok → startovní zbraň vydržela 3 boje)
                     
                     // Legendary smith skill - 50% šance ušetřit opotřebení
                     if (getSkillLevel('legendary_smith') > 0 && Math.random() < 0.50) {
@@ -98466,6 +98483,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                         durLoss = 0;
                     }
                     
+                    if (durLoss > 0) { cs._wear = cs._wear || {}; if ((cs._wear.weapon || 0) >= 8) durLoss = 0; else cs._wear.weapon = (cs._wear.weapon || 0) + 1; } // [v7.50] max 8/boj
                     if (durLoss > 0) {
                         weapon.durability = Math.max(0, weapon.durability - durLoss);
                         if (weapon.durability === 0) {
@@ -102512,7 +102530,7 @@ body.pa-theme #paOverlay{display:block}
                 
                 // Degrade armor - 2 durability za kolo (Mechanik: neDurabilityLoss)
                 if (!hasClassPassive('noDurabilityLoss') && playerArmor && playerArmor.durability !== undefined) {
-                    playerArmor.durability = Math.max(0, playerArmor.durability - 2);
+                    cs._wear = cs._wear || {}; if ((cs._wear.armor || 0) < 8 && Math.random() < 0.25) { cs._wear.armor = (cs._wear.armor || 0) + 1; playerArmor.durability = Math.max(0, playerArmor.durability - 1); } // [v7.50] postupné opotřebení, max 8/boj
                     if (playerArmor.durability === 0) {
                         log.innerHTML += `<div style="color: #c62828;">💔 ${playerArmor.icon} ${playerArmor.name} se rozpadlo! Přesunuto do inventáře.</div>`;
                         state.inv.push({...playerArmor});
@@ -102525,7 +102543,7 @@ body.pa-theme #paOverlay{display:block}
                 // Degrade helmet - 1 durability za kolo (Mechanik: neDurabilityLoss)
                 const playerHelmet = state.equipped?.helmet;
                 if (!hasClassPassive('noDurabilityLoss') && playerHelmet && playerHelmet.durability !== undefined) {
-                    playerHelmet.durability = Math.max(0, playerHelmet.durability - 1);
+                    playerHelmet.durability = Math.max(0, playerHelmet.durability - (Math.random() < 0.35 ? 1 : 0));
                     if (playerHelmet.durability === 0) {
                         log.innerHTML += `<div style="color: #c62828;">💔 ${playerHelmet.icon} ${playerHelmet.name} se rozpadla! Přesunuta do inventáře.</div>`;
                         state.inv.push({...playerHelmet});
@@ -102538,7 +102556,7 @@ body.pa-theme #paOverlay{display:block}
                 // Degrade boots - 1 durability za kolo (Mechanik: neDurabilityLoss)
                 const playerBoots = state.equipped?.boots;
                 if (!hasClassPassive('noDurabilityLoss') && playerBoots && playerBoots.durability !== undefined) {
-                    playerBoots.durability = Math.max(0, playerBoots.durability - 1);
+                    playerBoots.durability = Math.max(0, playerBoots.durability - (Math.random() < 0.35 ? 1 : 0));
                     if (playerBoots.durability === 0) {
                         log.innerHTML += `<div style="color: #c62828;">💔 ${playerBoots.icon} ${playerBoots.name} se rozpadly! Přesunuty do inventáře.</div>`;
                         state.inv.push({...playerBoots});
@@ -102551,7 +102569,7 @@ body.pa-theme #paOverlay{display:block}
                 // Degrade gloves - 1 durability za kolo (Mechanik: neDurabilityLoss)
                 const playerGloves = state.equipped?.gloves;
                 if (!hasClassPassive('noDurabilityLoss') && playerGloves && playerGloves.durability !== undefined) {
-                    playerGloves.durability = Math.max(0, playerGloves.durability - 1);
+                    playerGloves.durability = Math.max(0, playerGloves.durability - (Math.random() < 0.35 ? 1 : 0));
                     if (playerGloves.durability === 0) {
                         log.innerHTML += `<div style="color: #c62828;">💔 ${playerGloves.icon} ${playerGloves.name} se rozpadly! Přesunuty do inventáře.</div>`;
                         state.inv.push({...playerGloves});
@@ -104100,7 +104118,6 @@ body.pa-theme #paOverlay{display:block}
                     maxHp = Math.floor(maxHp * (1 + _invB.maxHpBonusPermanent));
                 }
             }
-            
             return maxHp;
         }
         
