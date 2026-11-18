@@ -19846,6 +19846,18 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         let pendingPickupItem = null;
         let pendingPickupCount = 0;
         
+        // [v7.63] Zrušení „uvolni místo“ → věc nezmizí, ale zůstane ležet na zemi
+        function _pendingPickupToGround() {
+            try {
+                if (pendingPickupItem) {
+                    const g = JSON.parse(JSON.stringify(pendingPickupItem)); g.count = pendingPickupCount || g.count || 1;
+                    addToGroundLoot(g);
+                    notifyInfo('📦 Necháno na zemi', `${g.icon || '📦'} ${g.name} leží na zemi – můžeš ho sebrat později.`);
+                }
+            } catch (e) {}
+            pendingPickupItem = null; pendingPickupCount = 0;
+        }
+        window._pendingPickupToGround = _pendingPickupToGround;
         function showDropItemModal(item, count) {
             pendingPickupItem = item;
             pendingPickupCount = count;
@@ -19891,7 +19903,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${itemsHtml}
                 </div>
                 
-                <button class="btn" onclick="closeModal(); pendingPickupItem = null;" style="width: 100%; margin-top: 0.5rem; background: #555;">
+                <button class="btn" onclick="closeModal(); _pendingPickupToGround();" style="width: 100%; margin-top: 0.5rem; background: #555;">
                     ❌ Nevzít předmět
                 </button>
             `);
@@ -21446,8 +21458,16 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     SoundSystem.play('error');
                     // Nabídni možnost vyhodit něco
                     showDropItemModal(item, count);
+                    return false;
                 }
-                return false;
+                // [v7.63] Tiché přidání (kořist, odměny…) při plném batohu: dřív věc potichu zmizela
+                // (79 míst návratovou hodnotu nekontroluje). Teď ji polož na zem na aktuální lokaci.
+                try {
+                    const g = JSON.parse(JSON.stringify(item)); g.count = count;
+                    addToGroundLoot(g);
+                    notifyWarning('🎒 Batoh je plný', `${item.icon || '📦'} ${item.name}${count > 1 ? ' ×' + count : ''} leží na zemi – seber ho, až uvolníš místo.`);
+                    return 'ground';
+                } catch (e) { return false; }
             }
             
             // Stackovatelné typy: spotřební + fungibilní materiály/komponenty
@@ -34803,6 +34823,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const count = item.count || 1;
             const toMove = amount ? Math.min(amount, count) : count;
+            if (toMove >= count) _unequipRef(item); // [v7.63] vybavenou věc nejdřív sundej
             
             // Najdi existující stack ve skrýši - porovnej podle id a typu (a ammoType pro munici)
             const existingStash = state.stashes[key].find(i => 
@@ -63599,6 +63620,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 state.resources.scrap = (state.resources.scrap || 0) + baseScrap * count;
             }
             
+            _unequipRef(item); // [v7.63]
             state.inv.splice(idx, 1);
         }
         window.recycleItemSilent = recycleItemSilent;
@@ -64236,6 +64258,22 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // [FIX] Helper: zajisti že equipped item je v inventáři, přenes upgrady pokud potřeba
         const _upgradeProps = ['damage', 'defense', 'ivanUpgrades', 'aiUpgraded', 'techUpgrades', 'technicianUpgrades', 'labUpgraded', '_smithyUpgrades', 'abyssShardUpgrades', 'name', 'enchantment', 'durability', 'maxDurability'];
+        // [v7.63] Před přesunem věci z inventáře (skrýš, tiché rozebrání…) ji nejdřív sundej –
+        // jinak zůstane „v ruce“, _ensureEquippedInInventory ji později vrátí do inventáře a vznikne duplikát.
+        function _unequipRef(item) {
+            if (!item || !state.equipped) return false;
+            let hit = false;
+            Object.keys(state.equipped).forEach(k => {
+                const e = state.equipped[k];
+                if (e && typeof e === 'object' && (e === item || (item._uniqueId && e._uniqueId === item._uniqueId))) { state.equipped[k] = null; hit = true; }
+            });
+            if (hit) {
+                window._cachedDamage = null;
+                try { if (typeof calculateMaxHp === 'function') { state.char.maxHp = calculateMaxHp(); state.char.hp = Math.min(state.char.hp, state.char.maxHp); } } catch (e) {}
+            }
+            return hit;
+        }
+        window._unequipRef = _unequipRef;
         function _ensureEquippedInInventory(slotType) {
             const eq = state.equipped?.[slotType];
             if (!eq || !eq.id) return;
@@ -91254,7 +91292,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     
                     const scaledHp = Math.floor((e.hp || e.maxHp) * levelScaling * eliteMultiplier);
                     const scaledDmg = Math.floor(e.damage * levelScaling * (isElite ? 1.5 : 1));
-                    const scaledDef = Math.floor(e.defense * levelScaling * (isElite ? 1.3 : 1));
+                    const scaledDef = Math.floor(e.defense * (1 + (levelScaling - 1) * 0.6) * (isElite ? 1.3 : 1)); // [v7.63] obrana roste pomaleji než HP (odčítá se plošně)
                     
                     units.push({
                         id: unitId++,
@@ -95349,7 +95387,8 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 }
             }
             
-            const _dmgMin = attacker.team === 'enemy' ? Math.floor((attacker.damage || 1) * 0.10) : 1;
+            // [v7.63] symetrické minimum: zbroj pohltí max 85 % rány (dřív hráč min 1 → obrnění roboti nezničitelní, nepřítel 10 %)
+            const _dmgMin = Math.max(1, Math.floor((attacker.team === 'enemy' ? (attacker.damage || 1) : damage) * 0.15));
             let finalDamage = Math.floor(Math.max(_dmgMin, damage - defense));
             
             // [NEW] COMPANION BONUS: Kat (executeBonus) — +% DMG na nepřátele pod 25% HP
