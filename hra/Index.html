@@ -3462,6 +3462,10 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
 .dice-scene{font-size:3rem;text-align:center;margin:.3rem 0}
 .dice-text{text-align:center;color:#d8cfc0;font-size:.9rem;margin-bottom:.7rem;line-height:1.35}
 .dice-opts{display:flex;flex-direction:column;gap:.4rem}
+.dice-opts.dice-lock{pointer-events:none;opacity:.4;filter:grayscale(.6)}
+.dice-opts{transition:opacity .2s}
+.dice-lockbar{height:3px;border-radius:2px;background:#e0a84a;margin:.1rem 0 .4rem;transform-origin:left;animation:diceLockBar var(--lk,700ms) linear forwards}
+@keyframes diceLockBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
 .dice-opt{display:flex;align-items:center;gap:.55rem;width:100%;text-align:left;cursor:pointer;padding:.55rem .6rem;border-radius:9px;background:linear-gradient(#2e2519,#1a140d);border:1px solid #5a4630;color:#f2e4c8;font-family:inherit}
 .dice-opt:active{transform:scale(.98)}
 .dice-opt.off{opacity:.4;cursor:default}
@@ -8642,8 +8646,18 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
                             <span class="tx"><b>${op.label}</b>${op.desc ? `<small>${op.desc}</small>` : ''}</span>
                             ${a ? `<span class="ch"><em style="color:${a.c}">🎲 ${a.s} ${m >= 0 ? '+' : '−'}${Math.abs(m)}</em><small>obtížnost ${op.dc} · ${diceChance(op.attr, op.dc)} %</small></span>` : ''}
                         </button>`; }).join('')}</div></div>`;
+                // [v7.52] ochrana proti „rozjetému“ klepnutí – když volba vyskočí během průzkumu, tlačítka jsou chvíli zamčená
+                const _lk = cfg.guard != null ? cfg.guard : (window._explore3D && document.getElementById('explore3DCanvas') ? 700 : 0);
+                const _unlockAt = Date.now() + _lk;
+                if (_lk > 0) {
+                    const box = ov.querySelector('.dice-opts');
+                    box.classList.add('dice-lock');
+                    box.insertAdjacentHTML('beforebegin', `<div class="dice-lockbar" style="--lk:${_lk}ms"></div>`);
+                    setTimeout(() => { box.classList.remove('dice-lock'); const b = ov.querySelector('.dice-lockbar'); if (b) b.remove(); }, _lk);
+                }
                 ov.querySelectorAll('.dice-opt').forEach(btn => btn.onclick = async () => {
                     const i = +btn.dataset.i, op = opts[i];
+                    if (Date.now() < _unlockAt) return;
                     if (!op || op.disabled) return;
                     if (!op.attr) { _diceClose(); resolve({ index: i, option: op, roll: null }); return; }
                     const roll = await diceRoll({ attr: op.attr, dc: op.dc, label: (op.icon || '') + ' ' + op.label, outcome: op.outcome });
@@ -21452,25 +21466,17 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         
         // Screen shake effect
         function screenShake(intensity = 5, duration = 300) {
-            const container = document.querySelector('.container');
-            if (!container) return;
-            
-            container.style.transition = 'none';
-            const startTime = Date.now();
-            
-            function shake() {
-                const elapsed = Date.now() - startTime;
-                if (elapsed < duration) {
-                    const x = (Math.random() - 0.5) * intensity * 2;
-                    const y = (Math.random() - 0.5) * intensity * 2;
-                    container.style.transform = `translate(${x}px, ${y}px)`;
-                    requestAnimationFrame(shake);
-                } else {
-                    container.style.transform = '';
-                    container.style.transition = '';
-                }
+            // [v7.52] v boji třes jen bojištěm; animace přes WAAPI (compositor) místo přepisování stylu každý snímek
+            const grid = document.getElementById('combatGridContainer') || document.getElementById('pvpCombatGrid');
+            const target = (grid && grid.offsetParent) ? grid : document.querySelector('.container');
+            if (!target) return;
+            if (target.animate) {
+                const n = Math.max(4, Math.round(duration / 35)), fr = [];
+                for (let i = 0; i < n; i++) { const k = 1 - i / n; fr.push({ transform: `translate(${((Math.random() - 0.5) * intensity * 2 * k).toFixed(1)}px, ${((Math.random() - 0.5) * intensity * 2 * k).toFixed(1)}px)` }); }
+                fr.push({ transform: 'translate(0px, 0px)' });
+                try { target.animate(fr, { duration, easing: 'linear' }); return; } catch (e) {}
             }
-            shake();
+            target.style.transform = `translate(${intensity / 2}px, 0)`; setTimeout(() => { target.style.transform = ''; }, duration);
         }
         
         // Particle burst effect
@@ -52988,17 +52994,44 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 window.addEventListener('keydown', E._keyDown); window.addEventListener('keyup', E._keyUp);
                 if (E.tickInterval) clearInterval(E.tickInterval);
                 E.lastTick = Date.now(); E.running = true; E.inCombat = false;
+                // [v7.52] smyčka přes requestAnimationFrame (plynulý pohyb, synchronně s displejem);
+                // při chůzi 60 fps, v klidu ~30 fps. Interval slouží jen jako „tep“ – když ho jiný kód zruší, smyčka se do 1,5 s zastaví.
+                const tok = E._loopTok = (E._loopTok || 0) + 1; E._beat = Date.now();
+                let lastR = 0, pending = false;
                 E.tickInterval = setInterval(() => {
                     if (window._explore3D !== E) { clearInterval(E.tickInterval); return; }
+                    E._beat = Date.now();
+                    if (E._loopTok === tok && !pending) { pending = true; requestAnimationFrame(frame); } // pojistka: smyčka se znovu rozjede
+                }, 400);
+                const frame = () => {
+                    pending = false;
+                    if (window._explore3D !== E || E._loopTok !== tok || Date.now() - E._beat > 1500) return;
+                    pending = true; requestAnimationFrame(frame);
+                    const now = performance.now();
+                    const busy = E.fx.moving || (E.fx.path && E.fx.path.length) || E.fx.fade > 0 || E.fx.camMoving || (E.keys && Object.values(E.keys).some(Boolean));
+                    if (!busy && now - lastR < 31) return;
+                    lastR = now;
                     if (E.running) fxUpdate(E);
                     fxRender(E);
-                    if (++E._st > 30) { E._st = 0; updateExploreStatus(); }
-                }, 33);
+                    fxPerfTune(E, performance.now() - now);
+                    if (++E._st > 40) { E._st = 0; updateExploreStatus(); }
+                };
+                pending = true; requestAnimationFrame(frame);
                 E._st = 0; updateExploreStatus();
                 if (reopen) add3DLog('Vrátil ses do průzkumu.');
             }, 80);
         }
         window.fxOpenUI = fxOpenUI;
+        // [v7.52] Automatické rozlišení plátna: když telefon nestíhá, sniž rozlišení (a při rezervě zase zvyš)
+        function fxPerfTune(E, ms) {
+            const f = E.fx; f._pt = (f._pt || []); f._pt.push(ms); if (f._pt.length < 24) return;
+            const avg = f._pt.reduce((a, b) => a + b, 0) / f._pt.length; f._pt = [];
+            const res = f.res || 1;
+            if (avg > 16 && res > 0.55) { f.res = Math.max(0.55, +(res - 0.15).toFixed(2)); f._good = 0; if (window._exFit) window._exFit(); }
+            else if (avg < 6 && res < 1) { f._good = (f._good || 0) + 1; if (f._good >= 5) { f._good = 0; f.res = Math.min(1, +(res + 0.15).toFixed(2)); if (window._exFit) window._exFit(); } }
+            else f._good = 0;
+        }
+        window.fxPerfTune = fxPerfTune;
 
         // ---------- OVLÁDÁNÍ ----------
         function fxTap(cx, cy) {
@@ -53173,6 +53206,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // hráč je vždy uprostřed (trochu výš, ať ho nezakrývá log dole)
             cy = cy + (H * 0.08) / U;
             if (E.fx.camX == null) { E.fx.camX = cx; E.fx.camY = cy; } else { E.fx.camX += (cx - E.fx.camX) * 0.18; E.fx.camY += (cy - E.fx.camY) * 0.18; }
+            E.fx.camMoving = Math.abs(cx - E.fx.camX) + Math.abs(cy - E.fx.camY) > 0.01;
             const ox = W / 2 - E.fx.camX * U, oy = H / 2 - E.fx.camY * U;
             const X = x => ox + x * U, Y = y => oy + y * U;
             ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#050403'; ctx.fillRect(0, 0, W, H);
@@ -53272,8 +53306,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const mk = E.fx.marker; if (mk && Date.now() - mk.t < 700) { const a = 1 - (Date.now() - mk.t) / 700; ctx.strokeStyle = mk.bad ? `rgba(255,80,80,${a})` : `rgba(255,220,120,${a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(X(mk.x), Y(mk.y), U * (0.2 + (1 - a) * 0.4), 0, 6.29); ctx.stroke(); }
             if (E.fx.path && E.fx.path.length) { ctx.strokeStyle = 'rgba(255,220,120,.35)'; ctx.setLineDash([6, 8]); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(P.x), Y(P.y)); E.fx.path.forEach(q => ctx.lineTo(X(q.x), Y(q.y))); ctx.stroke(); ctx.setLineDash([]); }
             // tma + mlha (neprozkoumané = černé, mimo světlo = šero)
-            if (!E.fx.dark || E.fx.dark.width !== W || E.fx.dark.height !== H) { E.fx.dark = document.createElement('canvas'); E.fx.dark.width = W; E.fx.dark.height = H; }
-            const dc = E.fx.dark.getContext('2d'); dc.globalCompositeOperation = 'source-over'; dc.clearRect(0, 0, W, H);
+            // [v7.52] mlha se kreslí ve ~třetinovém rozlišení (je stejně měkká) a pak se jednou roztáhne – výrazně šetří výkon na mobilu
+            const FQ = 0.34, FW = Math.max(16, Math.ceil(W * FQ)), FH = Math.max(16, Math.ceil(H * FQ));
+            if (!E.fx.dark || E.fx.dark.width !== FW || E.fx.dark.height !== FH) { E.fx.dark = document.createElement('canvas'); E.fx.dark.width = FW; E.fx.dark.height = FH; }
+            const dc = E.fx.dark.getContext('2d'); dc.setTransform(FW / W, 0, 0, FH / H, 0, 0); dc.globalCompositeOperation = 'source-over'; dc.clearRect(0, 0, W, H);
             const cw = Math.ceil(sc.w), dim = sc.kind === 'out' ? 0.42 : (sc.dark || 0.7);
             dc.fillStyle = `rgba(0,0,0,${dim})`; dc.fillRect(0, 0, W, H);
             if (sc.seen) {
@@ -53285,7 +53321,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     for (let y = 0; y < chh + 2; y++) for (let x = 0; x < cw + 2; x++) { const sx = x - 1, sy = y - 1; const seen = sx >= 0 && sy >= 0 && sx < cw && sy < chh && sc.seen[sy * cw + sx]; id.data[(y * (cw + 2) + x) * 4 + 3] = seen ? 0 : 255; }
                     mc.putImageData(id, 0, 0);
                 }
-                dc.imageSmoothingEnabled = true; dc.imageSmoothingQuality = 'high';
+                dc.imageSmoothingEnabled = true; dc.imageSmoothingQuality = 'medium';
                 dc.drawImage(sc._mask, X(-1.5), Y(-1.5), (cw + 2) * U, (chh + 2) * U);
                 dc.fillStyle = '#000'; const L = X(-1), T = Y(-1), Rr = X(sc.w + 1), Bt = Y(sc.h + 1);
                 if (L > 0) dc.fillRect(0, 0, L, H); if (Rr < W) dc.fillRect(Rr, 0, W - Rr, H); if (T > 0) dc.fillRect(0, 0, W, T); if (Bt < H) dc.fillRect(0, Bt, W, H - Bt);
@@ -53295,7 +53331,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const gr = dc.createRadialGradient(X(P.x), Y(P.y), R * 0.15, X(P.x), Y(P.y), R);
             gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.65, 'rgba(0,0,0,.85)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
             dc.fillStyle = gr; dc.beginPath(); dc.arc(X(P.x), Y(P.y), R, 0, 6.29); dc.fill();
-            ctx.drawImage(E.fx.dark, 0, 0);
+            ctx.imageSmoothingEnabled = true; ctx.drawImage(E.fx.dark, 0, 0, W, H);
             if (sc.kind === 'in') { ctx.fillStyle = 'rgba(255,170,80,.05)'; ctx.fillRect(0, 0, W, H); }
             if (E._alertFlashUntil && Date.now() < E._alertFlashUntil) { ctx.fillStyle = 'rgba(255,0,0,.18)'; ctx.fillRect(0, 0, W, H); }
             if (E.fx.fade > 0) { ctx.fillStyle = `rgba(0,0,0,${E.fx.fade})`; ctx.fillRect(0, 0, W, H); }
@@ -53348,11 +53384,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const fit = () => {
                 if (!document.body.contains(cv)) { window.removeEventListener('resize', fit); return; }
                 const r = stage.getBoundingClientRect();
-                const k = Math.min(1.5, window.devicePixelRatio || 1);
+                const k = Math.min(1.5, window.devicePixelRatio || 1) * ((window._explore3D && window._explore3D.fx && window._explore3D.fx.res) || 1);
                 const W = Math.max(200, Math.round(r.width * k)), H = Math.max(200, Math.round(r.height * k));
                 if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; const E = window._explore3D; if (E && E.ctx) { E.ctx.imageSmoothingEnabled = true; E.ctx.imageSmoothingQuality = 'high'; } }
             };
-            fit(); setTimeout(fit, 120); window.addEventListener('resize', fit);
+            fit(); setTimeout(fit, 120); window.addEventListener('resize', fit); window._exFit = fit;
         }
         setInterval(() => { try { _exploreFS(); } catch (e) {} }, 250);
         window._exploreFS = _exploreFS;
@@ -93659,12 +93695,33 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // 💥 [v7.51] NOVÉ EFEKTY ZBRANÍ (Kenney Particle Pack, CC0) – sprity místo CSS koleček
         // ============================================================
         const CFX = 'img/fx/';
+        // [v7.52] sprity se načtou a dekódují dopředu (první výstřel se nezasekne) a kreslí se bez mix-blend-mode
+        // (prolínání nutilo mobil překreslovat celé bojiště pod efektem každý snímek; PNG mají vlastní průhlednost)
+        const _cfxCache = {};
+        function _cfxPreload() {
+            if (_cfxPreload.done) return; _cfxPreload.done = true;
+            ['mz1', 'mz2', 'mz3', 'mzb', 'tr_y', 'tr_c', 'hit', 'hitb', 'dirt', 'blood', 'fire', 'smoke', 'puff', 'flare', 'ring', 'slash1', 'slash2', 'slash3', 'claw', 'punch', 'arrow'].forEach(n => {
+                const im = new Image(); im.decoding = 'async'; im.src = CFX + n + '.png'; _cfxCache[n] = im;
+                try { im.decode().catch(() => {}); } catch (e) {}
+            });
+        }
+        window._cfxPreload = _cfxPreload;
         function _cfx(src, x, y, w, h, opts) {
-            const el = document.createElement('img');
-            el.src = CFX + src + '.png'; el.alt = '';
-            el.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:${(opts && opts.z) || 9999};transform-origin:${(opts && opts.origin) || '50% 50%'};mix-blend-mode:${(opts && opts.blend) || 'screen'};will-change:transform,opacity`;
+            const base = _cfxCache[src];
+            const el = base ? base.cloneNode(false) : document.createElement('img');
+            if (!base) el.src = CFX + src + '.png';
+            el.alt = '';
+            el.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:${(opts && opts.z) || 9999};transform-origin:${(opts && opts.origin) || '50% 50%'};will-change:transform,opacity`;
             _combatEffectOverlay().appendChild(el);
             return el;
+        }
+        // otřes jen bojiště (přes compositor), ne celé aplikace
+        function _cfxShake(px, ms) {
+            const g = document.getElementById('combatGridContainer') || document.getElementById('pvpCombatGrid');
+            if (!g || !g.animate) return;
+            const fr = []; for (let i = 0; i < 6; i++) fr.push({ transform: `translate(${((Math.random() - .5) * 2 * px).toFixed(1)}px,${((Math.random() - .5) * 2 * px).toFixed(1)}px)` });
+            fr.push({ transform: 'translate(0,0)' });
+            try { g.animate(fr, { duration: ms, easing: 'linear' }); } catch (e) {}
         }
         function _cfxAnim(el, frames, ms, ease) {
             ms = ms * (window.__fxSlow || 1); // jen pro ladění (zpomalení efektů)
@@ -93687,7 +93744,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 for (let i = 0; i < 2; i++) { const f = _cfx('fire', x, y, 140, 140); _cfxAnim(f, [{ transform: _cfxT((i - .5) * 12, 0, i * 90, .25), opacity: 1 }, { transform: _cfxT((i - .5) * 24, -16, i * 90 + 40, 1.35), opacity: 0 }], 560 + i * 120); }
                 const sm = _cfx('smoke', x, y, 170, 170, { blend: 'normal', z: 9998 }); _cfxAnim(sm, [{ transform: _cfxT(0, 0, 0, .4), opacity: .95 }, { transform: _cfxT(0, -30, 60, 1.7), opacity: 0 }], 1100, 'ease-out');
                 for (let i = 0; i < 7; i++) { const a = Math.random() * 6.28, d = 40 + Math.random() * 50; const p = _cfx('dirt', x, y, 26, 26, { blend: 'normal' }); _cfxAnim(p, [{ transform: _cfxT(0, 0, 0, .6), opacity: 1 }, { transform: _cfxT(Math.cos(a) * d, Math.sin(a) * d, 200, .9), opacity: 0 }], 480, 'cubic-bezier(.2,.7,.4,1)'); }
-                if (typeof screenShake === 'function') { try { screenShake(7, 160); } catch (e) {} }
+                _cfxShake(6, 180);
                 return;
             }
             if (kind === 'laser') { const h = _cfx('hitb', x, y, 80, 80); _cfxAnim(h, [{ transform: _cfxT(0, 0, Math.random() * 360, .4), opacity: 1 }, { transform: _cfxT(0, 0, Math.random() * 360, 1.2), opacity: 0 }], 300); return; }
@@ -93722,7 +93779,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 const el = document.createElement('div'); el.textContent = '🚀';
                 el.style.cssText = 'position:fixed;left:0;top:0;font-size:26px;pointer-events:none;z-index:9999'; _combatEffectOverlay().appendChild(el);
                 _cfxAnim(el, [{ transform: `translate(${mx}px,${my}px) translate(-50%,-50%) rotate(${ang + 45}deg)` }, { transform: `translate(${ex}px,${ey}px) translate(-50%,-50%) rotate(${ang + 45}deg)` }], dur, 'ease-in');
-                const t0 = Date.now(), iv = setInterval(() => { const t = Math.min(1, (Date.now() - t0) / dur), tt = t * t; if (t >= 1) { clearInterval(iv); return; } const p = _cfx('puff', mx + (ex - mx) * tt, my + (ey - my) * tt, 26, 26, { blend: 'normal', z: 9998 }); _cfxAnim(p, [{ transform: _cfxT(0, 0, 0, .5), opacity: .7 }, { transform: _cfxT(0, -8, 90, 1.6), opacity: 0 }], 600); }, 35);
+                const t0 = Date.now(), iv = setInterval(() => { const t = Math.min(1, (Date.now() - t0) / dur), tt = t * t; if (t >= 1) { clearInterval(iv); return; } const p = _cfx('puff', mx + (ex - mx) * tt, my + (ey - my) * tt, 26, 26, { blend: 'normal', z: 9998 }); _cfxAnim(p, [{ transform: _cfxT(0, 0, 0, .5), opacity: .7 }, { transform: _cfxT(0, -8, 90, 1.6), opacity: 0 }], 600); }, 55);
                 setTimeout(() => _cfxImpact(ex, ey, 'rocket'), dur);
                 return dur + 80;
             }
@@ -93753,7 +93810,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             const rot = Math.random() * 360;
             if (type === 'punch' || type === 'hammer') {
                 const p = _cfx('punch', to.x, to.y, type === 'hammer' ? 90 : 64, type === 'hammer' ? 90 : 64); _cfxAnim(p, [{ transform: _cfxT(0, 0, rot, .3), opacity: 1 }, { transform: _cfxT(0, 0, rot + 30, 1.2), opacity: 0 }], 260);
-                if (type === 'hammer') { const r = _cfx('ring', to.x, to.y, 90, 90); _cfxAnim(r, [{ transform: _cfxT(0, 0, 0, .3), opacity: .8 }, { transform: _cfxT(0, 0, 0, 1.2), opacity: 0 }], 320); if (typeof screenShake === 'function') { try { screenShake(3, 90); } catch (e) {} } }
+                if (type === 'hammer') { const r = _cfx('ring', to.x, to.y, 90, 90); _cfxAnim(r, [{ transform: _cfxT(0, 0, 0, .3), opacity: .8 }, { transform: _cfxT(0, 0, 0, 1.2), opacity: 0 }], 320); _cfxShake(3, 110); }
                 return;
             }
             const img = (type === 'claw' || type === 'bite') ? 'claw' : ['slash1', 'slash2', 'slash3'][Math.floor(Math.random() * 3)];
@@ -93769,6 +93826,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         // weapon: objekt zbraně (nebo null pro unarmed/default)
         // RETURN: delay v ms než kulka doletí (0 pro melee, 600 pro ranged) - combat kód může počkat
         function combatAttackVisual(unit, target, weapon) {
+            _cfxPreload();
             if (!unit || !target || unit.x === undefined || target.x === undefined) {
                 console.warn(`🎯 combatAttackVisual BAIL: unit=${!!unit} target=${!!target} unit.x=${unit?.x} target.x=${target?.x}`);
                 return 0;
@@ -93805,7 +93863,6 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                            weaponName.includes('luk') || weaponName.includes('plazm');
             }
             
-            console.log(`🎯 combatAttackVisual: weapon="${weaponName}" ammo="${ammoType}" isRanged=${isRanged}`);
             
             try { if (typeof _kcAttackAnim === 'function') _kcAttackAnim(unit, target, isRanged || weaponName.includes('granát') || weaponName.includes('molotov')); } catch (e) {}
             if (isRanged) {
@@ -99853,6 +99910,7 @@ body.pa-theme .wm-tile.wm-here{border:2px solid #9bd22a !important;box-shadow:0 
 body.pa-theme .wm-tile.wm-here{animation:kcHerePulse 2s ease-in-out infinite !important}
 #paAsh{position:fixed;inset:0;pointer-events:none;z-index:9996;overflow:hidden;display:none}
 body.pa-theme #paAsh{display:block}
+body.pa-theme:has(#modal.exfs) #paAsh{display:none}
 #paAsh i{position:absolute;top:0;width:3px;height:3px;border-radius:50%;background:rgba(210,195,170,.55);box-shadow:0 0 3px rgba(255,220,180,.3);animation:paAsh linear infinite}
 @keyframes kcLunge{0%{translate:0 0}40%{translate:var(--lx) var(--ly)}100%{translate:0 0}}
 @keyframes kcRecoil{0%{translate:0 0}25%{translate:var(--lx) var(--ly)}100%{translate:0 0}}
