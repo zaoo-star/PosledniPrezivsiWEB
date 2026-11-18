@@ -3803,6 +3803,54 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
         
         // === SECURITY UTILITIES ===
         // Escape HTML to prevent XSS attacks in user-generated content
+        // [v7.54] Bezpečný argument do onclick="fn('…')": escapeHtml nestačí (prohlížeč &#039; v atributu dekóduje zpět na ' → XSS).
+        // [v7.54] Ochrana na vstupu z databáze: klíče s ' " < > \ ` ( ) nejsou nikdy legitimní (push ID, přezdívky
+        // [a-zA-Z0-9_-], čeština) → podvržené záznamy se zahodí; z identifikátorů (jméno, autor, ID…) se tyto znaky odstraní.
+        // Volný text (zprávy, popisy) zůstává – ten hra vypisuje přes escapeHtml.
+        const _FB_BADKEY = /['"<>\\`()]|&#/;
+        const _FB_BADCH = /['"<>\\`]/g;
+        const _FB_IDF = new Set(['id', 'key', '_key', 'uid', 'name', 'author', 'seller', 'buyer', 'from', 'to', 'player', 'playerName', 'nick', 'sender', 'winner', 'owner', 'leader', 'by', 'bannedBy', 'itemId', 'targetName', 'fromName', 'toName', 'authorName', 'recipient', 'createdBy', 'claimedBy']);
+        function _fbSanitize(v, d) {
+            if (!v || typeof v !== 'object' || d > 14) return v;
+            for (const k of Object.keys(v)) {
+                if (_FB_BADKEY.test(k)) { delete v[k]; continue; }
+                const x = v[k];
+                if (typeof x === 'string') { if (_FB_IDF.has(k) && /['"<>\\`]/.test(x)) v[k] = x.replace(_FB_BADCH, ''); }
+                else if (x && typeof x === 'object') _fbSanitize(x, d + 1);
+            }
+            return v;
+        }
+        function _installFirebaseSanitizer() {
+            const ns = window.firebase && firebase.database;
+            const DS = ns && ns.DataSnapshot, Q = ns && (ns.Query || (ns.Reference && Object.getPrototypeOf(ns.Reference.prototype)?.constructor));
+            if (DS && DS.prototype && !DS.prototype.__ppSafe) {
+                const ov = DS.prototype.val, oe = DS.prototype.exportVal, of = DS.prototype.forEach;
+                DS.prototype.val = function () { const r = ov.apply(this, arguments); try { return _fbSanitize(r, 0); } catch (e) { return r; } };
+                if (oe) DS.prototype.exportVal = function () { const r = oe.apply(this, arguments); try { return _fbSanitize(r, 0); } catch (e) { return r; } };
+                if (of) DS.prototype.forEach = function (cb) { return of.call(this, c => (c && _FB_BADKEY.test(c.key || '')) ? false : cb(c)); };
+                DS.prototype.__ppSafe = true;
+            }
+            const QP = Q && Q.prototype;
+            if (QP && QP.on && !QP.__ppSafe) {
+                const oon = QP.on, ooff = QP.off, map = new WeakMap();
+                QP.on = function (ev, cb, ...rest) {
+                    if (typeof cb !== 'function') return oon.call(this, ev, cb, ...rest);
+                    let w = map.get(cb);
+                    if (!w) { w = function (snap, prev) { if (snap && _FB_BADKEY.test(snap.key || '')) return; return cb.call(this, snap, prev); }; map.set(cb, w); }
+                    oon.call(this, ev, w, ...rest);
+                    return cb;
+                };
+                QP.off = function (ev, cb, ...rest) { return ooff.call(this, ev, (cb && map.get(cb)) || cb, ...rest); };
+                QP.__ppSafe = true;
+            }
+            window.__ppFbSafe = !!(DS && DS.prototype.__ppSafe);
+        }
+        function jsArg(v) {
+            return String(v === null || v === undefined ? '' : v)
+                .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\r\n\u2028\u2029]/g, ' ')
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        window.jsArg = jsArg;
         function escapeHtml(unsafe) {
             if (unsafe === null || unsafe === undefined) return '';
             return String(unsafe)
@@ -18939,41 +18987,38 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         
         // Generování cest dynamicky
+        // [v7.54] Rychlejší generování cest (stejný výsledek): vzdálenosti se počítají jednou, existence cesty přes Set
+        // místo paths.some() – dřív desítky milionů operací při každém startu (~1,5 s na slabším mobilu).
         function generatePaths() {
-            const paths = [];
-            
-            WORLD_LOCATIONS.forEach(loc => {
-                const neighbors = getAdjacentLocations(loc.id);
-                neighbors.forEach(neighbor => {
-                    // Zkontroluj jestli cesta už neexistuje
-                    const exists = paths.some(p => 
-                        (p.from === loc.id && p.to === neighbor.id) ||
-                        (p.from === neighbor.id && p.to === loc.id)
-                    );
-                    
-                    if (!exists) {
-                        const distKm = getDistanceKm(loc, neighbor);
-                        const timeMin = getBaseTravelTime(loc, neighbor);
-                        const dangerLevel = Math.max(
-                            loc.zone === 'deadly' ? 5 : loc.zone === 'danger' ? 3 : loc.zone === 'medium' ? 1 : 0,
-                            neighbor.zone === 'deadly' ? 5 : neighbor.zone === 'danger' ? 3 : neighbor.zone === 'medium' ? 1 : 0
-                        );
-                        
-                        paths.push({
-                            from: loc.id,
-                            to: neighbor.id,
-                            distance: Math.round(distKm * 10) / 10, // Vzdálenost v km (1 desetinné místo)
-                            time: timeMin, // Čas v minutách (základní, bez vozidla)
-                            danger: dangerLevel,
-                            name: loc.name + ' → ' + neighbor.name
-                        });
-                    }
-                });
+            const paths = [], seen = new Set();
+            const zoneLvl = z => z === 'deadly' ? 5 : z === 'danger' ? 3 : z === 'medium' ? 1 : 0;
+            WORLD_LOCATIONS.forEach(loc0 => {
+                const loc = WORLD_LOCATIONS.find(l => l.id === loc0.id);
+                if (!loc) return;
+                const neighbors = [];
+                for (const l of WORLD_LOCATIONS) {
+                    if (l.id === loc0.id) continue;
+                    const d = getDistanceKm(loc, l);
+                    if (d <= 8) neighbors.push({ l, d });
+                }
+                neighbors.sort((a, b) => a.d - b.d);
+                for (const { l: neighbor } of neighbors) {
+                    const k1 = loc0.id + '\u0001' + neighbor.id;
+                    if (seen.has(k1)) continue;
+                    seen.add(k1); seen.add(neighbor.id + '\u0001' + loc0.id);
+                    const distKm = getDistanceKm(loc0, neighbor);
+                    paths.push({
+                        from: loc0.id,
+                        to: neighbor.id,
+                        distance: Math.round(distKm * 10) / 10,
+                        time: getBaseTravelTime(loc0, neighbor),
+                        danger: Math.max(zoneLvl(loc0.zone), zoneLvl(neighbor.zone)),
+                        name: loc0.name + ' → ' + neighbor.name
+                    });
+                }
             });
-            
             return paths;
         }
-        
         const WORLD_PATHS = generatePaths();
         
         // === EVENTY NA CESTÁCH ===
@@ -44565,7 +44610,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                         html += '</div>';
                         html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.3rem;">';
                         visiblePH.forEach(p => {
-                            const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                            const safeName = jsArg(p.name);
                             const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
                             const borderCol = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
                             const statusIcon = p.isMe ? '👑' : (p.isReallyOnline ? '🟢' : '🔵');
@@ -46267,7 +46312,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     
                     // Avatar (mini 24px) + jméno
                     const avatar24 = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(tp.name, '20px') : `<div style="width:20px;height:20px;background:#1976d2;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.6rem;font-weight:bold;">${escapeHtml(tp.name.charAt(0))}</div>`;
-                    const safeName = escapeHtml(tp.name).replace(/'/g, "\\'");
+                    const safeName = jsArg(tp.name);
                     const shortNameTrav = tp.name.length > 8 ? tp.name.substring(0, 7) + '…' : tp.name;
                     
                     // [NEW] Status indikátor: zlatý = sám sebe, zelený = online cestuje, žlutý = offline cestuje
@@ -47322,7 +47367,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     const overflowCount = sortedPlayers.length - visiblePlayers.length;
                     
                     const playerCardsHtml = visiblePlayers.map(p => {
-                        const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                        const safeName = jsArg(p.name);
                         const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(p.name, '32px') : '';
                         const borderCol = p.isMe ? '#ffd700' : (p.isReallyOnline ? '#4caf50' : '#1976d2');
                         const statusIcon = p.isMe ? '👑' : (p.isReallyOnline ? '🟢' : '🔵');
@@ -84879,7 +84924,47 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             triggerSettlementEvent(event);
         }
         
+        // [v7.54] Pes, který přijde k osadě dřív, než hráč získal psa-společníka, je ten samý pes z první cesty
+        // → nabídne se jako SPOLEČNÍK (dřív se hned stal strážním psem osady Rex a hráč o společníka přišel).
+        function _hasOrRejectedCompanionDog() {
+            return !!(state.companions?.some(c => c.id === 'dog') || state.rejectedCompanions?.includes('dog'));
+        }
+        function _offerSettlementDogCompanion() {
+            const c = typeof getCompanionData === 'function' ? getCompanionData('dog') : null;
+            if (!c) return false;
+            const full = (state.companions || []).filter(x => !x.isDead && !x.inSettlement).length >= getMaxCompanions();
+            if (full) return false; // plný tým → klasická volba (hlídač osady)
+            showModal('🐕 Pes u osady',
+                '<p>K bráně osady se připlížil vychrtlý pes. Drží se u tebe a nechce odejít.</p>' +
+                '<div style="text-align:center;margin:1rem 0;"><div style="font-size:4rem;">' + c.icon + '</div>' +
+                '<h3 style="color: var(--toxic-green);">' + c.name + '</h3>' +
+                '<p style="color:#888;font-size:.85rem;">Společník: ' + c.abilityDesc + '</p></div>' +
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:1rem;">' +
+                '<button class="btn" onclick="_adoptSettlementDog()" style="background: var(--toxic-dark); padding:.7rem; font-weight:bold;">❤️ Vzít k sobě</button>' +
+                '<button class="btn" onclick="closeModal()" style="background:#555;padding:.7rem;">✗ Teď ne</button></div>');
+            return true;
+        }
+        function _adoptSettlementDog() {
+            if (_hasOrRejectedCompanionDog()) { closeModal(); return; }
+            const c = getCompanionData('dog'); if (!c) { closeModal(); return; }
+            if (!state.companions) state.companions = [];
+            const nc = normalizeCompanion({ ...c, hp: c.hp, maxHp: c.hp, uniqueId: `${c.id}_${Date.now()}` });
+            state.companions.push(nc);
+            // naplánovaný pes z první cesty už není potřeba
+            if (state.world?.scheduledEvents) state.world.scheduledEvents = state.world.scheduledEvents.filter(e => !(e.type === 'companion' && e.eventId === 'stray_dog' && !e.triggered));
+            closeModal();
+            notifySuccess('Nový společník!', nc.name + ' se k tobě přidal!');
+            addLog(nc.name + ' se stal tvým společníkem!', c.icon);
+            saveGame(true);
+            if (typeof saveCloudSave === 'function' && typeof currentUser !== 'undefined' && currentUser && !currentUser.isAnonymous) { try { saveCloudSave().catch(() => {}); } catch (_) {} }
+            renderFull();
+        }
+        window._adoptSettlementDog = _adoptSettlementDog;
         function triggerSettlementEvent(event) {
+            if (event.id === 'stray_dog' && !_hasOrRejectedCompanionDog() && _offerSettlementDogCompanion()) {
+                state.settlement.activeEvent = null;
+                return;
+            }
             // Ochrana: stray_dog event se nespustí pokud hráč už má strážního psa nebo na event reagoval
             if (event.id === 'stray_dog') {
                 const hasSettlementDog = state.settlement?.dog;
@@ -99883,10 +99968,10 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
         };
         const PA_NAV_ICONS = { map: 'treasure-map', inv: 'backpack', char: 'gas-mask', craft: 'anvil-impact', base: 'village', multiplayer: 'radio-tower' };
         const PA_CSS = `
-@font-face{font-family:'PA Ops';src:url('fonts/BlackOpsOne-Regular.ttf');font-display:swap}
-@font-face{font-family:'PA Stencil';src:url('fonts/StardosStencil-Bold.ttf');font-display:swap}
-@font-face{font-family:'PA Type';src:url('fonts/SpecialElite-Regular.ttf');font-display:swap}
-@font-face{font-family:'PA Oswald';src:url('fonts/Oswald.ttf');font-display:swap}
+@font-face{font-family:'PA Ops';src:url('fonts/BlackOpsOne-Regular.woff2') format('woff2'),url('fonts/BlackOpsOne-Regular.ttf') format('truetype');font-display:swap}
+@font-face{font-family:'PA Stencil';src:url('fonts/StardosStencil-Bold.woff2') format('woff2'),url('fonts/StardosStencil-Bold.ttf') format('truetype');font-display:swap}
+@font-face{font-family:'PA Type';src:url('fonts/SpecialElite-Regular.woff2') format('woff2'),url('fonts/SpecialElite-Regular.ttf') format('truetype');font-display:swap}
+@font-face{font-family:'PA Oswald';src:url('fonts/Oswald.woff2') format('woff2'),url('fonts/Oswald.ttf') format('truetype');font-display:swap}
 body.pa-theme{--pa-metal:url('img/ui/t_metal.png');--pa-rust:url('img/ui/t_rust.png')}
 body.pa-theme #main, body.pa-theme #modalContent{font-family:'PA Oswald','Oswald',sans-serif;letter-spacing:.2px}
 body.pa-theme #main h1, body.pa-theme #main h2, body.pa-theme #main h3, body.pa-theme #modalContent h2, body.pa-theme #modalContent h3, body.pa-theme .modal-title, body.pa-theme #modalTitle{font-family:'PA Ops',sans-serif !important;letter-spacing:1.5px;text-shadow:0 2px 0 #000,0 0 10px rgba(0,0,0,.8)}
@@ -99935,7 +100020,10 @@ body.pa-theme .wm-tile.wm-here{border:2px solid #9bd22a !important;box-shadow:0 
 .kc-smoke{animation:kcSmoke 3.4s linear infinite;animation-delay:var(--d,0s)}
 .kc-flick{animation:kcFlicker .9s ease-in-out infinite}
 .kc-pulse{animation:kcPulse 2.8s ease-in-out infinite}
-body.pa-theme .wm-tile.wm-here{animation:kcHerePulse 2s ease-in-out infinite !important}
+/* [v7.54] pulz pozice přes opacity pseudo-prvku (compositor) – animace box-shadow překreslovala mapu 60× za sekundu */
+body.pa-theme .wm-tile.wm-here{overflow:visible !important;box-shadow:none !important;animation:none !important}
+body.pa-theme .wm-tile.wm-here::after{content:'';position:absolute;inset:-2px;border-radius:50%;pointer-events:none;box-shadow:0 0 0 7px rgba(155,210,42,.10),0 0 24px rgba(155,210,42,.9);animation:kcHereGlow 2s ease-in-out infinite;will-change:opacity}
+@keyframes kcHereGlow{0%,100%{opacity:.35}50%{opacity:1}}
 #paAsh{position:fixed;inset:0;pointer-events:none;z-index:9996;overflow:hidden;display:none}
 body.pa-theme #paAsh{display:block}
 body.pa-theme:has(#modal.exfs) #paAsh{display:none}
@@ -99950,8 +100038,8 @@ body.pa-theme:has(#modal.exfs) #paAsh{display:none}
 .kc-unit.kc-hurt{animation:kcHurt .5s ease-out}
 .kc-die{animation:kcDie 1.1s ease-in forwards}
 .kc-muzzle{position:absolute;width:40%;height:40%;object-fit:contain;pointer-events:none;z-index:5;animation:kcMuzzle .25s ease-out forwards}
-@media (prefers-reduced-motion: reduce){.kc-lunge,.kc-recoil,.kc-hurt,.kc-die,.kc-muzzle{animation:none !important}.kc-unit,.kc-smoke,.kc-flick,.kc-pulse,#paAsh i,body.pa-theme .wm-tile.wm-here{animation:none !important}#paAsh{display:none !important}}
-body.pa-eco .kc-unit,body.pa-eco .kc-smoke,body.pa-eco .kc-flick,body.pa-eco .kc-pulse,body.pa-eco #paAsh i,body.pa-eco .wm-tile.wm-here,body.pa-eco #statusBars,body.pa-eco [style*="bounce-arrow"]{animation:none !important}
+@media (prefers-reduced-motion: reduce){.kc-lunge,.kc-recoil,.kc-hurt,.kc-die,.kc-muzzle{animation:none !important}.kc-unit,.kc-smoke,.kc-flick,.kc-pulse,#paAsh i,body.pa-theme .wm-tile.wm-here,body.pa-theme .wm-tile.wm-here::after{animation:none !important}#paAsh{display:none !important}}
+body.pa-eco .kc-unit,body.pa-eco .kc-smoke,body.pa-eco .kc-flick,body.pa-eco .kc-pulse,body.pa-eco #paAsh i,body.pa-eco .wm-tile.wm-here,body.pa-eco .wm-tile.wm-here::after,body.pa-eco #statusBars,body.pa-eco [style*="bounce-arrow"]{animation:none !important}
 body.pa-eco #paAsh,body.pa-eco #dustLayer{display:none !important}
 #paOverlay{position:fixed;inset:0;pointer-events:none;z-index:9997;display:none}
 body.pa-theme #paOverlay{display:block}
@@ -99963,8 +100051,10 @@ body.pa-theme #paOverlay{display:block}
         function _paDecorate(root) {
             if (!document.body.classList.contains('pa-theme')) return;
             const scope = root && root.querySelectorAll ? root : document;
+            // [v7.54] umí zpracovat i jen nově přidaný podstrom (včetně kořene samotného)
+            const _q = sel => { const a = [...scope.querySelectorAll(sel)]; if (scope !== document && scope.matches && scope.matches(sel)) a.unshift(scope); return a; };
             // 1) emoji → ikony v tlačítkách a horní liště
-            scope.querySelectorAll('#main .btn, #modalContent .btn, #statusBars span').forEach(el => {
+            _q('#main .btn, #modalContent .btn, #statusBars span').forEach(el => {
                 if (el.dataset.paDone) return;
                 el.dataset.paDone = '1';
                 const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -99986,13 +100076,14 @@ body.pa-theme #paOverlay{display:block}
                 }
             });
             // 1b) mapa světa: při otevření posuň na hráče (jen když je posuvník úplně vlevo = uživatel s ní nehýbal)
-            const _wmHere = document.querySelector('#worldMapGrid .wm-here');
-            const _wmScroll = document.getElementById('worldMapGrid')?.parentElement;
+            const _wmGrid = document.getElementById('worldMapGrid');
+            const _wmHere = _wmGrid && (scope === document || scope.contains(_wmGrid)) ? _wmGrid.querySelector('.wm-here') : null; // [v7.54] jen když se překreslila mapa (čtení rozměrů = přepočet layoutu)
+            const _wmScroll = _wmGrid?.parentElement;
             if (_wmHere && _wmScroll && _wmScroll.scrollLeft === 0 && _wmScroll.scrollWidth > _wmScroll.clientWidth) {
                 _wmScroll.scrollLeft = Math.max(0, _wmHere.offsetLeft - _wmScroll.clientWidth / 2 + _wmHere.offsetWidth / 2);
             }
             // 2) velké karty → kovové panely (ne obrázková pozadí, ne překryvy)
-            scope.querySelectorAll('#main div[style*="background"], #modalContent div[style*="background"]').forEach(el => {
+            _q('#main div[style*="background"], #modalContent div[style*="background"]').forEach(el => {
                 if (el.dataset.paPlate) return;
                 el.dataset.paPlate = '1';
                 const st = el.getAttribute('style') || '';
@@ -100110,13 +100201,25 @@ body.pa-theme #paOverlay{display:block}
             }
             body.classList.toggle('pa-theme', !!on);
             if (on && !_paObserver) {
-                _paObserver = new MutationObserver(() => {
-                    // [v7.21] Dekorace hned (před vykreslením) — se zpožděním 700 ms (v7.8) blikala stará grafika
-                    // ve statech, když se obrazovka často překresluje (online záložka). Hotové prvky se přeskakují
-                    // (data-pa-done), takže opakované volání je levné. Na skryté stránce se nic nedělá.
-                    if (_paPending || document.hidden) return; _paPending = true;
-                    try { _paDecorate(document); } catch (e) { console.warn('PA theme:', e); }
-                    _paPending = false;
+                // [v7.54] Výkon: dřív se při KAŽDÉ změně DOM (hodiny, ukazatele, log) prohledal celý dokument a měřily se
+                // rozměry (vynucený layout) – ~7 % CPU i v klidu. Teď jen nově přidané prvky, max. 1× za snímek
+                // (requestAnimationFrame běží před vykreslením, takže stará grafika nebliká).
+                const _paRoots = new Set();
+                _paObserver = new MutationObserver(records => {
+                    if (document.hidden) return;
+                    for (const r of records) for (const n of r.addedNodes) {
+                        const el = n.nodeType === 1 ? n : n.parentElement;
+                        if (el && el.isConnected && !el.closest('#combatBubbleOverlay, #paAsh, #explore3DCanvas')) _paRoots.add(el);
+                    }
+                    if (_paPending || !_paRoots.size) return; _paPending = true;
+                    requestAnimationFrame(() => {
+                        _paPending = false;
+                        const roots = [..._paRoots]; _paRoots.clear();
+                        try {
+                            if (roots.length > 60) { _paDecorate(document); return; }
+                            for (const el of roots) { if (el.isConnected && !roots.some(o => o !== el && o.contains(el))) _paDecorate(el); }
+                        } catch (e) { console.warn('PA theme:', e); }
+                    });
                 });
                 document.addEventListener('visibilitychange', () => { if (!document.hidden) { try { _paDecorate(document); } catch (e) {} } });
                 _paObserver.observe(body, { childList: true, subtree: true });
@@ -115808,6 +115911,7 @@ body.pa-theme #paOverlay{display:block}
                 }
                 
                 firebaseApp = firebase.initializeApp(firebaseConfig);
+                try { _installFirebaseSanitizer(); } catch (e) { console.warn('sanitizer', e); }
                 firebaseDB = firebase.database();
                 firebaseAuth = firebase.auth();
                 multiplayerEnabled = true;
@@ -116004,6 +116108,13 @@ body.pa-theme #paOverlay{display:block}
                         isGuest = user.isAnonymous;
                         console.log('✅ Přihlášen:', user.email || 'Host');
                         
+                        // [v7.54] E-mail už se u přezdívky neukládá (byl veřejně čitelný) – smaž ho ze svého starého záznamu
+                        if (!user.isAnonymous && user.uid && user.displayName) {
+                            try {
+                                const _rnRef = firebaseDB.ref('registeredNicks/' + String(user.displayName).toLowerCase());
+                                _rnRef.once('value').then(sn => { const v = sn.val(); if (v && v.email && (v.odid === user.uid || v.uid === user.uid)) _rnRef.child('email').remove().catch(() => {}); }).catch(() => {});
+                            } catch (e) {}
+                        }
                         // KONTROLA BANU PODLE UID (nelze obejít změnou nicku!)
                         if (!user.isAnonymous && user.uid) {
                             try {
@@ -116691,7 +116802,6 @@ body.pa-theme #paOverlay{display:block}
                 await firebaseDB.ref('registeredNicks/' + nick.toLowerCase()).set({
                     odid: userCredential.user.uid,
                     nick: nick,
-                    email: email,
                     registeredAt: firebase.database.ServerValue.TIMESTAMP
                 });
                 
@@ -118341,8 +118451,8 @@ body.pa-theme #paOverlay{display:block}
                 
                 await firebaseDB.ref('registeredNicks/' + newKey).set({
                     uid: currentUser.uid,
+                    odid: currentUser.uid,
                     nick: newNick,
-                    email: currentUser.email,
                     registeredAt: firebase.database.ServerValue.TIMESTAMP,
                     previousNick: oldNick,
                     changedAt: firebase.database.ServerValue.TIMESTAMP
@@ -122715,7 +122825,7 @@ body.pa-theme #paOverlay{display:block}
                         const superRow = hasSuperAbility ? `<div style="font-size: 0.65rem; color: #ffd700; font-weight: bold; letter-spacing: 0.5px; margin-top: 0.1rem; text-shadow: 0 0 4px rgba(255,215,0,0.4);">⚡ Zakoupena super schopnost</div>` : '';
                         
                         html += `
-                            <div onclick="${isMe ? '' : `showPlayerProfileByName('${escapeHtml(player.name).replace(/'/g, "\\'")}', ${isOnline})`}" 
+                            <div onclick="${isMe ? '' : `showPlayerProfileByName('${jsArg(player.name)}', ${isOnline})`}" 
                                  style="display: grid; grid-template-columns: 38px 36px 1fr auto; gap: 0.45rem; padding: 0.55rem; background: ${rowBg}; border-radius: 6px; margin-bottom: 0.35rem; border: 1.5px solid ${rowBorder}; ${rowGlow} ${isMe ? '' : 'cursor: pointer;'} transition: transform 0.1s; align-items: center; position: relative;"
                                  ${isMe ? '' : 'onmouseover="this.style.transform=\'scale(1.015)\'" onmouseout="this.style.transform=\'scale(1)\'"'}>
                                 <div style="text-align: center;">
@@ -122946,7 +123056,7 @@ body.pa-theme #paOverlay{display:block}
                     statusColor = '#666';
                 }
                 
-                const safeName = escapeHtml(p.name).replace(/'/g, "\\'");
+                const safeName = jsArg(p.name);
                 return `
                     <div onclick="closeModal();showPlayerProfileByName('${safeName}', ${p.isReallyOnline})" 
                         style="display:flex;align-items:center;gap:0.6rem;padding:0.6rem;background:#0a0a0a;border-radius:6px;margin-bottom:0.4rem;cursor:pointer;border:1px solid #222;transition:background 0.2s;"
@@ -123024,7 +123134,7 @@ body.pa-theme #paOverlay{display:block}
             
             // Avatar 64px
             const avatar = typeof renderAvatarHTML === 'function' ? renderAvatarHTML(tp.name, '56px') : '';
-            const safeName = escapeHtml(tp.name).replace(/'/g, "\\'");
+            const safeName = jsArg(tp.name);
             
             showModal(`🚶 Hráč na cestě`, `
                 <div style="text-align:center;padding:0.5rem;">
@@ -123280,13 +123390,13 @@ body.pa-theme #paOverlay{display:block}
             if (!isMe) {
                 if (isFriendLocal) {
                     html += `
-                        <button class="btn" onclick="if(confirm('Odebrat ${escapeHtml(playerName)} z přátel?')){removeFriend('${escapeHtml(playerName).replace(/'/g, "\\\\'")}');closeModal();}" style="background: linear-gradient(135deg,#37474f,#263238); padding: 0.8rem; grid-column: span 2;">
+                        <button class="btn" onclick="if(confirm('Odebrat ${jsArg(playerName)} z přátel?')){removeFriend('${jsArg(playerName)}');closeModal();}" style="background: linear-gradient(135deg,#37474f,#263238); padding: 0.8rem; grid-column: span 2;">
                             ⭐ Odebrat z přátel
                         </button>
                     `;
                 } else {
                     html += `
-                        <button class="btn" onclick="sendFriendRequest('${escapeHtml(playerName).replace(/'/g, "\\\\'")}');closeModal();" style="background: linear-gradient(135deg,#1b5e20,#2e7d32); padding: 0.8rem; grid-column: span 2;">
+                        <button class="btn" onclick="sendFriendRequest('${jsArg(playerName)}');closeModal();" style="background: linear-gradient(135deg,#1b5e20,#2e7d32); padding: 0.8rem; grid-column: span 2;">
                             ➕ Přidat do přátel
                         </button>
                     `;
@@ -123309,7 +123419,7 @@ body.pa-theme #paOverlay{display:block}
                     } catch(e) { /* ignore */ }
                 }
                 
-                const escName = escapeHtml(playerName).replace(/'/g, "\\'");
+                const escName = jsArg(playerName);
                 
                 if (pvpLocked) {
                     pvpButtonHtml = `<button class="btn" disabled style="background: #333; padding: 0.8rem; grid-column: span 2; opacity: 0.5; cursor: not-allowed;">
@@ -123326,7 +123436,7 @@ body.pa-theme #paOverlay{display:block}
             
             // === MODERÁTORSKÁ TLAČÍTKA (podle permission) ===
             // Tlačítka se zobrazí podle role - admin vidí vše, moderátor jen co může
-            const escNameJs = escapeHtml(playerName).replace(/'/g, "\\\\'");
+            const escNameJs = jsArg(playerName);
             
             const modButtons = [];
             
@@ -123968,7 +124078,7 @@ body.pa-theme #paOverlay{display:block}
                                 <div style="font-size: 0.7rem; color: #888; margin-top: 0.15rem;">${statusIcon} ${expiresText}</div>
                                 <div style="font-size: 0.65rem; color: #666; margin-top: 0.15rem;">By: ${escapeHtml(bannedBy)}${bannedAt ? ' • ' + new Date(bannedAt).toLocaleDateString('cs') : ''}</div>
                             </div>
-                            ${canUnban ? `<button class="btn" onclick="banlistRemove('${type}', '${escapeHtml(key).replace(/'/g, "\\'")}')" style="background: #2e7d32; padding: 0.3rem 0.5rem; font-size: 0.7rem; white-space: nowrap;">✅ Odebrat</button>` : `<span style="color: #555; font-size: 0.65rem;">🔒</span>`}
+                            ${canUnban ? `<button class="btn" onclick="banlistRemove('${type}', '${jsArg(key)}')" style="background: #2e7d32; padding: 0.3rem 0.5rem; font-size: 0.7rem; white-space: nowrap;">✅ Odebrat</button>` : `<span style="color: #555; font-size: 0.65rem;">🔒</span>`}
                         </div>
                     </div>
                 `;
@@ -124691,19 +124801,19 @@ body.pa-theme #paOverlay{display:block}
                 </div>
                 
                 <div style="display: grid; gap: 0.5rem;">
-                    <button class="btn" onclick="closeChatPlayerMenu(); replyToPlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: #ff9800; padding: 0.6rem;">
+                    <button class="btn" onclick="closeChatPlayerMenu(); replyToPlayer('${jsArg(playerName)}');" style="background: #ff9800; padding: 0.6rem;">
                         ↩️ Odpovědět v chatu
                     </button>
                     
-                    <button class="btn" onclick="closeChatPlayerMenu(); showPrivateChat('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: #e91e63; padding: 0.6rem;">
+                    <button class="btn" onclick="closeChatPlayerMenu(); showPrivateChat('${jsArg(playerName)}');" style="background: #e91e63; padding: 0.6rem;">
                         💬 Soukromá zpráva
                     </button>
                     
-                    <button class="btn" onclick="closeChatPlayerMenu(); showPlayerProfileByName('${escapeHtml(playerName).replace(/'/g, "\\'")}', false);" style="background: #2196f3; padding: 0.6rem;">
+                    <button class="btn" onclick="closeChatPlayerMenu(); showPlayerProfileByName('${jsArg(playerName)}', false);" style="background: #2196f3; padding: 0.6rem;">
                         👤 Zobrazit profil
                     </button>
                     
-                    <button class="btn" onclick="closeChatPlayerMenu(); sendGift('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: #4CAF50; padding: 0.6rem;">
+                    <button class="btn" onclick="closeChatPlayerMenu(); sendGift('${jsArg(playerName)}');" style="background: #4CAF50; padding: 0.6rem;">
                         🎁 Poslat dárek
                     </button>
                     
@@ -124712,7 +124822,7 @@ body.pa-theme #paOverlay{display:block}
                     </button>
                     
                     ${hasPermission('mute') ? `
-                        <button class="btn" onclick="closeChatPlayerMenu(); adminQuickMute('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); adminQuickMute('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%); padding: 0.6rem;">
                             🔇 Mute (Staff)
                         </button>
                     ` : ''}
@@ -124721,22 +124831,22 @@ body.pa-theme #paOverlay{display:block}
                         <div style="border-top: 1px solid #f44336; margin-top: 0.5rem; padding-top: 0.5rem;">
                             <div style="color: #f44336; font-size: 0.7rem; text-align: center; margin-bottom: 0.3rem;">👑 ADMIN</div>
                         </div>
-                        <button class="btn" onclick="closeChatPlayerMenu(); showQuickReward('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); showQuickReward('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.6rem;">
                             🎁 Dát odměnu
                         </button>
-                        <button class="btn" onclick="closeChatPlayerMenu(); adminSetPlayerMoney('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); adminSetPlayerMoney('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%); padding: 0.6rem;">
                             💰 Nastavit peníze
                         </button>
-                        <button class="btn" onclick="closeChatPlayerMenu(); showQuickVIPColor('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); showQuickVIPColor('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.6rem;">
                             🎨 Změnit barvu
                         </button>
-                        <button class="btn" onclick="closeChatPlayerMenu(); quickAddToStaff('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); quickAddToStaff('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); padding: 0.6rem;">
                             👥 Přidat do Staff
                         </button>
-                        <button class="btn" onclick="closeChatPlayerMenu(); adminQuickBan('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #b71c1c 0%, #7f0000 100%); padding: 0.6rem;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); adminQuickBan('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #b71c1c 0%, #7f0000 100%); padding: 0.6rem;">
                             🚫 Ban
                         </button>
-                        <button class="btn" onclick="closeChatPlayerMenu(); adminGrantSuperAbility('${escapeHtml(playerName).replace(/'/g, "\\'")}');" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); padding: 0.6rem; color: #000;">
+                        <button class="btn" onclick="closeChatPlayerMenu(); adminGrantSuperAbility('${jsArg(playerName)}');" style="background: linear-gradient(135deg, #ffd700 0%, #ff9800 100%); padding: 0.6rem; color: #000;">
                             ⚡ Super schopnost
                         </button>
                     ` : ''}
@@ -125855,7 +125965,7 @@ body.pa-theme #paOverlay{display:block}
                             ? `<span style="color: ${msgColor}; font-weight: bold;">${escapeHtml(msg.author)}</span>`
                             : `<span onclick="event.stopPropagation(); ${clickAction};" style="color: ${msgColor}; font-weight: bold; cursor: pointer; text-decoration: underline;">${escapeHtml(msg.author)}</span>`;
                     } else {
-                        authorHtml = `${factionPrefix}<span onclick="event.stopPropagation(); showChatPlayerMenu('${escapeHtml(msg.author).replace(/'/g, "\'")}', event)" style="display: inline-flex; align-items: center; gap: 0.25rem; color: ${isRainbow ? '#ff0000' : authorColor}; ${rainbowStyle} ${goldNickStyle} font-weight: bold; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; font-size: 0.78rem;">${typeof renderAvatarHTML === 'function' && !msg.system ? renderAvatarHTML(msg.author, '16px') : ''}<span>${msg.goldNick ? '🌟 ' : ''}${escapeHtml(msg.author)}</span></span>${staffBadge}${vipBadge}${politicsBadge}${clanBadge}`;
+                        authorHtml = `${factionPrefix}<span onclick="event.stopPropagation(); showChatPlayerMenu('${jsArg(msg.author)}', event)" style="display: inline-flex; align-items: center; gap: 0.25rem; color: ${isRainbow ? '#ff0000' : authorColor}; ${rainbowStyle} ${goldNickStyle} font-weight: bold; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; font-size: 0.78rem;">${typeof renderAvatarHTML === 'function' && !msg.system ? renderAvatarHTML(msg.author, '16px') : ''}<span>${msg.goldNick ? '🌟 ' : ''}${escapeHtml(msg.author)}</span></span>${staffBadge}${vipBadge}${politicsBadge}${clanBadge}`;
                     }
                     
                     // Kliknutí na zprávu (ne na jméno) = rychlá odpověď (ne pro systémové zprávy)
@@ -125866,7 +125976,7 @@ body.pa-theme #paOverlay{display:block}
                     const systemClickAction = isTombolaMsg ? 'showTombola()' : isWarZoneClick ? 'showFactionTab()' : isPoliticsClick ? 'showPoliticsPanel()' : isPokerClick ? 'showPokerLobby()' : null;
                     const messageClickHandler = isSystemMessage && systemClickAction
                         ? `onclick="${systemClickAction}" style="cursor: pointer;" title="Klikni pro otevření"`
-                        : (isMe || isSystemMessage) ? '' : `onclick="replyToPlayer('${escapeHtml(msg.author).replace(/'/g, "\'")}', ${_msgIdx}, '${(msg._key || '').replace(/'/g, "\\'")}')" style="cursor: pointer;" title="Klikni pro odpověď"`;
+                        : (isMe || isSystemMessage) ? '' : `onclick="replyToPlayer('${jsArg(msg.author)}', ${_msgIdx}, '${jsArg(msg._key || '')}')" style="cursor: pointer;" title="Klikni pro odpověď"`;
                     
                     // Barva systémové zprávy podle typu
                     const isWarZoneMsg = msg.author?.includes('WAR') || msg.author?.includes('VÁLEČNÁ');
@@ -125938,7 +126048,7 @@ body.pa-theme #paOverlay{display:block}
                                         const iMine = r[myName];
                                         return cnt > 0 || !isSystemMessage ? `<button onclick="event.stopPropagation();chatReact('${msg._key}','${e}')" style="background:${iMine?'#1a2a10':'#0d0d08'};border:1px solid ${iMine?'#4a7a30':'#2a2010'};border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#a09070;line-height:1.2;${cnt===0?'opacity:0.25;':''}display:inline-flex;align-items:center;gap:0.1rem;">${e}${cnt>0?'<span style=\"font-size:0.55rem;color:#c0a050;\">'+cnt+'</span>':''}</button>` : '';
                                     }).join('')}
-                                    ${(typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) ? `<button onclick="event.stopPropagation();pinChatMessage('${msg._key}','${escapeHtml((msg.text||'').substring(0,200)).replace(/'/g,"\\'")}','${escapeHtml(msg.author||'').replace(/'/g,"\\'")}');showChatModal();" style="background:#1a1505;border:1px solid #2a2010;border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#888;line-height:1.2;opacity:0.4;" title="Připnout">📌</button>` : ''}
+                                    ${(typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) ? `<button onclick="event.stopPropagation();pinChatMessage('${msg._key}','${jsArg((msg.text||'').substring(0,200))}','${jsArg(msg.author||'')}');showChatModal();" style="background:#1a1505;border:1px solid #2a2010;border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#888;line-height:1.2;opacity:0.4;" title="Připnout">📌</button>` : ''}
                                     ${(isMe && msg.timestamp && Date.now() - msg.timestamp < 300000) || (typeof isAdmin === 'function' && isAdmin()) || (typeof isStaff === 'function' && isStaff()) ? `<button onclick="event.stopPropagation();deleteChatMessage('${msg._key}')" style="background:#1a0805;border:1px solid #2a2010;border-radius:2px;padding:0.05rem 0.25rem;font-size:0.6rem;cursor:pointer;color:#888;line-height:1.2;opacity:0.3;" title="Smazat">🗑️</button>` : ''}
                                 </div>` : ''}
                         </div>
@@ -127720,8 +127830,8 @@ body.pa-theme #paOverlay{display:block}
                     
                     html += `
                         <div style="display: flex; align-items: center; gap: 0.5rem; background: ${bgColor}; padding: 0.6rem; border-radius: 3px; margin-bottom: 0.3rem; border-left: 2px solid ${borderColor}; ${isSpoiled ? 'opacity: 0.6;' : ''}">
-                            <span onclick="showMarketItemDetail('${escapeHtml(offer.id)}')" style="font-size: 1.8rem; cursor: pointer;" title="Klikni pro detail">${isSpoiled ? '🤢' : renderIcon(offer.item.icon, offer.item.id)}</span>
-                            <div onclick="showMarketItemDetail('${escapeHtml(offer.id)}')" style="flex: 1; cursor: pointer;" title="Klikni pro detail">
+                            <span onclick="showMarketItemDetail('${jsArg(offer.id)}')" style="font-size: 1.8rem; cursor: pointer;" title="Klikni pro detail">${isSpoiled ? '🤢' : renderIcon(offer.item.icon, offer.item.id)}</span>
+                            <div onclick="showMarketItemDetail('${jsArg(offer.id)}')" style="flex: 1; cursor: pointer;" title="Klikni pro detail">
                                 <div style="${nameStyle}">${escapeHtml(offer.item.name)} ${count > 1 ? `<span style="color: #8bc34a;">(${count}x)</span>` : ''}</div>
                                 <div style="font-size: 0.75rem; color: #888;">
                                     ${offer.item.damage ? '⚔️' + escapeHtml(offer.item.damage) : ''} ${offer.item.defense ? '🛡️' + escapeHtml(offer.item.defense) : ''} ${specialInfo}
@@ -127754,7 +127864,7 @@ body.pa-theme #paOverlay{display:block}
                                     }
                                     return '';
                                 })()}
-                                <button class="btn" onclick="promptBuyOffer('${escapeHtml(offer.id)}', ${count}, ${offer.price})" style="background: ${canBuy ? '#3a3a15' : '#1a1a1a'}; padding: 0.2rem 0.5rem; font-size: 0.75rem; border: 1px solid ${canBuy ? '#5a5a20' : '#333'}; color: ${canBuy ? '#b0a050' : '#555'};" ${!canBuy ? 'disabled' : ''}>
+                                <button class="btn" onclick="promptBuyOffer('${jsArg(offer.id)}', ${count}, ${offer.price})" style="background: ${canBuy ? '#3a3a15' : '#1a1a1a'}; padding: 0.2rem 0.5rem; font-size: 0.75rem; border: 1px solid ${canBuy ? '#5a5a20' : '#333'}; color: ${canBuy ? '#b0a050' : '#555'};" ${!canBuy ? 'disabled' : ''}>
                                     ${canBuy ? '💰 Koupit' : '✕ Málo 💰'}
                                 </button>`}
                             </div>
@@ -130978,7 +131088,7 @@ body.pa-theme #paOverlay{display:block}
                             <div style="color: #888; font-size: 0.65rem; margin-bottom: 0.3rem;">${_isAdminUser ? 'Online hráči (admin — bez limitu):' : `Online hráči (rozsah ±${PVP_DUEL_CONFIG.MAX_LEVEL_DIFF} lvl):`}</div>
                             <div style="max-height: 200px; overflow-y: auto;">
                                 ${onlinePlayers.map(p => {
-                                    const safe = escapeHtml(p.name).replace(/'/g, "\\'");
+                                    const safe = jsArg(p.name);
                                     const diff = p.level - myLevel;
                                     const diffStr = diff === 0 ? '=' : (diff > 0 ? `+${diff}` : `${diff}`);
                                     const diffColor = Math.abs(diff) <= 2 ? '#4caf50' : (Math.abs(diff) <= 5 ? '#ff9800' : '#f44336');
@@ -131143,7 +131253,7 @@ body.pa-theme #paOverlay{display:block}
                             <div style="background:#0a1a0a;border:1px solid #4caf50;border-radius:8px;padding:0.6rem;margin-bottom:0.3rem;display:flex;justify-content:space-between;align-items:center;">
                                 <div>
                                     <span style="color:${pRank.color};font-size:0.85rem;">${pRank.icon}</span>
-                                    <strong style="color:#fff;">${p.name}</strong>
+                                    <strong style="color:#fff;">${escapeHtml(p.name)}</strong>
                                     <span style="color:#888;font-size:0.75rem;"> Lv.${p.level || '?'}</span>
                                     <span style="color:${pRank.color};font-size:0.7rem;"> ${pElo} ELO</span>
                                 </div>
@@ -131380,7 +131490,7 @@ body.pa-theme #paOverlay{display:block}
                             <span style="color:#ffd700;font-weight:bold;min-width:2rem;text-align:center;">${medal}</span>
                             <span style="font-size:1.1rem;">${rank.icon}</span>
                             <div style="flex:1;">
-                                <span style="color:${isMe ? '#4caf50' : '#fff'};font-weight:bold;">${p.name}</span>
+                                <span style="color:${isMe ? '#4caf50' : '#fff'};font-weight:bold;">${escapeHtml(p.name)}</span>
                                 <span style="color:#888;font-size:0.7rem;"> Lv.${p.level || '?'}</span>
                             </div>
                             <div style="text-align:right;">
@@ -134190,7 +134300,7 @@ ${window.REMOVED_FEATURES?.enabled ? '' : `                        <div onclick=
             const msgs = (privateMessages[friendName] || []).sort((a, b) => a.timestamp - b.timestamp).slice(-30);
             
             // Bezpečné escapování pro onclick
-            const safeName = escapeHtml(friendName).replace(/'/g, "\\'");
+            const safeName = jsArg(friendName);
             
             let messagesHtml = '';
             if (msgs.length === 0) {
@@ -134420,7 +134530,7 @@ ${window.REMOVED_FEATURES?.enabled ? '' : `                        <div onclick=
                     const preview = conv.lastMsg?.text ? (conv.lastMsg.text.substring(0, 40) + (conv.lastMsg.text.length > 40 ? '...' : '')) : 'Žádná zpráva';
                     
                     const isPustinaConv = conv.name === '🌍 Pustina';
-                    const _safeConvName = escapeHtml(conv.name).replace(/'/g, "\\'");
+                    const _safeConvName = jsArg(conv.name);
                     html += `
                         <div style="display: flex; align-items: center; gap: 0.8rem; background: ${conv.unreadCount > 0 ? (isPustinaConv ? '#1a2a1a' : '#1a2a3a') : '#1a1a1a'}; padding: 0.8rem; border-radius: 8px; margin-bottom: 0.5rem; border-left: 3px solid ${conv.unreadCount > 0 ? (isPustinaConv ? '#4caf50' : '#2196f3') : '#333'};">
                             ${isPustinaConv 
@@ -147039,16 +147149,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 html += '</div>';
                 html += `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.75rem;">
                     <button class="btn" onclick="adminInspectPlayer()" style="background: #555;">← Zpět na seznam</button>
-                    <button class="btn" onclick="adminSetPlayerMoney('${escapeHtml(playerName).replace(/'/g, "\\'")}'); closeModal();" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">💰 Nastavit peníze</button>
+                    <button class="btn" onclick="adminSetPlayerMoney('${jsArg(playerName)}'); closeModal();" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">💰 Nastavit peníze</button>
                 </div>
                 <div style="margin-top: 0.5rem;">
-                    <button class="btn" onclick="adminMultiplayerBan('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="width: 100%; background: linear-gradient(135deg, #d32f2f 0%, #6a1b1b 100%); padding: 0.7rem; font-size: 0.85rem;">
+                    <button class="btn" onclick="adminMultiplayerBan('${jsArg(playerName)}')" style="width: 100%; background: linear-gradient(135deg, #d32f2f 0%, #6a1b1b 100%); padding: 0.7rem; font-size: 0.85rem;">
                         🌐 Multiplayer ban
                     </button>
                     <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Vyber co konkrétně mu chceš zakázat (tržiště, World Boss, klan, tombolu, poklady).</p>
                 </div>
                 <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #2a0a0a;">
-                    <button class="btn" onclick="adminWipePlayer('${escapeHtml(playerName).replace(/'/g, "\\'")}', '${uid || ''}')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b0000;">
+                    <button class="btn" onclick="adminWipePlayer('${jsArg(playerName)}', '${uid || ''}')" style="width: 100%; background: linear-gradient(135deg, #6a1b1b 0%, #3a0808 100%); padding: 0.7rem; font-size: 0.85rem; border: 1px solid #8b0000;">
                         💀 SMAZAT POSTAVU (cheater hunt)
                     </button>
                     <p style="color: #666; font-size: 0.7rem; margin: 0.3rem 0 0 0; text-align: center;">Smaže cloud save + leaderboard záznam. Hráč bude muset vytvořit novou postavu při dalším loginu.</p>
@@ -147405,6 +147515,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Ulož do Firebase pro persistenci
             if (firebaseDB) {
                 await firebaseDB.ref('adminData/staffMembers/' + nick.replace(/[\\/\\.#$\\[\\]]/g, '_')).set(role);
+                _setStaffUid(nick, true);
             }
             
             const roleData = STAFF_ROLES[role];
@@ -147412,6 +147523,16 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             showStaffManager();
         }
         
+        // [v7.54] Práva staffu v pravidlech databáze se řídí podle UID (staffUIDs/<uid>) – UID najdeme podle registrované přezdívky
+        async function _setStaffUid(nick, on) {
+            try {
+                const v = (await firebaseDB.ref('registeredNicks/' + String(nick).toLowerCase()).once('value')).val();
+                const uid = v && (v.odid || v.uid);
+                if (!uid) { notifyWarning('Staff bez účtu', nick + ' nemá registrovaný účet – práva v databázi dostane až po registraci.'); return false; }
+                if (on) await firebaseDB.ref('staffUIDs/' + uid).set(true); else await firebaseDB.ref('staffUIDs/' + uid).remove();
+                return true;
+            } catch (e) { console.warn('staffUIDs', e); return false; }
+        }
         async function removeStaffMember(nick) {
             if (!isAdmin()) return;
             if (nick === ADMIN_NICK) {
@@ -147424,6 +147545,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             // Odeber z Firebase
             if (firebaseDB) {
                 await firebaseDB.ref('adminData/staffMembers/' + nick.replace(/[\\/\\.#$\\[\\]]/g, '_')).remove();
+                _setStaffUid(nick, false);
             }
             
             notifySuccess('✓ Odebráno', `${nick} byl odebrán ze staff`);
@@ -147549,7 +147671,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                 <div style="color:#ce93d8;font-weight:bold;">⚔️ ${escapeHtml(clan.name)}</div>
                                 <div style="color:#888;font-size:0.72rem;">👑 ${escapeHtml(clan.leader)} · 👥 ${memberCount} členů · 📍 ${escapeHtml(loc?.name || locId)}</div>
                             </div>
-                            <button onclick="adminViewClanChat('${locId}','${escapeHtml(clan.name).replace(/'/g,"\'")}')" 
+                            <button onclick="adminViewClanChat('${locId}','${jsArg(clan.name)}')" 
                                 style="background:#7b1fa2;border:none;color:#fff;padding:0.35rem 0.7rem;border-radius:5px;cursor:pointer;font-size:0.8rem;white-space:nowrap;">
                                 💬 Chat
                             </button>
@@ -147587,14 +147709,14 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                     <div style="color:#ce93d8;font-size:0.8rem;">${escapeHtml(msg.author)} <span style="color:#555;">${time}</span></div>
                                     <div style="color:#ccc;font-size:0.9rem;">${escapeHtml(msg.text?.substring(0,80))}${(msg.text?.length||0)>80?'...':''}</div>
                                 </div>
-                                <button onclick="adminDeleteClanChatMsg('${clanId}','${msg.id}','${escapeHtml(clanName).replace(/'/g,"\'")}')" 
+                                <button onclick="adminDeleteClanChatMsg('${clanId}','${msg.id}','${jsArg(clanName)}')" 
                                     style="background:#c62828;border:none;color:#fff;padding:0.3rem 0.5rem;border-radius:4px;cursor:pointer;font-size:0.75rem;flex-shrink:0;">🗑️</button>
                             </div>`;
                     });
                 }
                 html += `</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:1rem;">
-                        <button class="btn" onclick="adminClearClanChat('${clanId}','${escapeHtml(clanName).replace(/'/g,"\'")}')" style="background:#c62828;">🗑️ Smazat vše</button>
+                        <button class="btn" onclick="adminClearClanChat('${clanId}','${jsArg(clanName)}')" style="background:#c62828;">🗑️ Smazat vše</button>
                         <button class="btn" onclick="adminManageClanChats()" style="background:#333;">← Zpět</button>
                     </div>`;
                 
@@ -149126,7 +149248,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     <input type="text" id="qrReason" placeholder="např. Kompenzace za bug" maxlength="100" style="width: 100%; padding: 0.5rem; background: #1a1a1a; color: #fff; border: 1px solid #444; border-radius: 6px;">
                 </div>
                 
-                <button class="btn" onclick="sendQuickReward('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="width: 100%; background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.8rem;">
+                <button class="btn" onclick="sendQuickReward('${jsArg(playerName)}')" style="width: 100%; background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%); padding: 0.8rem;">
                     🎁 Odeslat odměnu
                 </button>
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem; background: #555;">← Zpět</button>
@@ -150404,7 +150526,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
-                    <button class="btn" onclick="executeAdminSetMoney('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">
+                    <button class="btn" onclick="executeAdminSetMoney('${jsArg(playerName)}')" style="background: linear-gradient(135deg, #c62828 0%, #b71c1c 100%);">
                         💰 Nastavit peníze
                     </button>
                 </div>
@@ -150487,7 +150609,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
-                    <button class="btn" onclick="executeQuickMute('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%);">🔇 Ztlumit</button>
+                    <button class="btn" onclick="executeQuickMute('${jsArg(playerName)}')" style="background: linear-gradient(135deg, #607d8b 0%, #455a64 100%);">🔇 Ztlumit</button>
                 </div>
             `);
         }
@@ -150522,7 +150644,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
-                    <button class="btn" onclick="executeQuickAddStaff('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);">👥 Přidat</button>
+                    <button class="btn" onclick="executeQuickAddStaff('${jsArg(playerName)}')" style="background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);">👥 Přidat</button>
                 </div>
             `);
         }
@@ -150536,6 +150658,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             if (firebaseDB) {
                 await firebaseDB.ref('adminData/staffMembers/' + playerName.replace(/[\\/\\.#$\\[\\]]/g, '_')).set(role);
+                _setStaffUid(playerName, true);
             }
             
             const roleData = STAFF_ROLES[role];
@@ -150609,7 +150732,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                     <button class="btn" onclick="closeModal()" style="background: #555;">❌ Zrušit</button>
-                    <button class="btn" onclick="executeQuickBan('${escapeHtml(playerName).replace(/'/g, "\\\\'")}')" style="background: linear-gradient(135deg, #f44336 0%, #b71c1c 100%);">🚫 Banovat</button>
+                    <button class="btn" onclick="executeQuickBan('${jsArg(playerName)}')" style="background: linear-gradient(135deg, #f44336 0%, #b71c1c 100%);">🚫 Banovat</button>
                 </div>
             `);
         }
@@ -150727,7 +150850,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                    <button class="btn" onclick="applyQuickVIPColor('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.8rem;">
+                    <button class="btn" onclick="applyQuickVIPColor('${jsArg(playerName)}')" style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); padding: 0.8rem;">
                         ✓ Uložit
                     </button>
                     <button class="btn" onclick="closeModal()" style="background: #555; padding: 0.8rem;">
@@ -155495,7 +155618,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                         : '';
                     
                     const adminBtn = amAdmin 
-                        ? `<button onclick="adminPokerPlayerDetail('${escapeHtml(s.name).replace(/'/g, "\\'")}')" style="background:#00bcd4;color:#000;border:none;padding:0.2rem 0.5rem;font-size:0.65rem;border-radius:3px;cursor:pointer;margin-top:0.2rem;">🔍 Detail</button>`
+                        ? `<button onclick="adminPokerPlayerDetail('${jsArg(s.name)}')" style="background:#00bcd4;color:#000;border:none;padding:0.2rem 0.5rem;font-size:0.65rem;border-radius:3px;cursor:pointer;margin-top:0.2rem;">🔍 Detail</button>`
                         : '';
                     
                     return `
@@ -155567,7 +155690,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                     </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-top:0.8rem;">
                         <button class="btn" onclick="showPokerLeaderboard()" style="background:#555;">← Zpět</button>
-                        <button class="btn" onclick="adminResetPokerStats('${escapeHtml(playerName).replace(/'/g, "\\'")}')" style="background:linear-gradient(135deg,#b71c1c,#7f0000);">🗑️ Reset stats</button>
+                        <button class="btn" onclick="adminResetPokerStats('${jsArg(playerName)}')" style="background:linear-gradient(135deg,#b71c1c,#7f0000);">🗑️ Reset stats</button>
                     </div>
                 `);
             } catch(e) {
@@ -156330,7 +156453,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 }
 
                 const kickBtn = (_iAmAdminOrStaff && !isMe)
-                    ? `<button onclick="event.stopPropagation(); adminKickPokerPlayer('${escapeHtml(p.name).replace(/'/g, "\\'")}');" style="background:#c62828;color:#fff;border:none;padding:0.1rem 0.3rem;font-size:0.55rem;border-radius:3px;cursor:pointer;margin-top:0.1rem;">🚫</button>`
+                    ? `<button onclick="event.stopPropagation(); adminKickPokerPlayer('${jsArg(p.name)}');" style="background:#c62828;color:#fff;border:none;padding:0.1rem 0.3rem;font-size:0.55rem;border-radius:3px;cursor:pointer;margin-top:0.1rem;">🚫</button>`
                     : '';
 
                 const nameColor = isMe ? '#ffd700' : (p.isBot ? '#9fd3ff' : '#e0e0e0');
@@ -156683,7 +156806,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 } else {
                     listHtml = players.map(p => {
                         const isBanned = !!banned[p.name];
-                        const escName = escapeHtml(p.name).replace(/'/g, "\\'");
+                        const escName = jsArg(p.name);
                         return `
                             <div style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0.5rem;background:${isBanned ? '#1f0a0a' : '#1a1a1a'};border-radius:4px;margin-bottom:0.3rem;border-left:3px solid ${isBanned ? '#f44336' : '#333'};">
                                 <div style="flex:1;min-width:0;">
@@ -157963,7 +158086,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                         return `
                                             <div style="background: #222; border-radius: 4px; margin-bottom: 0.3rem; padding: 0.5rem;">
                                                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                                                    <span onclick="showCandidateProgram('${escapeHtml(name)}', '${escapeHtml((data.program || 'Bez programu').replace(/'/g, "\\'"))}')" style="color: #fff; cursor: pointer; text-decoration: underline;">${escapeHtml(name)}</span>
+                                                    <span onclick="showCandidateProgram('${jsArg(name)}', '${jsArg(data.program || 'Bez programu')}')" style="color: #fff; cursor: pointer; text-decoration: underline;">${escapeHtml(name)}</span>
                                                     <div>
                                                         <span style="color: #ffd700; margin-right: 0.5rem;">${voteCount} hlasů</span>
                                                         ${!hasVoted ? `
@@ -158041,7 +158164,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                                         return `
                                             <div style="background: #222; border-radius: 6px; padding: 0.6rem;">
                                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-                                                    <span onclick="showCandidateProgram('${escapeHtml(name)}', '${escapeHtml((data.program || 'Bez programu').replace(/'/g, "\\'"))}')" style="color: #fff; cursor: pointer; font-weight: bold;">
+                                                    <span onclick="showCandidateProgram('${jsArg(name)}', '${jsArg(data.program || 'Bez programu')}')" style="color: #fff; cursor: pointer; font-weight: bold;">
                                                         ${escapeHtml(name)} ${isMyCandidate ? '<span style="color: #9c27b0; font-size: 0.75rem;">(ty)</span>' : ''}
                                                     </span>
                                                     ${endorseCount > 0 ? `<span style="color: #ffd700; font-size: 0.75rem;">🤝 ${endorseCount} endorsement${endorseCount > 1 ? 's' : ''}</span>` : ''}
@@ -160155,7 +160278,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
             
             const playerOptions = players.length > 0 
                 ? players.map((p, i) => `
-                    <div onclick="selectGrantTarget('${escapeHtml(p.name).replace(/'/g, "\\'")}')" 
+                    <div onclick="selectGrantTarget('${jsArg(p.name)}')" 
                          id="grant-player-${i}"
                          class="grant-player-row"
                          style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; padding: 0.5rem 0.7rem; border-radius: 6px; margin-bottom: 0.25rem; border: 2px solid transparent; transition: all 0.15s;">
@@ -174814,7 +174937,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 </div>
                 
                 <div id="pvpDuelTimeOpts" style="display: grid; grid-template-columns: 1fr; gap: 0.4rem; margin-bottom: 0.8rem;">
-                    <button class="btn" onclick="confirmDeclarePvPDuel('${escapeHtml(targetName).replace(/'/g, "\\'")}', ${Date.now() + 30*1000})" style="background: linear-gradient(135deg, #c62828, #6a1b1b); border: 2px solid #ff5722; color: #fff; padding: 0.9rem; font-weight: bold; animation: pulse-glow 1.5s infinite; font-size: 0.95rem;">🔥 BOJOVAT IHNED<br><span style="font-size: 0.7rem; color: #ffccbc; font-weight: normal;">Souboj začne za 30 sekund — soupeř má 30s na přijetí</span></button>
+                    <button class="btn" onclick="confirmDeclarePvPDuel('${jsArg(targetName)}', ${Date.now() + 30*1000})" style="background: linear-gradient(135deg, #c62828, #6a1b1b); border: 2px solid #ff5722; color: #fff; padding: 0.9rem; font-weight: bold; animation: pulse-glow 1.5s infinite; font-size: 0.95rem;">🔥 BOJOVAT IHNED<br><span style="font-size: 0.7rem; color: #ffccbc; font-weight: normal;">Souboj začne za 30 sekund — soupeř má 30s na přijetí</span></button>
                 </div>
                 
                 <button class="btn" onclick="closeModal()" style="width: 100%; background: #555;">✗ Zrušit</button>
@@ -180065,7 +180188,7 @@ Po dosažení capu boss <strong>uteče</strong> z boje. Hráč si ponechá HP, d
                 entriesHtml = filtered.map(a => {
                     const style = typeStyles[a.type] || typeStyles.other;
                     const playerName = a.player || 'Klan';
-                    const safePlayerName = escapeHtml(playerName).replace(/'/g, "\\'");
+                    const safePlayerName = jsArg(playerName);
                     const avatar = (typeof renderAvatarHTML === 'function' && playerName !== 'Klan' && playerName !== 'klan') 
                         ? renderAvatarHTML(playerName, '24px') 
                         : `<span style="font-size:1.2rem;">${style.icon}</span>`;
