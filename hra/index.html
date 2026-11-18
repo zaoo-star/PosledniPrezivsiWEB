@@ -18883,49 +18883,47 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             return loc ? (loc.desc || '') : '';
         }
         
-        // 🗺️ RANDOMIZACE MAPY - přehodí pozice lokací v rámci zón
-        function randomizeMapLocations() {
-            // Lokace které NESMÍ být přemístěny (důležité pro příběh/start)
-            const fixedLocations = ['shelter', 'bucovice', 'research_facility', 'trading_post', 'secret_lab', 'old_bunker'];
-            
-            // Seskup lokace podle zóny
-            const zones = {};
-            WORLD_LOCATIONS.forEach(loc => {
-                if (fixedLocations.includes(loc.id)) return; // Přeskoč fixní lokace
-                if (loc.type === 'empty') return; // Prázdné lokace necháme
-                
-                const zone = loc.zone || 'medium';
-                if (!zones[zone]) zones[zone] = [];
-                zones[zone].push(loc);
-            });
-            
-            // Pro každou zónu zamíchej souřadnice mezi lokacemi stejné zóny
-            Object.keys(zones).forEach(zone => {
-                const locs = zones[zone];
-                if (locs.length < 2) return;
-                
-                // Extrahuj souřadnice
-                const coords = locs.map(l => ({ x: l.x, y: l.y }));
-                
-                // Zamíchej souřadnice (Fisher-Yates shuffle)
-                for (let i = coords.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [coords[i], coords[j]] = [coords[j], coords[i]];
-                }
-                
-                // Přiřaď zamíchané souřadnice zpět
-                locs.forEach((loc, i) => {
-                    loc.x = coords[i].x;
-                    loc.y = coords[i].y;
+        // 🗺️ [v7.57] NÁHODNÁ SVĚTOVÁ MAPA PRO KAŽDOU NOVOU POSTAVU
+        // Lokace se přehází jen v rámci své zóny (bezpečná/střední/nebezpečná/smrtící) → obtížnost podle vzdálenosti
+        // od úkrytu zůstává. Úkryt, Bučovice, příběhové lokace a frakce zůstávají na místě. Rozložení určuje
+        // state.mapLayoutSeed (uložený s postavou) → po restartu, v cloudu i na jiném zařízení je mapa stejná.
+        // Starší postavy seed nemají → původní mapa beze změny.
+        const MAP_FIXED_IDS = new Set(['shelter', 'bucovice', 'research_facility', 'trading_post', 'secret_lab', 'old_bunker']);
+        const MAP_FIXED_TYPES = new Set(['home', 'city', 'faction', 'clan_land']);
+        const _MAP_ORIG_POS = new Map(WORLD_LOCATIONS.map(l => [l.id, { x: l.x, y: l.y }]));
+        window._mapLayoutApplied = 0;
+        function _mapRng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+        function applyMapLayout(seed) {
+            seed = (seed | 0) >>> 0;
+            // vždy od původních pozic → stejný seed = stejná mapa
+            WORLD_LOCATIONS.forEach(l => { const o = _MAP_ORIG_POS.get(l.id); if (o) { l.x = o.x; l.y = o.y; } });
+            if (seed) {
+                const rnd = _mapRng(seed), zones = {};
+                WORLD_LOCATIONS.forEach(l => {
+                    if (MAP_FIXED_IDS.has(l.id) || MAP_FIXED_TYPES.has(l.type) || !_MAP_ORIG_POS.has(l.id)) return;
+                    (zones[l.zone || 'medium'] = zones[l.zone || 'medium'] || []).push(l);
                 });
-            });
-            
-            // Ulož seed pro případnou reprodukci
-            state.mapSeed = Date.now();
-            
-            console.log('🗺️ Mapa randomizována! Seed:', state.mapSeed);
-            addLog('🗺️ Svět se změnil... Vše je jinak než minule.', '🗺️');
+                Object.keys(zones).sort().forEach(z => {
+                    const locs = zones[z].sort((p, q) => p.id < q.id ? -1 : 1);
+                    const coords = locs.map(l => ({ x: l.x, y: l.y }));
+                    for (let i = coords.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [coords[i], coords[j]] = [coords[j], coords[i]]; }
+                    locs.forEach((l, i) => { l.x = coords[i].x; l.y = coords[i].y; });
+                });
+            }
+            if (typeof WORLD_PATHS !== 'undefined') { const np = generatePaths(); WORLD_PATHS.length = 0; np.forEach(p => WORLD_PATHS.push(p)); }
+            window._mapLayoutApplied = seed;
         }
+        function _ensureMapLayout() {
+            try {
+                const want = (typeof state !== 'undefined' && state && state.mapLayoutSeed) ? (state.mapLayoutSeed >>> 0) : 0;
+                if (want !== window._mapLayoutApplied) applyMapLayout(want);
+            } catch (e) { console.warn('mapLayout', e); }
+        }
+        function randomizeMapLocations() {
+            state.mapLayoutSeed = (Math.floor(Math.random() * 0xFFFFFFF0) + 1) >>> 0;
+            applyMapLayout(state.mapLayoutSeed);
+        }
+        window.applyMapLayout = applyMapLayout; window._ensureMapLayout = _ensureMapLayout; window.randomizeMapLocations = randomizeMapLocations;
         
         // Helper funkce pro získání názvu crafting receptu
         function getCraftingName(recipeId) {
@@ -39939,6 +39937,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // [FIX] renderFull debounce — zabrání mnohonásobným překreslením v jednom frame
         let _renderFullPending = false;
         function renderFull() {
+            if (typeof _ensureMapLayout === 'function') _ensureMapLayout();
             if (_renderFullPending) return;
             _renderFullPending = true;
             requestAnimationFrame(() => {
@@ -40738,6 +40737,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // Spustí se automaticky při startu hry — viz startGame inicializace
         
         function renderGame() {
+            if (typeof _ensureMapLayout === 'function') _ensureMapLayout();
             try {
                 console.log('🎮 renderGame() started');
             document.getElementById('nav').innerHTML = `
@@ -43196,6 +43196,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // [FIX v3.9.84] Nastav timestamp vytvoření postavy - pro ověření vlastnictví pozemků/items
             state.char.createdAt = Date.now();
+            // [v7.57] každá nová postava má vlastní rozložení světové mapy
+            try { randomizeMapLocations(); } catch (e) { console.warn('map layout', e); }
             
             // Reset inventáře - vyčisti vše kromě lore knih
             const loreItems = state.inv.filter(i => i.type === 'lore');
@@ -43908,6 +43910,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         window.showStealthInfo = showStealthInfo;
         
         function renderWorldMap() {
+            if (typeof _ensureMapLayout === 'function') _ensureMapLayout();
             // Zajisti že currentLocation existuje
             if (!state.world.currentLocation) {
                 state.world.currentLocation = 'shelter';
