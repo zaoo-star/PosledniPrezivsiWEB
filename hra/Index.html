@@ -8695,8 +8695,19 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
         function diceMod(attr) {
             if (!attr) return 0;
             const v = typeof getEffectiveAttr === 'function' ? getEffectiveAttr(attr) : (state.char?.attrs?.[attr] || 5);
-            return Math.max(-2, Math.floor(((v || 5) - 5) / 2));
+            // [v7.62] klesající výnos: do 15 bodů +1 za 2 body (max +5), nad 15 jen +1 za 4 body, strop +8
+            return _diceAttrCurve(v || 5);
         }
+        function _diceAttrCurve(v) {
+            if (v <= 15) return Math.max(-2, Math.floor((v - 5) / 2));
+            return Math.min(DICE_ATTR_CAP, 5 + Math.floor((v - 15) / 4));
+        }
+        const DICE_ATTR_CAP = 8;     // max bonus z atributu
+        const DICE_TOTAL_CAP = 10;   // max bonus celkem (atribut + vybavení + povolání)
+        // [v7.62] obtížnost hodů mimo průzkum roste s levelem: +1 za každých 6 levelů (max +5)
+        function diceDC(base) { const lv = (typeof state !== 'undefined' && state?.char?.level) || 1; return base + Math.min(5, Math.floor((lv - 1) / 6)); }
+        // obtížnost v průzkumu podle nebezpečnosti lokace 1–5 → 10, 11, 13, 14, 16
+        function diceDangerDC(dl, base) { return (base || 8) + Math.round(Math.max(1, Math.min(5, dl || 1)) * 1.5); }
         // [v7.58] Bonusy ke kostce z vybavení, povolání a pomoc společníka
         const DICE_EXTRA_CAP = 3; // vybavení + povolání dohromady max +3 (atribut se počítá zvlášť)
         const _DICE_TIER = { rare: 1, epic: 1, legendary: 2, mythic: 2, unique: 2, set: 1 };
@@ -8752,7 +8763,7 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
                 return { ic: typeof companionIcon === 'function' ? companionIcon(c.id, emo, '1.1em') : emo, n: String(c.name || 'Společník').replace(/[<>"&]/g, ''), why: DICE_COMP_WHY[attr] || 'pomáhá' };
             } catch (e) { return null; }
         }
-        function diceTotalMod(attr) { return diceMod(attr) + diceSources(attr).reduce((s, x) => s + x.v, 0); }
+        function diceTotalMod(attr) { return Math.min(DICE_TOTAL_CAP, diceMod(attr) + diceSources(attr).reduce((s, x) => s + x.v, 0)); }
         function diceChance(attr, dc, adv) {
             const need = dc - diceTotalMod(attr); // potřebná hodnota na kostce
             const p = Math.max(1, Math.min(19, 21 - need)) / 20; // 1 = vždy neúspěch, 20 = vždy úspěch
@@ -8780,8 +8791,9 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
         const DICE_HELP_HTML = `<div class="dice-help">
             <b>🎲 Jak fungují kostky</b>
             <p>Hodíš dvacetistěnnou kostkou (1–20) a přičteš <b>bonusy</b>. Když je součet aspoň <b>obtížnost</b>, uspěješ. Padne-li <b style="color:#ffd740">20</b>, vyjde to vždy, <b style="color:#ef5350">1</b> nevyjde nikdy.</p>
-            <p><b>Bonusy:</b> atribut postavy · tvoje povolání · lepší vybavení (vzácná zbraň → SÍL/VNÍ, zbroj → VÝD, rukavice → OBR, dalekohled či baterka → VNÍ, šťastný prsten → ŠTĚ).</p>
+            <p><b>Bonusy:</b> atribut postavy (+1 za 2 body nad 5, nad 15 už jen za 4 body, max +8) · tvoje povolání · lepší vybavení (vzácná zbraň → SÍL/VNÍ, zbroj → VÝD, rukavice → OBR, dalekohled či baterka → VNÍ, šťastný prsten → ŠTĚ).</p>
             <p><b>Společník</b> (pes, vrána, vlk…) u hodu, který mu sedí, pomůže: házíš <b>dvěma kostkami</b> a bere se lepší.</p>
+            <p><b>Strop:</b> všechny bonusy dohromady max <b>+10</b>. Obtížnost roste s nebezpečností lokace a u rozhovorů, schopností a cest i s tvým levelem – kostky zůstanou napínavé i později.</p>
             <p><b>🍀 Přehození:</b> nevyšlo to? Jednou denně můžeš hod přehodit (víc se Štěstím 8+ a šťastným doplňkem).</p>
         </div>`;
         function _diceBonusLine(attr) {
@@ -8793,7 +8805,7 @@ body:has(#explore3DWrapper.fs) #scrollToTop{display:none!important}
             const o = opts || {};
             const attr = o.attr, dc = o.dc || 10;
             const base = diceMod(attr), src = attr ? diceSources(attr) : [], helper = (attr && !o.noHelp) ? diceHelper(attr) : null;
-            const mod = base + src.reduce((s, x) => s + x.v, 0);
+            const mod = Math.min(DICE_TOTAL_CAP, base + src.reduce((s, x) => s + x.v, 0)); // [v7.62] strop
             const a = DICE_ATTRS[attr] || { s: '', c: '#c9a46a', n: '' };
             const need = Math.max(2, Math.min(20, dc - mod)); // od kolika na kostce je úspěch
             const r20 = () => 1 + Math.floor(Math.random() * 20);
@@ -38668,8 +38680,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             if (window._abilityRolling) return;
             window._abilityRolling = true;
             let r = null;
-            try { r = await diceRoll({ attr: CLASS_ABILITY_ATTR[state.char.classId] || 'lck', dc: 12, label: `${ability.icon} ${ability.name}`,
-                outcome: x => x.fumble ? 'Zaváhal jsi – schopnost nevyšla (cooldown jen 25 %).' : x.success ? (x.crit || x.total >= 18 ? 'Mistrovské provedení! Cooldown −50 %.' : 'Schopnost použita.') : 'Schopnost použita.' }); } catch (e) {}
+            try { r = await diceRoll({ attr: CLASS_ABILITY_ATTR[state.char.classId] || 'lck', dc: diceDC(10), label: `${ability.icon} ${ability.name}`,
+                outcome: x => x.fumble ? 'Zaváhal jsi – schopnost nevyšla (cooldown jen 25 %).' : x.success ? (x.crit || x.total >= x.dc + 6 ? 'Mistrovské provedení! Cooldown −50 %.' : 'Schopnost použita.') : 'Schopnost použita.' }); } catch (e) {}
             window._abilityRolling = false;
             if (r?.fumble) {
                 state.char.abilityLastUsed = Date.now() - ability.cooldown * 750;
@@ -41718,10 +41730,10 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     ${typeof diceSources === 'function' ? (() => {
                         const rows = Object.keys(DICE_ATTRS).map(k => {
                             const a = DICE_ATTRS[k], m = diceMod(k), src = diceSources(k), h = diceHelper(k);
-                            const tot = m + src.reduce((x, y) => x + y.v, 0);
+                            const tot = Math.min(DICE_TOTAL_CAP, m + src.reduce((x, y) => x + y.v, 0));
                             return `<div class="ch2-dice-row"><b style="color:${a.c}">${a.n}</b><span class="t">${tot >= 0 ? '+' : '−'}${Math.abs(tot)}</span><span class="s">${a.s} ${m >= 0 ? '+' : '−'}${Math.abs(m)}${src.map(x => ` · ${x.ic} ${x.n} +${x.v}`).join('')}${h ? ` · <span style="color:#b5e07a">${h.ic} ${h.n}: 2 kostky</span>` : ''}</span></div>`;
                         }).join('');
-                        return `<details class="ch2-acc ch2-dice"><summary><span>🎲 Kostky · přehození dnes ${diceLuckLeft()}×</span><span class="q" onclick="event.preventDefault(); event.stopPropagation(); showModal('🎲 Jak fungují kostky', window.DICE_HELP_HTML)">?</span></summary><div class="ch2-dice-body">${rows}<div class="ch2-dice-tip">Lepší vybavení, vlastní povolání a vhodný společník přidávají ke kostkám. Vzácné a lepší věci = vyšší bonus (max +${DICE_EXTRA_CAP} navíc k atributu).</div></div></details>`;
+                        return `<details class="ch2-acc ch2-dice"><summary><span>🎲 Kostky · přehození dnes ${diceLuckLeft()}×</span><span class="q" onclick="event.preventDefault(); event.stopPropagation(); showModal('🎲 Jak fungují kostky', window.DICE_HELP_HTML)">?</span></summary><div class="ch2-dice-body">${rows}<div class="ch2-dice-tip">Lepší vybavení, vlastní povolání a vhodný společník přidávají ke kostkám. Vzácné a lepší věci = vyšší bonus (max +${DICE_EXTRA_CAP} navíc k atributu, celkem max +${DICE_TOTAL_CAP}).</div></div></details>`;
                     })() : ''}
 
                     <!-- ACHIEVEMENTY - TERMINAL -->
@@ -49423,7 +49435,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             // [v7.58] všimnout si pasti = hod kostkou na Vnímání; společník s citem pro pasti snižuje obtížnost
             let _spotted = false;
             try {
-                const _dc = Math.max(6, 13 - Math.round(trapAvoidBonus * 10));
+                const _dc = Math.max(6, diceDC(11) - Math.round(trapAvoidBonus * 10));
                 const _r = await diceRoll({ attr: 'per', dc: _dc, label: '🪤 Něco cvaklo pod nohou…',
                     outcome: x => x.success ? 'Včas sis všiml nástražného drátu!' : 'Pozdě…' });
                 _spotted = !!_r.success;
@@ -50100,7 +50112,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             window._fleeRolling = true;
             let ok = false;
             try {
-                const r = await diceRoll({ attr: 'agi', dc: 13, label: '🏃 Strategický ústup',
+                const r = await diceRoll({ attr: 'agi', dc: diceDC(11), label: '🏃 Strategický ústup',
                     outcome: x => x.success ? 'Zmizel jsi jim z očí.' : 'Dostihli tě – musíš bojovat!' });
                 ok = !!r.success;
             } catch (e) { ok = Math.random() < 0.3; }
@@ -54496,7 +54508,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         async function exploreDiceEnemy(E, enemy) {
             _explorePause(E);
-            const dl = _exploreDanger(E), dc = 9 + dl;
+            const dl = _exploreDanger(E), dc = diceDangerDC(dl, 8);
             const def = ENEMIES.find(e => e.id === enemy.enemyId) || {};
             const _rng = !!(state.equipped?.weapon && (state.equipped.weapon.ammoType || state.equipped.weapon.ranged || /luk|kuš|puš|pistol|bow|rifle/i.test(state.equipped.weapon.name + ' ' + state.equipped.weapon.id)));
             let known = false;
@@ -54554,7 +54566,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         async function exploreDiceChest(E, li) {
             _explorePause(E);
-            const dl = _exploreDanger(E), dc = 9 + dl;
+            const dl = _exploreDanger(E), dc = diceDangerDC(dl, 8);
             const r = await diceChoice({
                 title: '🧰 Zamčená truhla', icon: li.icon,
                 text: 'Starý zámek, zrezlé kování… a na víku visí podezřelý drát.',
@@ -54589,7 +54601,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         }
         async function exploreDiceTrap(E, tr) {
             _explorePause(E);
-            const dl = _exploreDanger(E), dc = 8 + dl;
+            const dl = _exploreDanger(E), dc = diceDangerDC(dl, 7);
             const spot = await diceRoll({ attr: 'per', dc, label: '👁️ Něco tu nesedí…', outcome: res => res.success ? 'Všiml sis nášlapné pasti!' : 'Pod nohou ti cvaklo…' });
             if (!spot.success) { tr.done = true; tr.revealed = true; _exploreHurt(E, 0.08 + 0.03 * dl, 'Nášlapná past'); _exploreResume(E); return; }
             tr.revealed = true;
@@ -58269,7 +58281,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             window._fleeRolling = true;
             let ok = false;
             try {
-                const r = await diceRoll({ attr: 'agi', dc: 13, label: '🏃 Útěk', outcome: x => x.success ? 'Zmizel jsi jim z očí.' : 'Dostihli tě – musíš bojovat!' });
+                const r = await diceRoll({ attr: 'agi', dc: diceDC(11), label: '🏃 Útěk', outcome: x => x.success ? 'Zmizel jsi jim z očí.' : 'Dostihli tě – musíš bojovat!' });
                 ok = !!r.success;
             } catch (e) { ok = Math.random() < 0.3; }
             window._fleeRolling = false;
@@ -60565,7 +60577,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             const info = attrEffects[attrKey];
             // [v7.58] každý atribut je zároveň bonus ke kostkám
-            if (info && Array.isArray(info.effects)) { const _dm = Math.max(-2, Math.floor((totalValue - 5) / 2)); info.effects.push({ name: '🎲 Bonus ke kostkám', formula: '+1 za každé 2 body nad 5', current: (_dm >= 0 ? '+' : '−') + Math.abs(_dm) }); }
+            if (info && Array.isArray(info.effects)) { const _dm = typeof _diceAttrCurve === 'function' ? _diceAttrCurve(totalValue) : Math.max(-2, Math.floor((totalValue - 5) / 2)); info.effects.push({ name: '🎲 Bonus ke kostkám', formula: '+1 za 2 body nad 5, nad 15 pomaleji (max +8)', current: (_dm >= 0 ? '+' : '−') + Math.abs(_dm) }); }
             
             showModal(`${attr.icon} ${info.title}`, `
                 <div style="text-align: center; padding: 1rem;">
@@ -61105,12 +61117,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 title: '💬 Smlouvání', icon: '🧔',
                 text: '„Ceny jsou pevný, kámo. Teda… pokud mě nepřesvědčíš.“',
                 options: [
-                    { icon: '🧠', label: 'Přesvědčit', desc: 'Úspěch = sleva 10 % (kritický 20 %) na 30 min', attr: 'int', dc: 12 },
-                    { icon: '👊', label: 'Zastrašit', desc: 'Úspěch = sleva 20 % · neúspěch = přirážka 15 %', attr: 'str', dc: 14 },
-                    { icon: '🍀', label: 'Hodit si o to', desc: 'Úspěch = sleva 15 % · neúspěch = přirážka 10 %', attr: 'lck', dc: 13 },
-                    { icon: '👁️', label: 'Najít vadu na zboží', desc: 'Úspěch = sleva 12 % (krit 22 %) · neúspěch = nic', attr: 'per', dc: 12 },
-                    { icon: '😂', label: 'Rozesmát ho', desc: 'Úspěch = sleva 8 % (krit 18 %) · neúspěch = přirážka 5 %', attr: 'lck', dc: 11 },
-                    { icon: '🧱', label: 'Ukázat výdrž – smlouvat do večera', desc: 'Úspěch = sleva 14 % · neúspěch = nic', attr: 'end', dc: 13 },
+                    { icon: '🧠', label: 'Přesvědčit', desc: 'Úspěch = sleva 10 % (kritický 20 %) na 30 min', attr: 'int', dc: diceDC(12) },
+                    { icon: '👊', label: 'Zastrašit', desc: 'Úspěch = sleva 20 % · neúspěch = přirážka 15 %', attr: 'str', dc: diceDC(14) },
+                    { icon: '🍀', label: 'Hodit si o to', desc: 'Úspěch = sleva 15 % · neúspěch = přirážka 10 %', attr: 'lck', dc: diceDC(13) },
+                    { icon: '👁️', label: 'Najít vadu na zboží', desc: 'Úspěch = sleva 12 % (krit 22 %) · neúspěch = nic', attr: 'per', dc: diceDC(12) },
+                    { icon: '😂', label: 'Rozesmát ho', desc: 'Úspěch = sleva 8 % (krit 18 %) · neúspěch = přirážka 5 %', attr: 'lck', dc: diceDC(11) },
+                    { icon: '🧱', label: 'Ukázat výdrž – smlouvat do večera', desc: 'Úspěch = sleva 14 % · neúspěch = nic', attr: 'end', dc: diceDC(13) },
                     { icon: '✖️', label: 'Nesmlouvat', desc: 'Nech to být' }
                 ]
             });
@@ -61143,12 +61155,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 title: '💬 ' + npc.name, icon: (typeof npc.icon === 'string' && npc.icon.includes('<img')) ? (npc.icon.match(/alt="([^"]*)"/)?.[1] || '🧑') : (npc.icon || '🧑'),
                 text: 'Zkusíš z něj vytáhnout něco užitečného…',
                 options: [
-                    { icon: '🧠', label: 'Vyptat se chytře', desc: 'Úspěch = tip na neznámé místo + XP', attr: 'int', dc: 11 },
-                    { icon: '😏', label: 'Okouzlit', desc: 'Úspěch = dárek (zásoby)', attr: 'lck', dc: 12 },
-                    { icon: '👊', label: 'Přitlačit', desc: 'Úspěch = zátky · neúspěch = zhorší se vztah', attr: 'str', dc: 13 },
-                    { icon: '👁️', label: 'Poslouchat a pozorovat', desc: 'Úspěch = drby o okolí + XP', attr: 'per', dc: 10 },
-                    { icon: '🤝', label: 'Nabídnout pomoc', desc: 'Úspěch = zlepší se vztah + XP · stojí to energii', attr: 'end', dc: 12 },
-                    { icon: '💰', label: 'Podplatit (20 💰)', desc: (state.money || 0) >= 20 ? 'Úspěch = tip na neznámé místo · neúspěch = peníze jsou pryč' : 'Nemáš 20 💰', attr: 'lck', dc: 9, disabled: (state.money || 0) < 20 },
+                    { icon: '🧠', label: 'Vyptat se chytře', desc: 'Úspěch = tip na neznámé místo + XP', attr: 'int', dc: diceDC(11) },
+                    { icon: '😏', label: 'Okouzlit', desc: 'Úspěch = dárek (zásoby)', attr: 'lck', dc: diceDC(12) },
+                    { icon: '👊', label: 'Přitlačit', desc: 'Úspěch = zátky · neúspěch = zhorší se vztah', attr: 'str', dc: diceDC(13) },
+                    { icon: '👁️', label: 'Poslouchat a pozorovat', desc: 'Úspěch = drby o okolí + XP', attr: 'per', dc: diceDC(10) },
+                    { icon: '🤝', label: 'Nabídnout pomoc', desc: 'Úspěch = zlepší se vztah + XP · stojí to energii', attr: 'end', dc: diceDC(12) },
+                    { icon: '💰', label: 'Podplatit (20 💰)', desc: (state.money || 0) >= 20 ? 'Úspěch = tip na neznámé místo · neúspěch = peníze jsou pryč' : 'Nemáš 20 💰', attr: 'lck', dc: diceDC(9), disabled: (state.money || 0) < 20 },
                     { icon: '✖️', label: 'Nechat být' }
                 ]
             });
@@ -99311,7 +99323,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             let _gRoll = null;
             if (cs._grenadeRolling) return;
             cs._grenadeRolling = true;
-            try { _gRoll = await diceRoll({ attr: 'agi', dc: 9, label: `💣 Hod: ${item.name}`, outcome: r => r.crit ? 'Přímý zásah! +50 % DMG' : r.fumble ? (isDemolisher ? 'Málem ti vyklouzl… ale ty víš, co děláš.' : 'Vyklouzl ti z ruky!') : r.success ? 'Dobře mířeno.' : 'Jen okrajově (−40 % DMG)' }); } catch (e) {}
+            try { _gRoll = await diceRoll({ attr: 'agi', dc: diceDC(9), label: `💣 Hod: ${item.name}`, outcome: r => r.crit ? 'Přímý zásah! +50 % DMG' : r.fumble ? (isDemolisher ? 'Málem ti vyklouzl… ale ty víš, co děláš.' : 'Vyklouzl ti z ruky!') : r.success ? 'Dobře mířeno.' : 'Jen okrajově (−40 % DMG)' }); } catch (e) {}
             cs._grenadeRolling = false;
             if (window.combatState !== cs) return;
             if (_gRoll?.crit) { dmgMult *= 1.5; cs.log.push(`🎲 ${_gRoll.d}! Přímý zásah granátem!`); }
