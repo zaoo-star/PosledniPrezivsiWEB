@@ -10464,11 +10464,19 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             }
         }
         
+        // [v7.67] Deník se počítá jako sebraný, i když už je přečtený a zahozený nebo leží ve skrýši
+        function _loreKnownIds() {
+            const ids = new Set((state.inv || []).filter(i => i?.id?.startsWith('lore_')).map(i => i.id));
+            (state.readBooks || []).forEach(id => { if (String(id).startsWith('lore_')) ids.add(id); });
+            Object.values(state.stashes || {}).forEach(arr => Array.isArray(arr) && arr.forEach(i => { if (i?.id?.startsWith('lore_')) ids.add(i.id); }));
+            return ids;
+        }
         // Funkce pro zobrazení sbírky knih
         function showLoreCollection() {
             if (!state.readBooks) state.readBooks = [];
             if (!state.loreCooldowns) state.loreCooldowns = {};
             const collected = state.inv.filter(i => i.id?.startsWith('lore_')).map(i => i.id);
+            const _known = _loreKnownIds(); // [v7.67]
             const now = Date.now();
             const cooldown = 5 * 60 * 1000; // 5 minut
             
@@ -10476,7 +10484,8 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             html += '<div style="display: grid; gap: 0.5rem;">';
             
             LORE_BOOKS.forEach((book, idx) => {
-                const hasBook = collected.includes(book.id);
+                const ownsBook = collected.includes(book.id);
+                const hasBook = ownsBook || _known.has(book.id); // [v7.67] přečtený a zahozený se nepočítá jako „Nenalezeno“
                 const wasRead = state.readBooks.includes(book.id);
                 const lastRead = state.loreCooldowns[book.id] || 0;
                 const remaining = cooldown - (now - lastRead);
@@ -10487,13 +10496,14 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
                 html += '<div style="flex: 1;">';
                 html += '<div style="font-weight: bold; color: ' + (hasBook ? '#8bc34a' : '#666') + ';">' + (hasBook ? book.name : '???') + '</div>';
                 html += '<div style="font-size: 0.8rem; color: #888;">' + (hasBook ? book.title : 'Nenalezeno') + '</div>';
-                if (hasBook && isOnCooldown) {
+                if (hasBook && !ownsBook) html += '<div style="font-size: 0.75rem; color: #888;">📖 Přečteno (deník už u sebe nemáš)</div>';
+                if (ownsBook && isOnCooldown) {
                     const mins = Math.floor(remaining / 60000);
                     const secs = Math.floor((remaining % 60000) / 1000);
                     html += '<div style="font-size: 0.75rem; color: #ff9800;">🔒 ' + mins + ':' + String(secs).padStart(2, '0') + '</div>';
                 }
                 html += '</div>';
-                if (hasBook) {
+                if (ownsBook) {
                     // [v4.0.1] Drop tlačítko vedle čtení
                     html += '<div style="display: flex; flex-direction: column; gap: 0.2rem;">';
                     if (isOnCooldown) {
@@ -10508,7 +10518,7 @@ Někdy je nejlepší volba - nepodlehnout iluzi, že musíme volit.`}
             });
             
             html += '</div>';
-            html += '<p style="text-align: center; margin-top: 1rem; color: #ffd700;">📚 Sebráno: ' + collected.length + '/' + LORE_BOOKS.length + '</p>';
+            html += '<p style="text-align: center; margin-top: 1rem; color: #ffd700;">📚 Sebráno: ' + LORE_BOOKS.filter(b => _known.has(b.id)).length + '/' + LORE_BOOKS.length + '</p>';
             html += '<button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 0.5rem;">' + t('ui', 'close') + '</button>';
             
             showModal('📚 Příběh zkázy', html);
@@ -32617,6 +32627,35 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             `);
         }
         
+        // [v7.67] Zvířata (pes, kočka, havran…) nestřílí – střelnou zbraň jim nejde dát a v boji útočí zblízka
+        function _isAnimalCompanion(comp) {
+            if (!comp) return false;
+            const base = (typeof COMPANIONS !== 'undefined' ? COMPANIONS : []).find(c => c.id === comp.id);
+            return comp.type === 'animal' || base?.type === 'animal' || ['dog', 'cat', 'crow', 'wolf'].includes(comp.id);
+        }
+        function _isRangedItem(it) {
+            if (!it) return false;
+            const d = typeof findItemDef === 'function' ? findItemDef(it) : ITEMS.find(i => i.id === it.id);
+            return !!(d?.ammoType || it.ammoType);
+        }
+        // Starší uložené hry: střelnou zbraň zvířete vrať do batohu
+        function _unequipAnimalGuns() {
+            let n = 0;
+            (state.companions || []).forEach(comp => {
+                const w = comp?.equipped?.weapon;
+                if (w && _isAnimalCompanion(comp) && _isRangedItem(w)) {
+                    comp.equipped.weapon = null;
+                    if (!Array.isArray(state.inv)) state.inv = [];
+                    state.inv.push(w);
+                    n++;
+                    try { addLog(`🐾 ${comp.name || 'Zvíře'} neumí střílet – ${w.name} vrácena do batohu.`, '🎒'); } catch (e) {}
+                }
+            });
+            if (n) { try { notifyInfo('🐾 Zvířata nestřílí', n === 1 ? 'Střelná zbraň zvířete je zpět v batohu.' : n + ' střelné zbraně zvířat jsou zpět v batohu.'); } catch (e) {} }
+            return n;
+        }
+        window._unequipAnimalGuns = _unequipAnimalGuns;
+        
         function equipCompanionItem(companionId, slot, itemId) {
             const comp = state.companions.find(c => c.id === companionId || c.uniqueId === companionId);
             if (!comp) {
@@ -32650,6 +32689,11 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             }
             
             const item = state.inv[itemIndex];
+            
+            if (slot === 'weapon' && _isAnimalCompanion(comp) && _isRangedItem(item)) {
+                notifyWarning('🐾 Zvíře nestřílí', `${comp.name || 'Zvíře'} neumí používat střelné zbraně. Dej mu zbraň na blízko.`);
+                return;
+            }
             
             // Kontrola - nelze vzít předmět co má hráč na sobě
             // (Equipnuté itemy jsou normálně ODSTRANĚNY z inv, takže toto je pouze fallback)
@@ -42058,7 +42102,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                     <!-- 🆕 [v6.3.1] PŘÍBĚH - TERMINAL (stejný styl jako Bestiář) -->
                     <details class="ch2-acc" style="background: #0a0a0a; border: 1px solid #4a3a2a; margin-bottom: 0.5rem; font-family: 'Rajdhani', sans-serif;">
                         ${(() => {
-                            const _lCollected = (state.inv || []).filter(i => i.id?.startsWith('lore_')).length;
+                            const _lCollected = (typeof _loreKnownIds === 'function' && typeof LORE_BOOKS !== 'undefined') ? LORE_BOOKS.filter(b => _loreKnownIds().has(b.id)).length : (state.inv || []).filter(i => i.id?.startsWith('lore_')).length; // [v7.67]
                             const _lTotal = (typeof LORE_BOOKS !== 'undefined' && LORE_BOOKS.length) ? LORE_BOOKS.length : 0;
                             const _lPct = _lTotal > 0 ? Math.round(_lCollected / _lTotal * 100) : 0;
                             return '<summary style="padding: 0.5rem; cursor: pointer; color: #6a5a4a; font-size: 0.7rem; display: flex; align-items: center; gap: 0.5rem;">' +
@@ -90970,7 +91014,16 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
             } else if (c) c.style.display = 'none';
         }
         window._combatCover = _combatCover;
+        // [v7.67] Dungeony do úrovně 5 (Starý sklep, Policejní stanice, Opuštěný důl): nepřátelé mají 2 akce jako venku.
+        // Dřív 3 → boss Starého sklepa dal 3 údery za kolo a hráče na lvl 13 zabil „na ránu“.
+        function _isEasyDungeonNow() {
+            if (state.abyss?.inProgress) return false;
+            const id = (typeof state.dungeon?.active === 'string' ? state.dungeon.active : null) || state.dungeonState?.dungeonId;
+            const lvl = (typeof DUNGEON_FLOORS !== 'undefined' && id) ? DUNGEON_FLOORS[id]?.level : null;
+            return !!(state.dungeon?.active && lvl && lvl <= 5);
+        }
         function startCombatWithGroup(enemyGroup, combatType = 'normal', skipPreCombat = false) {
+            try { if (typeof _unequipAnimalGuns === 'function') _unequipAnimalGuns(); } catch (e) {}
             console.log('⚔️ startCombatWithGroup called with', enemyGroup?.length || 0, 'enemies, type:', combatType);
             // [v7.12 FIX] Žádný boj, dokud není načtená postava (jinak vznikl boj s výchozím „Hrdina / 100 HP / ⚔️5“
             // a uložil se hráči do účtu)
@@ -92282,7 +92335,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                     // Enemies v Propasti/dungeonu: 3 tahy. World Boss sám: 3 tahy. Jinak 2.
                     let enemyBonusActions = 2;
                     if (u.team === 'enemy') {
-                        if (_isAbyssOrDungeon) enemyBonusActions = 3;
+                        if (_isAbyssOrDungeon && !_isEasyDungeonNow()) enemyBonusActions = 3; // [v7.67] nízké dungeony 2 akce
                         else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaid) enemyBonusActions = 3;
                         console.log(`🎮 [SETUP] Enemy ${u.name}: bonusActions=${enemyBonusActions}`);
                     }
@@ -93080,7 +93133,7 @@ Bez uvozovek. 3. osoba.`, 'status', `status_${npcId}_${_c.tod}_${Math.floor((_c.
                 // (Bug: hráč hlásí "porad jen 2 tahy" - příčina: cs.units mají stale maxActions:2 ze save)
                 let defaultActions = 2;
                 if (u.team === 'enemy') {
-                    if (_isAbyssOrDungeonRound) defaultActions = 3;
+                    if (_isAbyssOrDungeonRound && !_isEasyDungeonNow()) defaultActions = 3; // [v7.67] nízké dungeony 2 akce
                     else if (u.isWorldBoss || u.isRaidBoss || _isWorldBossRaidRound) defaultActions = 3;
                     // Force přepsat stale maxActions ze save game
                     u.maxActions = defaultActions;
