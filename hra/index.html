@@ -2545,6 +2545,9 @@
             position: relative;
             animation: screenFlicker 10s linear infinite;
         }
+        /* [v7.68] 🔋 Úsporný režim */
+        body.pp-eco #paAsh, body.pp-eco [style*="dustFloat"] { display: none !important; animation: none !important; }
+        body.pp-eco #statusBars { animation: none !important; }
         
         /* Border effects via border-image */
         header {
@@ -40184,6 +40187,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     <span style="font-size: 0.9rem;">☢️</span>
                                     <span style="font-size: 0.75rem; font-weight: bold; color: #ffd700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${state.char?.name || ''}</span>
                                     <span onclick="event.stopPropagation(); toggleSound(); this.textContent = SoundSystem.enabled ? '🔊' : '🔇';" style="font-size: 0.75rem; cursor: pointer; padding: 0 0.15rem;" title="Zvuk">${(typeof SoundSystem !== 'undefined' && SoundSystem.enabled === false) ? '🔇' : '🔊'}</span>
+                                    <span onclick="event.stopPropagation(); toggleEcoMode(); this.style.opacity = _ecoOn() ? '1' : '0.4';" style="font-size: 0.75rem; cursor: pointer; padding: 0 0.15rem; opacity: ${(typeof _ecoOn === 'function' && _ecoOn()) ? '1' : '0.4'};" title="Úsporný režim (šetří baterii)">🔋</span>
                                     <span onclick="event.stopPropagation(); showGameInfo()" style="font-size: 0.75rem; cursor: pointer; padding: 0 0.15rem;" title="Info o hře">📟</span>
                                 </div>
                                 <div style="font-size: 0.55rem; color: #888; letter-spacing: 0.05em; text-transform: uppercase; margin-top: 0.1rem;">Hráč</div>
@@ -56316,7 +56320,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                             _combatCover(true); // [v7.53] žádné probliknutí hlavní obrazovky
                             setTimeout(() => reopen3DExploration(), 150);
                         } else {
-                            // Hráč zemřel - vyčistit
+                            // Hráč zemřel - vyčistit (smrt = kořist propadá, není to chyba)
+                            delete state._exploreLootPending;
                             window._explore3D = null;
                         }
                     }
@@ -57157,6 +57162,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🆕 [v6.4.0] Pojistka: bez nalezení východu žádná odměna
             const actualReward = withReward && E.exitReached;
+            delete state._exploreLootPending; // [v7.68] řádné ukončení – kořist řeší tahle funkce
             
             // Cleanup
             E.running = false;
@@ -57282,8 +57288,39 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         function _fxTake(E, li, n) {
             const got = [];
             for (let i = 0; i < n; i++) { const e = _fxRollLootEntry(E); E.loot.push(e); got.push(e); }
+            _exploreLootInsure(E);
             return got;
         }
+        // [v7.68] Pojistka kořisti z průzkumu: sebrané věci se průběžně ukládají. Když se průzkum přeruší
+        // (chyba boje, pád/minimalizace appky, obnovení stránky), vrátí se do batohu — dřív zmizely
+        // a denní limit průzkumu byl stejně spotřebovaný (hlášení hráče).
+        function _exploreLootInsure(E) {
+            try {
+                const items = (E?.loot || []).flatMap(e => (e && e.items) || []);
+                if (items.length) { state._exploreLootPending = { loc: E.locationId, at: Date.now(), items: JSON.parse(JSON.stringify(items)) }; saveGame(true); }
+            } catch (e) {}
+        }
+        function _exploreLootRescue() {
+            const p = state._exploreLootPending;
+            if (!p || window._explore3D || window.combatState?.units) return false;
+            delete state._exploreLootPending;
+            const names = [];
+            (p.items || []).forEach(item => {
+                try {
+                    if (item.isAmmo) { if (typeof addAmmo === 'function') addAmmo(item.ammoType, item.count); }
+                    else if (item.id) addItemToInventory(item, item.count || 1);
+                    names.push(`${item.icon || '📦'} ${item.count > 1 ? item.count + '× ' : ''}${item.name || item.id}`);
+                } catch (e) {}
+            });
+            if (names.length) {
+                addLog('🎒 Kořist z přerušeného průzkumu vrácena: ' + names.join(', '), '🏚️');
+                notifySuccess('🎒 Kořist z průzkumu zachráněna', names.slice(0, 6).join(', ') + (names.length > 6 ? '…' : ''));
+            }
+            try { saveGame(true); } catch (e) {}
+            return true;
+        }
+        window._exploreLootRescue = _exploreLootRescue;
+        setInterval(() => { try { if (state?.char && state._exploreLootPending) _exploreLootRescue(); } catch (e) {} }, 5000);
         window._fxTake = _fxTake;
         function exploreLocation(skipLimitCheck = false) {
             const loc = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation);
@@ -110887,6 +110924,23 @@ body.pa-theme #paOverlay{display:block}
             }
         }
         
+        // [v7.68] 🔋 Úsporný režim – vypne dekorace, které pořád běží (popel, prach, blikání ukazatelů).
+        // Na mobilu výchozí ZAP (hlášení: hra žere baterii), jde přepnout ikonou 🔋 u jména.
+        function _ecoOn() {
+            let v = null; try { v = localStorage.getItem('pp_eco'); } catch (e) {}
+            if (v === '1') return true; if (v === '0') return false;
+            return window.innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent);
+        }
+        function _applyEco() { try { document.body.classList.toggle('pp-eco', _ecoOn()); } catch (e) {} }
+        function toggleEcoMode() {
+            const on = !_ecoOn();
+            try { localStorage.setItem('pp_eco', on ? '1' : '0'); } catch (e) {}
+            _applyEco();
+            notifyInfo(on ? '🔋 Úsporný režim zapnut' : '🔋 Úsporný režim vypnut', on ? 'Vypnuté dekorační animace – hra šetří baterii.' : 'Zpět plné efekty (popel, prach, blikání).');
+        }
+        window.toggleEcoMode = toggleEcoMode; window._ecoOn = _ecoOn;
+        if (document.body) _applyEco(); else document.addEventListener('DOMContentLoaded', _applyEco);
+        
         function toggleSound() {
             const enabled = SoundSystem.toggle();
             const btn = document.getElementById('soundBtn');
@@ -112561,7 +112615,7 @@ body.pa-theme #paOverlay{display:block}
             const hide = () => { if (ring) ring.style.display = 'none'; if (tip) tip.style.display = 'none'; _coachLastEl = null; };
             try {
                 const g = state.guide;
-                const blocked = !state.confirmed || !state.char?.name || !g || !g.enabled || g.minimized || g.coachOff
+                const blocked = document.hidden || !state.confirmed || !state.char?.name || !g || !g.enabled || g.minimized || g.coachOff
                     || document.body.classList.contains('combat-fullscreen')
                     || document.getElementById('diceOverlay')?.classList.contains('show')
                     || (window._explore3D && document.getElementById('explore3DCanvas'));
