@@ -21966,6 +21966,13 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const hasAlivePlayer = hasUnits && cs.units.some(u => u && u.team === 'player' && u.alive);
                 
                 if (!hasUnits || !hasAliveEnemy || !hasAlivePlayer) {
+                    // [v7.68] Nečisti boj, který právě skončil — vítězství/prohra se vyhodnocuje se zpožděním
+                    // (animace, loot). Dřív ho tu smazala třeba kontrola achievementů hned po posledním zásahu
+                    // → vítězství se nezapočítalo a v Propasti hráč zůstal na stejném patře („zasekne se“).
+                    if (hasUnits) {
+                        if (!cs._staleSince) cs._staleSince = Date.now();
+                        if (Date.now() - cs._staleSince < 8000) return true;
+                    }
                     console.warn('🛡️ [isInCombat self-heal] Stale combat state detekován — vyčišťuji', {
                         hasUnits, hasAliveEnemy, hasAlivePlayer, units: cs.units?.length
                     });
@@ -43414,6 +43421,14 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 const mc = document.getElementById('modalContent')?.innerHTML || '';
                 const hasAbyssMarker = mc.includes('exitAbyss') || mc.includes('startAbyssCombat');
                 if (!hasAbyssMarker) {
+                    // [v7.68] Vyhrané patro, jehož vítězné okno se zavřelo jinak → dokonči vítězství (další patro)
+                    if (state.abyss._pendingVictoryFloor && state.abyss._pendingVictoryFloor === state.abyss.currentFloor && typeof handleAbyssVictory === 'function') {
+                        console.log('🕳️ closeModal: nevyřízené vítězství v Propasti → dokončuji');
+                        try { if (typeof _cleanupCombatState === 'function') _cleanupCombatState(); } catch (e) {}
+                        window.isAbyssCombat = false;
+                        handleAbyssVictory();
+                        return;
+                    }
                     console.log('🕳️ closeModal: Active abyss detected, restoring abyss UI');
                     if (typeof showAbyssFloor === 'function') {
                         showAbyssFloor();
@@ -72878,6 +72893,7 @@ function openFullscreenMap() {
             }
             
             state.abyss.runs = (state.abyss.runs || 0) + 1;
+            delete state.abyss._pendingVictoryFloor; // [v7.68]
             state.abyss.currentFloor = 1;
             state.abyss.loot = [];
             state.abyss.activeModifiers = [];
@@ -72908,15 +72924,18 @@ function openFullscreenMap() {
                 return mod ? `<span style="background: #2a1a3a; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.7rem; color: #ce93d8;">${mod.name}</span>` : '';
             }).join(' ');
             
-            // Nepřátelé - scale s patrem
-            const enemyCount = Math.min(6, 1 + Math.floor(floor / 5));
-            const enemyScaling = 1 + (floor * 0.1); // +10% za patro
+            // [v7.68] Náhled odpovídá skutečnému boji (startAbyssCombat): dřív ukazoval „1x, ×1.1“,
+            // ale na patře byli 2 bossové + 3 moby se sílou ×1.15
+            const _bossFloor5 = floor % 5 === 0;
+            const _bossesN = _bossFloor5 ? (floor < 25 ? 3 : floor < 50 ? 4 : 5) : (floor < 50 ? 2 : 3);
+            const _mobsN = _bossFloor5 ? 0 : (floor < 25 ? 3 : (floor < 50 ? 4 : 5));
+            const enemyScaling = 1 + (floor * 0.15);
             
             showModal(`🕳️ Propast - Patro ${floor}`, `
                 <div style="text-align: center; margin-bottom: 0.5rem;">
                     <div style="font-size: 2rem;">${isBossFloor ? '👹' : '🕳️'}</div>
                     <div style="color: ${isBossFloor ? '#ff4444' : '#9c27b0'}; font-weight: bold;">
-                        ${isBossFloor ? '⚠️ BOSS FLOOR ⚠️' : `Patro ${floor}`}
+                        ${isBossFloor ? '⚠️ BOSS FLOOR ⚠️' : _bossFloor5 ? '⚠️ Patro bossů' : `Patro ${floor}`}
                     </div>
                     ${isCheckpoint ? '<div style="color: #4caf50; font-size: 0.8rem;">✓ Checkpoint</div>' : ''}
                 </div>
@@ -72926,7 +72945,7 @@ function openFullscreenMap() {
                 <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 6px; margin-bottom: 1rem;">
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                         <span style="color: #888;">Nepřátelé:</span>
-                        <span style="color: #ff6b6b;">${isBossFloor ? 'BOSS + ' + (enemyCount - 1) : enemyCount}x</span>
+                        <span style="color: #ff6b6b;">👹 ${_bossesN}× boss${_mobsN ? ' + ' + _mobsN + '× nepřítel' : ''}</span>
                     </div>
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                         <span style="color: #888;">Síla:</span>
@@ -73183,8 +73202,11 @@ function openFullscreenMap() {
                         if (rangedInPool.length > 0) {
                             enemyId = rangedInPool[Math.floor(Math.random() * rangedInPool.length)];
                         } else {
-                            // Pokud žádný ranged není v enemyPool, vyber random z globálního ranged pool
-                            enemyId = RANGED_ENEMY_IDS[Math.floor(Math.random() * RANGED_ENEMY_IDS.length)];
+                            // [v7.68] Střelec z nejbližšího NIŽŠÍHO/stejného tieru (dřív z celé hry → na 1. patře
+                            // Toxická bestie s ~950 HP a 100 DMG)
+                            let _rp = [];
+                            for (let _t = tier; _t <= 5 && !_rp.length; _t++) _rp = (tierEnemies[_t] || []).filter(id => RANGED_ENEMY_IDS.includes(id));
+                            enemyId = _rp.length ? _rp[Math.floor(Math.random() * _rp.length)] : RANGED_ENEMY_IDS[Math.floor(Math.random() * RANGED_ENEMY_IDS.length)];
                         }
                         rangedAdded = true;
                     } else {
@@ -73227,6 +73249,7 @@ function openFullscreenMap() {
         function handleAbyssVictory() {
             _cleanupCombatState();
             window.isAbyssCombat = false;
+            if (state.abyss) delete state.abyss._pendingVictoryFloor; // [v7.68]
             
             const floor = state.abyss.currentFloor;
             
@@ -104661,6 +104684,9 @@ body.pa-theme #paOverlay{display:block}
             } else if (cs.combatType === 'abyss') {
                 continueAction = "_cleanupCombatState(); window.isAbyssCombat = false; handleAbyssVictory();"
                 // [FIX] saveGame je uvnitř handleAbyssVictory
+                // [v7.68] Poznamenej vítězství — když vítězné okno zavře něco jiného než „Pokračovat“
+                // (křížek, level-up, jiný modal), closeModal ho dokončí místo opakování stejného patra
+                if (state.abyss) state.abyss._pendingVictoryFloor = state.abyss.currentFloor;
             }
             
             // Show victory screen
