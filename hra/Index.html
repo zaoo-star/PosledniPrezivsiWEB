@@ -44737,7 +44737,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                                     type: 'detective',
                                     icon: '🔍',
                                     name: quest.name,
-                                    location: null,
+                                    location: (dq.cluesFound.length < quest.requiredClues && typeof _detClueLocs === 'function') ? (_detClueLocs(quest, dq)[0]?.loc.id || null) : null, // [v7.66] naviguj na nejbližší stopu
                                     color: '#9c27b0',
                                     extra: `Stopy: ${dq.cluesFound.length}/${quest.requiredClues}`,
                                     questId: questId
@@ -50477,6 +50477,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
         // === HELPER: Aktualizuj quest progress při příjezdu na lokaci ===
         // Volá se ze všech míst kde hráč dorazí (checkTravelComplete, offline arrival, resume timer)
         function updateQuestProgressOnArrival() {
+            // [v7.66] Klidné lokace bez 3D průzkumu (úkryt, obchody, NPC) – stopa k případu se najde hned po příchodu
+            try { const _cl = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation); if (_cl && !(_cl.enemies && _cl.enemies.length) && typeof _detCheckClues === 'function') _detCheckClues(_cl.id, 'Porozhlédl ses a našel stopu k případu.', true); } catch (e) {}
             // NPC quest progress
             if (state.npcQuests) {
                 Object.keys(state.npcQuests).forEach(npcId => {
@@ -54046,6 +54048,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             
             // 🆕 [v6.4.0] Setup combat hook (jednou per session)
             setupExplore3DCombatHook();
+            // [v7.66] Šerifovy případy – stopa na této lokaci se najde při průzkumu
+            if (typeof _detCheckClues === 'function') { const _lid = loc.id; setTimeout(() => { try { _detCheckClues(_lid, 'Při průzkumu jsi narazil na stopu k případu.', true); } catch (e) {} }, 1500); }
             // [v7.46] Nový volný průzkum (klepni kam jít, budovy, patra, sklepy)
             if (typeof FX_ENABLED !== 'undefined' && FX_ENABLED) { fxStart(loc); return; }
             
@@ -59411,6 +59415,47 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             showDetectiveQuestIntro(quest);
         }
         
+        // [v7.66] Kde hledat stopy – dřív to hra nikde neřekla a hráči nevěděli, kam jít
+        function _detClueLocs(quest, dq) {
+            const found = dq?.cluesFound || [];
+            const ids = [...new Set(Object.entries(quest.clueLocations || {}).filter(([c]) => !found.includes(c)).map(([, l]) => l))];
+            return ids.map(id => WORLD_LOCATIONS.find(l => l.id === id)).filter(Boolean)
+                .map(l => ({ loc: l, dist: (typeof getDirectionToLocation === 'function' ? getDirectionToLocation(l.id).distance : 0) || 0 }))
+                .sort((a, b) => a.dist - b.dist);
+        }
+        function _detClueLocsHtml(quest, dq) {
+            const list = _detClueLocs(quest, dq);
+            if (!list.length) return '';
+            const here = state.world.currentLocation;
+            const rows = list.map(({ loc, dist }) => {
+                const isHere = loc.id === here;
+                const dir = !isHere && typeof getDirectionToLocation === 'function' ? getDirectionToLocation(loc.id) : null;
+                return `<div style="display:flex; justify-content:space-between; align-items:center; background:${isHere ? '#1a2a1a' : '#151515'}; padding:0.4rem 0.6rem; border-radius:4px; margin-bottom:0.25rem; font-size:0.85rem;">
+                    <span>${typeof stripToEmoji === 'function' ? stripToEmoji(loc.icon) : loc.icon} ${loc.name}</span>
+                    <span style="color:${isHere ? '#8bc34a' : '#888'}; font-size:0.75rem;">${isHere ? '📍 jsi tady' : (dir && dir.distance ? dir.arrow + ' ' + dir.distance : '')}</span>
+                </div>`;
+            }).join('');
+            return `<h4 style="color:#64b5f6; margin:0.8rem 0 0.4rem;">📍 Kde hledat stopy:</h4>${rows}
+                <p style="color:#777; font-size:0.75rem; margin:0.3rem 0 0;">Na klidných místech stopu najdeš hned po příchodu. Kde jsou nepřátelé, dej <b>🧭 Průzkum</b>.</p>`;
+        }
+        window._detClueLocs = _detClueLocs;
+        // [v7.66] Stopy se najdou i při 3D průzkumu (dřív jen přes staré „Prohledat“, které už je skoro jen v Bučovicích)
+        function _detCheckClues(locId, why, quiet) {
+            if (!state.detectiveQuests || !locId) return 0;
+            let n = 0;
+            Object.entries(state.detectiveQuests).forEach(([questId, dq]) => {
+                if (!dq || dq.solved) return;
+                const quest = DETECTIVE_QUESTS.find(q => q.id === questId);
+                if (!quest) return;
+                Object.entries(quest.clueLocations || {}).forEach(([clueId, clueLoc]) => {
+                    if (clueLoc === locId && !dq.cluesFound.includes(clueId)) { findClue(questId, clueId, quiet); n++; }
+                });
+            });
+            if (n && why) addLog(why, '🔍');
+            return n;
+        }
+        window._detCheckClues = _detCheckClues;
+        
         function showDetectiveQuestIntro(quest) {
             let suspectsHtml = quest.suspects.map(s => `
                 <div style="display: flex; align-items: center; gap: 0.5rem; background: #1a1a1a; padding: 0.5rem; border-radius: 4px; margin-bottom: 0.3rem;">
@@ -59431,11 +59476,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 <div style="background: #1a2a1a; padding: 0.8rem; border-radius: 6px; margin-top: 1rem;">
                     <p style="color: #4caf50; margin: 0;">💡 Sbírej stopy na různých lokacích a vyslýchej podezřelé. Až budeš mít ${quest.requiredClues} stopy, můžeš někoho obvinit.</p>
                 </div>
+                ${_detClueLocsHtml(quest, state.detectiveQuests?.[quest.id])}
                 <button class="btn" onclick="closeModal()" style="width: 100%; margin-top: 1rem;">🔍 Začít vyšetřování</button>
             `);
         }
         
-        function findClue(questId, clueId) {
+        function findClue(questId, clueId, quiet) {
             if (!state.detectiveQuests?.[questId]) return false;
             
             const dq = state.detectiveQuests[questId];
@@ -59475,6 +59521,12 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 'family_photo': '🖼️ Rodinná fotka'
             };
             
+            // [v7.66] Během 3D průzkumu jen notifikace (modal by zavřel průzkum)
+            if (quiet) {
+                notifySuccess('🔍 Stopa nalezena: ' + (clueNames[clueId] || clueId), (suspectName ? 'Ukazuje na: ' + suspectName + ' · ' : '') + 'Stopy ' + dq.cluesFound.length + '/' + quest.requiredClues + (dq.cluesFound.length >= quest.requiredClues ? ' – můžeš obvinit u šerifa!' : ''));
+                try { saveGame(); } catch (e) {}
+                return true;
+            }
             showModal('🔍 Stopa nalezena!', `
                 <div style="text-align: center;">
                     <div style="font-size: 3rem; margin-bottom: 1rem;">${clueNames[clueId]?.split(' ')[0] || '🔍'}</div>
@@ -59590,6 +59642,8 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
             const dq = state.detectiveQuests?.[questId];
             const quest = DETECTIVE_QUESTS.find(q => q.id === questId);
             if (!dq || !quest) return;
+            // [v7.66] Stojíš na klidném místě se stopou (např. po návratu do úkrytu po smrti) → dohledej ji
+            try { const _cl = WORLD_LOCATIONS.find(l => l.id === state.world.currentLocation); if (_cl && !(_cl.enemies && _cl.enemies.length)) _detCheckClues(_cl.id, '', true); } catch (e) {}
             
             const clueNames = {
                 'bloody_knife': '🔪 Zakrvácený nůž',
@@ -59636,6 +59690,7 @@ Lidstvo si najde svou vlastní cestu. Bez bohů, bez spasitelů. Jen MY SAMI.`,
                 </div>
                 <h4 style="color: #ff9800; margin-bottom: 0.5rem;">Podezřelí:</h4>
                 ${suspectsHtml}
+                ${dq.cluesFound.length < quest.requiredClues ? _detClueLocsHtml(quest, dq) : ''}
                 ${dq.cluesFound.length < quest.requiredClues ? 
                     `<p style="color: #888; font-size: 0.85rem; margin-top: 1rem;">${'💡 Najdi více stop než budeš moci někoho obvinit.'}</p>` : 
                     `<p style="color: #4caf50; font-size: 0.85rem; margin-top: 1rem;">${'✓ Máš dost důkazů! Vyber podezřelého a obviň ho.'}</p>`}
@@ -139381,6 +139436,15 @@ ${window.REMOVED_FEATURES?.enabled ? '' : `                        <div onclick=
             html += '</div>';
             showPostApoModal('🌀 Super Teleport', html, [{ text: '← Zpět', color: '#333', callback: () => showSuperAbility() }]);
         }
+        // [v7.66] Příchod teleportem (Super Teleport, návštěva z dopisu) se počítá do questů stejně jako běžná cesta
+        function _questArrivalHooks() {
+            try { updateQuestProgressOnArrival(); } catch (e) {}
+            try { if (typeof checkSpecialQuestTriggers === 'function') checkSpecialQuestTriggers(state.world.currentLocation); } catch (e) {}
+            setTimeout(() => {
+                try { if (typeof checkCompanionQuestItemPickup === 'function') checkCompanionQuestItemPickup(); } catch (e) {}
+                try { if (typeof triggerQuestItemCheck === 'function') triggerQuestItemCheck(); } catch (e) {}
+            }, 500);
+        }
         function superTeleportTo(locationId) {
             if (!canUseSuperAbility('teleport')) return;
             const loc = WORLD_LOCATIONS.find(l => l.id === locationId);
@@ -139396,6 +139460,7 @@ ${window.REMOVED_FEATURES?.enabled ? '' : `                        <div onclick=
             if (!state.world.visitedLocations.includes(locationId)) state.world.visitedLocations.push(locationId);
             state.map.inBase = (locationId === 'shelter');
             markSuperAbilityUsed('teleport');
+            _questArrivalHooks();
             
             closeModal();
             saveGame();
@@ -185687,6 +185752,7 @@ function acceptLetterVisit(idx) {
     if (typeof checkLocationTip === 'function') {
         checkLocationTip(npc.location);
     }
+    if (typeof _questArrivalHooks === 'function') _questArrivalHooks(); // [v7.66]
     
     _applyLetterReward(l, l.action);
 }
